@@ -30,6 +30,18 @@ func CreateAttentionAnswerHandler(store pkg.AttentionStore) http.Handler {
 	return handler.NewAttentionAnswerHandler(store)
 }
 
+// CreateAttentionCloseHandler creates the handler that applies
+// open -> closed and answered -> closed.
+func CreateAttentionCloseHandler(store pkg.AttentionStore) http.Handler {
+	return handler.NewAttentionCloseHandler(store)
+}
+
+// CreateAttentionGetHandler creates the handler that returns a single item by
+// id, whatever its state.
+func CreateAttentionGetHandler(store pkg.AttentionStore) http.Handler {
+	return handler.NewAttentionGetHandler(store)
+}
+
 // CreateTestLoglevelHandler creates an HTTP handler that tests different glog verbosity levels.
 func CreateTestLoglevelHandler() http.Handler {
 	return handler.NewTestLoglevelHandler()

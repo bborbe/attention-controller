@@ -9,6 +9,7 @@ import (
 
 	libkv "github.com/bborbe/kv"
 	libtime "github.com/bborbe/time"
+	"github.com/bborbe/validation"
 )
 
 //counterfeiter:generate -o ../mocks/attention-store.go --fake-name AttentionStore . AttentionStore
@@ -59,6 +60,26 @@ type PushRequest struct {
 	Payload         Payload           `json:"payload"`
 	AnswerMechanism AnswerMechanism   `json:"answer_mechanism"`
 	ExpiresAt       *libtime.DateTime `json:"expires_at,omitempty"`
+}
+
+// Validate returns an error when the declaration violates the schema's rules
+// for the fields a producer owns.
+//
+// It is deliberately NOT Item.Validate. Three of the schema's fields —
+// ItemID, State and CreatedAt — are written by the store, so a producer's
+// request cannot carry them and must not be judged against them. Reusing
+// Item.Validate here would reject every push for an empty ItemID, which is
+// exactly what it did when this was first run end to end.
+func (p PushRequest) Validate(ctx context.Context) error {
+	return validation.All{
+		validation.Name("ProducerID", validation.NotEmptyString(p.ProducerID)),
+		validation.Name("ProducerKind", p.ProducerKind),
+		validation.Name("LivenessRef", p.LivenessRef),
+		validation.Name("DedupKey", validation.NotEmptyString(p.DedupKey)),
+		validation.Name("InterruptClass", validation.NotEmptyString(p.InterruptClass)),
+		validation.Name("Payload", validation.NotEmptyString(p.Payload)),
+		validation.Name("AnswerMechanism", p.AnswerMechanism),
+	}.Validate(ctx)
 }
 
 // AttentionStoreBucketName is the bucket every item lives in.

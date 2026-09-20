@@ -35,7 +35,12 @@ func main() {
 }
 
 type application struct {
-	SentryDSN       string            `required:"true"  arg:"sentry-dsn"        env:"SENTRY_DSN"        usage:"SentryDSN"                                                                        display:"length"`
+	// Optional, unlike the notification-controller precedent: Sentry is error
+	// reporting for the deployed stage, and requiring it made a local run
+	// impossible without a teamvault-resolved DSN. An empty DSN disables error
+	// reporting rather than failing startup. The deployed manifests still
+	// supply SENTRY_DSN from the secret, so prod behaviour is unchanged.
+	SentryDSN       string            `required:"false" arg:"sentry-dsn"        env:"SENTRY_DSN"        usage:"SentryDSN (empty disables error reporting)"                                       display:"length"`
 	SentryProxy     string            `required:"false" arg:"sentry-proxy"      env:"SENTRY_PROXY"      usage:"Sentry Proxy"`
 	Listen          string            `required:"true"  arg:"listen"            env:"LISTEN"            usage:"address to listen to"`
 	DataDir         string            `required:"true"  arg:"datadir"           env:"DATADIR"           usage:"data directory"`
@@ -141,6 +146,16 @@ func (a *application) createHTTPServer(
 		router.Path("/api/1.0/attention/{itemID}/answer").
 			Methods(http.MethodPost).
 			Handler(factory.CreateAttentionAnswerHandler(store))
+		router.Path("/api/1.0/attention/{itemID}/close").
+			Methods(http.MethodPost).
+			Handler(factory.CreateAttentionCloseHandler(store))
+		// Single-item read, distinct from the render path above: an arm reads
+		// open items, but a caller checking a transition's outcome (or the
+		// loser of an answer race reading back) needs the item whatever state
+		// it is in.
+		router.Path("/api/1.0/attention/{itemID}").
+			Methods(http.MethodGet).
+			Handler(factory.CreateAttentionGetHandler(store))
 
 		glog.V(2).Infof("starting http server listen on %s", a.Listen)
 		return libhttp.NewServer(

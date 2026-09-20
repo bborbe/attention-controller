@@ -9,9 +9,16 @@ SERVICE = bborbe/attention-controller
 # Docker Hub as an immutable semver tag, then mirrored into the quant registry
 # and applied from the nuke manifests. There is no in-repo k8s/ tree — the
 # deploy lives in nuke/attention-controller/, per [[Deploy Mirrored Agent Service]].
+# No sentry flag here, matching notification-controller's run target. The
+# skeleton's version resolved -sentry-dsn from teamvault at run time, which
+# made a local run depend on a teamvault key this repo never declares
+# (SENTRY_DSN_KEY is in neither example.env nor Makefile.variables) and on
+# ~/.teamvault.json existing — so `make run` failed at argument parsing before
+# the server started. Sentry is error reporting for the deployed stage; the
+# local rung does not need it. The deployed manifests still supply SENTRY_DSN
+# from the secret, so nothing about prod changes.
 run:
 	@go run -mod=mod main.go \
-	-sentry-dsn="$(shell teamvault-url --teamvault-config ~/.teamvault.json --teamvault-key=${SENTRY_DSN_KEY})" \
 	-listen="localhost:${ATTENTION_CONTROLLER_PORT}" \
 	-datadir="data" \
 	-v=2

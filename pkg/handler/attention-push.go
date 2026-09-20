@@ -70,18 +70,12 @@ func handleAttentionPush(
 
 // validatePushRequest rejects a declaration the schema's field rules do not
 // allow, before the store is touched.
+//
+// It validates the request as a PushRequest, not as an Item: ItemID, State and
+// CreatedAt are the store's to write, so judging the producer's request against
+// them rejected every push for an empty ItemID.
 func validatePushRequest(ctx context.Context, request pkg.PushRequest) error {
-	item := pkg.Item{
-		ProducerID:      request.ProducerID,
-		ProducerKind:    request.ProducerKind,
-		LivenessRef:     request.LivenessRef,
-		DedupKey:        request.DedupKey,
-		InterruptClass:  request.InterruptClass,
-		Payload:         request.Payload,
-		AnswerMechanism: request.AnswerMechanism,
-		State:           pkg.OpenState,
-	}
-	if err := item.Validate(ctx); err != nil {
+	if err := request.Validate(ctx); err != nil {
 		return libhttp.WrapWithDetails(
 			errors.Wrap(ctx, err, "validate push request failed"),
 			libhttp.ErrorCodeValidation,

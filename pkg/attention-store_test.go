@@ -72,6 +72,26 @@ var _ = Describe("AttentionStore", func() {
 		}
 	}
 
+	// Regression: PushRequest must be validated as a request, not as an Item.
+	// An earlier revision built an Item to reuse Item.Validate and left ItemID
+	// empty — which is store-assigned and therefore never present in a
+	// producer's declaration — so EVERY push failed validation with
+	// "validate ItemID failed: empty string". Found by the first end-to-end run
+	// against a live process, not by the unit suite, because the suite called
+	// the store directly and never went through the handler's validation.
+	Describe("PushRequest validation", func() {
+		It("accepts a declaration that omits the store-owned fields", func() {
+			request := pushRequest("session-a", "gate-1")
+			Expect(request.Validate(ctx)).To(BeNil())
+		})
+
+		It("rejects a declaration missing a producer-owned field", func() {
+			request := pushRequest("session-a", "gate-1")
+			request.Payload = ""
+			Expect(request.Validate(ctx)).NotTo(BeNil())
+		})
+	})
+
 	Describe("Push", func() {
 		It("creates an open item carrying a stable id", func() {
 			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
