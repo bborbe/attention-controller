@@ -7,8 +7,8 @@ package pkg
 import (
 	"context"
 
-	"github.com/bborbe/validation"
 	libtime "github.com/bborbe/time"
+	"github.com/bborbe/validation"
 )
 
 // ItemID is the stable unique id for an item. It survives the producer's exit,

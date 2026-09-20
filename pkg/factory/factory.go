@@ -9,8 +9,26 @@ import (
 
 	libsentry "github.com/bborbe/sentry"
 
+	"github.com/bborbe/attention-controller/pkg"
 	"github.com/bborbe/attention-controller/pkg/handler"
 )
+
+// CreateAttentionPushHandler creates the handler a producer calls to declare
+// that a human is needed.
+func CreateAttentionPushHandler(store pkg.AttentionStore) http.Handler {
+	return handler.NewAttentionPushHandler(store)
+}
+
+// CreateAttentionReadHandler creates the handler every arm reads.
+func CreateAttentionReadHandler(store pkg.AttentionStore) http.Handler {
+	return handler.NewAttentionReadHandler(store)
+}
+
+// CreateAttentionAnswerHandler creates the handler that applies an answer as an
+// atomic compare-and-set.
+func CreateAttentionAnswerHandler(store pkg.AttentionStore) http.Handler {
+	return handler.NewAttentionAnswerHandler(store)
+}
 
 // CreateTestLoglevelHandler creates an HTTP handler that tests different glog verbosity levels.
 func CreateTestLoglevelHandler() http.Handler {

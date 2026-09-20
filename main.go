@@ -6,7 +6,9 @@ package main
 
 import (
 	"context"
+	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	libboltkv "github.com/bborbe/boltkv"
@@ -23,6 +25,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/bborbe/attention-controller/pkg"
 	"github.com/bborbe/attention-controller/pkg/factory"
 )
 
@@ -32,12 +35,14 @@ func main() {
 }
 
 type application struct {
-	SentryDSN       string            `required:"true"  arg:"sentry-dsn"        env:"SENTRY_DSN"        usage:"SentryDSN"                 display:"length"`
+	SentryDSN       string            `required:"true"  arg:"sentry-dsn"        env:"SENTRY_DSN"        usage:"SentryDSN"                                                                        display:"length"`
 	SentryProxy     string            `required:"false" arg:"sentry-proxy"      env:"SENTRY_PROXY"      usage:"Sentry Proxy"`
 	Listen          string            `required:"true"  arg:"listen"            env:"LISTEN"            usage:"address to listen to"`
 	DataDir         string            `required:"true"  arg:"datadir"           env:"DATADIR"           usage:"data directory"`
-	BuildGitVersion string            `required:"false" arg:"build-git-version" env:"BUILD_GIT_VERSION" usage:"Build Git version"                          default:"dev"`
-	BuildGitCommit  string            `required:"false" arg:"build-git-commit"  env:"BUILD_GIT_COMMIT"  usage:"Build Git commit hash"                      default:"none"`
+	HeartbeatWindow string            `required:"false" arg:"heartbeat-window"  env:"HEARTBEAT_WINDOW"  usage:"how stale a heartbeat:<path> mtime may be before the producer counts as finished"                  default:"15m"`
+	SessionsDir     string            `required:"false" arg:"sessions-dir"      env:"SESSIONS_DIR"      usage:"directory holding the session registry used to resolve session:<id> liveness"`
+	BuildGitVersion string            `required:"false" arg:"build-git-version" env:"BUILD_GIT_VERSION" usage:"Build Git version"                                                                                 default:"dev"`
+	BuildGitCommit  string            `required:"false" arg:"build-git-commit"  env:"BUILD_GIT_COMMIT"  usage:"Build Git commit hash"                                                                             default:"none"`
 	BuildDate       *libtime.DateTime `required:"false" arg:"build-date"        env:"BUILD_DATE"        usage:"Build timestamp (RFC3339)"`
 }
 
@@ -50,16 +55,63 @@ func (a *application) Run(ctx context.Context, sentryClient libsentry.Client) er
 	}
 	defer db.Close()
 
+	store, err := a.createAttentionStore(ctx, db)
+	if err != nil {
+		return err
+	}
+
 	return service.Run(
 		ctx,
-		a.createHTTPServer(sentryClient, db),
+		a.createHTTPServer(sentryClient, db, store),
 	)
 
+}
+
+// createAttentionStore builds the attention store.
+//
+// ⚠️ Two values here resolve recorded schema silences rather than reading them
+// from the schema: the heartbeat window (the schema requires the check but
+// declares no field carrying it) and the session registry the session model is
+// resolved against (the schema names no source). Both are documented on
+// [[Attention Item Schema]] § Silences found while implementing, and both are
+// injectable so a later step can replace them without touching the store.
+func (a *application) createAttentionStore(
+	ctx context.Context,
+	db libkv.DB,
+) (pkg.AttentionStore, error) {
+	heartbeatWindow, err := libtime.ParseDuration(ctx, a.HeartbeatWindow)
+	if err != nil {
+		return nil, errors.Wrapf(ctx, err, "parse heartbeat window '%s' failed", a.HeartbeatWindow)
+	}
+	sessionsDir := a.SessionsDir
+	if sessionsDir == "" {
+		sessionsDir, err = defaultSessionsDir(ctx)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return pkg.NewAttentionStore(
+		db,
+		pkg.NewItemIDGenerator(),
+		pkg.NewSessionLivenessChecker(sessionsDir),
+		libtime.NewCurrentDateTime(),
+		*heartbeatWindow,
+	), nil
+}
+
+// defaultSessionsDir resolves ~/.claude/sessions.
+func defaultSessionsDir(ctx context.Context) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", errors.Wrap(ctx, err, "resolve home dir failed")
+	}
+	return filepath.Join(home, ".claude", "sessions"), nil
 }
 
 func (a *application) createHTTPServer(
 	sentryClient libsentry.Client,
 	db libkv.DB,
+	store pkg.AttentionStore,
 ) run.Func {
 	return func(ctx context.Context) error {
 		ctx, cancel := context.WithCancel(ctx)
@@ -76,6 +128,19 @@ func (a *application) createHTTPServer(
 		router.Path("/gc").Handler(libhttp.NewGarbageCollectorHandler())
 		router.Path("/testloglevel").Handler(factory.CreateTestLoglevelHandler())
 		router.Path("/sentryalert").Handler(factory.CreateSentryAlertHandler(sentryClient))
+
+		// Business routes live under /api/1.0/, never in the admin block above.
+		// The push entry point takes a producer's declaration; nothing scrapes
+		// a pane, a hook event or a rendered closer line.
+		router.Path("/api/1.0/attention").
+			Methods(http.MethodPost).
+			Handler(factory.CreateAttentionPushHandler(store))
+		router.Path("/api/1.0/attention").
+			Methods(http.MethodGet).
+			Handler(factory.CreateAttentionReadHandler(store))
+		router.Path("/api/1.0/attention/{itemID}/answer").
+			Methods(http.MethodPost).
+			Handler(factory.CreateAttentionAnswerHandler(store))
 
 		glog.V(2).Infof("starting http server listen on %s", a.Listen)
 		return libhttp.NewServer(

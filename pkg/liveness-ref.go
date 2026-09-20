@@ -8,6 +8,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/bborbe/collection"
 	"github.com/bborbe/errors"
 	"github.com/bborbe/validation"
 )
@@ -50,7 +51,7 @@ func (l LivenessModel) Validate(ctx context.Context) error {
 
 // Contains reports whether the collection holds the given liveness model.
 func (l LivenessModels) Contains(livenessModel LivenessModel) bool {
-	return collectionContains(l, livenessModel)
+	return collection.Contains(l, livenessModel)
 }
 
 // Parse splits a liveness ref into its model and its value. The ref is written
