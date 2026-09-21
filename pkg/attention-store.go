@@ -41,6 +41,25 @@ type AttentionStore interface {
 	// ErrAlreadyAnswered and must read back and report rather than retry.
 	Answer(ctx context.Context, itemID ItemID, answeredBy string) (*Item, error)
 
+	// Escalate records which session is carrying this item to the operator, as
+	// an atomic compare-and-set. Exactly one of two concurrent escalations
+	// stamps the item; the loser receives ErrAlreadyEscalated and must read
+	// back EscalatedBy and report who holds it rather than stamping over it.
+	//
+	// Escalation is NOT a transition. The item stays in whatever state it was
+	// in and no row of the schema's transitions table is involved — escalating
+	// changes who is being asked, not where the item is in its lifecycle. An
+	// implementation that models it as a state redefines the schema.
+	//
+	// Escalating an item that is not open is rejected with ErrItemNotOpen: the
+	// item has left the queue, so nothing would render the stamp.
+	//
+	// Re-escalating by the session that already stamped the item succeeds and
+	// returns the item unchanged. A manager re-running its own sweep must never
+	// be blocked by its own stamp — the comparison is against the caller's
+	// identity, not merely against the field's presence.
+	Escalate(ctx context.Context, itemID ItemID, escalatedBy string) (*Item, error)
+
 	// Close applies open -> closed or answered -> closed. Closing an item that
 	// is already closed is rejected with ErrIllegalTransition.
 	Close(ctx context.Context, itemID ItemID) (*Item, error)

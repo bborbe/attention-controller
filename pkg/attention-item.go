@@ -110,6 +110,17 @@ type Item struct {
 	// AnsweredBy is which arm supplied the answer. Recorded so the
 	// one-item-many-arms property is auditable rather than merely asserted.
 	AnsweredBy string `json:"answered_by,omitempty"`
+	// EscalatedBy is which session escalated this item to the operator — a
+	// session id, never a pane id and never a boolean. A pane id is recycled
+	// across tab moves and WezTerm restarts, so a stale one returns another
+	// session's pane rather than failing; a boolean cannot answer "is it me",
+	// which the self-stamp rule requires. Absent until a manager escalates.
+	//
+	// There is deliberately no EscalatedAt companion: the schema declares no
+	// such field, and with no TTL and no clearing sweep nothing would read it.
+	// Adding one would be a gap filled silently in code rather than a finding
+	// reported on the schema page.
+	EscalatedBy string `json:"escalated_by,omitempty"`
 	// ClosedAt is when the item left the queue. Absent while open or answered.
 	ClosedAt *libtime.DateTime `json:"closed_at,omitempty"`
 	// ExpiresAt is the producer's own deadline, if it has one. Absent means the
