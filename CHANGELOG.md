@@ -1,5 +1,13 @@
 # Changelog
 
+All notable changes to this project will be documented in this file.
+
+Please choose versions by [Semantic Versioning](http://semver.org/).
+
+* MAJOR version when you make incompatible API changes,
+* MINOR version when you add functionality in a backwards-compatible manner, and
+* PATCH version when you make backwards-compatible bug fixes.
+
 ## Unreleased
 
 - feat: Add the `escalated_by` field and a `POST /api/1.0/attention/{itemID}/escalate` route, recording which session is carrying an item to the operator as an atomic compare-and-set — first to stamp wins, a manager is never blocked by its own stamp, and escalation deliberately leaves the item's state untouched because it is not a transition
