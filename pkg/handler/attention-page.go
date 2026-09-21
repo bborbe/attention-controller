@@ -34,14 +34,45 @@ const attentionPageTemplate = `<!DOCTYPE html>
 <meta charset="utf-8">
 <title>Attention</title>
 <style>
-body { font-family: system-ui, sans-serif; margin: 2rem; line-height: 1.5; }
-h1 { font-size: 1.25rem; }
-ul.items { list-style: none; padding: 0; }
-li.item { border: 1px solid #d0d0d0; border-radius: 4px; margin-bottom: 1rem; padding: 0.75rem 1rem; }
-.producer { font-size: 0.8rem; color: #555; font-family: ui-monospace, monospace; }
-.payload { font-size: 1rem; margin: 0.4rem 0; white-space: pre-wrap; }
-.meta { font-size: 0.8rem; color: #777; }
-.empty { color: #777; }
+/* Dark theme, matching the tts-mcp page this store's UI is modelled on — same
+   token names and values, so the two surfaces read as one family. The
+   color-scheme property is set so the scrollbar and any native control render
+   dark too; without it the page is dark but the chrome around it stays light. */
+:root {
+  color-scheme: dark;
+  --bg: #111418;
+  --panel: #1a1f26;
+  --border: #2a3038;
+  --text: #e8edf2;
+  --muted: #8b95a3;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0 auto;
+  max-width: 760px;
+  padding: 24px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+h1 { font-size: 20px; margin: 0 0 16px; }
+ul.items { list-style: none; padding: 0; margin: 0; }
+li.item {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+  margin-bottom: 12px;
+}
+.producer {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+.payload { font-size: 15px; line-height: 1.45; margin: 6px 0 8px; white-space: pre-wrap; }
+.meta { color: var(--muted); font-size: 12px; }
+.empty { color: var(--muted); font-size: 14px; }
 </style>
 </head>
 <body>
