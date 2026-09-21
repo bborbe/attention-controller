@@ -223,6 +223,69 @@ func (a *attentionStore) Answer(
 	return result, nil
 }
 
+// Escalate records which session is carrying this item, as an atomic
+// compare-and-set. The read, the compare and the write all happen inside one
+// write transaction, so exactly one of two concurrent escalations stamps it.
+//
+// The state is deliberately left alone. Escalation changes who is being asked,
+// not where the item is in its lifecycle, so no row of the schema's transitions
+// table is involved and ValidateTransition is never called — calling it would
+// be the state-machine detour the schema's § Escalation rules out.
+func (a *attentionStore) Escalate(
+	ctx context.Context,
+	itemID ItemID,
+	escalatedBy string,
+) (*Item, error) {
+	var result *Item
+	err := a.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
+		item, err := a.store.Get(ctx, tx, itemID.String())
+		if err != nil {
+			if isNotFound(err) {
+				return errors.Wrapf(ctx, ErrItemNotFound, "item %s not found", itemID)
+			}
+			return errors.Wrap(ctx, err, "get item failed")
+		}
+		// Only an open item is rendered by an arm, so only an open item has a
+		// stamp anyone would read. Refused rather than stamped-and-ignored:
+		// the schema says a stamp on a closed item is unreachable.
+		if item.State != OpenState {
+			return errors.Wrapf(
+				ctx,
+				ErrItemNotOpen,
+				"item %s is %s, not open",
+				itemID,
+				item.State,
+			)
+		}
+		// The compare-and-set itself, against the caller's identity rather than
+		// the field's presence. A manager re-running its own sweep over an item
+		// it already escalated must proceed, not skip itself.
+		if item.EscalatedBy != "" {
+			if item.EscalatedBy == escalatedBy {
+				result = item
+				return nil
+			}
+			return errors.Wrapf(
+				ctx,
+				ErrAlreadyEscalated,
+				"item %s was already escalated by %s",
+				itemID,
+				item.EscalatedBy,
+			)
+		}
+		item.EscalatedBy = escalatedBy
+		if err := a.store.Add(ctx, tx, item.ItemID.String(), *item); err != nil {
+			return errors.Wrap(ctx, err, "update item failed")
+		}
+		result = item
+		return nil
+	})
+	if err != nil {
+		return nil, errors.Wrap(ctx, err, "escalate failed")
+	}
+	return result, nil
+}
+
 // Close applies open -> closed or answered -> closed.
 func (a *attentionStore) Close(ctx context.Context, itemID ItemID) (*Item, error) {
 	var result *Item

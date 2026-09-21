@@ -251,6 +251,155 @@ var _ = Describe("AttentionStore", func() {
 		})
 	})
 
+	Describe("Escalate", func() {
+		It("records which session escalated and leaves the item open", func() {
+			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
+			Expect(err).To(BeNil())
+
+			escalated, err := store.Escalate(ctx, item.ItemID, "session-manager")
+			Expect(err).To(BeNil())
+			Expect(escalated.EscalatedBy).To(Equal("session-manager"))
+			// Escalation is not a transition: the item stays where it was, so
+			// an arm still renders it. A store that moved it to a new state
+			// would be redefining the schema rather than implementing it.
+			Expect(escalated.State).To(Equal(pkg.OpenState))
+			Expect(escalated.AnsweredAt).To(BeNil())
+			Expect(escalated.ClosedAt).To(BeNil())
+		})
+
+		It("persists the stamp across a read", func() {
+			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
+			Expect(err).To(BeNil())
+			_, err = store.Escalate(ctx, item.ItemID, "session-manager")
+			Expect(err).To(BeNil())
+
+			read, err := store.Get(ctx, item.ItemID)
+			Expect(err).To(BeNil())
+			Expect(read.EscalatedBy).To(Equal("session-manager"))
+		})
+
+		It("rejects a second escalation by a different session", func() {
+			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
+			Expect(err).To(BeNil())
+			_, err = store.Escalate(ctx, item.ItemID, "session-fleet-manager")
+			Expect(err).To(BeNil())
+
+			_, err = store.Escalate(ctx, item.ItemID, "session-topic-manager")
+			Expect(err).NotTo(BeNil())
+			Expect(errors.Is(err, pkg.ErrAlreadyEscalated)).To(BeTrue())
+
+			// The loser must not have stamped over the winner: the first
+			// escalator is still the one on record.
+			read, err := store.Get(ctx, item.ItemID)
+			Expect(err).To(BeNil())
+			Expect(read.EscalatedBy).To(Equal("session-fleet-manager"))
+		})
+
+		// The self-stamp rule: the stamp answers "is someone already carrying
+		// this", so a manager re-running its own sweep over an item it already
+		// escalated must proceed rather than skip itself.
+		It("lets the escalating session re-escalate its own item", func() {
+			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
+			Expect(err).To(BeNil())
+			_, err = store.Escalate(ctx, item.ItemID, "session-manager")
+			Expect(err).To(BeNil())
+
+			again, err := store.Escalate(ctx, item.ItemID, "session-manager")
+			Expect(err).To(BeNil())
+			Expect(again.EscalatedBy).To(Equal("session-manager"))
+			Expect(again.State).To(Equal(pkg.OpenState))
+		})
+
+		It("rejects escalation of a closed item", func() {
+			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
+			Expect(err).To(BeNil())
+			_, err = store.Close(ctx, item.ItemID)
+			Expect(err).To(BeNil())
+
+			_, err = store.Escalate(ctx, item.ItemID, "session-manager")
+			Expect(err).NotTo(BeNil())
+			Expect(errors.Is(err, pkg.ErrItemNotOpen)).To(BeTrue())
+			// Deliberately not ErrIllegalTransition: escalation is not a
+			// transition, so it must not borrow the transition vocabulary.
+			Expect(errors.Is(err, pkg.ErrIllegalTransition)).To(BeFalse())
+		})
+
+		It("rejects escalation of an answered item", func() {
+			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
+			Expect(err).To(BeNil())
+			_, err = store.Answer(ctx, item.ItemID, "telegram")
+			Expect(err).To(BeNil())
+
+			_, err = store.Escalate(ctx, item.ItemID, "session-manager")
+			Expect(err).NotTo(BeNil())
+			Expect(errors.Is(err, pkg.ErrItemNotOpen)).To(BeTrue())
+		})
+
+		It("rejects escalation of an unknown item", func() {
+			_, err := store.Escalate(ctx, pkg.ItemID("does-not-exist"), "session-manager")
+			Expect(err).NotTo(BeNil())
+			Expect(errors.Is(err, pkg.ErrItemNotFound)).To(BeTrue())
+		})
+
+		// The criterion this task exists to prove: exactly one of two
+		// concurrent escalations stamps the item, which is what stops two
+		// managers escalating the same gate without either knowing. A single
+		// pair can pass on a store that merely serializes its writes, so this
+		// fires N pairs from a shared barrier and asserts the totals.
+		It("lets exactly one of many concurrent escalation pairs win, per item", func() {
+			const itemCount = 100
+			itemIDs := make([]pkg.ItemID, 0, itemCount)
+			for i := 0; i < itemCount; i++ {
+				item, err := store.Push(ctx, pushRequest("session-a", pkg.DedupKey(
+					"gate-"+string(rune('a'+i%26))+string(rune('0'+i/26)),
+				)))
+				Expect(err).To(BeNil())
+				itemIDs = append(itemIDs, item.ItemID)
+			}
+
+			var start sync.WaitGroup
+			start.Add(1)
+			var done sync.WaitGroup
+			var mu sync.Mutex
+			successes := 0
+			alreadyEscalated := 0
+
+			for _, itemID := range itemIDs {
+				for _, manager := range []string{"session-fleet-manager", "session-topic-manager"} {
+					done.Add(1)
+					go func(itemID pkg.ItemID, manager string) {
+						defer done.Done()
+						defer GinkgoRecover()
+						start.Wait()
+						_, err := store.Escalate(ctx, itemID, manager)
+						mu.Lock()
+						defer mu.Unlock()
+						switch {
+						case err == nil:
+							successes++
+						case errors.Is(err, pkg.ErrAlreadyEscalated):
+							alreadyEscalated++
+						}
+					}(itemID, manager)
+				}
+			}
+			start.Done()
+			done.Wait()
+
+			Expect(successes).To(Equal(itemCount))
+			Expect(alreadyEscalated).To(Equal(itemCount))
+
+			// Exactly one escalator recorded per item, every item still open,
+			// and no item silently unstamped by a losing write.
+			for _, itemID := range itemIDs {
+				item, err := store.Get(ctx, itemID)
+				Expect(err).To(BeNil())
+				Expect(item.State).To(Equal(pkg.OpenState))
+				Expect(item.EscalatedBy).NotTo(BeEmpty())
+			}
+		})
+	})
+
 	Describe("Close", func() {
 		It("applies open -> closed", func() {
 			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))

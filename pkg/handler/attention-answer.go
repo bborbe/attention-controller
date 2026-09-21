@@ -83,7 +83,7 @@ func wrapAnswerError(ctx context.Context, err error, itemID pkg.ItemID) error {
 	case errors.Is(err, pkg.ErrAlreadyAnswered):
 		return libhttp.WrapWithDetails(
 			errors.Wrap(ctx, err, "answer failed"),
-			"ALREADY_ANSWERED",
+			ErrorCodeAlreadyAnswered,
 			http.StatusConflict,
 			map[string]any{"item_id": itemID.String()},
 		)

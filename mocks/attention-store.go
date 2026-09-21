@@ -38,6 +38,21 @@ type AttentionStore struct {
 		result1 *pkg.Item
 		result2 error
 	}
+	EscalateStub        func(context.Context, pkg.ItemID, string) (*pkg.Item, error)
+	escalateMutex       sync.RWMutex
+	escalateArgsForCall []struct {
+		arg1 context.Context
+		arg2 pkg.ItemID
+		arg3 string
+	}
+	escalateReturns struct {
+		result1 *pkg.Item
+		result2 error
+	}
+	escalateReturnsOnCall map[int]struct {
+		result1 *pkg.Item
+		result2 error
+	}
 	GetStub        func(context.Context, pkg.ItemID) (*pkg.Item, error)
 	getMutex       sync.RWMutex
 	getArgsForCall []struct {
@@ -209,6 +224,72 @@ func (fake *AttentionStore) CloseReturnsOnCall(i int, result1 *pkg.Item, result2
 		})
 	}
 	fake.closeReturnsOnCall[i] = struct {
+		result1 *pkg.Item
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *AttentionStore) Escalate(arg1 context.Context, arg2 pkg.ItemID, arg3 string) (*pkg.Item, error) {
+	fake.escalateMutex.Lock()
+	ret, specificReturn := fake.escalateReturnsOnCall[len(fake.escalateArgsForCall)]
+	fake.escalateArgsForCall = append(fake.escalateArgsForCall, struct {
+		arg1 context.Context
+		arg2 pkg.ItemID
+		arg3 string
+	}{arg1, arg2, arg3})
+	stub := fake.EscalateStub
+	fakeReturns := fake.escalateReturns
+	fake.recordInvocation("Escalate", []interface{}{arg1, arg2, arg3})
+	fake.escalateMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2, arg3)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *AttentionStore) EscalateCallCount() int {
+	fake.escalateMutex.RLock()
+	defer fake.escalateMutex.RUnlock()
+	return len(fake.escalateArgsForCall)
+}
+
+func (fake *AttentionStore) EscalateCalls(stub func(context.Context, pkg.ItemID, string) (*pkg.Item, error)) {
+	fake.escalateMutex.Lock()
+	defer fake.escalateMutex.Unlock()
+	fake.EscalateStub = stub
+}
+
+func (fake *AttentionStore) EscalateArgsForCall(i int) (context.Context, pkg.ItemID, string) {
+	fake.escalateMutex.RLock()
+	defer fake.escalateMutex.RUnlock()
+	argsForCall := fake.escalateArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3
+}
+
+func (fake *AttentionStore) EscalateReturns(result1 *pkg.Item, result2 error) {
+	fake.escalateMutex.Lock()
+	defer fake.escalateMutex.Unlock()
+	fake.EscalateStub = nil
+	fake.escalateReturns = struct {
+		result1 *pkg.Item
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *AttentionStore) EscalateReturnsOnCall(i int, result1 *pkg.Item, result2 error) {
+	fake.escalateMutex.Lock()
+	defer fake.escalateMutex.Unlock()
+	fake.EscalateStub = nil
+	if fake.escalateReturnsOnCall == nil {
+		fake.escalateReturnsOnCall = make(map[int]struct {
+			result1 *pkg.Item
+			result2 error
+		})
+	}
+	fake.escalateReturnsOnCall[i] = struct {
 		result1 *pkg.Item
 		result2 error
 	}{result1, result2}

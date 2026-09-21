@@ -154,13 +154,19 @@ func (a *application) createHTTPServer(
 		router.Path("/api/1.0/attention/{itemID}/answer").
 			Methods(http.MethodPost).
 			Handler(factory.CreateAttentionAnswerHandler(store))
+		// Escalation is not a transition: the item stays open, and this route
+		// records which session is carrying it. First to stamp wins; the loser
+		// reads the item back rather than stamping over it.
+		router.Path("/api/1.0/attention/{itemID}/escalate").
+			Methods(http.MethodPost).
+			Handler(factory.CreateAttentionEscalateHandler(store))
 		router.Path("/api/1.0/attention/{itemID}/close").
 			Methods(http.MethodPost).
 			Handler(factory.CreateAttentionCloseHandler(store))
 		// Single-item read, distinct from the render path above: an arm reads
 		// open items, but a caller checking a transition's outcome (or the
-		// loser of an answer race reading back) needs the item whatever state
-		// it is in.
+		// loser of an answer or escalation race reading back) needs the item
+		// whatever state it is in.
 		router.Path("/api/1.0/attention/{itemID}").
 			Methods(http.MethodGet).
 			Handler(factory.CreateAttentionGetHandler(store))

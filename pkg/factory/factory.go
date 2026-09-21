@@ -30,6 +30,12 @@ func CreateAttentionAnswerHandler(store pkg.AttentionStore) http.Handler {
 	return handler.NewAttentionAnswerHandler(store)
 }
 
+// CreateAttentionEscalateHandler creates the handler that records which
+// session is carrying an item, as an atomic compare-and-set.
+func CreateAttentionEscalateHandler(store pkg.AttentionStore) http.Handler {
+	return handler.NewAttentionEscalateHandler(store)
+}
+
 // CreateAttentionCloseHandler creates the handler that applies
 // open -> closed and answered -> closed.
 func CreateAttentionCloseHandler(store pkg.AttentionStore) http.Handler {

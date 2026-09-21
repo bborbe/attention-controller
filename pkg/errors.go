@@ -26,6 +26,25 @@ var (
 	// route its own answer anyway.
 	ErrAlreadyAnswered = stderrors.New("item already answered")
 
+	// ErrAlreadyEscalated is returned when an escalation write loses the
+	// compare-and-set: another session stamped the item first. The loser reads
+	// back EscalatedBy and reports who holds it; it must not stamp over it,
+	// which would erase the only record of who is carrying the item.
+	//
+	// This is NOT returned when the loser is the session that already stamped
+	// the item — a manager re-running its own sweep must never be blocked by
+	// its own stamp.
+	ErrAlreadyEscalated = stderrors.New("item already escalated")
+
+	// ErrItemNotOpen is returned when escalation is attempted on an item that
+	// has already left the queue.
+	//
+	// It is deliberately not ErrIllegalTransition: escalation is not a
+	// transition, and the item's state is untouched by it. The schema says a
+	// stamp on a closed item is unreachable because the item has left the
+	// queue, so the store refuses rather than stamping an item nothing renders.
+	ErrItemNotOpen = stderrors.New("item not open")
+
 	// ErrInvalidLivenessRef is returned when a liveness ref is neither of the
 	// two models, or carries no value.
 	ErrInvalidLivenessRef = stderrors.New("invalid liveness ref")
