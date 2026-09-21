@@ -42,6 +42,13 @@ func CreateAttentionGetHandler(store pkg.AttentionStore) http.Handler {
 	return handler.NewAttentionGetHandler(store)
 }
 
+// CreateAttentionPageHandler creates the read-only HTML page an operator opens
+// to see what currently needs attention, without Claude Code, vault-cli or the
+// task system.
+func CreateAttentionPageHandler(store pkg.AttentionStore) http.Handler {
+	return handler.NewAttentionPageHandler(store)
+}
+
 // CreateTestLoglevelHandler creates an HTTP handler that tests different glog verbosity levels.
 func CreateTestLoglevelHandler() http.Handler {
 	return handler.NewTestLoglevelHandler()

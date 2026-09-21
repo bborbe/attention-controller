@@ -133,6 +133,14 @@ func (a *application) createHTTPServer(
 		router.Path("/gc").Handler(libhttp.NewGarbageCollectorHandler())
 		router.Path("/testloglevel").Handler(factory.CreateTestLoglevelHandler())
 		router.Path("/sentryalert").Handler(factory.CreateSentryAlertHandler(sentryClient))
+		// The attention page sits at / rather than under /api/1.0/ because it
+		// renders HTML for a human rather than JSON for an API client — it is
+		// the store's operator-facing surface, not a business endpoint. It is
+		// read-only, so GET and HEAD are the only methods routed here; without
+		// .Methods, gorilla mux would route POST and DELETE to it as well.
+		router.Path("/").
+			Methods(http.MethodGet, http.MethodHead).
+			Handler(factory.CreateAttentionPageHandler(store))
 
 		// Business routes live under /api/1.0/, never in the admin block above.
 		// The push entry point takes a producer's declaration; nothing scrapes
