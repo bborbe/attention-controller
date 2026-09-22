@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- fix: Render no pane claim when the WezTerm listing cannot be read, instead of marking every row `unroutable` — an unreadable listing proves nothing about a pane, so the row now renders as it does when a value is absent, while an empty-but-read listing still proves a recorded pane is gone; the WezTerm CLI is also resolved through PATH with a fallback to the macOS app bundle, because that directory is not on the launchd job's PATH and a PATH-only lookup failed on every request in the deployed configuration
+
 ## v0.3.0
 
 - feat: Render each item's provenance on the read-only page — host, cwd, tool and pane — joined from the producer's own event log by the item's dedup key, with a pane shown only when it validates against the session's current name and the row marked `unroutable` otherwise

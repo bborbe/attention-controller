@@ -139,7 +139,15 @@ func (r *provenanceResolver) Resolve(ctx context.Context, items Items) Provenanc
 	if len(items) == 0 {
 		return resolved
 	}
-	panes := r.panes.List(ctx)
+	// A listing that could not be read yields no pane claims at all. It is
+	// logged, never flattened into an empty map: "no panes" would mark every row
+	// unroutable, which asserts the pane does not resolve to this session —
+	// something an unreadable listing cannot establish.
+	panes, panesErr := r.panes.List(ctx)
+	panesAvailable := panesErr == nil
+	if !panesAvailable {
+		glog.V(2).Infof("pane listing unavailable, rendering no pane: %v", panesErr)
+	}
 	names := r.sessionNames(ctx)
 
 	// One read of each producer's log, reused across that producer's items.
@@ -167,16 +175,25 @@ func (r *provenanceResolver) Resolve(ctx context.Context, items Items) Provenanc
 			// the session's newest event, which describes a different item.
 			continue
 		}
-		resolved[item.ItemID] = r.build(record, names, panes)
+		resolved[item.ItemID] = r.build(record, names, panes, panesAvailable)
 	}
 	return resolved
 }
 
 // build turns one event record into a Provenance, applying the pane rule.
+//
+// ⚠️ `panesAvailable` is a separate fact from the contents of `panes`, and the
+// two must not be collapsed. An empty-but-read listing proves a recorded pane is
+// gone and the row is marked unroutable; an unreadable listing proves nothing
+// and the row makes **no pane claim at all**, rendering exactly as it does when
+// a value is absent. Marking those rows unroutable would assert that the pane
+// does not resolve to this session on a host where the question was never
+// answerable.
 func (r *provenanceResolver) build(
 	record eventRecord,
 	names map[string]string,
 	panes map[int]Pane,
+	panesAvailable bool,
 ) Provenance {
 	provenance := Provenance{
 		Host: record.Host,
@@ -187,6 +204,11 @@ func (r *provenanceResolver) build(
 	if err != nil {
 		// No pane recorded, or an unparseable one. Nothing is shown and the
 		// row is not marked unroutable: there is no claim to distrust.
+		return provenance
+	}
+	if !panesAvailable {
+		// The pane was recorded but the listing could not be read, so nothing
+		// can be said about it either way.
 		return provenance
 	}
 	provenance.PaneRecorded = true

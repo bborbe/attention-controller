@@ -9,22 +9,24 @@ import (
 )
 
 type PaneLister struct {
-	ListStub        func(context.Context) map[int]pkg.Pane
+	ListStub        func(context.Context) (map[int]pkg.Pane, error)
 	listMutex       sync.RWMutex
 	listArgsForCall []struct {
 		arg1 context.Context
 	}
 	listReturns struct {
 		result1 map[int]pkg.Pane
+		result2 error
 	}
 	listReturnsOnCall map[int]struct {
 		result1 map[int]pkg.Pane
+		result2 error
 	}
 	invocations      map[string][][]interface{}
 	invocationsMutex sync.RWMutex
 }
 
-func (fake *PaneLister) List(arg1 context.Context) map[int]pkg.Pane {
+func (fake *PaneLister) List(arg1 context.Context) (map[int]pkg.Pane, error) {
 	fake.listMutex.Lock()
 	ret, specificReturn := fake.listReturnsOnCall[len(fake.listArgsForCall)]
 	fake.listArgsForCall = append(fake.listArgsForCall, struct {
@@ -38,9 +40,9 @@ func (fake *PaneLister) List(arg1 context.Context) map[int]pkg.Pane {
 		return stub(arg1)
 	}
 	if specificReturn {
-		return ret.result1
+		return ret.result1, ret.result2
 	}
-	return fakeReturns.result1
+	return fakeReturns.result1, fakeReturns.result2
 }
 
 func (fake *PaneLister) ListCallCount() int {
@@ -49,7 +51,7 @@ func (fake *PaneLister) ListCallCount() int {
 	return len(fake.listArgsForCall)
 }
 
-func (fake *PaneLister) ListCalls(stub func(context.Context) map[int]pkg.Pane) {
+func (fake *PaneLister) ListCalls(stub func(context.Context) (map[int]pkg.Pane, error)) {
 	fake.listMutex.Lock()
 	defer fake.listMutex.Unlock()
 	fake.ListStub = stub
@@ -62,27 +64,30 @@ func (fake *PaneLister) ListArgsForCall(i int) context.Context {
 	return argsForCall.arg1
 }
 
-func (fake *PaneLister) ListReturns(result1 map[int]pkg.Pane) {
+func (fake *PaneLister) ListReturns(result1 map[int]pkg.Pane, result2 error) {
 	fake.listMutex.Lock()
 	defer fake.listMutex.Unlock()
 	fake.ListStub = nil
 	fake.listReturns = struct {
 		result1 map[int]pkg.Pane
-	}{result1}
+		result2 error
+	}{result1, result2}
 }
 
-func (fake *PaneLister) ListReturnsOnCall(i int, result1 map[int]pkg.Pane) {
+func (fake *PaneLister) ListReturnsOnCall(i int, result1 map[int]pkg.Pane, result2 error) {
 	fake.listMutex.Lock()
 	defer fake.listMutex.Unlock()
 	fake.ListStub = nil
 	if fake.listReturnsOnCall == nil {
 		fake.listReturnsOnCall = make(map[int]struct {
 			result1 map[int]pkg.Pane
+			result2 error
 		})
 	}
 	fake.listReturnsOnCall[i] = struct {
 		result1 map[int]pkg.Pane
-	}{result1}
+		result2 error
+	}{result1, result2}
 }
 
 func (fake *PaneLister) Invocations() map[string][][]interface{} {

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"os/exec"
 
+	"github.com/bborbe/errors"
 	"github.com/golang/glog"
 )
 
@@ -32,15 +33,24 @@ type Pane struct {
 //
 // It is an interface because the listing is a subprocess against a terminal
 // multiplexer, and the store must not require one: a store running for k8s
-// agents, cron jobs or dark-factory runs has no WezTerm at all. Behind the
-// interface, a host with no WezTerm returns an empty listing rather than an
-// error, and every pane then renders absent — which is the correct rendering
-// for a value that cannot be resolved.
+// agents, cron jobs or dark-factory runs has no WezTerm at all. On such a host
+// the listing cannot be read, the error is surfaced rather than swallowed, and
+// every pane then renders **absent** — no pane claim is made at all, which is
+// the correct rendering for a value that cannot be resolved.
 type PaneLister interface {
-	// List returns the panes keyed by pane id. An empty map means no panes
-	// could be listed, which is indistinguishable from a host with none —
-	// deliberately, because both cases resolve to the same rendering.
-	List(ctx context.Context) map[int]Pane
+	// List returns the panes keyed by pane id, or an error when the listing
+	// could not be read at all.
+	//
+	// ⚠️ The error is not decoration and must not be flattened into an empty
+	// map. "No panes" and "could not ask" are different facts, and only the
+	// first one licenses a claim about a pane: an empty listing read
+	// successfully proves a recorded pane is gone, while a failed read proves
+	// nothing. Collapsing them renders `unroutable` — which asserts the pane
+	// does not resolve to this session — on a host where the question was never
+	// answerable. That is the same class of error as presenting an unresolvable
+	// value as resolved, with the sign flipped, and the store's own liveness
+	// checker already refuses it: an unreadable registry reads as live.
+	List(ctx context.Context) (map[int]Pane, error)
 }
 
 // NewWeztermPaneLister creates a lister reading `wezterm cli list`.
@@ -50,28 +60,74 @@ func NewWeztermPaneLister() PaneLister {
 
 type weztermPaneLister struct{}
 
+// weztermBinaryCandidates are where the WezTerm CLI is looked for, in order.
+//
+// PATH comes first: it is the portable answer, and the one a Linux or Homebrew
+// install resolves through. The macOS app bundle is the fallback, and it is
+// load-bearing rather than cosmetic — measured 2026-09-22, WezTerm installs
+// there on this fleet and that directory is deliberately **not** on the launchd
+// job's PATH, so a PATH-only lookup fails on every request in the deployed
+// configuration while succeeding in an interactive shell.
+//
+// Resolving this in the binary rather than by editing the plist is deliberate:
+// the plist lives outside every repo, so a PATH fix there is unversioned,
+// unreviewed and untested, and it needs a launchd reload to take effect. A
+// fallback here is reviewed, tested, and ships with the release.
+var weztermBinaryCandidates = []string{
+	"wezterm",
+	"/Applications/WezTerm.app/Contents/MacOS/wezterm",
+}
+
+// resolveWezterm returns the first candidate that resolves to an executable.
+func resolveWezterm(ctx context.Context) (string, error) {
+	for _, candidate := range weztermBinaryCandidates {
+		if path, err := exec.LookPath(candidate); err == nil {
+			return path, nil
+		}
+	}
+	return "", errors.New(ctx, "wezterm not found on PATH or in the macOS app bundle")
+}
+
 // List runs `wezterm cli list --format json` and indexes the result by pane id.
 //
 // Every failure — wezterm absent, not running, non-zero exit, malformed JSON,
-// timeout — returns an empty map and logs, never an error. A pane listing that
-// cannot be read cannot prove a pane is gone, and the store's own liveness rule
-// takes the same position for the same reason: an unreadable probe must not be
-// read as a negative answer, because doing so would strip provenance from every
-// row the moment the store ran somewhere WezTerm is absent.
-func (w *weztermPaneLister) List(ctx context.Context) map[int]Pane {
-	raw, err := exec.CommandContext(ctx, "wezterm", "cli", "list", "--format", "json").Output()
+// timeout — returns an error rather than an empty map, because an unreadable
+// probe must not be read as a negative answer: reporting "no panes" would mark
+// every row `unroutable` the moment the store ran somewhere WezTerm is absent,
+// which is a claim the store cannot support.
+func (w *weztermPaneLister) List(ctx context.Context) (map[int]Pane, error) {
+	binary, err := resolveWezterm(ctx)
 	if err != nil {
-		glog.V(2).Infof("list wezterm panes failed: %v", err)
-		return map[int]Pane{}
+		return nil, err
+	}
+	// #nosec G204 -- the reported risk is "subprocess launched with a variable",
+	// and the variable is the point: `binary` is resolved by resolveWezterm from
+	// the fixed, compile-time `weztermBinaryCandidates` list via exec.LookPath,
+	// so neither a caller nor any request input can reach it. Keeping a literal
+	// here is impossible without giving up the fallback that makes the CLI
+	// findable under launchd, which is the defect this resolution exists to fix.
+	// This records the provenance; it does not waive a risk.
+	raw, err := exec.CommandContext(ctx, binary, "cli", "list", "--format", "json").Output()
+	if err != nil {
+		// Logged, not just returned. This boundary call is the one whose
+		// failure is hardest to see from outside: when WezTerm is missing the
+		// page simply renders no pane, which is indistinguishable from a host
+		// that has none. Measured 2026-09-22 — the launchd PATH gap behind the
+		// first deployment of this feature was found only by probing the
+		// environment by hand, because the store's own log said nothing.
+		glog.V(2).Infof("wezterm cli list failed: binary=%s err=%v", binary, err)
+		return nil, errors.Wrap(ctx, err, "list wezterm panes failed")
 	}
 	var panes []Pane
 	if err := json.Unmarshal(raw, &panes); err != nil {
-		glog.V(2).Infof("parse wezterm pane listing failed: %v", err)
-		return map[int]Pane{}
+		glog.V(2).
+			Infof("wezterm cli list parse failed: binary=%s bytes=%d err=%v", binary, len(raw), err)
+		return nil, errors.Wrap(ctx, err, "parse wezterm pane listing failed")
 	}
 	byID := make(map[int]Pane, len(panes))
 	for _, pane := range panes {
 		byID[pane.PaneID] = pane
 	}
-	return byID
+	glog.V(2).Infof("wezterm cli list: binary=%s panes=%d", binary, len(byID))
+	return byID, nil
 }
