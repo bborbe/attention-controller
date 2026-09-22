@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/bborbe/errors"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -61,7 +62,7 @@ var _ = Describe("ProvenanceResolver", func() {
 		stateDir = GinkgoT().TempDir()
 		sessionsDir = GinkgoT().TempDir()
 		paneLister = &mocks.PaneLister{}
-		paneLister.ListReturns(map[int]pkg.Pane{})
+		paneLister.ListReturns(map[int]pkg.Pane{}, nil)
 		resolver = pkg.NewProvenanceResolver(stateDir, sessionsDir, paneLister)
 	})
 
@@ -104,7 +105,7 @@ var _ = Describe("ProvenanceResolver", func() {
 		writeEvents("producer-c", eventLine("key-ok", "producer-c", "burn", "/w/c", "", "928"))
 		paneLister.ListReturns(map[int]pkg.Pane{
 			928: {PaneID: 928, Title: "◑ Deploy Vulnerability Fix Agent to Octopus Dev"},
-		})
+		}, nil)
 
 		resolved := resolver.Resolve(ctx, pkg.Items{item("item-4", "producer-c", "key-ok")})
 		provenance := resolved[pkg.ItemID("item-4")]
@@ -122,7 +123,7 @@ var _ = Describe("ProvenanceResolver", func() {
 		writeEvents("producer-d", eventLine("key-bad", "producer-d", "burn", "/w/d", "", "928"))
 		paneLister.ListReturns(map[int]pkg.Pane{
 			928: {PaneID: 928, Title: "◑ Somebody Else's Session"},
-		})
+		}, nil)
 
 		resolved := resolver.Resolve(ctx, pkg.Items{item("item-5", "producer-d", "key-bad")})
 		provenance := resolved[pkg.ItemID("item-5")]
@@ -133,6 +134,32 @@ var _ = Describe("ProvenanceResolver", func() {
 		Expect(provenance.Pane).To(BeEmpty())
 		// The rest of the row still resolves — a bad pane does not blank the host.
 		Expect(provenance.Host).To(Equal("burn"))
+	})
+
+	It("makes no pane claim at all when the pane listing cannot be read", func() {
+		// ⚠️ The defect the live launchd artifact exposed. WezTerm is not on the
+		// plist's PATH, so the listing fails there on every request — and the
+		// first implementation flattened that failure into an empty map, which
+		// marked every row `unroutable`. That asserts the pane does not resolve
+		// to this session, which an unreadable listing cannot establish. The row
+		// must instead carry no pane claim, exactly as when a value is absent.
+		writeSession("111", "producer-x", "⚙ Some Session")
+		writeEvents("producer-x", eventLine("key-x", "producer-x", "burn", "/w/x", "", "928"))
+		paneLister.ListReturns(nil, errors.New(ctx, "wezterm not found"))
+
+		provenance := resolver.Resolve(
+			ctx,
+			pkg.Items{item("item-x", "producer-x", "key-x")},
+		)[pkg.ItemID("item-x")]
+
+		// The pane is neither shown nor disowned.
+		Expect(provenance.PaneRecorded).To(BeFalse())
+		Expect(provenance.Routable).To(BeFalse())
+		Expect(provenance.Pane).To(BeEmpty())
+		// The rest of the row still resolves — an unreadable listing is not a
+		// reason to drop host, cwd or tool.
+		Expect(provenance.Host).To(Equal("burn"))
+		Expect(provenance.Cwd).To(Equal("/w/x"))
 	})
 
 	It("resolves nothing for an item whose producer wrote no event log", func() {
