@@ -28,6 +28,7 @@ var _ = Describe("AttentionPageHandler", func() {
 	var db libkv.DB
 	var store pkg.AttentionStore
 	var sessionLivenessChecker *mocks.SessionLivenessChecker
+	var provenance *mocks.ProvenanceResolver
 	var httpHandler http.Handler
 
 	BeforeEach(func() {
@@ -54,7 +55,12 @@ var _ = Describe("AttentionPageHandler", func() {
 			libtime.Duration(15*60*1e9),
 		)
 
-		httpHandler = handler.NewAttentionPageHandler(store)
+		// Left returning nil, so every existing case exercises the no-provenance
+		// path — which is the degradation this page must keep: a row whose
+		// provenance cannot be resolved renders no provenance line at all.
+		provenance = &mocks.ProvenanceResolver{}
+
+		httpHandler = handler.NewAttentionPageHandler(store, provenance)
 	})
 
 	AfterEach(func() {
@@ -166,6 +172,102 @@ var _ = Describe("AttentionPageHandler", func() {
 		// HEAD is routed to this handler too; it is read-only and a link checker
 		// or browser may issue it, so it is asserted rather than merely declared.
 		Expect(get("HEAD").Code).To(Equal(http.StatusOK))
+	})
+
+	It("renders host, cwd, tool and pane as four required values on a resolving row", func() {
+		item, err := store.Push(ctx, pushRequest("producer-prov", "gate-prov", "deploy prod?"))
+		Expect(err).To(BeNil())
+		provenance.ResolveReturns(pkg.Provenances{
+			item.ItemID: pkg.Provenance{
+				Host:         "burn",
+				Cwd:          "/Users/bborbe/Documents/workspaces/attention-controller",
+				Tool:         "AskUserQuestion",
+				Pane:         "1140",
+				PaneRecorded: true,
+				Routable:     true,
+			},
+		})
+
+		body := get("GET").Body.String()
+
+		// Positive control first: a row that failed to render at all must not be
+		// able to satisfy the assertions below.
+		Expect(body).To(ContainSubstring(item.Payload.String()))
+		Expect(body).To(ContainSubstring(item.ProducerID.String()))
+
+		// All four, each in its own element. The pane is asserted as a required
+		// value rather than a conditional one: an implementation that resolves
+		// host, cwd and tool but never a pane fails here.
+		Expect(body).To(ContainSubstring(`<span class="host">burn</span>`))
+		Expect(
+			body,
+		).To(ContainSubstring(`<span class="cwd">/Users/bborbe/Documents/workspaces/attention-controller</span>`))
+		Expect(body).To(ContainSubstring(`<span class="tool">AskUserQuestion</span>`))
+		Expect(body).To(ContainSubstring(`<span class="pane">pane 1140</span>`))
+	})
+
+	It("marks an unvalidated pane unroutable, shows no pane id, and invents nothing", func() {
+		item, err := store.Push(
+			ctx,
+			pushRequest("producer-unroutable", "gate-unroutable", "who owns this?"),
+		)
+		Expect(err).To(BeNil())
+		// A pane was recorded but did not validate against the session, which is
+		// § Silence 7's exact case: a recycled id that resolves to another
+		// session's pane. Tool is absent, which is the common case for idle items.
+		provenance.ResolveReturns(pkg.Provenances{
+			item.ItemID: pkg.Provenance{
+				Host:         "burn",
+				Cwd:          "/tmp",
+				PaneRecorded: true,
+				Routable:     false,
+			},
+		})
+
+		body := get("GET").Body.String()
+
+		Expect(body).To(ContainSubstring(item.Payload.String()))
+		Expect(body).To(ContainSubstring(`<span class="unroutable">unroutable</span>`))
+
+		// The pane id is withheld entirely — not shown struck through, not shown
+		// with a warning, not shown at all. Showing it invites the operator to
+		// route to a pane that belongs to somebody else.
+		Expect(body).NotTo(ContainSubstring(`class="pane"`))
+
+		// An absent field renders blank, never a placeholder. A stand-in would be
+		// an unresolvable value presented as resolved, which is the one failure
+		// this task exists to avoid.
+		Expect(body).NotTo(ContainSubstring(`class="tool"`))
+		for _, placeholder := range []string{"unknown", "n/a", "N/A", "—", "??"} {
+			Expect(body).NotTo(ContainSubstring(placeholder))
+		}
+	})
+
+	It("renders every item with no provenance line when nothing resolves", func() {
+		first, err := store.Push(
+			ctx,
+			pushRequest("producer-noprov-a", "gate-noprov-a", "first ask"),
+		)
+		Expect(err).To(BeNil())
+		second, err := store.Push(
+			ctx,
+			pushRequest("producer-noprov-b", "gate-noprov-b", "second ask"),
+		)
+		Expect(err).To(BeNil())
+		provenance.ResolveReturns(pkg.Provenances{})
+
+		resp := get("GET")
+
+		// The standalone claim, honoured rather than broken: no provenance source
+		// is not an error and does not blank the page.
+		Expect(resp.Code).To(Equal(http.StatusOK))
+		body := resp.Body.String()
+		Expect(strings.Count(body, `data-item-id="`)).To(Equal(2))
+		for _, item := range []*pkg.Item{first, second} {
+			Expect(body).To(ContainSubstring(item.ProducerID.String()))
+			Expect(body).To(ContainSubstring(item.Payload.String()))
+		}
+		Expect(body).NotTo(ContainSubstring(`class="provenance"`))
 	})
 
 	It("returns the standard JSON error body when the read fails", func() {
