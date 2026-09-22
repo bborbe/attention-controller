@@ -147,6 +147,14 @@ func (r *provenanceResolver) Resolve(ctx context.Context, items Items) Provenanc
 	// times.
 	byProducer := make(map[ProducerID]map[string]eventRecord)
 	for _, item := range items {
+		// readEvents below can scan a large log, so the loop honours
+		// cancellation rather than relying on the per-item work being cheap.
+		select {
+		case <-ctx.Done():
+			glog.V(3).Infof("provenance resolution cancelled")
+			return resolved
+		default:
+		}
 		events, ok := byProducer[item.ProducerID]
 		if !ok {
 			events = r.readEvents(ctx, item.ProducerID)
