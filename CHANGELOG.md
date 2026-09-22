@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.3.0
 
 - feat: Render each item's provenance on the read-only page — host, cwd, tool and pane — joined from the producer's own event log by the item's dedup key, with a pane shown only when it validates against the session's current name and the row marked `unroutable` otherwise
 
