@@ -40,15 +40,16 @@ type application struct {
 	// impossible without a teamvault-resolved DSN. An empty DSN disables error
 	// reporting rather than failing startup. The deployed manifests still
 	// supply SENTRY_DSN from the secret, so prod behaviour is unchanged.
-	SentryDSN       string            `required:"false" arg:"sentry-dsn"        env:"SENTRY_DSN"        usage:"SentryDSN (empty disables error reporting)"                                       display:"length"`
-	SentryProxy     string            `required:"false" arg:"sentry-proxy"      env:"SENTRY_PROXY"      usage:"Sentry Proxy"`
-	Listen          string            `required:"true"  arg:"listen"            env:"LISTEN"            usage:"address to listen to"`
-	DataDir         string            `required:"true"  arg:"datadir"           env:"DATADIR"           usage:"data directory"`
-	HeartbeatWindow string            `required:"false" arg:"heartbeat-window"  env:"HEARTBEAT_WINDOW"  usage:"how stale a heartbeat:<path> mtime may be before the producer counts as finished"                  default:"15m"`
-	SessionsDir     string            `required:"false" arg:"sessions-dir"      env:"SESSIONS_DIR"      usage:"directory holding the session registry used to resolve session:<id> liveness"`
-	BuildGitVersion string            `required:"false" arg:"build-git-version" env:"BUILD_GIT_VERSION" usage:"Build Git version"                                                                                 default:"dev"`
-	BuildGitCommit  string            `required:"false" arg:"build-git-commit"  env:"BUILD_GIT_COMMIT"  usage:"Build Git commit hash"                                                                             default:"none"`
-	BuildDate       *libtime.DateTime `required:"false" arg:"build-date"        env:"BUILD_DATE"        usage:"Build timestamp (RFC3339)"`
+	SentryDSN         string            `required:"false" arg:"sentry-dsn"          env:"SENTRY_DSN"          usage:"SentryDSN (empty disables error reporting)"                                         display:"length"`
+	SentryProxy       string            `required:"false" arg:"sentry-proxy"        env:"SENTRY_PROXY"        usage:"Sentry Proxy"`
+	Listen            string            `required:"true"  arg:"listen"              env:"LISTEN"              usage:"address to listen to"`
+	DataDir           string            `required:"true"  arg:"datadir"             env:"DATADIR"             usage:"data directory"`
+	HeartbeatWindow   string            `required:"false" arg:"heartbeat-window"    env:"HEARTBEAT_WINDOW"    usage:"how stale a heartbeat:<path> mtime may be before the producer counts as finished"                    default:"15m"`
+	SessionsDir       string            `required:"false" arg:"sessions-dir"        env:"SESSIONS_DIR"        usage:"directory holding the session registry used to resolve session:<id> liveness"`
+	AttentionStateDir string            `required:"false" arg:"attention-state-dir" env:"ATTENTION_STATE_DIR" usage:"directory holding the producers' event logs the page resolves item provenance from"`
+	BuildGitVersion   string            `required:"false" arg:"build-git-version"   env:"BUILD_GIT_VERSION"   usage:"Build Git version"                                                                                   default:"dev"`
+	BuildGitCommit    string            `required:"false" arg:"build-git-commit"    env:"BUILD_GIT_COMMIT"    usage:"Build Git commit hash"                                                                               default:"none"`
+	BuildDate         *libtime.DateTime `required:"false" arg:"build-date"          env:"BUILD_DATE"          usage:"Build timestamp (RFC3339)"`
 }
 
 func (a *application) Run(ctx context.Context, sentryClient libsentry.Client) error {
@@ -113,6 +114,48 @@ func defaultSessionsDir(ctx context.Context) (string, error) {
 	return filepath.Join(home, ".claude", "sessions"), nil
 }
 
+// createProvenanceResolver builds the resolver the page joins item provenance
+// from.
+//
+// ⚠️ Both directories are optional and an unresolved one is not fatal. A store
+// running for k8s agents, cron jobs or dark-factory runs has neither a Claude
+// Code state directory nor WezTerm, and it must still serve every item: the
+// resolver reads nothing, every row renders with no provenance line, and the
+// page is exactly what it was before this change. That degradation is the
+// honest scoping of the page's standalone claim — it still works without Claude
+// Code, but it works with provenance absent rather than without looking.
+func (a *application) createProvenanceResolver(ctx context.Context) pkg.ProvenanceResolver {
+	stateDir := a.AttentionStateDir
+	if stateDir == "" {
+		resolved, err := defaultAttentionStateDir(ctx)
+		if err != nil {
+			// Not fatal: an unresolvable home directory means no provenance
+			// source, which is the same state as a host that has none.
+			glog.Warningf("resolve attention state dir failed: %v", err)
+		}
+		stateDir = resolved
+	}
+	sessionsDir := a.SessionsDir
+	if sessionsDir == "" {
+		resolved, err := defaultSessionsDir(ctx)
+		if err != nil {
+			glog.Warningf("resolve sessions dir failed: %v", err)
+		}
+		sessionsDir = resolved
+	}
+	return pkg.NewProvenanceResolver(stateDir, sessionsDir, pkg.NewWeztermPaneLister())
+}
+
+// defaultAttentionStateDir resolves ~/.claude/state/attention, the directory
+// holding each producer's event log.
+func defaultAttentionStateDir(ctx context.Context) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", errors.Wrap(ctx, err, "resolve home dir failed")
+	}
+	return filepath.Join(home, ".claude", "state", "attention"), nil
+}
+
 func (a *application) createHTTPServer(
 	sentryClient libsentry.Client,
 	db libkv.DB,
@@ -140,7 +183,7 @@ func (a *application) createHTTPServer(
 		// .Methods, gorilla mux would route POST and DELETE to it as well.
 		router.Path("/").
 			Methods(http.MethodGet, http.MethodHead).
-			Handler(factory.CreateAttentionPageHandler(store))
+			Handler(factory.CreateAttentionPageHandler(store, a.createProvenanceResolver(ctx)))
 
 		// Business routes live under /api/1.0/, never in the admin block above.
 		// The push entry point takes a producer's declaration; nothing scrapes

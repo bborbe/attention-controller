@@ -51,8 +51,15 @@ func CreateAttentionGetHandler(store pkg.AttentionStore) http.Handler {
 // CreateAttentionPageHandler creates the read-only HTML page an operator opens
 // to see what currently needs attention, without Claude Code, vault-cli or the
 // task system.
-func CreateAttentionPageHandler(store pkg.AttentionStore) http.Handler {
-	return handler.NewAttentionPageHandler(store)
+//
+// The resolver is injected rather than constructed here: `pkg/factory` is pure
+// plumbing with no business logic, and which directory the provenance is read
+// from is a decision `main` owns alongside the session registry's.
+func CreateAttentionPageHandler(
+	store pkg.AttentionStore,
+	provenance pkg.ProvenanceResolver,
+) http.Handler {
+	return handler.NewAttentionPageHandler(store, provenance)
 }
 
 // CreateTestLoglevelHandler creates an HTTP handler that tests different glog verbosity levels.
