@@ -10,6 +10,7 @@ import (
 	"os/exec"
 
 	"github.com/bborbe/errors"
+	"github.com/golang/glog"
 )
 
 // Pane is one WezTerm pane, reduced to the two fields the ownership check
@@ -108,15 +109,25 @@ func (w *weztermPaneLister) List(ctx context.Context) (map[int]Pane, error) {
 	// This records the provenance; it does not waive a risk.
 	raw, err := exec.CommandContext(ctx, binary, "cli", "list", "--format", "json").Output()
 	if err != nil {
+		// Logged, not just returned. This boundary call is the one whose
+		// failure is hardest to see from outside: when WezTerm is missing the
+		// page simply renders no pane, which is indistinguishable from a host
+		// that has none. Measured 2026-09-22 — the launchd PATH gap behind the
+		// first deployment of this feature was found only by probing the
+		// environment by hand, because the store's own log said nothing.
+		glog.V(2).Infof("wezterm cli list failed: binary=%s err=%v", binary, err)
 		return nil, errors.Wrap(ctx, err, "list wezterm panes failed")
 	}
 	var panes []Pane
 	if err := json.Unmarshal(raw, &panes); err != nil {
+		glog.V(2).
+			Infof("wezterm cli list parse failed: binary=%s bytes=%d err=%v", binary, len(raw), err)
 		return nil, errors.Wrap(ctx, err, "parse wezterm pane listing failed")
 	}
 	byID := make(map[int]Pane, len(panes))
 	for _, pane := range panes {
 		byID[pane.PaneID] = pane
 	}
+	glog.V(2).Infof("wezterm cli list: binary=%s panes=%d", binary, len(byID))
 	return byID, nil
 }
