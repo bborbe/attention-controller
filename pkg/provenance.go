@@ -16,8 +16,6 @@ import (
 	"github.com/golang/glog"
 )
 
-//counterfeiter:generate -o ../mocks/provenance-resolver.go --fake-name ProvenanceResolver . ProvenanceResolver
-
 // Provenance is where an item came from, as far as the page can prove it.
 //
 // Every field is a *claim about the event*, not about the store: the store
@@ -57,6 +55,8 @@ func (p Provenance) Resolved() bool {
 
 // Provenances is the resolver's answer for a whole page, keyed by item id.
 type Provenances map[ItemID]Provenance
+
+//counterfeiter:generate -o ../mocks/provenance-resolver.go --fake-name ProvenanceResolver . ProvenanceResolver
 
 // ProvenanceResolver resolves where each item came from.
 //
@@ -140,7 +140,7 @@ func (r *provenanceResolver) Resolve(ctx context.Context, items Items) Provenanc
 		return resolved
 	}
 	panes := r.panes.List(ctx)
-	names := r.sessionNames()
+	names := r.sessionNames(ctx)
 
 	// One read of each producer's log, reused across that producer's items.
 	// A session with six open items would otherwise re-read the same file six
@@ -149,7 +149,7 @@ func (r *provenanceResolver) Resolve(ctx context.Context, items Items) Provenanc
 	for _, item := range items {
 		events, ok := byProducer[item.ProducerID]
 		if !ok {
-			events = r.readEvents(item.ProducerID)
+			events = r.readEvents(ctx, item.ProducerID)
 			byProducer[item.ProducerID] = events
 		}
 		record, found := events[string(item.DedupKey)]
@@ -196,7 +196,10 @@ func (r *provenanceResolver) build(
 // earlier one. The line that carries provenance wins: a close event records
 // only `closed_by` and would otherwise overwrite the open event's host and cwd
 // with empties.
-func (r *provenanceResolver) readEvents(producerID ProducerID) map[string]eventRecord {
+func (r *provenanceResolver) readEvents(
+	ctx context.Context,
+	producerID ProducerID,
+) map[string]eventRecord {
 	events := map[string]eventRecord{}
 	if r.stateDir == "" {
 		return events
@@ -232,6 +235,15 @@ func (r *provenanceResolver) readEvents(producerID ProducerID) map[string]eventR
 	// the item's provenance.
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
+		// A page load reads one log per open item's producer, and a log is
+		// append-only and unbounded, so a client that has gone away must stop
+		// the scan rather than let it run to the end of the file.
+		select {
+		case <-ctx.Done():
+			glog.V(3).Infof("event log scan cancelled for producer %s", producerID)
+			return events
+		default:
+		}
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
 			continue
@@ -271,7 +283,7 @@ func (r *provenanceResolver) readEvents(producerID ProducerID) map[string]eventR
 // "no session owns any pane" would mark every row unroutable the moment the
 // store ran somewhere the registry is absent, and the store's own liveness
 // checker takes the same position for the same reason.
-func (r *provenanceResolver) sessionNames() map[string]string {
+func (r *provenanceResolver) sessionNames(ctx context.Context) map[string]string {
 	names := map[string]string{}
 	if r.sessionsDir == "" {
 		return names
@@ -282,6 +294,12 @@ func (r *provenanceResolver) sessionNames() map[string]string {
 		return names
 	}
 	for _, entry := range entries {
+		select {
+		case <-ctx.Done():
+			glog.V(3).Infof("session registry scan cancelled")
+			return names
+		default:
+		}
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}

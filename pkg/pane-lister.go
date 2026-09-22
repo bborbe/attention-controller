@@ -12,8 +12,6 @@ import (
 	"github.com/golang/glog"
 )
 
-//counterfeiter:generate -o ../mocks/pane-lister.go --fake-name PaneLister . PaneLister
-
 // Pane is one WezTerm pane, reduced to the two fields the ownership check
 // needs. The listing carries seventeen fields; nothing else here is read.
 type Pane struct {
@@ -27,6 +25,8 @@ type Pane struct {
 	// glyph is stripped from both sides.
 	Title string `json:"title"`
 }
+
+//counterfeiter:generate -o ../mocks/pane-lister.go --fake-name PaneLister . PaneLister
 
 // PaneLister lists the WezTerm panes on this host.
 //

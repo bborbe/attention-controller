@@ -165,6 +165,11 @@ func (a *application) createHTTPServer(
 		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()
 
+		// Hoisted rather than inlined into the handler call below, matching how
+		// the store is built once in Run and passed down. Two constructors
+		// nested at a call site read as wiring that happened by accident.
+		provenance := a.createProvenanceResolver(ctx)
+
 		router := mux.NewRouter()
 		router.Path("/healthz").Handler(factory.CreateHealthzHandler())
 		router.Path("/readiness").Handler(libhttp.NewPrintHandler("OK"))
@@ -183,7 +188,7 @@ func (a *application) createHTTPServer(
 		// .Methods, gorilla mux would route POST and DELETE to it as well.
 		router.Path("/").
 			Methods(http.MethodGet, http.MethodHead).
-			Handler(factory.CreateAttentionPageHandler(store, a.createProvenanceResolver(ctx)))
+			Handler(factory.CreateAttentionPageHandler(store, provenance))
 
 		// Business routes live under /api/1.0/, never in the admin block above.
 		// The push entry point takes a producer's declaration; nothing scrapes
