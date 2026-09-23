@@ -73,6 +73,7 @@ type Items []Item
 type PushRequest struct {
 	ProducerID      ProducerID        `json:"producer_id"`
 	ProducerKind    ProducerKind      `json:"producer_kind"`
+	ProvenanceClass ProvenanceClass   `json:"provenance_class,omitempty"`
 	LivenessRef     LivenessRef       `json:"liveness_ref"`
 	DedupKey        DedupKey          `json:"dedup_key"`
 	InterruptClass  InterruptClass    `json:"interrupt_class"`
@@ -93,6 +94,7 @@ func (p PushRequest) Validate(ctx context.Context) error {
 	return validation.All{
 		validation.Name("ProducerID", validation.NotEmptyString(p.ProducerID)),
 		validation.Name("ProducerKind", p.ProducerKind),
+		validation.Name("ProvenanceClass", p.ProvenanceClass),
 		validation.Name("LivenessRef", p.LivenessRef),
 		validation.Name("DedupKey", validation.NotEmptyString(p.DedupKey)),
 		validation.Name("InterruptClass", validation.NotEmptyString(p.InterruptClass)),

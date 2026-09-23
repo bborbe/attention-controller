@@ -89,6 +89,9 @@ type Item struct {
 	ProducerID ProducerID `json:"producer_id"`
 	// ProducerKind is what kind of thing the producer is.
 	ProducerKind ProducerKind `json:"producer_kind"`
+	// ProvenanceClass is where the claim came from. Declared by the
+	// producer, stored, never derived. Empty marks a pre-change item.
+	ProvenanceClass ProvenanceClass `json:"provenance_class,omitempty"`
 	// LivenessRef is how to tell whether the producer is still alive.
 	LivenessRef LivenessRef `json:"liveness_ref"`
 	// DedupKey is what two pushes must share to be the same item.
@@ -134,6 +137,7 @@ func (i Item) Validate(ctx context.Context) error {
 		validation.Name("ItemID", validation.NotEmptyString(i.ItemID)),
 		validation.Name("ProducerID", validation.NotEmptyString(i.ProducerID)),
 		validation.Name("ProducerKind", i.ProducerKind),
+		validation.Name("ProvenanceClass", i.ProvenanceClass),
 		validation.Name("LivenessRef", i.LivenessRef),
 		validation.Name("DedupKey", validation.NotEmptyString(i.DedupKey)),
 		validation.Name("InterruptClass", validation.NotEmptyString(i.InterruptClass)),

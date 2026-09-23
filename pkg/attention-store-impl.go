@@ -84,6 +84,7 @@ func (a *attentionStore) newItem(ctx context.Context, request PushRequest) (*Ite
 		ItemID:          itemID,
 		ProducerID:      request.ProducerID,
 		ProducerKind:    request.ProducerKind,
+		ProvenanceClass: request.ProvenanceClass,
 		LivenessRef:     request.LivenessRef,
 		DedupKey:        request.DedupKey,
 		InterruptClass:  request.InterruptClass,
