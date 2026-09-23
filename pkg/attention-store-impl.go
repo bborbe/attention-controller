@@ -346,6 +346,7 @@ func (a *attentionStore) updateExistingIfLive(
 	}
 	existing.Payload = request.Payload
 	existing.InterruptClass = request.InterruptClass
+	existing.ProvenanceClass = request.ProvenanceClass
 	existing.ExpiresAt = request.ExpiresAt
 	existing.CreatedAt = a.currentDateTimeGetter.Now()
 	if err := a.store.Add(ctx, tx, existing.ItemID.String(), *existing); err != nil {

@@ -120,6 +120,23 @@ var _ = Describe("AttentionStore", func() {
 			Expect(item.ProvenanceClass).To(Equal(pkg.ProvenanceClass("")))
 		})
 
+		It("carries the re-pushed value through a dedup update", func() {
+			first := pushRequest("session-a", "gate-1")
+			created, err := store.Push(ctx, first)
+			Expect(err).To(BeNil())
+			Expect(created.ProvenanceClass).To(Equal(pkg.ProvenanceClass("")))
+
+			second := pushRequest("session-a", "gate-1")
+			second.ProvenanceClass = pkg.HookProvenanceClass
+			updated, err := store.Push(ctx, second)
+			Expect(err).To(BeNil())
+			Expect(updated.ItemID).To(Equal(created.ItemID))
+
+			got, err := store.Get(ctx, created.ItemID)
+			Expect(err).To(BeNil())
+			Expect(got.ProvenanceClass).To(Equal(pkg.HookProvenanceClass))
+		})
+
 		It("rejects an invalid value", func() {
 			request := pushRequest("session-a", "gate-1")
 			request.ProvenanceClass = pkg.ProvenanceClass("bogus")
