@@ -14,6 +14,7 @@ import (
 	"github.com/bborbe/errors"
 	libkv "github.com/bborbe/kv"
 	libtime "github.com/bborbe/time"
+	"github.com/bborbe/validation"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -89,6 +90,59 @@ var _ = Describe("AttentionStore", func() {
 			request := pushRequest("session-a", "gate-1")
 			request.Payload = ""
 			Expect(request.Validate(ctx)).NotTo(BeNil())
+		})
+	})
+
+	// ProvenanceClass is declared by the producer, stored, never derived. An
+	// empty value must be accepted — it marks a pre-2026-09-23 item pushed
+	// before this field existed. See the attention item schema § Fields,
+	// `provenance_class`, and silence 9.
+	Describe("ProvenanceClass", func() {
+		It("round-trips a valid value via push and read", func() {
+			request := pushRequest("session-a", "gate-1")
+			request.ProvenanceClass = pkg.HookProvenanceClass
+			item, err := store.Push(ctx, request)
+			Expect(err).To(BeNil())
+			Expect(item.ProvenanceClass).To(Equal(pkg.HookProvenanceClass))
+
+			got, err := store.Get(ctx, item.ItemID)
+			Expect(err).To(BeNil())
+			Expect(got.ProvenanceClass).To(Equal(pkg.HookProvenanceClass))
+		})
+
+		It("accepts an empty value", func() {
+			request := pushRequest("session-a", "gate-1")
+			request.ProvenanceClass = ""
+			Expect(request.Validate(ctx)).To(BeNil())
+
+			item, err := store.Push(ctx, request)
+			Expect(err).To(BeNil())
+			Expect(item.ProvenanceClass).To(Equal(pkg.ProvenanceClass("")))
+		})
+
+		It("carries the re-pushed value through a dedup update", func() {
+			first := pushRequest("session-a", "gate-1")
+			created, err := store.Push(ctx, first)
+			Expect(err).To(BeNil())
+			Expect(created.ProvenanceClass).To(Equal(pkg.ProvenanceClass("")))
+
+			second := pushRequest("session-a", "gate-1")
+			second.ProvenanceClass = pkg.HookProvenanceClass
+			updated, err := store.Push(ctx, second)
+			Expect(err).To(BeNil())
+			Expect(updated.ItemID).To(Equal(created.ItemID))
+
+			got, err := store.Get(ctx, created.ItemID)
+			Expect(err).To(BeNil())
+			Expect(got.ProvenanceClass).To(Equal(pkg.HookProvenanceClass))
+		})
+
+		It("rejects an invalid value", func() {
+			request := pushRequest("session-a", "gate-1")
+			request.ProvenanceClass = pkg.ProvenanceClass("bogus")
+			err := request.Validate(ctx)
+			Expect(err).NotTo(BeNil())
+			Expect(errors.Is(err, validation.Error)).To(BeTrue())
 		})
 	})
 
