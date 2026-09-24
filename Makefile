@@ -5,10 +5,11 @@ include example.env
 
 SERVICE = bborbe/attention-controller
 
-# Deploy-only repo, like notification-controller: the image is published to
-# Docker Hub as an immutable semver tag, then mirrored into the quant registry
-# and applied from the nuke manifests. There is no in-repo k8s/ tree — the
-# deploy lives in nuke/attention-controller/, per [[Deploy Mirrored Agent Service]].
+# Local launchd service, not a cluster deploy. The store runs on this machine as
+# the launchd job com.bborbe.attention-controller, built straight to
+# ~/.local/bin/attention-controller and serving localhost:18080. There is no
+# in-repo k8s/ tree, no cluster manifests, and no image is pushed to a registry —
+# see CLAUDE.md § Deploy.
 # No sentry flag here, matching notification-controller's run target. The
 # skeleton's version resolved -sentry-dsn from teamvault at run time, which
 # made a local run depend on a teamvault key this repo never declares

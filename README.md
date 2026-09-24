@@ -122,14 +122,17 @@ Configuration is managed through environment variables. See `example.env` for de
 
 ## Deployment
 
-### Kubernetes
+### Local (launchd)
 
-The `k8s/` directory contains complete Kubernetes manifests:
+There is no Kubernetes deploy. The store runs on this machine as the launchd job
+`com.bborbe.attention-controller`, serving `http://127.0.0.1:18080`:
 
-- Choose between Deployment (`attention-controller-deploy.yaml`) or StatefulSet (`attention-controller-sts.yaml`)
-- Service, Ingress, Secret, and User configurations included
-- **To activate**: Change replicas from 0 → 1
-- **For Deployment**: Delete StatefulSet manifest if using Deployment
+```bash
+go build -o ~/.local/bin/attention-controller main.go
+launchctl kickstart -k gui/$(id -u)/com.bborbe.attention-controller
+```
+
+The plist lives at `~/Library/LaunchAgents/com.bborbe.attention-controller.plist`.
 
 ### Docker
 
