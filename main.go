@@ -36,10 +36,11 @@ func main() {
 
 type application struct {
 	// Optional, unlike the notification-controller precedent: Sentry is error
-	// reporting for the deployed stage, and requiring it made a local run
+	// reporting for a deployed stage, and requiring it made a local run
 	// impossible without a teamvault-resolved DSN. An empty DSN disables error
-	// reporting rather than failing startup. The deployed manifests still
-	// supply SENTRY_DSN from the secret, so prod behaviour is unchanged.
+	// reporting rather than failing startup. This repo has no deployed stage
+	// yet, so nothing here depends on the flag; a future deploy supplies
+	// SENTRY_DSN from its own secret.
 	SentryDSN         string            `required:"false" arg:"sentry-dsn"          env:"SENTRY_DSN"          usage:"SentryDSN (empty disables error reporting)"                                         display:"length"`
 	SentryProxy       string            `required:"false" arg:"sentry-proxy"        env:"SENTRY_PROXY"        usage:"Sentry Proxy"`
 	Listen            string            `required:"true"  arg:"listen"              env:"LISTEN"              usage:"address to listen to"`

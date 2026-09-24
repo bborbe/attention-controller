@@ -15,9 +15,9 @@ SERVICE = bborbe/attention-controller
 # made a local run depend on a teamvault key this repo never declares
 # (SENTRY_DSN_KEY is in neither example.env nor Makefile.variables) and on
 # ~/.teamvault.json existing — so `make run` failed at argument parsing before
-# the server started. Sentry is error reporting for the deployed stage; the
-# local rung does not need it. The deployed manifests still supply SENTRY_DSN
-# from the secret, so nothing about prod changes.
+# the server started. Sentry is error reporting for a deployed stage, and the
+# local rung does not need it — this repo has no deployed stage yet, so nothing
+# here depends on the flag.
 run:
 	@go run -mod=mod main.go \
 	-listen="localhost:${ATTENTION_CONTROLLER_PORT}" \
