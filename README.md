@@ -129,7 +129,7 @@ There is no Kubernetes deploy. The store runs on this machine as the launchd job
 
 ```bash
 go build -o ~/.local/bin/attention-controller main.go
-launchctl kickstart -k gui/$(id -u)/com.bborbe.attention-controller
+launchctl kickstart -k gui/$UID/com.bborbe.attention-controller
 ```
 
 The plist lives at `~/Library/LaunchAgents/com.bborbe.attention-controller.plist`.
