@@ -124,6 +124,19 @@ type Item struct {
 	// Adding one would be a gap filled silently in code rather than a finding
 	// reported on the schema page.
 	EscalatedBy string `json:"escalated_by,omitempty"`
+	// ResolvedBy is which session resolved this item — a session id, never a
+	// pane id and never a boolean, supplied by the caller of the answer path
+	// exactly as AnsweredBy is. It is distinct from AnsweredBy, which names the
+	// arm that supplied the answer rather than the identity that gave it, and
+	// from EscalatedBy, which names the session that carried the item to the
+	// operator.
+	//
+	// It is a declaration, not a proof. The store records the value the caller
+	// sent and does not authenticate it or derive it from the request, so two
+	// callers claiming one session id are indistinguishable here — the same
+	// trust model InterruptClass and ProvenanceClass already carry. Empty means
+	// absent, which is what an item resolved before this field existed reads as.
+	ResolvedBy string `json:"resolved_by,omitempty"`
 	// ClosedAt is when the item left the queue. Absent while open or answered.
 	ClosedAt *libtime.DateTime `json:"closed_at,omitempty"`
 	// ExpiresAt is the producer's own deadline, if it has one. Absent means the

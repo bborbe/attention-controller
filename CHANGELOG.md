@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- feat: add caller-supplied `resolved_by` session id, stamped on the answer path beside `answered_by`, so a manager-resolved item is distinguishable from an untouched one and from an operator-escalated one; add `GET /api/1.0/attention/history`, a closed-inclusive read that never prunes, so the resolved-versus-escalated split is countable
+
 ## v0.4.0
 
 - feat: add producer-declared provenance_class field (hook/explicit/third_party) to attention items

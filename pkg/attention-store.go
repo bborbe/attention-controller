@@ -36,10 +36,27 @@ type AttentionStore interface {
 	// the window between producer-exit and removal is one read at most.
 	Read(ctx context.Context) (Items, error)
 
+	// History returns every item regardless of state, for counting what
+	// resolved and what escalated rather than for rendering.
+	//
+	// It is deliberately not Read: Read answers "what should an arm show now"
+	// and prunes dead askers as a side effect, which makes it blind to anything
+	// that has left the queue — and a pruning read cannot report a history,
+	// because the act of reading would delete part of what it reports. History
+	// never prunes, never filters on liveness and never filters on state.
+	History(ctx context.Context) (Items, error)
+
 	// Answer applies open -> answered as an atomic compare-and-set. Exactly one
 	// of two concurrent answers transitions the item; the loser receives
 	// ErrAlreadyAnswered and must read back and report rather than retry.
-	Answer(ctx context.Context, itemID ItemID, answeredBy string) (*Item, error)
+	//
+	// answeredBy names the *arm* that supplied the answer and resolvedBy names
+	// the *session* that resolved it. They are separate fields because they
+	// answer separate questions: the arm is the same value whether a manager or
+	// the operator used it, so the arm alone cannot say who settled the item.
+	// resolvedBy may be empty — the schema does not reject an omitted value, and
+	// an item answered before the field existed reads back without one.
+	Answer(ctx context.Context, itemID ItemID, answeredBy string, resolvedBy string) (*Item, error)
 
 	// Escalate records which session is carrying this item to the operator, as
 	// an atomic compare-and-set. Exactly one of two concurrent escalations

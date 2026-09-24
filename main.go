@@ -199,6 +199,12 @@ func (a *application) createHTTPServer(
 		router.Path("/api/1.0/attention").
 			Methods(http.MethodGet).
 			Handler(factory.CreateAttentionReadHandler(store))
+		// Every item regardless of state, for counting what resolved and what
+		// escalated. Registered before /{itemID} so "history" is never read as
+		// an item id.
+		router.Path("/api/1.0/attention/history").
+			Methods(http.MethodGet).
+			Handler(factory.CreateAttentionHistoryHandler(store))
 		router.Path("/api/1.0/attention/{itemID}/answer").
 			Methods(http.MethodPost).
 			Handler(factory.CreateAttentionAnswerHandler(store))
