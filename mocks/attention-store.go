@@ -9,12 +9,13 @@ import (
 )
 
 type AttentionStore struct {
-	AnswerStub        func(context.Context, pkg.ItemID, string) (*pkg.Item, error)
+	AnswerStub        func(context.Context, pkg.ItemID, string, string) (*pkg.Item, error)
 	answerMutex       sync.RWMutex
 	answerArgsForCall []struct {
 		arg1 context.Context
 		arg2 pkg.ItemID
 		arg3 string
+		arg4 string
 	}
 	answerReturns struct {
 		result1 *pkg.Item
@@ -67,6 +68,19 @@ type AttentionStore struct {
 		result1 *pkg.Item
 		result2 error
 	}
+	HistoryStub        func(context.Context) (pkg.Items, error)
+	historyMutex       sync.RWMutex
+	historyArgsForCall []struct {
+		arg1 context.Context
+	}
+	historyReturns struct {
+		result1 pkg.Items
+		result2 error
+	}
+	historyReturnsOnCall map[int]struct {
+		result1 pkg.Items
+		result2 error
+	}
 	PushStub        func(context.Context, pkg.PushRequest) (*pkg.Item, error)
 	pushMutex       sync.RWMutex
 	pushArgsForCall []struct {
@@ -98,20 +112,21 @@ type AttentionStore struct {
 	invocationsMutex sync.RWMutex
 }
 
-func (fake *AttentionStore) Answer(arg1 context.Context, arg2 pkg.ItemID, arg3 string) (*pkg.Item, error) {
+func (fake *AttentionStore) Answer(arg1 context.Context, arg2 pkg.ItemID, arg3 string, arg4 string) (*pkg.Item, error) {
 	fake.answerMutex.Lock()
 	ret, specificReturn := fake.answerReturnsOnCall[len(fake.answerArgsForCall)]
 	fake.answerArgsForCall = append(fake.answerArgsForCall, struct {
 		arg1 context.Context
 		arg2 pkg.ItemID
 		arg3 string
-	}{arg1, arg2, arg3})
+		arg4 string
+	}{arg1, arg2, arg3, arg4})
 	stub := fake.AnswerStub
 	fakeReturns := fake.answerReturns
-	fake.recordInvocation("Answer", []interface{}{arg1, arg2, arg3})
+	fake.recordInvocation("Answer", []interface{}{arg1, arg2, arg3, arg4})
 	fake.answerMutex.Unlock()
 	if stub != nil {
-		return stub(arg1, arg2, arg3)
+		return stub(arg1, arg2, arg3, arg4)
 	}
 	if specificReturn {
 		return ret.result1, ret.result2
@@ -125,17 +140,17 @@ func (fake *AttentionStore) AnswerCallCount() int {
 	return len(fake.answerArgsForCall)
 }
 
-func (fake *AttentionStore) AnswerCalls(stub func(context.Context, pkg.ItemID, string) (*pkg.Item, error)) {
+func (fake *AttentionStore) AnswerCalls(stub func(context.Context, pkg.ItemID, string, string) (*pkg.Item, error)) {
 	fake.answerMutex.Lock()
 	defer fake.answerMutex.Unlock()
 	fake.AnswerStub = stub
 }
 
-func (fake *AttentionStore) AnswerArgsForCall(i int) (context.Context, pkg.ItemID, string) {
+func (fake *AttentionStore) AnswerArgsForCall(i int) (context.Context, pkg.ItemID, string, string) {
 	fake.answerMutex.RLock()
 	defer fake.answerMutex.RUnlock()
 	argsForCall := fake.answerArgsForCall[i]
-	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3, argsForCall.arg4
 }
 
 func (fake *AttentionStore) AnswerReturns(result1 *pkg.Item, result2 error) {
@@ -356,6 +371,70 @@ func (fake *AttentionStore) GetReturnsOnCall(i int, result1 *pkg.Item, result2 e
 	}
 	fake.getReturnsOnCall[i] = struct {
 		result1 *pkg.Item
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *AttentionStore) History(arg1 context.Context) (pkg.Items, error) {
+	fake.historyMutex.Lock()
+	ret, specificReturn := fake.historyReturnsOnCall[len(fake.historyArgsForCall)]
+	fake.historyArgsForCall = append(fake.historyArgsForCall, struct {
+		arg1 context.Context
+	}{arg1})
+	stub := fake.HistoryStub
+	fakeReturns := fake.historyReturns
+	fake.recordInvocation("History", []interface{}{arg1})
+	fake.historyMutex.Unlock()
+	if stub != nil {
+		return stub(arg1)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *AttentionStore) HistoryCallCount() int {
+	fake.historyMutex.RLock()
+	defer fake.historyMutex.RUnlock()
+	return len(fake.historyArgsForCall)
+}
+
+func (fake *AttentionStore) HistoryCalls(stub func(context.Context) (pkg.Items, error)) {
+	fake.historyMutex.Lock()
+	defer fake.historyMutex.Unlock()
+	fake.HistoryStub = stub
+}
+
+func (fake *AttentionStore) HistoryArgsForCall(i int) context.Context {
+	fake.historyMutex.RLock()
+	defer fake.historyMutex.RUnlock()
+	argsForCall := fake.historyArgsForCall[i]
+	return argsForCall.arg1
+}
+
+func (fake *AttentionStore) HistoryReturns(result1 pkg.Items, result2 error) {
+	fake.historyMutex.Lock()
+	defer fake.historyMutex.Unlock()
+	fake.HistoryStub = nil
+	fake.historyReturns = struct {
+		result1 pkg.Items
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *AttentionStore) HistoryReturnsOnCall(i int, result1 pkg.Items, result2 error) {
+	fake.historyMutex.Lock()
+	defer fake.historyMutex.Unlock()
+	fake.HistoryStub = nil
+	if fake.historyReturnsOnCall == nil {
+		fake.historyReturnsOnCall = make(map[int]struct {
+			result1 pkg.Items
+			result2 error
+		})
+	}
+	fake.historyReturnsOnCall[i] = struct {
+		result1 pkg.Items
 		result2 error
 	}{result1, result2}
 }

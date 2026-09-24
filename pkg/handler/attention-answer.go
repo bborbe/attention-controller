@@ -49,6 +49,11 @@ func handleAttentionAnswer(
 	}
 	var request struct {
 		AnsweredBy string `json:"answered_by"`
+		// ResolvedBy is the session that resolved the item, as distinct from
+		// AnsweredBy, the arm that carried the answer. Optional: an omitted
+		// value stores an item with no resolver recorded, which is what every
+		// item answered before this field existed reads as.
+		ResolvedBy string `json:"resolved_by"`
 	}
 	if err := json.NewDecoder(req.Body).Decode(&request); err != nil {
 		return libhttp.WrapWithDetails(
@@ -58,7 +63,7 @@ func handleAttentionAnswer(
 			map[string]any{"reason": "request body is not valid JSON"},
 		)
 	}
-	item, err := store.Answer(ctx, itemID, request.AnsweredBy)
+	item, err := store.Answer(ctx, itemID, request.AnsweredBy, request.ResolvedBy)
 	if err != nil {
 		return wrapAnswerError(ctx, err, itemID)
 	}

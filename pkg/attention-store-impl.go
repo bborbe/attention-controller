@@ -171,13 +171,46 @@ func (a *attentionStore) Read(ctx context.Context) (Items, error) {
 	return items, nil
 }
 
+// History returns every item regardless of state.
+//
+// It is deliberately not Read. Read answers "what should an arm render now": it
+// filters to open items and removes dead askers as a side effect, which makes
+// it blind to everything that has left the queue — and it cannot report a
+// history at all, because the act of reading would delete part of what it
+// reports. History filters on nothing and prunes nothing. An answered or closed
+// item is exactly what a caller counting resolutions needs, and removing it
+// would rewrite the history the schema says is never rewritten.
+//
+// A read transaction, not a write one: this path mutates nothing, so it takes
+// no writer lock and cannot interleave with the pruning Read does.
+func (a *attentionStore) History(ctx context.Context) (Items, error) {
+	items := make(Items, 0)
+	err := a.db.View(ctx, func(ctx context.Context, tx libkv.Tx) error {
+		return a.store.Map(ctx, tx, func(ctx context.Context, key string, item Item) error {
+			items = append(items, item)
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, errors.Wrap(ctx, err, "history failed")
+	}
+	return items, nil
+}
+
 // Answer applies open -> answered as an atomic compare-and-set. The read, the
 // compare and the write all happen inside one write transaction, so exactly one
 // of two concurrent answers transitions the item.
+//
+// answeredBy and resolvedBy are stamped together and mean different things:
+// answeredBy is the arm that carried the answer, resolvedBy is the session that
+// resolved the item. Resolution rides this transition rather than introducing
+// one — the schema's § Resolution is explicit that resolution is not a fourth
+// state, so ValidateTransition is called exactly as it was before.
 func (a *attentionStore) Answer(
 	ctx context.Context,
 	itemID ItemID,
 	answeredBy string,
+	resolvedBy string,
 ) (*Item, error) {
 	var result *Item
 	err := a.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
@@ -212,6 +245,11 @@ func (a *attentionStore) Answer(
 		item.State = AnsweredState
 		item.AnsweredAt = &now
 		item.AnsweredBy = answeredBy
+		// Stamped from the caller's declaration, never derived and never
+		// authenticated. An empty value is written as empty rather than
+		// backfilled from answeredBy: the arm is not an identity, so copying it
+		// here would record a value that looks like a resolver and is not one.
+		item.ResolvedBy = resolvedBy
 		if err := a.store.Add(ctx, tx, item.ItemID.String(), *item); err != nil {
 			return errors.Wrap(ctx, err, "update item failed")
 		}

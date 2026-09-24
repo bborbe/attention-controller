@@ -42,6 +42,12 @@ func CreateAttentionCloseHandler(store pkg.AttentionStore) http.Handler {
 	return handler.NewAttentionCloseHandler(store)
 }
 
+// CreateAttentionHistoryHandler creates the handler that returns every item
+// regardless of state, for counting resolutions rather than rendering.
+func CreateAttentionHistoryHandler(store pkg.AttentionStore) http.Handler {
+	return handler.NewAttentionHistoryHandler(store)
+}
+
 // CreateAttentionGetHandler creates the handler that returns a single item by
 // id, whatever its state.
 func CreateAttentionGetHandler(store pkg.AttentionStore) http.Handler {
