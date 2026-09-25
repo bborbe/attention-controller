@@ -7,6 +7,7 @@ package pkg
 import (
 	"context"
 
+	"github.com/bborbe/errors"
 	libkv "github.com/bborbe/kv"
 	libtime "github.com/bborbe/time"
 	"github.com/bborbe/validation"
@@ -62,12 +63,20 @@ type AttentionStore interface {
 	// cannot say what was decided. It may be empty — the schema adds no
 	// write-time rejection, and an empty value stores an item with no verdict
 	// recorded, which is what a message- or ack-class item reads as.
+	//
+	// answer is what the operator actually said, and it is separate from both
+	// for the same reason again: decision carries a `permission` item's verdict
+	// and answer carries a `message` item's content, and a chosen label is not a
+	// verdict. It may be nil — the schema adds no write-time rejection for an
+	// omitted answer either, so a nil value stores an item with no answer
+	// content recorded.
 	Answer(
 		ctx context.Context,
 		itemID ItemID,
 		answeredBy string,
 		resolvedBy string,
 		decision Decision,
+		answer *Answer,
 	) (*Item, error)
 
 	// Escalate records which session is carrying this item to the operator, as
@@ -107,7 +116,9 @@ type PushRequest struct {
 	DedupKey        DedupKey          `json:"dedup_key"`
 	InterruptClass  InterruptClass    `json:"interrupt_class"`
 	Payload         Payload           `json:"payload"`
+	Context         ItemContext       `json:"context,omitempty"`
 	AnswerMechanism AnswerMechanism   `json:"answer_mechanism"`
+	Options         AnswerOptions     `json:"options,omitempty"`
 	ExpiresAt       *libtime.DateTime `json:"expires_at,omitempty"`
 }
 
@@ -128,8 +139,32 @@ func (p PushRequest) Validate(ctx context.Context) error {
 		validation.Name("DedupKey", validation.NotEmptyString(p.DedupKey)),
 		validation.Name("InterruptClass", validation.NotEmptyString(p.InterruptClass)),
 		validation.Name("Payload", validation.NotEmptyString(p.Payload)),
+		validation.Name("Options", validation.HasValidationFunc(p.validateOptions)),
 		validation.Name("AnswerMechanism", p.AnswerMechanism),
 	}.Validate(ctx)
+}
+
+// validateOptions enforces the schema's message-only rule for `options`, at push
+// time rather than only at store time, so a producer learns its declaration is
+// rejected from the push response rather than from a stored item it cannot read
+// back.
+//
+// The field is absent on `permission` and `ack` alike, because neither class
+// offers the operator a choice to make. An empty list is legal — `options` is
+// optional.
+func (p PushRequest) validateOptions(ctx context.Context) error {
+	if len(p.Options) == 0 {
+		return nil
+	}
+	if p.AnswerMechanism != MessageAnswerMechanism {
+		return errors.Wrapf(
+			ctx,
+			validation.Error,
+			"options are only allowed on a message item, got answerMechanism '%s'",
+			p.AnswerMechanism,
+		)
+	}
+	return p.Options.Validate(ctx)
 }
 
 // AttentionStoreBucketName is the bucket every item lives in.

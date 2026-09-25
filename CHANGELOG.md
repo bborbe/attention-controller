@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- feat: add producer-declared `options` (`{label, recommended}`) and `context` to the push request and the item, and store the operator's `answer` (`{kind: option|skip|text, value}`) on the existing `open` → `answered` transition, so a `message` item is answerable on a surface other than the asker's own tab; `options` is rejected with HTTP 400 on a `permission` or `ack` item, and at most one option may carry `recommended`
+
 ## v0.6.0
 
 - feat: add caller-supplied `decision` (allow/deny) to the answer body and the item, stamped on the answer path beside `answered_by` and `resolved_by`, so an item answered allow is distinguishable from one answered deny — one arm supplies both, so the arm alone could not say what was decided

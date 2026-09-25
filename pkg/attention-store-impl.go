@@ -89,7 +89,9 @@ func (a *attentionStore) newItem(ctx context.Context, request PushRequest) (*Ite
 		DedupKey:        request.DedupKey,
 		InterruptClass:  request.InterruptClass,
 		Payload:         request.Payload,
+		Context:         request.Context,
 		AnswerMechanism: request.AnswerMechanism,
+		Options:         request.Options,
 		State:           OpenState,
 		CreatedAt:       a.currentDateTimeGetter.Now(),
 		ExpiresAt:       request.ExpiresAt,
@@ -212,6 +214,7 @@ func (a *attentionStore) Answer(
 	answeredBy string,
 	resolvedBy string,
 	decision Decision,
+	answer *Answer,
 ) (*Item, error) {
 	var result *Item
 	err := a.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
@@ -255,6 +258,12 @@ func (a *attentionStore) Answer(
 		// derived either: the arm is not a decision, so an empty decision stays
 		// empty rather than being inferred from the arm that supplied it.
 		item.Decision = decision
+		// The operator's actual answer, stamped from the caller for the same
+		// reason again: the arm is not an answer either, so a nil answer stays
+		// nil rather than being backfilled from the arm or the decision. It rides
+		// this same transition — the schema is explicit that answer content is
+		// not a fourth state, so ValidateTransition is called exactly as before.
+		item.Answer = answer
 		if err := a.store.Add(ctx, tx, item.ItemID.String(), *item); err != nil {
 			return errors.Wrap(ctx, err, "update item failed")
 		}
@@ -388,6 +397,8 @@ func (a *attentionStore) updateExistingIfLive(
 		return nil, nil
 	}
 	existing.Payload = request.Payload
+	existing.Context = request.Context
+	existing.Options = request.Options
 	existing.InterruptClass = request.InterruptClass
 	existing.ProvenanceClass = request.ProvenanceClass
 	existing.ExpiresAt = request.ExpiresAt
