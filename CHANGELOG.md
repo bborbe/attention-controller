@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.7.0
 
 - feat: add producer-declared `options` (`{label, recommended}`) and `context` to the push request and the item, and store the operator's `answer` (`{kind: option|skip|text, value}`) on the existing `open` → `answered` transition, so a `message` item is answerable on a surface other than the asker's own tab; `options` is rejected with HTTP 400 on a `permission` or `ack` item, and at most one option may carry `recommended`
 - feat: render answer controls on the board for `message` items — option buttons with the recommended one marked, a skip control and a free-text field, posting to the answer endpoint as `answered_by: attention-board`; a `permission` item renders a copyable `/supervisor:jump <pane>` command and **zero** controls, because only the operator may answer a gate and only in the session that raised it. This reverses the page's recorded inert-page decision for `message` items only; the board still does not sort, since it is served by the store and the no-ranking boundary applies to it
