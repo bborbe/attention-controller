@@ -45,6 +45,17 @@ var (
 	// queue, so the store refuses rather than stamping an item nothing renders.
 	ErrItemNotOpen = stderrors.New("item not open")
 
+	// ErrInvalidSessionID is returned when a value the schema requires to be a
+	// session id is not one. The store refuses such a write rather than
+	// normalizing it: a placeholder such as "session-a" has no UUID to normalize
+	// to, so "repair" could only mean inventing an identity.
+	//
+	// Observed live before this check existed: `escalated_by` carried the literal
+	// "session-a" on two items and a bare 8-hex prefix on a third, against
+	// § Escalation's own rule. Those three predate the check and are left in
+	// place — they sit on closed items and are the schema page's counterexamples.
+	ErrInvalidSessionID = stderrors.New("invalid session id")
+
 	// ErrInvalidLivenessRef is returned when a liveness ref is neither of the
 	// two models, or carries no value.
 	ErrInvalidLivenessRef = stderrors.New("invalid liveness ref")

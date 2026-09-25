@@ -22,6 +22,23 @@ import (
 	"github.com/bborbe/attention-controller/pkg"
 )
 
+// Session ids for the actors these specs name. § Escalation requires a session
+// id to be a dashed UUID — the store refuses anything else rather than
+// normalizing it — so a readable fixture such as "session-manager" cannot be
+// handed to Escalate. The actor names live in the constant names instead, and
+// the values are shaped like the ids the live store actually carries.
+//
+// Only the escalation path enforces this. `resolved_by` is the same kind of
+// value but § Resolution states no rejection rule for it, so those specs keep
+// their plain names — the asymmetry is the schema's, not an oversight here.
+const (
+	manager1SessionID     = "00000000-0000-4000-8000-000000000001"
+	manager2SessionID     = "00000000-0000-4000-8000-000000000002"
+	managerSessionID      = "00000000-0000-4000-8000-000000000003"
+	fleetManagerSessionID = "00000000-0000-4000-8000-000000000004"
+	topicManagerSessionID = "00000000-0000-4000-8000-000000000005"
+)
+
 var _ = Describe("AttentionStore", func() {
 	var ctx context.Context
 	var db libkv.DB
@@ -276,9 +293,9 @@ var _ = Describe("AttentionStore", func() {
 			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
 			Expect(err).To(BeNil())
 
-			escalated, err := store.Escalate(ctx, item.ItemID, "manager-1")
+			escalated, err := store.Escalate(ctx, item.ItemID, manager1SessionID)
 			Expect(err).To(BeNil())
-			Expect(escalated.EscalatedBy).To(Equal("manager-1"))
+			Expect(escalated.EscalatedBy).To(Equal(manager1SessionID))
 			Expect(escalated.ResolvedBy).To(BeEmpty())
 		})
 
@@ -318,7 +335,7 @@ var _ = Describe("AttentionStore", func() {
 				nil,
 			)
 			Expect(err).To(BeNil())
-			_, err = store.Escalate(ctx, escalated.ItemID, "manager-2")
+			_, err = store.Escalate(ctx, escalated.ItemID, manager2SessionID)
 			Expect(err).To(BeNil())
 
 			items, err := store.History(ctx)
@@ -330,7 +347,7 @@ var _ = Describe("AttentionStore", func() {
 
 			Expect(byID[resolved.ItemID].ResolvedBy).To(Equal("manager-1"))
 			Expect(byID[resolved.ItemID].EscalatedBy).To(BeEmpty())
-			Expect(byID[escalated.ItemID].EscalatedBy).To(Equal("manager-2"))
+			Expect(byID[escalated.ItemID].EscalatedBy).To(Equal(manager2SessionID))
 			Expect(byID[escalated.ItemID].ResolvedBy).To(BeEmpty())
 			Expect(byID[untouched.ItemID].State).To(Equal(pkg.OpenState))
 			Expect(byID[untouched.ItemID].ResolvedBy).To(BeEmpty())
@@ -576,9 +593,9 @@ var _ = Describe("AttentionStore", func() {
 			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
 			Expect(err).To(BeNil())
 
-			escalated, err := store.Escalate(ctx, item.ItemID, "session-manager")
+			escalated, err := store.Escalate(ctx, item.ItemID, managerSessionID)
 			Expect(err).To(BeNil())
-			Expect(escalated.EscalatedBy).To(Equal("session-manager"))
+			Expect(escalated.EscalatedBy).To(Equal(managerSessionID))
 			// Escalation is not a transition: the item stays where it was, so
 			// an arm still renders it. A store that moved it to a new state
 			// would be redefining the schema rather than implementing it.
@@ -587,24 +604,92 @@ var _ = Describe("AttentionStore", func() {
 			Expect(escalated.ClosedAt).To(BeNil())
 		})
 
+		// The stamp the operator rung's latency is measured from. Before it the
+		// rung had a count and no starting stamp, so time-to-answer was not
+		// computable at all — the schema page's silence 13.
+		It("stamps when the escalation happened, beside who did it", func() {
+			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
+			Expect(err).To(BeNil())
+
+			before := libtime.NewCurrentDateTime().Now()
+			escalated, err := store.Escalate(ctx, item.ItemID, managerSessionID)
+			Expect(err).To(BeNil())
+			after := libtime.NewCurrentDateTime().Now()
+
+			Expect(escalated.EscalatedAt).NotTo(BeNil())
+			Expect(escalated.EscalatedAt.Time()).To(BeTemporally(">=", before.Time()))
+			Expect(escalated.EscalatedAt.Time()).To(BeTemporally("<=", after.Time()))
+		})
+
+		It("leaves the timestamp absent while no one has escalated", func() {
+			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
+			Expect(err).To(BeNil())
+
+			Expect(item.EscalatedBy).To(BeEmpty())
+			Expect(item.EscalatedAt).To(BeNil())
+		})
+
+		It("does not move the timestamp when the same session re-escalates", func() {
+			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
+			Expect(err).To(BeNil())
+
+			first, err := store.Escalate(ctx, item.ItemID, managerSessionID)
+			Expect(err).To(BeNil())
+			Expect(first.EscalatedAt).NotTo(BeNil())
+
+			again, err := store.Escalate(ctx, item.ItemID, managerSessionID)
+			Expect(err).To(BeNil())
+			Expect(again.EscalatedAt).NotTo(BeNil())
+			// A re-run of the same sweep must not reset the clock: the measure is
+			// time-to-answer, and a moving start would shorten it silently.
+			//
+			// BeTemporally, not Equal: `first` is the struct the write returned,
+			// `again` is one read back through the store, and only the first still
+			// carries a monotonic reading — Equal would compare that too and fail
+			// on two values naming the same instant.
+			Expect(again.EscalatedAt.Time()).To(BeTemporally("==", first.EscalatedAt.Time()))
+		})
+
+		// § Escalation says the field holds a session id. The live store was
+		// carrying values that are not one, so the store refuses them rather than
+		// storing a placeholder no reader can attribute.
+		It("rejects a session id that is not a well-formed uuid", func() {
+			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
+			Expect(err).To(BeNil())
+
+			// The three shapes the live store actually carried, plus a plain
+			// word. The bare 8-hex prefix is the interesting one: it is a real
+			// session id's prefix, so it looks attributable and is not.
+			for _, malformed := range []string{"session-a", "5ad28987", "not-a-uuid", ""} {
+				_, err := store.Escalate(ctx, item.ItemID, malformed)
+				Expect(errors.Is(err, pkg.ErrInvalidSessionID)).To(BeTrue())
+			}
+
+			// Refused, not half-applied: no stamp was written.
+			read, err := store.Get(ctx, item.ItemID)
+			Expect(err).To(BeNil())
+			Expect(read.EscalatedBy).To(BeEmpty())
+			Expect(read.EscalatedAt).To(BeNil())
+		})
+
 		It("persists the stamp across a read", func() {
 			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
 			Expect(err).To(BeNil())
-			_, err = store.Escalate(ctx, item.ItemID, "session-manager")
+			_, err = store.Escalate(ctx, item.ItemID, managerSessionID)
 			Expect(err).To(BeNil())
 
 			read, err := store.Get(ctx, item.ItemID)
 			Expect(err).To(BeNil())
-			Expect(read.EscalatedBy).To(Equal("session-manager"))
+			Expect(read.EscalatedBy).To(Equal(managerSessionID))
 		})
 
 		It("rejects a second escalation by a different session", func() {
 			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
 			Expect(err).To(BeNil())
-			_, err = store.Escalate(ctx, item.ItemID, "session-fleet-manager")
+			_, err = store.Escalate(ctx, item.ItemID, fleetManagerSessionID)
 			Expect(err).To(BeNil())
 
-			_, err = store.Escalate(ctx, item.ItemID, "session-topic-manager")
+			_, err = store.Escalate(ctx, item.ItemID, topicManagerSessionID)
 			Expect(err).NotTo(BeNil())
 			Expect(errors.Is(err, pkg.ErrAlreadyEscalated)).To(BeTrue())
 
@@ -612,7 +697,7 @@ var _ = Describe("AttentionStore", func() {
 			// escalator is still the one on record.
 			read, err := store.Get(ctx, item.ItemID)
 			Expect(err).To(BeNil())
-			Expect(read.EscalatedBy).To(Equal("session-fleet-manager"))
+			Expect(read.EscalatedBy).To(Equal(fleetManagerSessionID))
 		})
 
 		// The self-stamp rule: the stamp answers "is someone already carrying
@@ -621,12 +706,12 @@ var _ = Describe("AttentionStore", func() {
 		It("lets the escalating session re-escalate its own item", func() {
 			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
 			Expect(err).To(BeNil())
-			_, err = store.Escalate(ctx, item.ItemID, "session-manager")
+			_, err = store.Escalate(ctx, item.ItemID, managerSessionID)
 			Expect(err).To(BeNil())
 
-			again, err := store.Escalate(ctx, item.ItemID, "session-manager")
+			again, err := store.Escalate(ctx, item.ItemID, managerSessionID)
 			Expect(err).To(BeNil())
-			Expect(again.EscalatedBy).To(Equal("session-manager"))
+			Expect(again.EscalatedBy).To(Equal(managerSessionID))
 			Expect(again.State).To(Equal(pkg.OpenState))
 		})
 
@@ -636,7 +721,7 @@ var _ = Describe("AttentionStore", func() {
 			_, err = store.Close(ctx, item.ItemID)
 			Expect(err).To(BeNil())
 
-			_, err = store.Escalate(ctx, item.ItemID, "session-manager")
+			_, err = store.Escalate(ctx, item.ItemID, managerSessionID)
 			Expect(err).NotTo(BeNil())
 			Expect(errors.Is(err, pkg.ErrItemNotOpen)).To(BeTrue())
 			// Deliberately not ErrIllegalTransition: escalation is not a
@@ -650,13 +735,13 @@ var _ = Describe("AttentionStore", func() {
 			_, err = store.Answer(ctx, item.ItemID, "telegram", "", "", nil, nil)
 			Expect(err).To(BeNil())
 
-			_, err = store.Escalate(ctx, item.ItemID, "session-manager")
+			_, err = store.Escalate(ctx, item.ItemID, managerSessionID)
 			Expect(err).NotTo(BeNil())
 			Expect(errors.Is(err, pkg.ErrItemNotOpen)).To(BeTrue())
 		})
 
 		It("rejects escalation of an unknown item", func() {
-			_, err := store.Escalate(ctx, pkg.ItemID("does-not-exist"), "session-manager")
+			_, err := store.Escalate(ctx, pkg.ItemID("does-not-exist"), managerSessionID)
 			Expect(err).NotTo(BeNil())
 			Expect(errors.Is(err, pkg.ErrItemNotFound)).To(BeTrue())
 		})
@@ -685,7 +770,7 @@ var _ = Describe("AttentionStore", func() {
 			alreadyEscalated := 0
 
 			for _, itemID := range itemIDs {
-				for _, manager := range []string{"session-fleet-manager", "session-topic-manager"} {
+				for _, manager := range []string{fleetManagerSessionID, topicManagerSessionID} {
 					done.Add(1)
 					go func(itemID pkg.ItemID, manager string) {
 						defer done.Done()

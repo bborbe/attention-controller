@@ -27,6 +27,10 @@ import (
 // Re-escalating by the session that already stamped the item is HTTP 200, not a
 // conflict: a manager re-running its own sweep must never be blocked by its own
 // stamp.
+//
+// A value that is not a well-formed session id is HTTP 400. § Escalation
+// requires a session id here, and the store refuses anything else rather than
+// normalizing it — see pkg.SessionID.
 func NewAttentionEscalateHandler(store pkg.AttentionStore) http.Handler {
 	return libhttp.NewJSONErrorHandler(
 		libhttp.WithErrorFunc(
@@ -87,6 +91,17 @@ func handleAttentionEscalate(
 // the queue from a missing item.
 func wrapEscalateError(ctx context.Context, err error, itemID pkg.ItemID) error {
 	switch {
+	case errors.Is(err, pkg.ErrInvalidSessionID):
+		// A malformed session id is refused, not repaired. The store owns this
+		// rule rather than the handler, so every caller is covered; the empty
+		// check above stays only because it names the missing field more
+		// directly than the pattern can.
+		return libhttp.WrapWithDetails(
+			errors.Wrap(ctx, err, "escalate failed"),
+			libhttp.ErrorCodeValidation,
+			http.StatusBadRequest,
+			map[string]any{"item_id": itemID.String()},
+		)
 	case errors.Is(err, pkg.ErrItemNotFound):
 		return libhttp.WrapWithDetails(
 			errors.Wrap(ctx, err, "escalate failed"),
