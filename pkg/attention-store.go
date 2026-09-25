@@ -56,7 +56,19 @@ type AttentionStore interface {
 	// the operator used it, so the arm alone cannot say who settled the item.
 	// resolvedBy may be empty — the schema does not reject an omitted value, and
 	// an item answered before the field existed reads back without one.
-	Answer(ctx context.Context, itemID ItemID, answeredBy string, resolvedBy string) (*Item, error)
+	//
+	// decision is what the answer decided, and it is separate from answeredBy
+	// for the same reason: an arm supplies an allow and a deny alike, so the arm
+	// cannot say what was decided. It may be empty — the schema adds no
+	// write-time rejection, and an empty value stores an item with no verdict
+	// recorded, which is what a message- or ack-class item reads as.
+	Answer(
+		ctx context.Context,
+		itemID ItemID,
+		answeredBy string,
+		resolvedBy string,
+		decision Decision,
+	) (*Item, error)
 
 	// Escalate records which session is carrying this item to the operator, as
 	// an atomic compare-and-set. Exactly one of two concurrent escalations

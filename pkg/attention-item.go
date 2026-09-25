@@ -137,6 +137,16 @@ type Item struct {
 	// trust model InterruptClass and ProvenanceClass already carry. Empty means
 	// absent, which is what an item resolved before this field existed reads as.
 	ResolvedBy string `json:"resolved_by,omitempty"`
+	// Decision is what the answer decided — allow or deny. It is distinct from
+	// AnsweredBy, which names the arm that supplied the answer: an arm is not a
+	// decision, so before this field an item answered allow and one answered
+	// deny were indistinguishable on the record.
+	//
+	// It is a caller's declaration, exactly as AnsweredBy and ResolvedBy are,
+	// and it is optional. Empty means no verdict was recorded, which is what a
+	// message- or ack-class item reads as and what every item answered before
+	// this field existed reads as.
+	Decision Decision `json:"decision,omitempty"`
 	// ClosedAt is when the item left the queue. Absent while open or answered.
 	ClosedAt *libtime.DateTime `json:"closed_at,omitempty"`
 	// ExpiresAt is the producer's own deadline, if it has one. Absent means the
@@ -156,6 +166,7 @@ func (i Item) Validate(ctx context.Context) error {
 		validation.Name("InterruptClass", validation.NotEmptyString(i.InterruptClass)),
 		validation.Name("Payload", validation.NotEmptyString(i.Payload)),
 		validation.Name("AnswerMechanism", i.AnswerMechanism),
+		validation.Name("Decision", i.Decision),
 		validation.Name("State", i.State),
 		validation.Name("CreatedAt", i.CreatedAt),
 	}.Validate(ctx)

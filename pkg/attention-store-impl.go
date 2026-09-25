@@ -211,6 +211,7 @@ func (a *attentionStore) Answer(
 	itemID ItemID,
 	answeredBy string,
 	resolvedBy string,
+	decision Decision,
 ) (*Item, error) {
 	var result *Item
 	err := a.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
@@ -250,6 +251,10 @@ func (a *attentionStore) Answer(
 		// backfilled from answeredBy: the arm is not an identity, so copying it
 		// here would record a value that looks like a resolver and is not one.
 		item.ResolvedBy = resolvedBy
+		// Stamped from the caller's declaration for the same reason, and never
+		// derived either: the arm is not a decision, so an empty decision stays
+		// empty rather than being inferred from the arm that supplied it.
+		item.Decision = decision
 		if err := a.store.Add(ctx, tx, item.ItemID.String(), *item); err != nil {
 			return errors.Wrap(ctx, err, "update item failed")
 		}

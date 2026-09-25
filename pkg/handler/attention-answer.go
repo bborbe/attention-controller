@@ -54,6 +54,13 @@ func handleAttentionAnswer(
 		// value stores an item with no resolver recorded, which is what every
 		// item answered before this field existed reads as.
 		ResolvedBy string `json:"resolved_by"`
+		// Decision is what the answer decided — allow or deny — and it is
+		// distinct from AnsweredBy for the same reason ResolvedBy is: an arm
+		// supplies an allow and a deny alike, so the arm cannot say what was
+		// decided. Optional: an omitted value stores an item with no verdict
+		// recorded, which is what a message- or ack-class item reads as, and
+		// what every item answered before this field existed reads as.
+		Decision pkg.Decision `json:"decision"`
 	}
 	if err := json.NewDecoder(req.Body).Decode(&request); err != nil {
 		return libhttp.WrapWithDetails(
@@ -63,7 +70,7 @@ func handleAttentionAnswer(
 			map[string]any{"reason": "request body is not valid JSON"},
 		)
 	}
-	item, err := store.Answer(ctx, itemID, request.AnsweredBy, request.ResolvedBy)
+	item, err := store.Answer(ctx, itemID, request.AnsweredBy, request.ResolvedBy, request.Decision)
 	if err != nil {
 		return wrapAnswerError(ctx, err, itemID)
 	}

@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- feat: add caller-supplied `decision` (allow/deny) to the answer body and the item, stamped on the answer path beside `answered_by` and `resolved_by`, so an item answered allow is distinguishable from one answered deny — one arm supplies both, so the arm alone could not say what was decided
+
 ## v0.5.0
 
 - feat: add caller-supplied `resolved_by` session id, stamped on the answer path beside `answered_by`, so a manager-resolved item is distinguishable from an untouched one and from an operator-escalated one; add `GET /api/1.0/attention/history`, a closed-inclusive read that never prunes, so the resolved-versus-escalated split is countable
