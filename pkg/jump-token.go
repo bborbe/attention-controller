@@ -12,6 +12,8 @@ import (
 	"github.com/bborbe/errors"
 )
 
+//counterfeiter:generate -o ../mocks/jump-token-reader.go --fake-name JumpTokenReader . JumpTokenReader
+
 // JumpTokenReader reads the shared secret the fleet-jump server requires.
 //
 // ⚠️ The token is a credential. It is never logged, never carried inside an
