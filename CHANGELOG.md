@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.8.0
 
 - feat: add a Jump button to every board item whose session resolves to a live WezTerm pane, rendered beside the existing copyable `/supervisor:jump <pane>` command rather than replacing it, and extend the handover to `message` items, which previously rendered answer controls and no route back to their session. The button links to a new board-side `GET /jump/{itemID}` that re-resolves the pane and redirects to the fleet-jump server with its shared token appended server-side, so the token never reaches the browser; that route is gated on `Sec-Fetch-Site` because routing the jump through this origin re-opens the cross-origin vector the token exists to defeat. Both the button and the redirect degrade to the existing command alone when the token file at `JUMP_TOKEN_PATH` is unreadable, and the pane is re-resolved per request rather than carried in the link, since a pane id is recycled across tab moves and restarts
 
