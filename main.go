@@ -41,20 +41,29 @@ type application struct {
 	// reporting rather than failing startup. This repo has no deployed stage
 	// yet, so nothing here depends on the flag; a future deploy supplies
 	// SENTRY_DSN from its own secret.
-	SentryDSN         string `required:"false" arg:"sentry-dsn"          env:"SENTRY_DSN"          usage:"SentryDSN (empty disables error reporting)"                                                display:"length"`
+	SentryDSN         string `required:"false" arg:"sentry-dsn"          env:"SENTRY_DSN"          usage:"SentryDSN (empty disables error reporting)"                                                         display:"length"`
 	SentryProxy       string `required:"false" arg:"sentry-proxy"        env:"SENTRY_PROXY"        usage:"Sentry Proxy"`
 	Listen            string `required:"true"  arg:"listen"              env:"LISTEN"              usage:"address to listen to"`
 	DataDir           string `required:"true"  arg:"datadir"             env:"DATADIR"             usage:"data directory"`
-	HeartbeatWindow   string `required:"false" arg:"heartbeat-window"    env:"HEARTBEAT_WINDOW"    usage:"how stale a heartbeat:<path> mtime may be before the producer counts as finished"                           default:"15m"`
+	HeartbeatWindow   string `required:"false" arg:"heartbeat-window"    env:"HEARTBEAT_WINDOW"    usage:"how stale a heartbeat:<path> mtime may be before the producer counts as finished"                                    default:"15m"`
 	SessionsDir       string `required:"false" arg:"sessions-dir"        env:"SESSIONS_DIR"        usage:"directory holding the session registry used to resolve session:<id> liveness"`
 	AttentionStateDir string `required:"false" arg:"attention-state-dir" env:"ATTENTION_STATE_DIR" usage:"directory holding the producers' event logs the page resolves item provenance from"`
+	// JumpURL is the fleet-jump server's origin. The board's Jump button
+	// redirects here with the pane and the shared token appended server-side,
+	// so the token never reaches the browser.
+	JumpURL string `required:"false" arg:"jump-url"            env:"JUMP_URL"            usage:"base URL of the fleet-jump server the board's Jump button redirects to"                                              default:"http://127.0.0.1:1337"`
+	// JumpTokenPath is the file holding the fleet-jump server's shared token.
+	// Empty resolves to ~/.claude/secrets/jump-token, the same path
+	// claude-supervisor's jump-link.py reads, so the two surfaces cannot drift
+	// onto different tokens. ⚠️ A credential: never logged, never rendered.
+	JumpTokenPath string `required:"false" arg:"jump-token-path"     env:"JUMP_TOKEN_PATH"     usage:"file holding the fleet-jump server's shared token (empty resolves to ~/.claude/secrets/jump-token)"`
 	// TTSURL is the tts server's base URL. Optional: with no value the
 	// read-aloud route is not registered and the page renders no read-aloud
 	// control, so a host without a tts server serves the same page minus one
 	// control rather than one that always fails.
-	TTSURL          string            `required:"false" arg:"tts-url"             env:"TTS_URL"             usage:"base URL of the tts server the board's read-aloud control forwards to (empty disables it)"                  default:"http://127.0.0.1:12000"`
-	BuildGitVersion string            `required:"false" arg:"build-git-version"   env:"BUILD_GIT_VERSION"   usage:"Build Git version"                                                                                          default:"dev"`
-	BuildGitCommit  string            `required:"false" arg:"build-git-commit"    env:"BUILD_GIT_COMMIT"    usage:"Build Git commit hash"                                                                                      default:"none"`
+	TTSURL          string            `required:"false" arg:"tts-url"             env:"TTS_URL"             usage:"base URL of the tts server the board's read-aloud control forwards to (empty disables it)"                           default:"http://127.0.0.1:12000"`
+	BuildGitVersion string            `required:"false" arg:"build-git-version"   env:"BUILD_GIT_VERSION"   usage:"Build Git version"                                                                                                   default:"dev"`
+	BuildGitCommit  string            `required:"false" arg:"build-git-commit"    env:"BUILD_GIT_COMMIT"    usage:"Build Git commit hash"                                                                                               default:"none"`
 	BuildDate       *libtime.DateTime `required:"false" arg:"build-date"          env:"BUILD_DATE"          usage:"Build timestamp (RFC3339)"`
 }
 
@@ -162,6 +171,36 @@ func defaultAttentionStateDir(ctx context.Context) (string, error) {
 	return filepath.Join(home, ".claude", "state", "attention"), nil
 }
 
+// defaultJumpTokenPath resolves ~/.claude/secrets/jump-token, the file
+// claude-supervisor's jump-link.py reads. The path is shared rather than
+// duplicated so the board and the managers' handovers cannot drift onto
+// different tokens.
+func defaultJumpTokenPath(ctx context.Context) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", errors.Wrap(ctx, err, "resolve home dir failed")
+	}
+	return filepath.Join(home, ".claude", "secrets", "jump-token"), nil
+}
+
+// createJumpTokenReader builds the reader the page and the redirect share.
+//
+// ⚠️ An unresolvable path is not fatal. The page then renders no Jump button
+// and the redirect refuses, which is the same state as a host with no
+// fleet-jump server — taking the store down over an optional affordance would
+// be the wrong trade, exactly as it is for the provenance directories.
+func (a *application) createJumpTokenReader(ctx context.Context) pkg.JumpTokenReader {
+	path := a.JumpTokenPath
+	if path == "" {
+		resolved, err := defaultJumpTokenPath(ctx)
+		if err != nil {
+			glog.Warningf("resolve jump token path failed: %v", err)
+		}
+		path = resolved
+	}
+	return pkg.NewJumpTokenReader(path)
+}
+
 func (a *application) createHTTPServer(
 	sentryClient libsentry.Client,
 	db libkv.DB,
@@ -175,6 +214,7 @@ func (a *application) createHTTPServer(
 		// the store is built once in Run and passed down. Two constructors
 		// nested at a call site read as wiring that happened by accident.
 		provenance := a.createProvenanceResolver(ctx)
+		jumpTokens := a.createJumpTokenReader(ctx)
 
 		router := mux.NewRouter()
 		router.Path("/healthz").Handler(factory.CreateHealthzHandler())
@@ -187,6 +227,13 @@ func (a *application) createHTTPServer(
 		router.Path("/gc").Handler(libhttp.NewGarbageCollectorHandler())
 		router.Path("/testloglevel").Handler(factory.CreateTestLoglevelHandler())
 		router.Path("/sentryalert").Handler(factory.CreateSentryAlertHandler(sentryClient))
+		// The Jump button's target: a path on this board, so the fleet-jump
+		// token is appended server-side instead of published in the page.
+		// Registered ahead of the page's own route, and GET/HEAD only, because
+		// a redirect is a navigation rather than a business call.
+		router.Path("/jump/{itemID}").
+			Methods(http.MethodGet, http.MethodHead).
+			Handler(factory.CreateAttentionJumpHandler(store, provenance, jumpTokens, a.JumpURL))
 		// The attention page sits at / rather than under /api/1.0/ because it
 		// renders HTML for a human rather than JSON for an API client — it is
 		// the store's operator-facing surface, not a business endpoint. It is
@@ -194,7 +241,7 @@ func (a *application) createHTTPServer(
 		// .Methods, gorilla mux would route POST and DELETE to it as well.
 		router.Path("/").
 			Methods(http.MethodGet, http.MethodHead).
-			Handler(factory.CreateAttentionPageHandler(store, provenance, a.TTSURL != ""))
+			Handler(factory.CreateAttentionPageHandler(store, provenance, a.TTSURL != "", jumpTokens))
 
 		// Business routes live under /api/1.0/, never in the admin block above.
 		// The push entry point takes a producer's declaration; nothing scrapes

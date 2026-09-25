@@ -51,7 +51,14 @@ var _ = Describe("Attention page board controls", func() {
 		)
 
 		provenance = &mocks.ProvenanceResolver{}
-		httpHandler = handler.NewAttentionPageHandler(store, provenance, true)
+		// Empty token path: no Jump button, so these cases keep exercising the
+		// answer controls alone.
+		httpHandler = handler.NewAttentionPageHandler(
+			store,
+			provenance,
+			true,
+			pkg.NewJumpTokenReader(""),
+		)
 	})
 
 	AfterEach(func() {

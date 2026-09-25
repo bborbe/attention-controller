@@ -60,7 +60,15 @@ var _ = Describe("AttentionPageHandler", func() {
 		// provenance cannot be resolved renders no provenance line at all.
 		provenance = &mocks.ProvenanceResolver{}
 
-		httpHandler = handler.NewAttentionPageHandler(store, provenance, false)
+		// An empty token path never resolves, so the page renders no Jump
+		// button — the fail-soft path, which is what a host with no fleet-jump
+		// server looks like. The button's own cases live in attention-jump_test.
+		httpHandler = handler.NewAttentionPageHandler(
+			store,
+			provenance,
+			false,
+			pkg.NewJumpTokenReader(""),
+		)
 	})
 
 	AfterEach(func() {

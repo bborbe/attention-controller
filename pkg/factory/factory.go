@@ -66,12 +66,29 @@ func CreateAttentionGetHandler(store pkg.AttentionStore) http.Handler {
 // from ttsURL so the page and the route agree by construction: a control that
 // renders while its endpoint is unrouted is a value presented as working that
 // is not.
+// jumpTokens gates the Jump button on the same principle: the page renders the
+// button only while the token the redirect needs is readable.
 func CreateAttentionPageHandler(
 	store pkg.AttentionStore,
 	provenance pkg.ProvenanceResolver,
 	speakEnabled bool,
+	jumpTokens pkg.JumpTokenReader,
 ) http.Handler {
-	return handler.NewAttentionPageHandler(store, provenance, speakEnabled)
+	return handler.NewAttentionPageHandler(store, provenance, speakEnabled, jumpTokens)
+}
+
+// CreateAttentionJumpHandler creates the redirect that hands an item back to
+// the session that raised it, appending the fleet-jump token server-side.
+//
+// jumpBaseURL is the fleet-jump server's origin; the handler adds the pane and
+// the token, so the token never appears in a rendered link.
+func CreateAttentionJumpHandler(
+	store pkg.AttentionStore,
+	provenance pkg.ProvenanceResolver,
+	jumpTokens pkg.JumpTokenReader,
+	jumpBaseURL string,
+) http.Handler {
+	return handler.NewAttentionJumpHandler(store, provenance, jumpTokens, jumpBaseURL)
 }
 
 // CreateAttentionSpeakHandler creates the handler that reads an item aloud
