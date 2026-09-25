@@ -284,11 +284,23 @@ func (a *attentionStore) Answer(
 // not where the item is in its lifecycle, so no row of the schema's transitions
 // table is involved and ValidateTransition is never called — calling it would
 // be the state-machine detour the schema's § Escalation rules out.
+//
+// Two fields are written, not one: EscalatedBy names the session and
+// EscalatedAt stamps when, from the store's own clock rather than the caller's,
+// so the pair is always present together. The timestamp exists so the operator
+// rung has a latency at all; § Escalation states its rules.
 func (a *attentionStore) Escalate(
 	ctx context.Context,
 	itemID ItemID,
 	escalatedBy string,
 ) (*Item, error) {
+	// Refused before the transaction opens: a malformed value is a caller bug and
+	// no write should be attempted for one. § Escalation requires a session id
+	// here, and a stored placeholder would be indistinguishable from a real
+	// escalation to any reader bucketing by level.
+	if err := SessionID(escalatedBy).Validate(ctx); err != nil {
+		return nil, err
+	}
 	var result *Item
 	err := a.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
 		item, err := a.store.Get(ctx, tx, itemID.String())
@@ -327,6 +339,11 @@ func (a *attentionStore) Escalate(
 			)
 		}
 		item.EscalatedBy = escalatedBy
+		// Stamped in the same compare-and-set that writes EscalatedBy, from the
+		// store's clock. A re-escalation by the session that already stamped the
+		// item returns above without reaching here, so the time never moves.
+		now := a.currentDateTimeGetter.Now()
+		item.EscalatedAt = &now
 		if err := a.store.Add(ctx, tx, item.ItemID.String(), *item); err != nil {
 			return errors.Wrap(ctx, err, "update item failed")
 		}

@@ -142,11 +142,21 @@ type Item struct {
 	// session's pane rather than failing; a boolean cannot answer "is it me",
 	// which the self-stamp rule requires. Absent until a manager escalates.
 	//
-	// There is deliberately no EscalatedAt companion: the schema declares no
-	// such field, and with no TTL and no clearing sweep nothing would read it.
-	// Adding one would be a gap filled silently in code rather than a finding
-	// reported on the schema page.
+	// The store rejects a value that is not a well-formed session id rather than
+	// normalizing it: a placeholder has no UUID to normalize to, so "repair"
+	// could only mean inventing an identity. See the schema's § Escalation.
 	EscalatedBy string `json:"escalated_by,omitempty"`
+	// EscalatedAt is when the item was escalated to the operator, stamped by the
+	// store from its own clock inside the same compare-and-set that writes
+	// EscalatedBy — never supplied by the caller, so the two are always present
+	// together. Its one reader is the latency measure: the operator rung's
+	// time-to-answer is AnsweredAt minus EscalatedAt.
+	//
+	// This comment previously said the opposite — that there was deliberately no
+	// EscalatedAt companion because nothing would read it. That held while the
+	// field had no reader; the latency measure is one. See the schema page's
+	// silence 13, resolved 2026-09-25.
+	EscalatedAt *libtime.DateTime `json:"escalated_at,omitempty"`
 	// ResolvedBy is which session resolved this item — a session id, never a
 	// pane id and never a boolean, supplied by the caller of the answer path
 	// exactly as AnsweredBy is. It is distinct from AnsweredBy, which names the
