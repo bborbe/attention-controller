@@ -226,6 +226,7 @@ var _ = Describe("AttentionStore", func() {
 				item.ItemID,
 				"supervisor:attention-next",
 				"manager-1",
+				"",
 			)
 			Expect(err).To(BeNil())
 			Expect(answered.ResolvedBy).To(Equal("manager-1"))
@@ -244,9 +245,9 @@ var _ = Describe("AttentionStore", func() {
 			second, err := store.Push(ctx, pushRequest("session-a", "gate-2"))
 			Expect(err).To(BeNil())
 
-			a, err := store.Answer(ctx, first.ItemID, "supervisor:attention-next", "manager-1")
+			a, err := store.Answer(ctx, first.ItemID, "supervisor:attention-next", "manager-1", "")
 			Expect(err).To(BeNil())
-			b, err := store.Answer(ctx, second.ItemID, "supervisor:attention-next", "manager-2")
+			b, err := store.Answer(ctx, second.ItemID, "supervisor:attention-next", "manager-2", "")
 			Expect(err).To(BeNil())
 
 			Expect(a.ResolvedBy).NotTo(Equal(b.ResolvedBy))
@@ -276,7 +277,7 @@ var _ = Describe("AttentionStore", func() {
 			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
 			Expect(err).To(BeNil())
 
-			answered, err := store.Answer(ctx, item.ItemID, "telegram", "")
+			answered, err := store.Answer(ctx, item.ItemID, "telegram", "", "")
 			Expect(err).To(BeNil())
 			Expect(answered.ResolvedBy).To(BeEmpty())
 		})
@@ -289,7 +290,13 @@ var _ = Describe("AttentionStore", func() {
 			untouched, err := store.Push(ctx, pushRequest("session-a", "gate-3"))
 			Expect(err).To(BeNil())
 
-			_, err = store.Answer(ctx, resolved.ItemID, "supervisor:attention-next", "manager-1")
+			_, err = store.Answer(
+				ctx,
+				resolved.ItemID,
+				"supervisor:attention-next",
+				"manager-1",
+				"",
+			)
 			Expect(err).To(BeNil())
 			_, err = store.Escalate(ctx, escalated.ItemID, "manager-2")
 			Expect(err).To(BeNil())
@@ -311,6 +318,78 @@ var _ = Describe("AttentionStore", func() {
 		})
 	})
 
+	// Decision is what an answer decided, as distinct from AnsweredBy, the arm
+	// that carried it. See the attention item schema § Fields, `decision`, and
+	// silence 11: before this field an item answered allow and one answered deny
+	// were the same record, so "was this answered" could not be told from "what
+	// was decided".
+	Describe("Decision", func() {
+		It("is stamped on the answer path, separately from the arm", func() {
+			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
+			Expect(err).To(BeNil())
+
+			answered, err := store.Answer(
+				ctx,
+				item.ItemID,
+				"supervisor:attention-next",
+				"manager-1",
+				pkg.AllowDecision,
+			)
+			Expect(err).To(BeNil())
+			Expect(answered.Decision).To(Equal(pkg.AllowDecision))
+			Expect(answered.AnsweredBy).To(Equal("supervisor:attention-next"))
+
+			got, err := store.Get(ctx, item.ItemID)
+			Expect(err).To(BeNil())
+			Expect(got.Decision).To(Equal(pkg.AllowDecision))
+		})
+
+		// Negative control: a constant, or a value copied from the arm, would pass
+		// the stamp spec above. One arm must be able to record both verdicts, and
+		// they must read back as two different values.
+		It("tracks the decision rather than the arm", func() {
+			first, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
+			Expect(err).To(BeNil())
+			second, err := store.Push(ctx, pushRequest("session-a", "gate-2"))
+			Expect(err).To(BeNil())
+
+			allowed, err := store.Answer(ctx, first.ItemID, "telegram", "", pkg.AllowDecision)
+			Expect(err).To(BeNil())
+			denied, err := store.Answer(ctx, second.ItemID, "telegram", "", pkg.DenyDecision)
+			Expect(err).To(BeNil())
+
+			Expect(allowed.Decision).NotTo(Equal(denied.Decision))
+			Expect(allowed.AnsweredBy).To(Equal(denied.AnsweredBy))
+		})
+
+		// The schema adds no write-time rejection for an omitted decision, so an
+		// answer without one stores an item with no verdict recorded rather than
+		// failing. This is what a message- or ack-class item reads as, and what
+		// every item answered before this field existed reads as.
+		It("accepts an omitted decision and stores no verdict", func() {
+			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
+			Expect(err).To(BeNil())
+
+			answered, err := store.Answer(ctx, item.ItemID, "telegram", "", "")
+			Expect(err).To(BeNil())
+			Expect(answered.Decision).To(BeEmpty())
+
+			got, err := store.Get(ctx, item.ItemID)
+			Expect(err).To(BeNil())
+			Expect(got.Decision).To(BeEmpty())
+		})
+
+		It("rejects a value outside AvailableDecisions", func() {
+			err := pkg.Decision("maybe").Validate(ctx)
+			Expect(err).NotTo(BeNil())
+			Expect(errors.Is(err, validation.Error)).To(BeTrue())
+		})
+
+		It("accepts an empty value, which is absent rather than unknown", func() {
+			Expect(pkg.Decision("").Validate(ctx)).To(BeNil())
+		})
+	})
+
 	// History is the closed-inclusive read the resolved-versus-escalated split
 	// is counted from. Read cannot serve: it returns only open items and prunes.
 	Describe("History", func() {
@@ -321,7 +400,7 @@ var _ = Describe("AttentionStore", func() {
 			Expect(err).To(BeNil())
 			closed, err := store.Push(ctx, pushRequest("session-a", "gate-3"))
 			Expect(err).To(BeNil())
-			_, err = store.Answer(ctx, answered.ItemID, "telegram", "manager-1")
+			_, err = store.Answer(ctx, answered.ItemID, "telegram", "manager-1", "")
 			Expect(err).To(BeNil())
 			_, err = store.Close(ctx, closed.ItemID)
 			Expect(err).To(BeNil())
@@ -361,7 +440,7 @@ var _ = Describe("AttentionStore", func() {
 			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
 			Expect(err).To(BeNil())
 
-			answered, err := store.Answer(ctx, item.ItemID, "telegram", "")
+			answered, err := store.Answer(ctx, item.ItemID, "telegram", "", "")
 			Expect(err).To(BeNil())
 			Expect(answered.State).To(Equal(pkg.AnsweredState))
 			Expect(answered.AnsweredBy).To(Equal("telegram"))
@@ -371,10 +450,10 @@ var _ = Describe("AttentionStore", func() {
 		It("rejects a second answer as already-answered", func() {
 			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
 			Expect(err).To(BeNil())
-			_, err = store.Answer(ctx, item.ItemID, "telegram", "")
+			_, err = store.Answer(ctx, item.ItemID, "telegram", "", "")
 			Expect(err).To(BeNil())
 
-			_, err = store.Answer(ctx, item.ItemID, "discord", "")
+			_, err = store.Answer(ctx, item.ItemID, "discord", "", "")
 			Expect(err).NotTo(BeNil())
 			Expect(errors.Is(err, pkg.ErrAlreadyAnswered)).To(BeTrue())
 		})
@@ -385,13 +464,13 @@ var _ = Describe("AttentionStore", func() {
 			_, err = store.Close(ctx, item.ItemID)
 			Expect(err).To(BeNil())
 
-			_, err = store.Answer(ctx, item.ItemID, "telegram", "")
+			_, err = store.Answer(ctx, item.ItemID, "telegram", "", "")
 			Expect(err).NotTo(BeNil())
 			Expect(errors.Is(err, pkg.ErrIllegalTransition)).To(BeTrue())
 		})
 
 		It("rejects an answer to an unknown item", func() {
-			_, err := store.Answer(ctx, pkg.ItemID("does-not-exist"), "telegram", "")
+			_, err := store.Answer(ctx, pkg.ItemID("does-not-exist"), "telegram", "", "")
 			Expect(err).NotTo(BeNil())
 			Expect(errors.Is(err, pkg.ErrItemNotFound)).To(BeTrue())
 		})
@@ -425,7 +504,7 @@ var _ = Describe("AttentionStore", func() {
 						defer done.Done()
 						defer GinkgoRecover()
 						start.Wait()
-						_, err := store.Answer(ctx, itemID, arm, "")
+						_, err := store.Answer(ctx, itemID, arm, "", "")
 						mu.Lock()
 						defer mu.Unlock()
 						switch {
@@ -530,7 +609,7 @@ var _ = Describe("AttentionStore", func() {
 		It("rejects escalation of an answered item", func() {
 			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
 			Expect(err).To(BeNil())
-			_, err = store.Answer(ctx, item.ItemID, "telegram", "")
+			_, err = store.Answer(ctx, item.ItemID, "telegram", "", "")
 			Expect(err).To(BeNil())
 
 			_, err = store.Escalate(ctx, item.ItemID, "session-manager")
@@ -616,7 +695,7 @@ var _ = Describe("AttentionStore", func() {
 		It("applies answered -> closed", func() {
 			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
 			Expect(err).To(BeNil())
-			_, err = store.Answer(ctx, item.ItemID, "telegram", "")
+			_, err = store.Answer(ctx, item.ItemID, "telegram", "", "")
 			Expect(err).To(BeNil())
 			closed, err := store.Close(ctx, item.ItemID)
 			Expect(err).To(BeNil())
