@@ -236,5 +236,5 @@ func (i Item) validateAnswer(ctx context.Context) error {
 	if i.Answer == nil {
 		return nil
 	}
-	return i.Answer.Validate(ctx)
+	return errors.Wrap(ctx, i.Answer.Validate(ctx), "validate answer failed")
 }

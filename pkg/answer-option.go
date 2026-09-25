@@ -57,7 +57,7 @@ func (o AnswerOptions) Validate(ctx context.Context) error {
 func (o AnswerOptions) validateLabels(ctx context.Context) error {
 	for _, option := range o {
 		if err := option.Validate(ctx); err != nil {
-			return err
+			return errors.Wrap(ctx, err, "validate answer option failed")
 		}
 	}
 	return nil
