@@ -70,6 +70,12 @@ type AttentionStore interface {
 	// verdict. It may be nil — the schema adds no write-time rejection for an
 	// omitted answer either, so a nil value stores an item with no answer
 	// content recorded.
+	//
+	// answers is the same content for an item carrying `questions`: one entry
+	// per tab. It may be empty, and it is mutually exclusive with answer — an
+	// item holding both would have two places the operator's content could be
+	// and no rule for which wins, so a call carrying both is rejected rather
+	// than resolved by convention.
 	Answer(
 		ctx context.Context,
 		itemID ItemID,
@@ -77,6 +83,7 @@ type AttentionStore interface {
 		resolvedBy string,
 		decision Decision,
 		answer *Answer,
+		answers Answers,
 	) (*Item, error)
 
 	// Escalate records which session is carrying this item to the operator, as
@@ -109,17 +116,19 @@ type Items []Item
 // PushRequest carries a producer's declaration. The store owns ItemID, State,
 // CreatedAt and the answer fields; the producer owns everything else.
 type PushRequest struct {
-	ProducerID      ProducerID        `json:"producer_id"`
-	ProducerKind    ProducerKind      `json:"producer_kind"`
-	ProvenanceClass ProvenanceClass   `json:"provenance_class,omitempty"`
-	LivenessRef     LivenessRef       `json:"liveness_ref"`
-	DedupKey        DedupKey          `json:"dedup_key"`
-	InterruptClass  InterruptClass    `json:"interrupt_class"`
-	Payload         Payload           `json:"payload"`
-	Context         ItemContext       `json:"context,omitempty"`
-	AnswerMechanism AnswerMechanism   `json:"answer_mechanism"`
-	Options         AnswerOptions     `json:"options,omitempty"`
-	ExpiresAt       *libtime.DateTime `json:"expires_at,omitempty"`
+	ProducerID        ProducerID        `json:"producer_id"`
+	ProducerKind      ProducerKind      `json:"producer_kind"`
+	ProvenanceClass   ProvenanceClass   `json:"provenance_class,omitempty"`
+	LivenessRef       LivenessRef       `json:"liveness_ref"`
+	DedupKey          DedupKey          `json:"dedup_key"`
+	InterruptClass    InterruptClass    `json:"interrupt_class"`
+	Payload           Payload           `json:"payload"`
+	Context           ItemContext       `json:"context,omitempty"`
+	AnswerMechanism   AnswerMechanism   `json:"answer_mechanism"`
+	Options           AnswerOptions     `json:"options,omitempty"`
+	AnswerCardinality AnswerCardinality `json:"answer_cardinality,omitempty"`
+	Questions         Questions         `json:"questions,omitempty"`
+	ExpiresAt         *libtime.DateTime `json:"expires_at,omitempty"`
 }
 
 // Validate returns an error when the declaration violates the schema's rules
@@ -140,6 +149,11 @@ func (p PushRequest) Validate(ctx context.Context) error {
 		validation.Name("InterruptClass", validation.NotEmptyString(p.InterruptClass)),
 		validation.Name("Payload", validation.NotEmptyString(p.Payload)),
 		validation.Name("Options", validation.HasValidationFunc(p.validateOptions)),
+		validation.Name(
+			"AnswerCardinality",
+			validation.HasValidationFunc(p.validateAnswerCardinality),
+		),
+		validation.Name("Questions", validation.HasValidationFunc(p.validateQuestions)),
 		validation.Name("AnswerMechanism", p.AnswerMechanism),
 	}.Validate(ctx)
 }
@@ -165,6 +179,47 @@ func (p PushRequest) validateOptions(ctx context.Context) error {
 		)
 	}
 	return p.Options.Validate(ctx)
+}
+
+// validateAnswerCardinality enforces the message-only rule for
+// `answer_cardinality` at push time rather than only at store time, so a
+// producer learns its declaration is rejected from the push response rather
+// than from a stored item it cannot read back.
+//
+// An empty value is legal — the schema declines to reject an omitted
+// cardinality, and an absent value reads as `single`.
+func (p PushRequest) validateAnswerCardinality(ctx context.Context) error {
+	if p.AnswerCardinality == "" {
+		return nil
+	}
+	if p.AnswerMechanism != MessageAnswerMechanism {
+		return errors.Wrapf(
+			ctx,
+			validation.Error,
+			"answerCardinality is only allowed on a message item, got answerMechanism '%s'",
+			p.AnswerMechanism,
+		)
+	}
+	return p.AnswerCardinality.Validate(ctx)
+}
+
+// validateQuestions enforces the message-only rule for `questions` at push
+// time, and validates the units when present. An empty list is legal —
+// `questions` is optional, and an absent value is what every single-question
+// item carries.
+func (p PushRequest) validateQuestions(ctx context.Context) error {
+	if len(p.Questions) == 0 {
+		return nil
+	}
+	if p.AnswerMechanism != MessageAnswerMechanism {
+		return errors.Wrapf(
+			ctx,
+			validation.Error,
+			"questions are only allowed on a message item, got answerMechanism '%s'",
+			p.AnswerMechanism,
+		)
+	}
+	return p.Questions.Validate(ctx)
 }
 
 // AttentionStoreBucketName is the bucket every item lives in.

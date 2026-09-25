@@ -69,6 +69,13 @@ func handleAttentionAnswer(
 		// item reads as, and what every item answered before this field existed
 		// reads as.
 		Answer *pkg.Answer `json:"answer"`
+		// Answers is the same content for an item carrying `questions` — one
+		// entry per tab, each naming the question it answers. It is distinct from
+		// Answer rather than a replacement for it, so a single-question item's
+		// wire shape is unchanged. Optional: an omitted value stores an item with
+		// no per-question content recorded. It is mutually exclusive with Answer,
+		// and a call carrying both is rejected rather than resolved by convention.
+		Answers pkg.Answers `json:"answers"`
 	}
 	if err := json.NewDecoder(req.Body).Decode(&request); err != nil {
 		return libhttp.WrapWithDetails(
@@ -78,7 +85,7 @@ func handleAttentionAnswer(
 			map[string]any{"reason": "request body is not valid JSON"},
 		)
 	}
-	if err := validateAnswerRequest(ctx, request.Decision, request.Answer); err != nil {
+	if err := validateAnswerRequest(ctx, request.Decision, request.Answer, request.Answers); err != nil {
 		return err
 	}
 	item, err := store.Answer(
@@ -88,6 +95,7 @@ func handleAttentionAnswer(
 		request.ResolvedBy,
 		request.Decision,
 		request.Answer,
+		request.Answers,
 	)
 	if err != nil {
 		return wrapAnswerError(ctx, err, itemID)
@@ -113,6 +121,7 @@ func validateAnswerRequest(
 	ctx context.Context,
 	decision pkg.Decision,
 	answer *pkg.Answer,
+	answers pkg.Answers,
 ) error {
 	if err := decision.Validate(ctx); err != nil {
 		return libhttp.WrapWithDetails(
@@ -129,6 +138,16 @@ func validateAnswerRequest(
 				libhttp.ErrorCodeValidation,
 				http.StatusBadRequest,
 				map[string]any{"answer_kind": answer.Kind.String()},
+			)
+		}
+	}
+	if len(answers) > 0 {
+		if err := answers.Validate(ctx); err != nil {
+			return libhttp.WrapWithDetails(
+				errors.Wrap(ctx, err, "validate answer request failed"),
+				libhttp.ErrorCodeValidation,
+				http.StatusBadRequest,
+				map[string]any{"answers": len(answers)},
 			)
 		}
 	}

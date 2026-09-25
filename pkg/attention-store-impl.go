@@ -81,20 +81,22 @@ func (a *attentionStore) newItem(ctx context.Context, request PushRequest) (*Ite
 		return nil, errors.Wrap(ctx, err, "generate item id failed")
 	}
 	item := &Item{
-		ItemID:          itemID,
-		ProducerID:      request.ProducerID,
-		ProducerKind:    request.ProducerKind,
-		ProvenanceClass: request.ProvenanceClass,
-		LivenessRef:     request.LivenessRef,
-		DedupKey:        request.DedupKey,
-		InterruptClass:  request.InterruptClass,
-		Payload:         request.Payload,
-		Context:         request.Context,
-		AnswerMechanism: request.AnswerMechanism,
-		Options:         request.Options,
-		State:           OpenState,
-		CreatedAt:       a.currentDateTimeGetter.Now(),
-		ExpiresAt:       request.ExpiresAt,
+		ItemID:            itemID,
+		ProducerID:        request.ProducerID,
+		ProducerKind:      request.ProducerKind,
+		ProvenanceClass:   request.ProvenanceClass,
+		LivenessRef:       request.LivenessRef,
+		DedupKey:          request.DedupKey,
+		InterruptClass:    request.InterruptClass,
+		Payload:           request.Payload,
+		Context:           request.Context,
+		AnswerMechanism:   request.AnswerMechanism,
+		Options:           request.Options,
+		AnswerCardinality: request.AnswerCardinality,
+		Questions:         request.Questions,
+		State:             OpenState,
+		CreatedAt:         a.currentDateTimeGetter.Now(),
+		ExpiresAt:         request.ExpiresAt,
 	}
 	if err := item.Validate(ctx); err != nil {
 		return nil, errors.Wrap(ctx, err, "validate item failed")
@@ -215,6 +217,7 @@ func (a *attentionStore) Answer(
 	resolvedBy string,
 	decision Decision,
 	answer *Answer,
+	answers Answers,
 ) (*Item, error) {
 	var result *Item
 	err := a.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
@@ -264,6 +267,20 @@ func (a *attentionStore) Answer(
 		// this same transition — the schema is explicit that answer content is
 		// not a fourth state, so ValidateTransition is called exactly as before.
 		item.Answer = answer
+		// The same content for an item carrying `questions`, stamped from the
+		// caller on the same reasoning: one entry per tab, and never backfilled
+		// from the arm, the decision or the single answer.
+		item.Answers = answers
+		// ⚠️ The answer fields are validated here rather than only in
+		// Item.Validate, because this path does not call Item.Validate: it mutates
+		// a stored item and writes it back. Without this call an answer naming a
+		// question the item does not carry was accepted and stored, and the
+		// mutual-exclusion rule went unenforced on the one path a caller can
+		// actually violate it. A rejection aborts the transaction, so the item
+		// stays open rather than half-written.
+		if err := item.validateAnswers(ctx); err != nil {
+			return errors.Wrap(ctx, err, "validate answers failed")
+		}
 		if err := a.store.Add(ctx, tx, item.ItemID.String(), *item); err != nil {
 			return errors.Wrap(ctx, err, "update item failed")
 		}

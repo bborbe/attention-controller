@@ -21,6 +21,15 @@ import (
 type AnswerOption struct {
 	// Label is the choice as the operator reads it.
 	Label string `json:"label"`
+	// Description is the muted line the board renders under the label — what
+	// the option does and what it costs.
+	//
+	// It is optional, and an option carrying none renders its label alone, so
+	// every option list pushed before this field existed reads as it did. It
+	// belongs here rather than on the item because it is per-option: two
+	// options of one question carry different costs, and a single item-level
+	// line would have to describe both at once.
+	Description string `json:"description,omitempty"`
 	// Recommended marks the producer's recommendation. At most one option in a
 	// list may carry it.
 	Recommended bool `json:"recommended"`

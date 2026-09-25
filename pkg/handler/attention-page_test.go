@@ -100,6 +100,48 @@ var _ = Describe("AttentionPageHandler", func() {
 		return resp
 	}
 
+	// rowOf returns the rendered HTML for one item's row, so an assertion about
+	// the card is scoped to that item rather than to the whole page: a page-wide
+	// grep would pass on a page where the wrong item carried the controls.
+	rowOf := func(body string, itemID pkg.ItemID) string {
+		start := strings.Index(body, `data-item-id="`+itemID.String()+`"`)
+		Expect(start).To(BeNumerically(">=", 0), "row for %s not found", itemID)
+		rest := body[start:]
+		end := strings.Index(rest, "</li>")
+		Expect(end).To(BeNumerically(">=", 0))
+		return rest[:end]
+	}
+
+	// messageRequest builds a `message` declaration whose question shape the
+	// caller supplies, so the card's control can be driven from the declared
+	// cardinality rather than from the option count. The fixtures above carry no
+	// options at all, which is what keeps their cases about the row rather than
+	// about the card.
+	messageRequest := func(
+		dedupKey pkg.DedupKey,
+		cardinality pkg.AnswerCardinality,
+	) pkg.PushRequest {
+		producerID := pkg.ProducerID("producer-" + dedupKey.String())
+		return pkg.PushRequest{
+			ProducerID:        producerID,
+			ProducerKind:      pkg.SessionProducerKind,
+			LivenessRef:       pkg.LivenessRef("session:" + producerID.String()),
+			DedupKey:          dedupKey,
+			InterruptClass:    "pick",
+			Payload:           "Which vault-cleanup chores should I queue for this week?",
+			AnswerMechanism:   pkg.MessageAnswerMechanism,
+			AnswerCardinality: cardinality,
+			Options: pkg.AnswerOptions{
+				{
+					Label:       "Dead-link sweep",
+					Description: "Scan the vault for broken wikilinks.",
+					Recommended: true,
+				},
+				{Label: "Archive 2025 daily notes"},
+			},
+		}
+	}
+
 	It("renders one row per open item, carrying every rendered field", func() {
 		first, err := store.Push(ctx, pushRequest("producer-a", "gate-a", "deploy prod?"))
 		Expect(err).To(BeNil())
@@ -198,18 +240,9 @@ var _ = Describe("AttentionPageHandler", func() {
 
 		// Scoped per row rather than page-wide: a page-wide grep would pass on a
 		// page where the wrong item carried the controls.
-		rowOf := func(itemID pkg.ItemID) string {
-			start := strings.Index(body, `data-item-id="`+itemID.String()+`"`)
-			Expect(start).To(BeNumerically(">=", 0))
-			rest := body[start:]
-			end := strings.Index(rest, "</li>")
-			Expect(end).To(BeNumerically(">=", 0))
-			return rest[:end]
-		}
-
-		Expect(rowOf(message.ItemID)).To(ContainSubstring("<form"))
-		Expect(rowOf(permission.ItemID)).NotTo(ContainSubstring("<form"))
-		Expect(rowOf(permission.ItemID)).NotTo(ContainSubstring("<button"))
+		Expect(rowOf(body, message.ItemID)).To(ContainSubstring("<form"))
+		Expect(rowOf(body, permission.ItemID)).NotTo(ContainSubstring("<form"))
+		Expect(rowOf(body, permission.ItemID)).NotTo(ContainSubstring("<button"))
 
 		// HEAD is routed to this handler too; it is read-only and a link checker
 		// or browser may issue it, so it is asserted rather than merely declared.
@@ -326,5 +359,198 @@ var _ = Describe("AttentionPageHandler", func() {
 		Expect(json.NewDecoder(resp.Body).Decode(&errorResponse)).To(BeNil())
 		Expect(errorResponse.Error.Code).To(Equal(libhttp.ErrorCodeInternal))
 		Expect(errorResponse.Error.Message).To(ContainSubstring("read failed"))
+	})
+
+	// The card's control is driven by the producer's declared cardinality and
+	// never by the option count: a one-option question and a many-option
+	// single-pick question carry lists of different lengths and ask for different
+	// things, so a card that read the length would render a checkbox for a
+	// question admitting one answer. See the attention item schema and the page
+	// handler's own doc comment.
+	Describe("the answer card", func() {
+		It("renders a checkbox per option when the question takes several picks", func() {
+			item, err := store.Push(
+				ctx,
+				messageRequest("gate-multiple", pkg.MultipleAnswerCardinality),
+			)
+			Expect(err).To(BeNil())
+
+			block := rowOf(get("GET").Body.String(), item.ItemID)
+
+			Expect(block).To(ContainSubstring(`type="checkbox"`))
+			Expect(block).NotTo(ContainSubstring(`type="radio"`))
+		})
+
+		It("renders a radio button per option when the question takes one pick", func() {
+			item, err := store.Push(
+				ctx,
+				messageRequest("gate-single", pkg.SingleAnswerCardinality),
+			)
+			Expect(err).To(BeNil())
+
+			block := rowOf(get("GET").Body.String(), item.ItemID)
+
+			Expect(block).To(ContainSubstring(`type="radio"`))
+			Expect(block).NotTo(ContainSubstring(`type="checkbox"`))
+		})
+
+		// An absent cardinality is what every item pushed before the field
+		// existed carries, and the schema reads it as single. Asserted rather than
+		// assumed, because the opposite reading would render a checkbox for a
+		// question that admits one answer.
+		It("renders a radio button per option when the cardinality is absent", func() {
+			item, err := store.Push(ctx, messageRequest("gate-absent", ""))
+			Expect(err).To(BeNil())
+
+			block := rowOf(get("GET").Body.String(), item.ItemID)
+
+			Expect(block).To(ContainSubstring(`type="radio"`))
+			Expect(block).NotTo(ContainSubstring(`type="checkbox"`))
+		})
+
+		It("renders the cardinality hint and marks the recommended option", func() {
+			item, err := store.Push(
+				ctx,
+				messageRequest("gate-hint", pkg.MultipleAnswerCardinality),
+			)
+			Expect(err).To(BeNil())
+
+			block := rowOf(get("GET").Body.String(), item.ItemID)
+
+			Expect(block).To(ContainSubstring("(pick any number)"))
+			Expect(block).To(ContainSubstring(`class="recommended"`))
+			Expect(block).To(ContainSubstring("(Recommended)"))
+		})
+
+		It("renders an option's muted description under its label", func() {
+			item, err := store.Push(
+				ctx,
+				messageRequest("gate-description", pkg.SingleAnswerCardinality),
+			)
+			Expect(err).To(BeNil())
+
+			block := rowOf(get("GET").Body.String(), item.ItemID)
+
+			Expect(block).To(ContainSubstring(`class="option-desc"`))
+			Expect(block).To(ContainSubstring("Scan the vault for broken wikilinks."))
+			// An option carrying no description renders its label alone rather
+			// than an empty line, so the two options differ in this block.
+			Expect(strings.Count(block, `class="option-desc"`)).To(Equal(1))
+		})
+
+		It("renders one tab and one panel per question of a multi-question item", func() {
+			item, err := store.Push(ctx, pkg.PushRequest{
+				ProducerID:      "producer-two-questions",
+				ProducerKind:    pkg.SessionProducerKind,
+				LivenessRef:     pkg.LivenessRef("session:producer-two-questions"),
+				DedupKey:        "gate-two-questions",
+				InterruptClass:  "pick",
+				Payload:         "Vault cleanup",
+				AnswerMechanism: pkg.MessageAnswerMechanism,
+				Questions: pkg.Questions{
+					{
+						Tab:         "Chores",
+						Payload:     "Which chores should I queue?",
+						Cardinality: pkg.MultipleAnswerCardinality,
+						Options:     pkg.AnswerOptions{{Label: "Dead-link sweep"}},
+					},
+					{
+						Tab:         "Priority",
+						Payload:     "Which one comes first?",
+						Cardinality: pkg.SingleAnswerCardinality,
+						Options:     pkg.AnswerOptions{{Label: "Dead-link sweep"}},
+					},
+				},
+			})
+			Expect(err).To(BeNil())
+
+			block := rowOf(get("GET").Body.String(), item.ItemID)
+
+			// Both tabs, both panels, and both questions' payloads — a card that
+			// rendered only the first question would fail here.
+			Expect(block).To(ContainSubstring(`data-tab="Chores"`))
+			Expect(block).To(ContainSubstring(`data-tab="Priority"`))
+			Expect(block).To(ContainSubstring(`data-question="Chores"`))
+			Expect(block).To(ContainSubstring(`data-question="Priority"`))
+			Expect(block).To(ContainSubstring("Which chores should I queue?"))
+			Expect(block).To(ContainSubstring("Which one comes first?"))
+
+			// The item's own payload is the card's title on a multi-question item
+			// rather than a question, and it renders beside the questions rather
+			// than instead of them.
+			Expect(block).To(ContainSubstring("Vault cleanup"))
+
+			// The first tab is the open one, and the second panel ships in the
+			// document already hidden, so a click reveals a panel that is present
+			// rather than fetching one.
+			Expect(block).To(ContainSubstring(`class="tab active" data-tab="Chores"`))
+			// The second panel carries its own cardinality, which is what the script
+			// reads to choose between the value and values carriers, and ships in
+			// the document already hidden so a click reveals a panel that is
+			// present rather than fetching one.
+			Expect(
+				block,
+			).To(ContainSubstring(`data-question="Priority" data-multi-pick="false" hidden`))
+
+			// Each question carries its own control: the multi-pick tab renders a
+			// checkbox and the single-pick tab a radio button, on one card.
+			Expect(block).To(ContainSubstring(`type="checkbox"`))
+			Expect(block).To(ContainSubstring(`type="radio"`))
+
+			// The wire shape follows the tab strip. The script reads this attribute
+			// to decide between `answer` and `answers`, so a card rendering tabs
+			// while reporting false would post the wrong field.
+			Expect(block).To(ContainSubstring(`data-multi="true"`))
+		})
+
+		It("renders no tab strip and answers by `answer` on a single-question item", func() {
+			item, err := store.Push(
+				ctx,
+				messageRequest("gate-no-tabs", pkg.SingleAnswerCardinality),
+			)
+			Expect(err).To(BeNil())
+
+			block := rowOf(get("GET").Body.String(), item.ItemID)
+
+			Expect(block).To(ContainSubstring(`data-multi="false"`))
+			Expect(block).NotTo(ContainSubstring(`data-tab=`))
+			Expect(block).NotTo(ContainSubstring(`class="tabs"`))
+			Expect(block).NotTo(ContainSubstring(`class="card-title"`))
+		})
+
+		It("renders Dismiss and Next, and no card on a permission row", func() {
+			message, err := store.Push(
+				ctx,
+				messageRequest("gate-buttons", pkg.SingleAnswerCardinality),
+			)
+			Expect(err).To(BeNil())
+			permission, err := store.Push(ctx, pkg.PushRequest{
+				ProducerID:      "producer-gate-buttons",
+				ProducerKind:    pkg.SessionProducerKind,
+				LivenessRef:     pkg.LivenessRef("session:producer-gate-buttons"),
+				DedupKey:        "gate-buttons-permission",
+				InterruptClass:  "approve",
+				Payload:         "deploy prod?",
+				AnswerMechanism: pkg.PermissionAnswerMechanism,
+			})
+			Expect(err).To(BeNil())
+
+			body := get("GET").Body.String()
+			block := rowOf(body, message.ItemID)
+
+			// The Dismiss value is what the script reads as the skip, so it is
+			// asserted rather than left to the label.
+			Expect(block).To(ContainSubstring(`value="skip"`))
+			Expect(block).To(ContainSubstring("Dismiss"))
+			Expect(block).To(ContainSubstring("Next"))
+
+			// The card is one `if .Message` away from a permission row, so the
+			// negative case is asserted beside the positive one rather than only
+			// page-wide.
+			permissionBlock := rowOf(body, permission.ItemID)
+			Expect(permissionBlock).NotTo(ContainSubstring("<form"))
+			Expect(permissionBlock).NotTo(ContainSubstring("<button"))
+			Expect(permissionBlock).NotTo(ContainSubstring("<input"))
+		})
 	})
 })
