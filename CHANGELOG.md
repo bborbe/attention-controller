@@ -12,6 +12,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 
 - feat: add producer-declared `options` (`{label, recommended}`) and `context` to the push request and the item, and store the operator's `answer` (`{kind: option|skip|text, value}`) on the existing `open` → `answered` transition, so a `message` item is answerable on a surface other than the asker's own tab; `options` is rejected with HTTP 400 on a `permission` or `ack` item, and at most one option may carry `recommended`
 - feat: render answer controls on the board for `message` items — option buttons with the recommended one marked, a skip control and a free-text field, posting to the answer endpoint as `answered_by: attention-board`; a `permission` item renders a copyable `/supervisor:jump <pane>` command and **zero** controls, because only the operator may answer a gate and only in the session that raised it. This reverses the page's recorded inert-page decision for `message` items only; the board still does not sort, since it is served by the store and the no-ranking boundary applies to it
+- feat: add `POST /api/1.0/attention/{itemID}/speak`, a server-side proxy that reads an item aloud through the tts server at `TTS_URL` and returns its `message_id`, plus the board's read-aloud control. It is a proxy rather than a direct browser call because the tts server has no CORS middleware; the route and the control are both gated on `TTS_URL` being set, so a host without a tts server renders no control rather than one that always fails
 
 ## v0.6.0
 

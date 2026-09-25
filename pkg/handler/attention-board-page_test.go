@@ -51,7 +51,7 @@ var _ = Describe("Attention page board controls", func() {
 		)
 
 		provenance = &mocks.ProvenanceResolver{}
-		httpHandler = handler.NewAttentionPageHandler(store, provenance)
+		httpHandler = handler.NewAttentionPageHandler(store, provenance, true)
 	})
 
 	AfterEach(func() {
@@ -142,6 +142,14 @@ var _ = Describe("Attention page board controls", func() {
 			body, item := renderPage(messageRequest(), pkg.Provenance{Pane: "1907"})
 			Expect(rowBlock(body, item.ItemID)).NotTo(ContainSubstring("/supervisor:jump"))
 		})
+
+		It("renders a read-aloud control", func() {
+			body, item := renderPage(messageRequest(), pkg.Provenance{})
+			block := rowBlock(body, item.ItemID)
+
+			Expect(block).To(ContainSubstring("data-speak"))
+			Expect(block).To(ContainSubstring("Read aloud"))
+		})
 	})
 
 	Describe("a permission item", func() {
@@ -172,6 +180,19 @@ var _ = Describe("Attention page board controls", func() {
 		It("renders no jump command when no pane resolved", func() {
 			body, item := renderPage(permissionRequest(), pkg.Provenance{})
 			Expect(rowBlock(body, item.ItemID)).NotTo(ContainSubstring("/supervisor:jump"))
+		})
+
+		// Read-aloud is configured on this suite's page, so this is the case that
+		// matters: even with a tts server wired, a permission row carries no
+		// control at all. The read-aloud button renders on `message` rows only,
+		// which is what keeps SC2's grep clean for `<form>` and `<button>` on a
+		// permission block.
+		It("renders no read-aloud control even when read-aloud is enabled", func() {
+			body, item := renderPage(permissionRequest(), pkg.Provenance{Pane: "1907"})
+			block := rowBlock(body, item.ItemID)
+
+			Expect(block).NotTo(ContainSubstring("data-speak"))
+			Expect(block).NotTo(ContainSubstring("<button"))
 		})
 	})
 

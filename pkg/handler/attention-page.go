@@ -163,7 +163,8 @@ li.item {
 {{end}}<button type="submit" name="kind" value="skip">Skip</button>
 <input type="text" name="text" placeholder="or answer in your own words">
 <button type="submit" name="kind" value="text">Send</button>
-</form>
+{{if $.Speak}}<button type="button" class="speak" data-speak>Read aloud</button>
+{{end}}</form>
 {{else if .Jump}}<div class="jump">Approve in the session that asked: <code>{{ .Jump }}</code></div>
 {{end}}<div class="meta">{{ .Item.State }} - {{ .Item.CreatedAt }}</div>
 </li>
@@ -206,6 +207,31 @@ function showAnswerFailure(form, detail) {
   note.textContent = 'Answer failed - ' + detail;
   form.appendChild(note);
 }
+/* The read-aloud control is type="button" so it never submits the answer form.
+   It reports the tts message id rather than reloading, because the item is
+   still open and the id is what a caller polls for playback status. */
+document.querySelectorAll('button[data-speak]').forEach(function (button) {
+  button.addEventListener('click', function () {
+    var form = button.closest('form.answer');
+    var itemID = form.closest('li.item').getAttribute('data-item-id');
+    fetch('/api/1.0/attention/' + encodeURIComponent(itemID) + '/speak', { method: 'POST' })
+      .then(function (response) {
+        return response.text().then(function (body) {
+          showSpeakResult(form, response.ok ? 'Reading aloud (' + body + ')' : 'Read aloud failed - HTTP ' + response.status + ' - ' + body);
+        });
+      }).catch(function (error) {
+        showSpeakResult(form, 'Read aloud failed - ' + String(error));
+      });
+  });
+});
+function showSpeakResult(form, message) {
+  var previous = form.querySelector('.failed');
+  if (previous) { previous.remove(); }
+  var note = document.createElement('div');
+  note.className = 'failed';
+  note.textContent = message;
+  form.appendChild(note);
+}
 </script>
 </body>
 </html>
@@ -235,6 +261,10 @@ type attentionPageRow struct {
 // own — the store never ranks, so the page must not either.
 type attentionPageData struct {
 	Items []attentionPageRow
+	// Speak reports whether a read-aloud control should render. False when no
+	// tts server is configured, so the page never offers a control whose
+	// endpoint is unrouted.
+	Speak bool
 }
 
 // jumpCommand renders the handover for an item the board must not answer.
@@ -278,6 +308,7 @@ func jumpCommand(item pkg.Item, provenance pkg.Provenance) string {
 func NewAttentionPageHandler(
 	store pkg.AttentionStore,
 	provenance pkg.ProvenanceResolver,
+	speakEnabled bool,
 ) http.Handler {
 	// Parsed once at construction rather than per request: the template is a
 	// compile-time constant, so a parse failure is a programming error, and
@@ -313,7 +344,7 @@ func NewAttentionPageHandler(
 				// response would commit a 200 and a partial document before the
 				// error handler had a chance to report anything.
 				var body bytes.Buffer
-				if err := page.Execute(&body, attentionPageData{Items: rows}); err != nil {
+				if err := page.Execute(&body, attentionPageData{Items: rows, Speak: speakEnabled}); err != nil {
 					return errors.Wrap(ctx, err, "render page failed")
 				}
 				resp.Header().Set(

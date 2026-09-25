@@ -61,11 +61,23 @@ func CreateAttentionGetHandler(store pkg.AttentionStore) http.Handler {
 // The resolver is injected rather than constructed here: `pkg/factory` is pure
 // plumbing with no business logic, and which directory the provenance is read
 // from is a decision `main` owns alongside the session registry's.
+//
+// speakEnabled gates the read-aloud control. It is passed rather than derived
+// from ttsURL so the page and the route agree by construction: a control that
+// renders while its endpoint is unrouted is a value presented as working that
+// is not.
 func CreateAttentionPageHandler(
 	store pkg.AttentionStore,
 	provenance pkg.ProvenanceResolver,
+	speakEnabled bool,
 ) http.Handler {
-	return handler.NewAttentionPageHandler(store, provenance)
+	return handler.NewAttentionPageHandler(store, provenance, speakEnabled)
+}
+
+// CreateAttentionSpeakHandler creates the handler that reads an item aloud
+// through the tts server at ttsURL.
+func CreateAttentionSpeakHandler(store pkg.AttentionStore, ttsURL string) http.Handler {
+	return handler.NewAttentionSpeakHandler(store, ttsURL)
 }
 
 // CreateTestLoglevelHandler creates an HTTP handler that tests different glog verbosity levels.

@@ -60,7 +60,7 @@ var _ = Describe("AttentionPageHandler", func() {
 		// provenance cannot be resolved renders no provenance line at all.
 		provenance = &mocks.ProvenanceResolver{}
 
-		httpHandler = handler.NewAttentionPageHandler(store, provenance)
+		httpHandler = handler.NewAttentionPageHandler(store, provenance, false)
 	})
 
 	AfterEach(func() {
