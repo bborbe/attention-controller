@@ -145,9 +145,13 @@ li.item {
   padding: 2px 6px;
   user-select: all;
 }
-/* An answer failure is shown, never swallowed into a reload — a silent catch
-   reports a code fault as a connection problem. */
-.failed { color: var(--warn); font-size: 12px; margin: 8px 0 0; }
+/* A control's outcome is shown, never swallowed into a reload — a silent catch
+   reports a code fault as a connection problem. The class is "note" rather than
+   "failed" because the read-aloud control reports success through it too (the
+   tts message id), and a success line rendered in a failure style would read as
+   an error. */
+.note { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
+.note.failed { color: var(--warn); }
 </style>
 </head>
 <body>
@@ -192,19 +196,19 @@ document.querySelectorAll('form.answer').forEach(function (form) {
     }).then(function (response) {
       if (response.ok) { window.location.reload(); return; }
       return response.text().then(function (body) {
-        showAnswerFailure(form, 'HTTP ' + response.status + ' - ' + body);
+        showNote(form, 'Answer failed - HTTP ' + response.status + ' - ' + body, true);
       });
     }).catch(function (error) {
-      showAnswerFailure(form, String(error));
+      showNote(form, 'Answer failed - ' + String(error), true);
     });
   });
 });
-function showAnswerFailure(form, detail) {
-  var previous = form.querySelector('.failed');
+function showNote(form, message, isError) {
+  var previous = form.querySelector('.note');
   if (previous) { previous.remove(); }
   var note = document.createElement('div');
-  note.className = 'failed';
-  note.textContent = 'Answer failed - ' + detail;
+  note.className = isError ? 'note failed' : 'note';
+  note.textContent = message;
   form.appendChild(note);
 }
 /* The read-aloud control is type="button" so it never submits the answer form.
@@ -217,21 +221,19 @@ document.querySelectorAll('button[data-speak]').forEach(function (button) {
     fetch('/api/1.0/attention/' + encodeURIComponent(itemID) + '/speak', { method: 'POST' })
       .then(function (response) {
         return response.text().then(function (body) {
-          showSpeakResult(form, response.ok ? 'Reading aloud (' + body + ')' : 'Read aloud failed - HTTP ' + response.status + ' - ' + body);
+          showNote(
+            form,
+            response.ok
+              ? 'Reading aloud (' + body + ')'
+              : 'Read aloud failed - HTTP ' + response.status + ' - ' + body,
+            !response.ok
+          );
         });
       }).catch(function (error) {
-        showSpeakResult(form, 'Read aloud failed - ' + String(error));
+        showNote(form, 'Read aloud failed - ' + String(error), true);
       });
   });
 });
-function showSpeakResult(form, message) {
-  var previous = form.querySelector('.failed');
-  if (previous) { previous.remove(); }
-  var note = document.createElement('div');
-  note.className = 'failed';
-  note.textContent = message;
-  form.appendChild(note);
-}
 </script>
 </body>
 </html>

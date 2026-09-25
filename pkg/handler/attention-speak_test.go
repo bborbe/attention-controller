@@ -86,6 +86,11 @@ var _ = Describe("AttentionSpeakHandler", func() {
 	// fakeTTS stands in for the tts server. It captures the body it was sent, so
 	// the assertion is what the proxy forwarded rather than that it forwarded
 	// something.
+	//
+	// Its success status is 202, matching the real server: `POST /say` queues the
+	// utterance and returns Accepted rather than OK. A fake returning 200 would
+	// pass against a proxy that accepted only 200 — which is exactly the defect
+	// that shipped past a green suite and was caught only by loading the page.
 	newFakeTTS := func(status int, body string) (*httptest.Server, *string, *string) {
 		var gotBody, gotPath string
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -101,7 +106,7 @@ var _ = Describe("AttentionSpeakHandler", func() {
 
 	It("forwards the item's payload and returns the tts message id", func() {
 		server, gotBody, gotPath := newFakeTTS(
-			http.StatusOK,
+			http.StatusAccepted,
 			`{"message_id":"msg-1","status":"queued","queue_position":0}`,
 		)
 		defer server.Close()
@@ -125,6 +130,21 @@ var _ = Describe("AttentionSpeakHandler", func() {
 		}
 		Expect(json.Unmarshal(rec.Body.Bytes(), &got)).To(BeNil())
 		Expect(got.MessageID).To(Equal("msg-1"))
+	})
+
+	// The success bound is a range, not an equality. The real server answers 202;
+	// a proxy that accepted only 200 reported a successful queue as a gateway
+	// failure. This spec pins the other end so the bound is not quietly narrowed
+	// back to a single value.
+	It("accepts 200 as well as 202", func() {
+		server, _, _ := newFakeTTS(http.StatusOK, `{"message_id":"msg-2"}`)
+		defer server.Close()
+
+		item := pushItem("Deploy to prod?")
+		rec := speak(handler.NewAttentionSpeakHandler(store, server.URL), item.ItemID)
+
+		Expect(rec.Code).To(Equal(http.StatusOK))
+		Expect(rec.Body.String()).To(ContainSubstring("msg-2"))
 	})
 
 	It("returns 404 for an unknown item", func() {
@@ -172,7 +192,7 @@ var _ = Describe("AttentionSpeakHandler", func() {
 	})
 
 	It("tolerates a trailing slash in the configured base URL", func() {
-		server, _, gotPath := newFakeTTS(http.StatusOK, `{"message_id":"msg-1"}`)
+		server, _, gotPath := newFakeTTS(http.StatusAccepted, `{"message_id":"msg-1"}`)
 		defer server.Close()
 
 		item := pushItem("Deploy to prod?")

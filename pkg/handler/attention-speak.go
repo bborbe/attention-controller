@@ -168,7 +168,15 @@ func callSay(
 	if err != nil {
 		return speakResponse{}, errors.Wrap(ctx, err, "read tts response failed")
 	}
-	if upstreamResp.StatusCode != http.StatusOK {
+	// Any 2xx is a success, and the bound is a range rather than `== 200` for a
+	// measured reason: the tts server answers **202 Accepted**, because it queues
+	// the utterance and returns immediately instead of waiting for playback. An
+	// equality check against 200 therefore rejected a successful queue and
+	// reported it as a gateway failure, discarding a message id that was present
+	// in the body. Found by loading the page against the live server — the unit
+	// suite's fake returned 200, so precommit was green while the control was
+	// broken.
+	if upstreamResp.StatusCode < 200 || upstreamResp.StatusCode > 299 {
 		return speakResponse{}, errors.Errorf(
 			ctx,
 			"tts server returned %d: %s",
