@@ -227,6 +227,7 @@ var _ = Describe("AttentionStore", func() {
 				"supervisor:attention-next",
 				"manager-1",
 				"",
+				nil,
 			)
 			Expect(err).To(BeNil())
 			Expect(answered.ResolvedBy).To(Equal("manager-1"))
@@ -245,9 +246,23 @@ var _ = Describe("AttentionStore", func() {
 			second, err := store.Push(ctx, pushRequest("session-a", "gate-2"))
 			Expect(err).To(BeNil())
 
-			a, err := store.Answer(ctx, first.ItemID, "supervisor:attention-next", "manager-1", "")
+			a, err := store.Answer(
+				ctx,
+				first.ItemID,
+				"supervisor:attention-next",
+				"manager-1",
+				"",
+				nil,
+			)
 			Expect(err).To(BeNil())
-			b, err := store.Answer(ctx, second.ItemID, "supervisor:attention-next", "manager-2", "")
+			b, err := store.Answer(
+				ctx,
+				second.ItemID,
+				"supervisor:attention-next",
+				"manager-2",
+				"",
+				nil,
+			)
 			Expect(err).To(BeNil())
 
 			Expect(a.ResolvedBy).NotTo(Equal(b.ResolvedBy))
@@ -277,7 +292,7 @@ var _ = Describe("AttentionStore", func() {
 			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
 			Expect(err).To(BeNil())
 
-			answered, err := store.Answer(ctx, item.ItemID, "telegram", "", "")
+			answered, err := store.Answer(ctx, item.ItemID, "telegram", "", "", nil)
 			Expect(err).To(BeNil())
 			Expect(answered.ResolvedBy).To(BeEmpty())
 		})
@@ -296,6 +311,7 @@ var _ = Describe("AttentionStore", func() {
 				"supervisor:attention-next",
 				"manager-1",
 				"",
+				nil,
 			)
 			Expect(err).To(BeNil())
 			_, err = store.Escalate(ctx, escalated.ItemID, "manager-2")
@@ -334,6 +350,7 @@ var _ = Describe("AttentionStore", func() {
 				"supervisor:attention-next",
 				"manager-1",
 				pkg.AllowDecision,
+				nil,
 			)
 			Expect(err).To(BeNil())
 			Expect(answered.Decision).To(Equal(pkg.AllowDecision))
@@ -353,9 +370,9 @@ var _ = Describe("AttentionStore", func() {
 			second, err := store.Push(ctx, pushRequest("session-a", "gate-2"))
 			Expect(err).To(BeNil())
 
-			allowed, err := store.Answer(ctx, first.ItemID, "telegram", "", pkg.AllowDecision)
+			allowed, err := store.Answer(ctx, first.ItemID, "telegram", "", pkg.AllowDecision, nil)
 			Expect(err).To(BeNil())
-			denied, err := store.Answer(ctx, second.ItemID, "telegram", "", pkg.DenyDecision)
+			denied, err := store.Answer(ctx, second.ItemID, "telegram", "", pkg.DenyDecision, nil)
 			Expect(err).To(BeNil())
 
 			Expect(allowed.Decision).NotTo(Equal(denied.Decision))
@@ -370,7 +387,7 @@ var _ = Describe("AttentionStore", func() {
 			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
 			Expect(err).To(BeNil())
 
-			answered, err := store.Answer(ctx, item.ItemID, "telegram", "", "")
+			answered, err := store.Answer(ctx, item.ItemID, "telegram", "", "", nil)
 			Expect(err).To(BeNil())
 			Expect(answered.Decision).To(BeEmpty())
 
@@ -400,7 +417,7 @@ var _ = Describe("AttentionStore", func() {
 			Expect(err).To(BeNil())
 			closed, err := store.Push(ctx, pushRequest("session-a", "gate-3"))
 			Expect(err).To(BeNil())
-			_, err = store.Answer(ctx, answered.ItemID, "telegram", "manager-1", "")
+			_, err = store.Answer(ctx, answered.ItemID, "telegram", "manager-1", "", nil)
 			Expect(err).To(BeNil())
 			_, err = store.Close(ctx, closed.ItemID)
 			Expect(err).To(BeNil())
@@ -440,7 +457,7 @@ var _ = Describe("AttentionStore", func() {
 			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
 			Expect(err).To(BeNil())
 
-			answered, err := store.Answer(ctx, item.ItemID, "telegram", "", "")
+			answered, err := store.Answer(ctx, item.ItemID, "telegram", "", "", nil)
 			Expect(err).To(BeNil())
 			Expect(answered.State).To(Equal(pkg.AnsweredState))
 			Expect(answered.AnsweredBy).To(Equal("telegram"))
@@ -450,10 +467,10 @@ var _ = Describe("AttentionStore", func() {
 		It("rejects a second answer as already-answered", func() {
 			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
 			Expect(err).To(BeNil())
-			_, err = store.Answer(ctx, item.ItemID, "telegram", "", "")
+			_, err = store.Answer(ctx, item.ItemID, "telegram", "", "", nil)
 			Expect(err).To(BeNil())
 
-			_, err = store.Answer(ctx, item.ItemID, "discord", "", "")
+			_, err = store.Answer(ctx, item.ItemID, "discord", "", "", nil)
 			Expect(err).NotTo(BeNil())
 			Expect(errors.Is(err, pkg.ErrAlreadyAnswered)).To(BeTrue())
 		})
@@ -464,13 +481,13 @@ var _ = Describe("AttentionStore", func() {
 			_, err = store.Close(ctx, item.ItemID)
 			Expect(err).To(BeNil())
 
-			_, err = store.Answer(ctx, item.ItemID, "telegram", "", "")
+			_, err = store.Answer(ctx, item.ItemID, "telegram", "", "", nil)
 			Expect(err).NotTo(BeNil())
 			Expect(errors.Is(err, pkg.ErrIllegalTransition)).To(BeTrue())
 		})
 
 		It("rejects an answer to an unknown item", func() {
-			_, err := store.Answer(ctx, pkg.ItemID("does-not-exist"), "telegram", "", "")
+			_, err := store.Answer(ctx, pkg.ItemID("does-not-exist"), "telegram", "", "", nil)
 			Expect(err).NotTo(BeNil())
 			Expect(errors.Is(err, pkg.ErrItemNotFound)).To(BeTrue())
 		})
@@ -504,7 +521,7 @@ var _ = Describe("AttentionStore", func() {
 						defer done.Done()
 						defer GinkgoRecover()
 						start.Wait()
-						_, err := store.Answer(ctx, itemID, arm, "", "")
+						_, err := store.Answer(ctx, itemID, arm, "", "", nil)
 						mu.Lock()
 						defer mu.Unlock()
 						switch {
@@ -609,7 +626,7 @@ var _ = Describe("AttentionStore", func() {
 		It("rejects escalation of an answered item", func() {
 			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
 			Expect(err).To(BeNil())
-			_, err = store.Answer(ctx, item.ItemID, "telegram", "", "")
+			_, err = store.Answer(ctx, item.ItemID, "telegram", "", "", nil)
 			Expect(err).To(BeNil())
 
 			_, err = store.Escalate(ctx, item.ItemID, "session-manager")
@@ -695,7 +712,7 @@ var _ = Describe("AttentionStore", func() {
 		It("applies answered -> closed", func() {
 			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
 			Expect(err).To(BeNil())
-			_, err = store.Answer(ctx, item.ItemID, "telegram", "", "")
+			_, err = store.Answer(ctx, item.ItemID, "telegram", "", "", nil)
 			Expect(err).To(BeNil())
 			closed, err := store.Close(ctx, item.ItemID)
 			Expect(err).To(BeNil())

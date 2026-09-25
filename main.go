@@ -41,16 +41,21 @@ type application struct {
 	// reporting rather than failing startup. This repo has no deployed stage
 	// yet, so nothing here depends on the flag; a future deploy supplies
 	// SENTRY_DSN from its own secret.
-	SentryDSN         string            `required:"false" arg:"sentry-dsn"          env:"SENTRY_DSN"          usage:"SentryDSN (empty disables error reporting)"                                         display:"length"`
-	SentryProxy       string            `required:"false" arg:"sentry-proxy"        env:"SENTRY_PROXY"        usage:"Sentry Proxy"`
-	Listen            string            `required:"true"  arg:"listen"              env:"LISTEN"              usage:"address to listen to"`
-	DataDir           string            `required:"true"  arg:"datadir"             env:"DATADIR"             usage:"data directory"`
-	HeartbeatWindow   string            `required:"false" arg:"heartbeat-window"    env:"HEARTBEAT_WINDOW"    usage:"how stale a heartbeat:<path> mtime may be before the producer counts as finished"                    default:"15m"`
-	SessionsDir       string            `required:"false" arg:"sessions-dir"        env:"SESSIONS_DIR"        usage:"directory holding the session registry used to resolve session:<id> liveness"`
-	AttentionStateDir string            `required:"false" arg:"attention-state-dir" env:"ATTENTION_STATE_DIR" usage:"directory holding the producers' event logs the page resolves item provenance from"`
-	BuildGitVersion   string            `required:"false" arg:"build-git-version"   env:"BUILD_GIT_VERSION"   usage:"Build Git version"                                                                                   default:"dev"`
-	BuildGitCommit    string            `required:"false" arg:"build-git-commit"    env:"BUILD_GIT_COMMIT"    usage:"Build Git commit hash"                                                                               default:"none"`
-	BuildDate         *libtime.DateTime `required:"false" arg:"build-date"          env:"BUILD_DATE"          usage:"Build timestamp (RFC3339)"`
+	SentryDSN         string `required:"false" arg:"sentry-dsn"          env:"SENTRY_DSN"          usage:"SentryDSN (empty disables error reporting)"                                                display:"length"`
+	SentryProxy       string `required:"false" arg:"sentry-proxy"        env:"SENTRY_PROXY"        usage:"Sentry Proxy"`
+	Listen            string `required:"true"  arg:"listen"              env:"LISTEN"              usage:"address to listen to"`
+	DataDir           string `required:"true"  arg:"datadir"             env:"DATADIR"             usage:"data directory"`
+	HeartbeatWindow   string `required:"false" arg:"heartbeat-window"    env:"HEARTBEAT_WINDOW"    usage:"how stale a heartbeat:<path> mtime may be before the producer counts as finished"                           default:"15m"`
+	SessionsDir       string `required:"false" arg:"sessions-dir"        env:"SESSIONS_DIR"        usage:"directory holding the session registry used to resolve session:<id> liveness"`
+	AttentionStateDir string `required:"false" arg:"attention-state-dir" env:"ATTENTION_STATE_DIR" usage:"directory holding the producers' event logs the page resolves item provenance from"`
+	// TTSURL is the tts server's base URL. Optional: with no value the
+	// read-aloud route is not registered and the page renders no read-aloud
+	// control, so a host without a tts server serves the same page minus one
+	// control rather than one that always fails.
+	TTSURL          string            `required:"false" arg:"tts-url"             env:"TTS_URL"             usage:"base URL of the tts server the board's read-aloud control forwards to (empty disables it)"                  default:"http://127.0.0.1:12000"`
+	BuildGitVersion string            `required:"false" arg:"build-git-version"   env:"BUILD_GIT_VERSION"   usage:"Build Git version"                                                                                          default:"dev"`
+	BuildGitCommit  string            `required:"false" arg:"build-git-commit"    env:"BUILD_GIT_COMMIT"    usage:"Build Git commit hash"                                                                                      default:"none"`
+	BuildDate       *libtime.DateTime `required:"false" arg:"build-date"          env:"BUILD_DATE"          usage:"Build timestamp (RFC3339)"`
 }
 
 func (a *application) Run(ctx context.Context, sentryClient libsentry.Client) error {
@@ -189,7 +194,7 @@ func (a *application) createHTTPServer(
 		// .Methods, gorilla mux would route POST and DELETE to it as well.
 		router.Path("/").
 			Methods(http.MethodGet, http.MethodHead).
-			Handler(factory.CreateAttentionPageHandler(store, provenance))
+			Handler(factory.CreateAttentionPageHandler(store, provenance, a.TTSURL != ""))
 
 		// Business routes live under /api/1.0/, never in the admin block above.
 		// The push entry point takes a producer's declaration; nothing scrapes
@@ -218,6 +223,14 @@ func (a *application) createHTTPServer(
 		router.Path("/api/1.0/attention/{itemID}/close").
 			Methods(http.MethodPost).
 			Handler(factory.CreateAttentionCloseHandler(store))
+		// Read-aloud is routed only when a tts server is configured, and the page
+		// renders its control on the same condition. A control that renders while
+		// its endpoint is unrouted is a value presented as working that is not.
+		if a.TTSURL != "" {
+			router.Path("/api/1.0/attention/{itemID}/speak").
+				Methods(http.MethodPost).
+				Handler(factory.CreateAttentionSpeakHandler(store, a.TTSURL))
+		}
 		// Single-item read, distinct from the render path above: an arm reads
 		// open items, but a caller checking a transition's outcome (or the
 		// loser of an answer or escalation race reading back) needs the item

@@ -20,9 +20,25 @@ import (
 // external stylesheet, no framework, no build step. It lives here as a string
 // constant so the page ships inside the binary rather than as an asset.
 //
-// The document is deliberately inert. There is no <form>, no submitting
-// <button>, no <script> and no fetch/XHR: the page only reads, so an answer or
-// close control would be a defect rather than a missing feature.
+// The document renders answer controls for `message` items and nothing for
+// every other class. ⚠️ That reverses the decision this page was built with,
+// which was that the document is inert — "no <form>, no submitting <button>, no
+// <script> and no fetch/XHR: the page only reads, so an answer or close control
+// would be a defect rather than a missing feature".
+//
+// The reversal is bounded by the schema's who-answers-what ruling rather than
+// by taste. A `message` item is `pick`-shaped, so a control that gives a `pick`
+// answer is a legal way to answer it. A `permission` item is `approve`-shaped
+// and **only the operator may answer it, in the session that raised it** — a
+// button there would be the permission laundering the schema forbids — so a
+// `permission` item renders a copyable jump command and zero controls. The
+// schema's § Answer routing records the board as a second arm
+// (`answered_by: attention-board`) and states this reversal; silence 12 is the
+// field change that made it possible.
+//
+// The jump is a copyable command rather than an <a href>: a browser cannot
+// activate a WezTerm tab, so an anchor here would present a value as resolved
+// that is not, which is exactly what the schema's silence 7 forbids.
 //
 // Rendering goes through html/template, which escapes every interpolated value
 // for the context it lands in. ProducerID is a producer-supplied free string
@@ -92,6 +108,50 @@ li.item {
 .provenance .unroutable { color: var(--warn); }
 .meta { color: var(--muted); font-size: 12px; }
 .empty { color: var(--muted); font-size: 14px; }
+/* Answer controls, rendered for message items only. The context line carries
+   the background the producer declared, kept separate from the question so the
+   ask stays readable on its own at the top of the row. */
+.context { color: var(--muted); font-size: 13px; line-height: 1.45; margin: 0 0 8px; white-space: pre-wrap; }
+.answer { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 10px 0 0; }
+.answer button {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.answer button:hover { border-color: var(--muted); }
+.answer button.recommended { border-color: var(--warn); }
+.answer .rec { color: var(--warn); font-size: 11px; }
+.answer input[type=text] {
+  flex: 1 1 200px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 13px;
+}
+/* The jump handover for a permission item. A copyable command, not a link:
+   the browser cannot activate a WezTerm tab. */
+.jump { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
+.jump code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 6px;
+  user-select: all;
+}
+/* A control's outcome is shown, never swallowed into a reload — a silent catch
+   reports a code fault as a connection problem. The class is "note" rather than
+   "failed" because the read-aloud control reports success through it too (the
+   tts message id), and a success line rendered in a failure style would read as
+   an error. */
+.note { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
+.note.failed { color: var(--warn); }
 </style>
 </head>
 <body>
@@ -100,12 +160,82 @@ li.item {
 {{range .Items}}<li class="item" data-item-id="{{ .Item.ItemID }}">
 <div class="producer">{{ .Item.ProducerID }} ({{ .Item.ProducerKind }})</div>
 <div class="payload">{{ .Item.Payload }}</div>
-{{if .Provenance.Resolved}}<div class="provenance">{{if .Provenance.Host}}<span class="host">{{ .Provenance.Host }}</span>{{end}}{{if .Provenance.Cwd}}<span class="cwd">{{ .Provenance.Cwd }}</span>{{end}}{{if .Provenance.Tool}}<span class="tool">{{ .Provenance.Tool }}</span>{{end}}{{if .Provenance.Pane}}<span class="pane">pane {{ .Provenance.Pane }}</span>{{else if .Provenance.PaneRecorded}}<span class="unroutable">unroutable</span>{{end}}</div>
+{{if .Item.Context}}<div class="context">{{ .Item.Context }}</div>
+{{end}}{{if .Provenance.Resolved}}<div class="provenance">{{if .Provenance.Host}}<span class="host">{{ .Provenance.Host }}</span>{{end}}{{if .Provenance.Cwd}}<span class="cwd">{{ .Provenance.Cwd }}</span>{{end}}{{if .Provenance.Tool}}<span class="tool">{{ .Provenance.Tool }}</span>{{end}}{{if .Provenance.Pane}}<span class="pane">pane {{ .Provenance.Pane }}</span>{{else if .Provenance.PaneRecorded}}<span class="unroutable">unroutable</span>{{end}}</div>
+{{end}}{{if .Message}}<form class="answer">
+{{range .Item.Options}}<button type="submit" name="kind" value="option" data-value="{{ .Label }}"{{if .Recommended}} class="recommended"{{end}}>{{ .Label }}{{if .Recommended}} <span class="rec">recommended</span>{{end}}</button>
+{{end}}<button type="submit" name="kind" value="skip">Skip</button>
+<input type="text" name="text" placeholder="or answer in your own words">
+<button type="submit" name="kind" value="text">Send</button>
+{{if $.Speak}}<button type="button" class="speak" data-speak>Read aloud</button>
+{{end}}</form>
+{{else if .Jump}}<div class="jump">Approve in the session that asked: <code>{{ .Jump }}</code></div>
 {{end}}<div class="meta">{{ .Item.State }} - {{ .Item.CreatedAt }}</div>
 </li>
 {{end}}</ul>
 {{else}}<p class="empty">Nothing needs attention.</p>
-{{end}}</body>
+{{end}}
+<script>
+/* Answer controls exist for message items only, and the form is intercepted so
+   a failed answer is shown rather than swallowed into a reload: a bare catch
+   that reloads anyway reports a code fault as a connection problem. */
+document.querySelectorAll('form.answer').forEach(function (form) {
+  form.addEventListener('submit', function (event) {
+    event.preventDefault();
+    var button = event.submitter;
+    var kind = button ? button.value : 'text';
+    var value = '';
+    if (kind === 'option') { value = button.getAttribute('data-value') || ''; }
+    if (kind === 'text') { value = form.querySelector('input[name=text]').value; }
+    var answer = { kind: kind };
+    if (value) { answer.value = value; }
+    fetch('/api/1.0/attention/' + encodeURIComponent(form.closest('li.item').getAttribute('data-item-id')) + '/answer', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ answered_by: 'attention-board', answer: answer })
+    }).then(function (response) {
+      if (response.ok) { window.location.reload(); return; }
+      return response.text().then(function (body) {
+        showNote(form, 'Answer failed - HTTP ' + response.status + ' - ' + body, true);
+      });
+    }).catch(function (error) {
+      showNote(form, 'Answer failed - ' + String(error), true);
+    });
+  });
+});
+function showNote(form, message, isError) {
+  var previous = form.querySelector('.note');
+  if (previous) { previous.remove(); }
+  var note = document.createElement('div');
+  note.className = isError ? 'note failed' : 'note';
+  note.textContent = message;
+  form.appendChild(note);
+}
+/* The read-aloud control is type="button" so it never submits the answer form.
+   It reports the tts message id rather than reloading, because the item is
+   still open and the id is what a caller polls for playback status. */
+document.querySelectorAll('button[data-speak]').forEach(function (button) {
+  button.addEventListener('click', function () {
+    var form = button.closest('form.answer');
+    var itemID = form.closest('li.item').getAttribute('data-item-id');
+    fetch('/api/1.0/attention/' + encodeURIComponent(itemID) + '/speak', { method: 'POST' })
+      .then(function (response) {
+        return response.text().then(function (body) {
+          showNote(
+            form,
+            response.ok
+              ? 'Reading aloud (' + body + ')'
+              : 'Read aloud failed - HTTP ' + response.status + ' - ' + body,
+            !response.ok
+          );
+        });
+      }).catch(function (error) {
+        showNote(form, 'Read aloud failed - ' + String(error), true);
+      });
+  });
+});
+</script>
+</body>
 </html>
 `
 
@@ -117,6 +247,15 @@ li.item {
 type attentionPageRow struct {
 	Item       pkg.Item
 	Provenance pkg.Provenance
+	// Message reports whether this row renders answer controls. True for
+	// `message` items only: a `permission` item is approve-shaped and only the
+	// operator may answer it in the session that raised it, so a control there
+	// would be the permission laundering the schema forbids.
+	Message bool
+	// Jump is the copyable command handing a non-`message` item back to the
+	// session that raised it. Empty when no pane resolved — an unresolvable
+	// value renders absent rather than as a stand-in, per the schema's silence 7.
+	Jump string
 }
 
 // attentionPageData is what the template renders: the items the store's read
@@ -124,6 +263,28 @@ type attentionPageRow struct {
 // own — the store never ranks, so the page must not either.
 type attentionPageData struct {
 	Items []attentionPageRow
+	// Speak reports whether a read-aloud control should render. False when no
+	// tts server is configured, so the page never offers a control whose
+	// endpoint is unrouted.
+	Speak bool
+}
+
+// jumpCommand renders the handover for an item the board must not answer.
+//
+// It is a command to copy, not a link: a browser cannot activate a WezTerm tab,
+// and an anchor that goes nowhere presents an unresolvable value as resolved,
+// which is what the schema's silence 7 forbids. An item whose pane did not
+// resolve yields no command, so its row renders exactly as it did before.
+//
+// It is empty for a `message` item, which renders answer controls instead.
+func jumpCommand(item pkg.Item, provenance pkg.Provenance) string {
+	if item.AnswerMechanism == pkg.MessageAnswerMechanism {
+		return ""
+	}
+	if provenance.Pane == "" {
+		return ""
+	}
+	return "/supervisor:jump " + provenance.Pane
 }
 
 // NewAttentionPageHandler creates the read-only HTML page a human opens to see
@@ -149,6 +310,7 @@ type attentionPageData struct {
 func NewAttentionPageHandler(
 	store pkg.AttentionStore,
 	provenance pkg.ProvenanceResolver,
+	speakEnabled bool,
 ) http.Handler {
 	// Parsed once at construction rather than per request: the template is a
 	// compile-time constant, so a parse failure is a programming error, and
@@ -171,9 +333,12 @@ func NewAttentionPageHandler(
 				provenances := provenance.Resolve(ctx, items)
 				rows := make([]attentionPageRow, 0, len(items))
 				for _, item := range items {
+					resolved := provenances[item.ItemID]
 					rows = append(rows, attentionPageRow{
 						Item:       item,
-						Provenance: provenances[item.ItemID],
+						Provenance: resolved,
+						Message:    item.AnswerMechanism == pkg.MessageAnswerMechanism,
+						Jump:       jumpCommand(item, resolved),
 					})
 				}
 				// Rendered into a buffer first so a render failure can still
@@ -181,7 +346,7 @@ func NewAttentionPageHandler(
 				// response would commit a 200 and a partial document before the
 				// error handler had a chance to report anything.
 				var body bytes.Buffer
-				if err := page.Execute(&body, attentionPageData{Items: rows}); err != nil {
+				if err := page.Execute(&body, attentionPageData{Items: rows, Speak: speakEnabled}); err != nil {
 					return errors.Wrap(ctx, err, "render page failed")
 				}
 				resp.Header().Set(

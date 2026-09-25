@@ -61,6 +61,14 @@ func handleAttentionAnswer(
 		// recorded, which is what a message- or ack-class item reads as, and
 		// what every item answered before this field existed reads as.
 		Decision pkg.Decision `json:"decision"`
+		// Answer is what the operator actually said on a message item — the
+		// chosen option's label, a skip, or free text. Distinct from Decision
+		// for the same reason Decision is distinct from AnsweredBy: a chosen
+		// label is not a verdict. Optional: an omitted value stores an item with
+		// no answer content recorded, which is what a permission- or ack-class
+		// item reads as, and what every item answered before this field existed
+		// reads as.
+		Answer *pkg.Answer `json:"answer"`
 	}
 	if err := json.NewDecoder(req.Body).Decode(&request); err != nil {
 		return libhttp.WrapWithDetails(
@@ -70,10 +78,17 @@ func handleAttentionAnswer(
 			map[string]any{"reason": "request body is not valid JSON"},
 		)
 	}
-	if err := validateAnswerRequest(ctx, request.Decision); err != nil {
+	if err := validateAnswerRequest(ctx, request.Decision, request.Answer); err != nil {
 		return err
 	}
-	item, err := store.Answer(ctx, itemID, request.AnsweredBy, request.ResolvedBy, request.Decision)
+	item, err := store.Answer(
+		ctx,
+		itemID,
+		request.AnsweredBy,
+		request.ResolvedBy,
+		request.Decision,
+		request.Answer,
+	)
 	if err != nil {
 		return wrapAnswerError(ctx, err, itemID)
 	}
@@ -83,16 +98,22 @@ func handleAttentionAnswer(
 	return nil
 }
 
-// validateAnswerRequest rejects a decision the schema's enum does not allow,
-// before the store is touched — the same shape validatePushRequest uses.
+// validateAnswerRequest rejects a decision or an answer the schema's rules do
+// not allow, before the store is touched — the same shape validatePushRequest
+// uses.
 //
-// It checks the decision alone. answered_by and resolved_by are free-form
-// declarations with no value domain, while decision is an enum whose whole
-// purpose is membership, so it is the one field here that can be wrong in a way
-// the store could not notice. An OMITTED decision is deliberately not rejected:
-// the schema declines to add that rule, so an empty value stores an item with
-// no verdict recorded. Only a non-empty unknown value fails.
-func validateAnswerRequest(ctx context.Context, decision pkg.Decision) error {
+// It checks the decision and the answer alone. answered_by and resolved_by are
+// free-form declarations with no value domain, while decision and answer are
+// closed vocabularies whose whole purpose is membership, so they are the fields
+// here that can be wrong in a way the store could not notice. An OMITTED
+// decision or answer is deliberately not rejected: the schema declines to add
+// those rules, so an empty value stores an item with nothing recorded. Only a
+// present-and-wrong value fails.
+func validateAnswerRequest(
+	ctx context.Context,
+	decision pkg.Decision,
+	answer *pkg.Answer,
+) error {
 	if err := decision.Validate(ctx); err != nil {
 		return libhttp.WrapWithDetails(
 			errors.Wrap(ctx, err, "validate answer request failed"),
@@ -100,6 +121,16 @@ func validateAnswerRequest(ctx context.Context, decision pkg.Decision) error {
 			http.StatusBadRequest,
 			map[string]any{"decision": decision.String()},
 		)
+	}
+	if answer != nil {
+		if err := answer.Validate(ctx); err != nil {
+			return libhttp.WrapWithDetails(
+				errors.Wrap(ctx, err, "validate answer request failed"),
+				libhttp.ErrorCodeValidation,
+				http.StatusBadRequest,
+				map[string]any{"answer_kind": answer.Kind.String()},
+			)
+		}
 	}
 	return nil
 }

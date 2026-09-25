@@ -60,7 +60,7 @@ var _ = Describe("AttentionPageHandler", func() {
 		// provenance cannot be resolved renders no provenance line at all.
 		provenance = &mocks.ProvenanceResolver{}
 
-		httpHandler = handler.NewAttentionPageHandler(store, provenance)
+		httpHandler = handler.NewAttentionPageHandler(store, provenance, false)
 	})
 
 	AfterEach(func() {
@@ -134,7 +134,10 @@ var _ = Describe("AttentionPageHandler", func() {
 
 		body := get("GET").Body.String()
 
-		Expect(body).NotTo(ContainSubstring("<script>"))
+		// The page legitimately carries its own <script> for the answer controls,
+		// so the assertion is that the *injected* raw script is absent rather than
+		// that no script element exists at all.
+		Expect(body).NotTo(ContainSubstring("<script>alert(1)"))
 		Expect(body).To(ContainSubstring("&lt;script&gt;"))
 	})
 
@@ -155,19 +158,50 @@ var _ = Describe("AttentionPageHandler", func() {
 		Expect(body).NotTo(ContainSubstring(closed.ProducerID.String()))
 	})
 
-	It("offers no way to answer, close or change anything", func() {
-		_, err := store.Push(ctx, pushRequest("producer-readonly", "gate-readonly", "read me"))
+	// ⚠️ This spec previously asserted the page was inert — no <form>, no
+	// <script>, no method="post" — which was the recorded design decision the
+	// board reversal overturns. It asserts the *bounded* rule instead: answer
+	// controls exist for `message` items and a `permission` item renders none,
+	// because only the operator may answer a gate, and only in the session that
+	// raised it. See the attention item schema § Answer routing, and the page
+	// handler's own doc comment for why the reversal stops there.
+	It("offers answer controls for a message item and none for a permission item", func() {
+		message, err := store.Push(
+			ctx,
+			pushRequest("producer-readonly", "gate-readonly", "read me"),
+		)
+		Expect(err).To(BeNil())
+		permission, err := store.Push(ctx, pkg.PushRequest{
+			ProducerID:      "producer-gate",
+			ProducerKind:    pkg.SessionProducerKind,
+			LivenessRef:     pkg.LivenessRef("session:producer-gate"),
+			DedupKey:        "gate-permission",
+			InterruptClass:  "approve",
+			Payload:         "deploy prod?",
+			AnswerMechanism: pkg.PermissionAnswerMechanism,
+		})
 		Expect(err).To(BeNil())
 
 		// A non-empty page first, so the absence assertions below are made against
 		// a rendered document rather than against an empty body.
 		resp := get("GET")
 		Expect(resp.Body.String()).NotTo(BeEmpty())
+		body := resp.Body.String()
 
-		body := strings.ToLower(resp.Body.String())
-		Expect(body).NotTo(ContainSubstring("<form"))
-		Expect(body).NotTo(ContainSubstring("<script"))
-		Expect(body).NotTo(ContainSubstring(`method="post"`))
+		// Scoped per row rather than page-wide: a page-wide grep would pass on a
+		// page where the wrong item carried the controls.
+		rowOf := func(itemID pkg.ItemID) string {
+			start := strings.Index(body, `data-item-id="`+itemID.String()+`"`)
+			Expect(start).To(BeNumerically(">=", 0))
+			rest := body[start:]
+			end := strings.Index(rest, "</li>")
+			Expect(end).To(BeNumerically(">=", 0))
+			return rest[:end]
+		}
+
+		Expect(rowOf(message.ItemID)).To(ContainSubstring("<form"))
+		Expect(rowOf(permission.ItemID)).NotTo(ContainSubstring("<form"))
+		Expect(rowOf(permission.ItemID)).NotTo(ContainSubstring("<button"))
 
 		// HEAD is routed to this handler too; it is read-only and a link checker
 		// or browser may issue it, so it is asserted rather than merely declared.
