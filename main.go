@@ -208,6 +208,16 @@ func (a *application) createJumpTokenReader(ctx context.Context) pkg.JumpTokenRe
 	return pkg.NewJumpTokenReader(path)
 }
 
+// createJumpCaller builds the HTTP caller the board's Jump button goes through.
+//
+// The timeout is deliberate: the button reports success only on a 204, so a
+// jump that hangs must not hold the request open — the operator would otherwise
+// be left with a control that appears to have done nothing, which is the same
+// silent failure as a button that never worked.
+func (a *application) createJumpCaller() pkg.JumpCaller {
+	return pkg.NewJumpCaller(&http.Client{Timeout: 5 * time.Second})
+}
+
 func (a *application) createHTTPServer(
 	sentryClient libsentry.Client,
 	db libkv.DB,
@@ -222,6 +232,7 @@ func (a *application) createHTTPServer(
 		// nested at a call site read as wiring that happened by accident.
 		provenance := a.createProvenanceResolver(ctx)
 		jumpTokens := a.createJumpTokenReader(ctx)
+		jumpCaller := a.createJumpCaller()
 
 		router := mux.NewRouter()
 		router.Path("/healthz").Handler(factory.CreateHealthzHandler())
@@ -240,7 +251,7 @@ func (a *application) createHTTPServer(
 		// a redirect is a navigation rather than a business call.
 		router.Path("/jump/{itemID}").
 			Methods(http.MethodGet, http.MethodHead).
-			Handler(factory.CreateAttentionJumpHandler(store, provenance, jumpTokens, a.JumpURL))
+			Handler(factory.CreateAttentionJumpHandler(store, provenance, jumpTokens, jumpCaller, a.JumpURL))
 		// The attention page sits at / rather than under /api/1.0/ because it
 		// renders HTML for a human rather than JSON for an API client — it is
 		// the store's operator-facing surface, not a business endpoint. It is

@@ -77,18 +77,20 @@ func CreateAttentionPageHandler(
 	return handler.NewAttentionPageHandler(store, provenance, speakEnabled, jumpTokens)
 }
 
-// CreateAttentionJumpHandler creates the redirect that hands an item back to
-// the session that raised it, appending the fleet-jump token server-side.
+// CreateAttentionJumpHandler creates the endpoint the board's Jump button calls
+// to hand an item back to the session that raised it.
 //
-// jumpBaseURL is the fleet-jump server's origin; the handler adds the pane and
-// the token, so the token never appears in a rendered link.
+// jumpBaseURL is the fleet-jump server's origin and jumpCaller is what performs
+// the jump against it; the handler adds the pane and the token, so the token
+// never appears in a rendered page or in a response.
 func CreateAttentionJumpHandler(
 	store pkg.AttentionStore,
 	provenance pkg.ProvenanceResolver,
 	jumpTokens pkg.JumpTokenReader,
+	jumpCaller pkg.JumpCaller,
 	jumpBaseURL string,
 ) http.Handler {
-	return handler.NewAttentionJumpHandler(store, provenance, jumpTokens, jumpBaseURL)
+	return handler.NewAttentionJumpHandler(store, provenance, jumpTokens, jumpCaller, jumpBaseURL)
 }
 
 // CreateAttentionSpeakHandler creates the handler that reads an item aloud

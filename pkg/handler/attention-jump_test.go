@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	libboltkv "github.com/bborbe/boltkv"
+	"github.com/bborbe/errors"
 	libhttp "github.com/bborbe/http"
 	libkv "github.com/bborbe/kv"
 	libtime "github.com/bborbe/time"
@@ -27,9 +28,9 @@ import (
 )
 
 // jumpBaseURL stands in for the fleet-jump server's origin. It is a distinct
-// host on purpose: the redirect's Location must be built from the configured
-// origin, not from the request's own Host, so a test that used the request host
-// would pass on an implementation that echoed the request back.
+// host on purpose: the jump is issued server-side against the configured
+// origin, not against the request's own Host, so a test that used the request
+// host would pass on an implementation that echoed the request back.
 const jumpBaseURL = "http://fleet-jump.test:1337"
 
 // jumpTokenSentinel is the token written to the temp file. It is deliberately
@@ -38,23 +39,30 @@ const jumpBaseURL = "http://fleet-jump.test:1337"
 const jumpTokenSentinel = "TESTTOKEN-DO-NOT-LEAK"
 
 // The Jump handover has two halves that must not be collapsed into one: the
-// button's href is a path on *this* board, and following it re-resolves the pane
-// and appends the fleet-jump token server-side. These specs hold both halves —
-// what the page renders, and what the redirect does with the request — because
-// the token's whole reason for existing is that it never reaches the browser,
-// and only the pair of them together shows that.
+// button's data-jump is a path on *this* board, and following it re-resolves the
+// pane and performs the jump against the fleet-jump server with the token
+// server-side. These specs hold both halves — what the page renders, and what
+// the handler does with the request — because the token's whole reason for
+// existing is that it never reaches the browser, and only the pair of them
+// together shows that.
+//
+// ⚠️ The handler answers 204 and performs the jump itself; it no longer
+// redirects. A redirect navigated the browser away from the board — the exact
+// behaviour the operator asked to remove — and published the token in the
+// Location header of every click.
 var _ = Describe("Attention jump handover", func() {
 	var ctx context.Context
 	var db libkv.DB
 	var store pkg.AttentionStore
 	var provenance *mocks.ProvenanceResolver
+	var jumpCaller *mocks.JumpCaller
 	var tokenDir string
 	var tokenPath string
 
 	BeforeEach(func() {
 		ctx = context.Background()
 		var err error
-		// A real boltkv DB and a real store, not a fake of either: the redirect
+		// A real boltkv DB and a real store, not a fake of either: the handler
 		// reads through the store's Get, so a faked store would assert the call
 		// shape instead of the item the production read path would return.
 		db, err = libboltkv.OpenTemp(ctx)
@@ -72,6 +80,7 @@ var _ = Describe("Attention jump handover", func() {
 		)
 
 		provenance = &mocks.ProvenanceResolver{}
+		jumpCaller = &mocks.JumpCaller{}
 
 		// A real readable token file, so the readable-token cases exercise the
 		// same read path production does. The sentinel is what the leak
@@ -171,17 +180,26 @@ var _ = Describe("Attention jump handover", func() {
 			return rowBlock(resp.Body.String(), itemID)
 		}
 
-		It("renders a Jump button whose href is the item's board-relative jump path", func() {
+		// The control is a button carrying data-jump, never an anchor with an
+		// href: a link navigates the browser away from the board, which is the
+		// behaviour the operator asked to remove. The path is a path on this
+		// board, never the fleet-jump URL — that URL carries the token, and the
+		// token must not reach the document.
+		It("renders a Jump button whose data-jump is the item's board-relative jump path", func() {
 			item := pushItem(nonMessageRequest())
 			resolvedPane(item.ItemID, "1907")
 
-			block := renderRow(item.ItemID)
+			resp := renderPage()
+			Expect(resp.Code).To(Equal(http.StatusOK))
+			block := rowBlock(resp.Body.String(), item.ItemID)
 
-			// The href is a path on this board, never the fleet-jump URL: that URL
-			// carries the token, and the token must not reach the document.
 			Expect(block).To(ContainSubstring(`class="jump-button"`))
-			Expect(block).To(ContainSubstring(`href="/jump/` + item.ItemID.String() + `"`))
+			Expect(block).To(ContainSubstring(`<button type="button"`))
+			Expect(block).To(ContainSubstring(`data-jump="/jump/` + item.ItemID.String() + `"`))
 			Expect(block).NotTo(ContainSubstring(jumpBaseURL))
+			// No anchor to the jump route anywhere on the page: an href would
+			// navigate the board away on a click.
+			Expect(resp.Body.String()).NotTo(ContainSubstring(`href="/jump/`))
 		})
 
 		// An unresolvable pane must render absent rather than as a stand-in: a
@@ -194,7 +212,7 @@ var _ = Describe("Attention jump handover", func() {
 			block := renderRow(item.ItemID)
 
 			Expect(block).NotTo(ContainSubstring("jump-button"))
-			Expect(block).NotTo(ContainSubstring(`href="/jump/`))
+			Expect(block).NotTo(ContainSubstring(`data-jump="/jump/`))
 			Expect(block).NotTo(ContainSubstring("/supervisor:jump"))
 			Expect(block).NotTo(ContainSubstring(`class="jump"`))
 			Expect(block).NotTo(ContainSubstring("Jump to session"))
@@ -218,7 +236,7 @@ var _ = Describe("Attention jump handover", func() {
 			block := renderRow(item.ItemID)
 
 			Expect(block).To(ContainSubstring(`class="jump-button"`))
-			Expect(block).To(ContainSubstring(`href="/jump/` + item.ItemID.String() + `"`))
+			Expect(block).To(ContainSubstring(`data-jump="/jump/` + item.ItemID.String() + `"`))
 			Expect(block).NotTo(ContainSubstring("/supervisor:jump"))
 			Expect(block).NotTo(ContainSubstring("Approve in the session that asked"))
 		})
@@ -253,12 +271,12 @@ var _ = Describe("Attention jump handover", func() {
 			block := rowBlock(resp.Body.String(), item.ItemID)
 
 			Expect(block).NotTo(ContainSubstring("jump-button"))
-			Expect(block).NotTo(ContainSubstring(`href="/jump/`))
+			Expect(block).NotTo(ContainSubstring(`data-jump="/jump/`))
 			Expect(block).To(ContainSubstring("/supervisor:jump 1907"))
 		})
 
-		// The token is a credential. It belongs in the redirect's Location header
-		// and nowhere a document the browser renders can carry it.
+		// The token is a credential. It stays on the server, in the request the
+		// handler builds and nowhere a document the browser renders can carry it.
 		It("never renders the token value into the page", func() {
 			item := pushItem(nonMessageRequest())
 			resolvedPane(item.ItemID, "1907")
@@ -269,12 +287,12 @@ var _ = Describe("Attention jump handover", func() {
 
 			// Positive control first: a page that failed to render the handover at
 			// all must not be able to satisfy the leak assertion below.
-			Expect(body).To(ContainSubstring(`href="/jump/` + item.ItemID.String() + `"`))
+			Expect(body).To(ContainSubstring(`data-jump="/jump/` + item.ItemID.String() + `"`))
 			Expect(body).NotTo(ContainSubstring(jumpTokenSentinel))
 		})
 	})
 
-	Describe("the jump redirect", func() {
+	Describe("the jump handler", func() {
 		var jumpHandler http.Handler
 
 		BeforeEach(func() {
@@ -282,6 +300,7 @@ var _ = Describe("Attention jump handover", func() {
 				store,
 				provenance,
 				pkg.NewJumpTokenReader(tokenPath),
+				jumpCaller,
 				jumpBaseURL,
 			)
 		})
@@ -301,36 +320,60 @@ var _ = Describe("Attention jump handover", func() {
 			return resp
 		}
 
-		It("redirects a same-origin request with the pane and the token in the Location", func() {
+		// The jump happens server-side and the response carries no body. A 204 is
+		// what keeps the browser on the board: it is not a navigation, so the
+		// page's fetch() resolves in place and the operator's screen stays put.
+		It(
+			"performs the jump server-side and answers 204 with no Location and an empty body",
+			func() {
+				item := pushItem(nonMessageRequest())
+				resolvedPane(item.ItemID, "1907")
+
+				resp := jump(item.ItemID, "same-origin")
+
+				Expect(resp.Code).To(Equal(http.StatusNoContent))
+				// No Location: a redirect would navigate the board away and publish
+				// the token in the header.
+				Expect(resp.Header().Get("Location")).To(BeEmpty())
+				Expect(resp.Body.String()).To(BeEmpty())
+			},
+		)
+
+		// The pane is re-resolved here rather than carried in the request, and the
+		// token is read from the file, so the caller's arguments are the only
+		// place either value appears.
+		It("calls the jump caller once with the base URL, the resolved pane and the token", func() {
 			item := pushItem(nonMessageRequest())
 			resolvedPane(item.ItemID, "1907")
 
 			resp := jump(item.ItemID, "same-origin")
 
-			Expect(resp.Code).To(Equal(http.StatusFound))
-			location := resp.Header().Get("Location")
-			Expect(location).To(ContainSubstring(jumpBaseURL + "/jump?"))
-			// The pane is re-resolved here rather than carried in the link, so the
-			// header is the only place either value appears.
-			Expect(location).To(ContainSubstring("pane=1907"))
-			Expect(location).To(ContainSubstring("t=" + jumpTokenSentinel))
+			Expect(resp.Code).To(Equal(http.StatusNoContent))
+			Expect(jumpCaller.JumpCallCount()).To(Equal(1))
+			_, baseURL, pane, token := jumpCaller.JumpArgsForCall(0)
+			Expect(baseURL).To(Equal(jumpBaseURL))
+			Expect(pane).To(Equal("1907"))
+			Expect(token).To(Equal(jumpTokenSentinel))
 		})
 
-		It("never writes the token into the redirect's body", func() {
+		// Trivially true for a 204, and asserted anyway: a body is the only place
+		// the token could land in the response, so the assertion is what would
+		// catch a future implementation that wrote one.
+		It("never writes the token into the response body", func() {
 			item := pushItem(nonMessageRequest())
 			resolvedPane(item.ItemID, "1907")
 
 			resp := jump(item.ItemID, "same-origin")
 
-			Expect(resp.Code).To(Equal(http.StatusFound))
+			Expect(resp.Code).To(Equal(http.StatusNoContent))
 			Expect(resp.Body.String()).NotTo(ContainSubstring(jumpTokenSentinel))
 		})
 
 		// The token's whole purpose is to defeat the cross-origin case where a
-		// visited page fires <img src=".../jump?pane=X">. Routing the jump through
+		// visited page fires <img src=".../jump/<itemID>">. Routing the jump through
 		// this origin re-opens that vector, so the route checks the request itself
 		// rather than resting on item-id unguessability.
-		It("refuses a cross-site request with 403 and no redirect", func() {
+		It("refuses a cross-site request with 403 and does not call the jump caller", func() {
 			item := pushItem(nonMessageRequest())
 			resolvedPane(item.ItemID, "1907")
 
@@ -338,9 +381,10 @@ var _ = Describe("Attention jump handover", func() {
 
 			Expect(resp.Code).To(Equal(http.StatusForbidden))
 			Expect(resp.Header().Get("Location")).To(BeEmpty())
+			Expect(jumpCaller.JumpCallCount()).To(Equal(0))
 		})
 
-		It("refuses a same-site request with 403 and no redirect", func() {
+		It("refuses a same-site request with 403 and does not call the jump caller", func() {
 			item := pushItem(nonMessageRequest())
 			resolvedPane(item.ItemID, "1907")
 
@@ -348,12 +392,13 @@ var _ = Describe("Attention jump handover", func() {
 
 			Expect(resp.Code).To(Equal(http.StatusForbidden))
 			Expect(resp.Header().Get("Location")).To(BeEmpty())
+			Expect(jumpCaller.JumpCallCount()).To(Equal(0))
 		})
 
 		// `same-origin` is the button click itself; `none` is a direct address-bar
 		// or bookmark entry. Both are allowed — an Origin-only check would reject
-		// the very navigation this route exists to serve, since a same-origin <a
-		// href> GET sends no Origin header at all.
+		// the very navigation this route exists to serve, since a same-origin GET
+		// sends no Origin header at all.
 		DescribeTable("allows a request that is not cross-site",
 			func(secFetchSite string) {
 				item := pushItem(nonMessageRequest())
@@ -361,14 +406,14 @@ var _ = Describe("Attention jump handover", func() {
 
 				resp := jump(item.ItemID, secFetchSite)
 
-				Expect(resp.Code).To(Equal(http.StatusFound))
-				Expect(resp.Header().Get("Location")).NotTo(BeEmpty())
+				Expect(resp.Code).To(Equal(http.StatusNoContent))
+				Expect(jumpCaller.JumpCallCount()).To(Equal(1))
 			},
 			Entry("same-origin", "same-origin"),
 			Entry("none", "none"),
 		)
 
-		It("returns 404 and no redirect when the pane does not resolve", func() {
+		It("returns 404 and does not call the jump caller when the pane does not resolve", func() {
 			item := pushItem(nonMessageRequest())
 			provenance.ResolveReturns(pkg.Provenances{})
 
@@ -376,6 +421,7 @@ var _ = Describe("Attention jump handover", func() {
 
 			Expect(resp.Code).To(Equal(http.StatusNotFound))
 			Expect(resp.Header().Get("Location")).To(BeEmpty())
+			Expect(jumpCaller.JumpCallCount()).To(Equal(0))
 			// Decoded rather than substring-matched, so a body that merely resembles
 			// the standard error shape does not pass.
 			var errorResponse libhttp.ErrorResponse
@@ -383,11 +429,12 @@ var _ = Describe("Attention jump handover", func() {
 			Expect(errorResponse.Error.Message).To(ContainSubstring("no resolvable pane"))
 		})
 
-		It("returns 503 and no redirect when the token is unreadable", func() {
+		It("returns 503 and does not call the jump caller when the token is unreadable", func() {
 			jumpHandler = handler.NewAttentionJumpHandler(
 				store,
 				provenance,
 				pkg.NewJumpTokenReader(""),
+				jumpCaller,
 				jumpBaseURL,
 			)
 			item := pushItem(nonMessageRequest())
@@ -397,9 +444,26 @@ var _ = Describe("Attention jump handover", func() {
 
 			Expect(resp.Code).To(Equal(http.StatusServiceUnavailable))
 			Expect(resp.Header().Get("Location")).To(BeEmpty())
+			Expect(jumpCaller.JumpCallCount()).To(Equal(0))
 			var errorResponse libhttp.ErrorResponse
 			Expect(json.NewDecoder(resp.Body).Decode(&errorResponse)).To(BeNil())
 			Expect(errorResponse.Error.Message).To(ContainSubstring("jump token unavailable"))
+		})
+
+		// A failed jump is reported, never swallowed into a 204. The body carries
+		// the failure, never the target URL — the URL carries the token.
+		It("returns 502 when the jump caller fails", func() {
+			jumpCaller.JumpReturns(errors.New(ctx, "jump server refused the request"))
+			item := pushItem(nonMessageRequest())
+			resolvedPane(item.ItemID, "1907")
+
+			resp := jump(item.ItemID, "same-origin")
+
+			Expect(resp.Code).To(Equal(http.StatusBadGateway))
+			Expect(resp.Body.String()).NotTo(ContainSubstring(jumpTokenSentinel))
+			var errorResponse libhttp.ErrorResponse
+			Expect(json.NewDecoder(resp.Body).Decode(&errorResponse)).To(BeNil())
+			Expect(errorResponse.Error.Message).To(ContainSubstring("jump failed"))
 		})
 	})
 })

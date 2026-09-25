@@ -7,7 +7,6 @@ package handler
 import (
 	"context"
 	"net/http"
-	"net/url"
 
 	"github.com/bborbe/errors"
 	libhttp "github.com/bborbe/http"
@@ -17,24 +16,30 @@ import (
 	"github.com/bborbe/attention-controller/pkg"
 )
 
-// NewAttentionJumpHandler creates the redirect that hands an item back to the
-// session that raised it.
+// NewAttentionJumpHandler creates the endpoint the board's Jump button calls to
+// hand an item back to the session that raised it.
 //
-// ⚠️ It exists so the token never reaches the browser. The fleet-jump server
-// authenticates with a shared token passed as a query parameter, so a page that
-// linked to it directly would publish that token in the served document on
-// every load. The board therefore links to /jump/<itemID> on its own origin and
-// this handler appends the token server-side.
+// ⚠️ It performs the jump **server-side** and answers 204 with no body, rather
+// than redirecting the browser at the fleet-jump server. Two reasons, and the
+// second is the one the operator asked for:
 //
-// The pane is re-resolved here rather than carried in the link, because a pane
-// id is recycled across tab moves and WezTerm restarts: a link holding one
-// would keep pointing at a pane that has since become another session's, which
-// is a wrong answer wearing the appearance of a resolved one. An item whose
-// pane does not resolve redirects nowhere.
+//   - The token never reaches the browser. The fleet-jump server authenticates
+//     with a shared token in a query parameter, so a redirect would put it in
+//     the Location header of every click; here it stays on the server.
+//   - A redirect navigates the browser away from the board. The operator's ask
+//     was explicitly "so we dont switch the screen" — a click must switch
+//     WezTerm and leave the board exactly where it was.
+//
+// The pane is re-resolved here rather than carried in the request, because a
+// pane id is recycled across tab moves and WezTerm restarts: a request holding
+// one would keep pointing at a pane that has since become another session's,
+// which is a wrong answer wearing the appearance of a resolved one. An item
+// whose pane does not resolve jumps nowhere and says so.
 func NewAttentionJumpHandler(
 	store pkg.AttentionStore,
 	provenance pkg.ProvenanceResolver,
 	jumpTokens pkg.JumpTokenReader,
+	jumpCaller pkg.JumpCaller,
 	jumpBaseURL string,
 ) http.Handler {
 	return libhttp.NewJSONErrorHandler(
@@ -67,30 +72,29 @@ func NewAttentionJumpHandler(
 				if err != nil {
 					// The failure is logged; the token value never is, and this
 					// branch is the one that would leak it if anything did.
-					glog.V(2).Infof("jump token unavailable, refusing redirect: %v", err)
+					glog.V(2).Infof("jump token unavailable, refusing jump: %v", err)
 					return libhttp.WrapWithCode(
 						errors.New(ctx, "jump token unavailable"),
 						libhttp.ErrorCodeInternal,
 						http.StatusServiceUnavailable,
 					)
 				}
-				// Encoded rather than interpolated: a token containing '&' or '#'
-				// would otherwise inject a parameter or truncate itself.
-				target := jumpBaseURL + "/jump?" + url.Values{
-					"pane": {pane},
-					"t":    {token},
-				}.Encode()
-				// ⚠️ The Location header is written directly rather than through
-				// http.Redirect, because http.Redirect emits a body —
-				// `<a href="<escaped target>">Found</a>` — whenever no
-				// Content-Type is already set, and that body reflects the target,
-				// which carries the token. A client that does not follow the
-				// redirect (curl without -L, a fetch reading .text()) would read
-				// the credential straight out of the response. The token belongs
-				// in the header, which only the navigation consumes, and nowhere
-				// else.
-				resp.Header().Set("Location", target)
-				resp.WriteHeader(http.StatusFound)
+				// ⚠️ The jump is performed here rather than handed to the browser
+				// as a redirect. A redirect would publish the token in the
+				// Location header and navigate the board out of view — the exact
+				// behaviour the operator asked to remove. The response carries no
+				// body, so there is nowhere for the token to land either.
+				if err := jumpCaller.Jump(ctx, jumpBaseURL, pane, token); err != nil {
+					// The error is logged without the target, which carries the
+					// token; the caller gets the failure, never the URL.
+					glog.V(2).Infof("jump failed: %v", err)
+					return libhttp.WrapWithCode(
+						errors.Wrap(ctx, err, "jump failed"),
+						libhttp.ErrorCodeInternal,
+						http.StatusBadGateway,
+					)
+				}
+				resp.WriteHeader(http.StatusNoContent)
 				return nil
 			},
 		),
