@@ -249,8 +249,10 @@ var _ = Describe("Questions and cardinality", func() {
 				pkg.Answers{
 					{
 						Question: "Chores",
-						Answer:   pkg.Answer{Kind: pkg.OptionAnswerKind},
-						Values:   []string{"Broken wikilinks", "Huge pages"},
+						Answer: pkg.Answer{
+							Kind:   pkg.OptionAnswerKind,
+							Values: []string{"Broken wikilinks", "Huge pages"},
+						},
 					},
 					{Question: "Priority", Answer: pkg.Answer{Kind: pkg.SkipAnswerKind}},
 				},
@@ -303,10 +305,81 @@ var _ = Describe("Questions and cardinality", func() {
 			_, err = store.Answer(ctx, pushed.ItemID, "attention-board", "", "", nil, pkg.Answers{
 				{
 					Question: "Chores",
-					Answer:   pkg.Answer{Kind: pkg.OptionAnswerKind},
-					Values:   []string{"Broken wikilinks"},
+					Answer: pkg.Answer{
+						Kind:   pkg.OptionAnswerKind,
+						Values: []string{"Broken wikilinks"},
+					},
 				},
 			})
+			Expect(err).NotTo(BeNil())
+		})
+
+		It("stores several picks on a single-question item declared multiple", func() {
+			// The case a card with checkboxes and no tabs produces: the item is
+			// not multi-question, so the answer rides the item-level field rather
+			// than an answers entry, and it still has to carry every pick. Before
+			// values lived on Answer this was unrepresentable, and the board sent
+			// a body the store rejected — the card promised a multi-pick it could
+			// not deliver.
+			request := pushRequest("card-single-question-multiple")
+			request.AnswerCardinality = pkg.MultipleAnswerCardinality
+			request.Options = pkg.AnswerOptions{{Label: "a"}, {Label: "b"}}
+			pushed, err := store.Push(ctx, request)
+			Expect(err).To(BeNil())
+
+			answered, err := store.Answer(
+				ctx,
+				pushed.ItemID,
+				"attention-board",
+				"",
+				"",
+				&pkg.Answer{Kind: pkg.OptionAnswerKind, Values: []string{"a", "b"}},
+				nil,
+			)
+			Expect(err).To(BeNil())
+			Expect(answered.Answer).NotTo(BeNil())
+			Expect(answered.Answer.Values).To(Equal([]string{"a", "b"}))
+			Expect(answered.Answer.Value).To(BeEmpty())
+		})
+
+		It("rejects a single value on a single-question item declared multiple", func() {
+			request := pushRequest("card-single-question-multiple-value")
+			request.AnswerCardinality = pkg.MultipleAnswerCardinality
+			request.Options = pkg.AnswerOptions{{Label: "a"}}
+			pushed, err := store.Push(ctx, request)
+			Expect(err).To(BeNil())
+
+			_, err = store.Answer(
+				ctx,
+				pushed.ItemID,
+				"attention-board",
+				"",
+				"",
+				&pkg.Answer{Kind: pkg.OptionAnswerKind, Value: "a"},
+				nil,
+			)
+			Expect(err).NotTo(BeNil())
+		})
+
+		It("rejects the single answer field on an item carrying questions", func() {
+			// The mutual exclusion runs both ways. Accepting `answer` here would
+			// store content with no tab attached, so the producer reading
+			// `answers` back would find nothing for any question and the routing
+			// the questions exist to provide would be gone.
+			request := pushRequest("card-questions-need-answers")
+			request.Questions = pkg.Questions{{Tab: "Chores", Payload: "Which chores?"}}
+			pushed, err := store.Push(ctx, request)
+			Expect(err).To(BeNil())
+
+			_, err = store.Answer(
+				ctx,
+				pushed.ItemID,
+				"attention-board",
+				"",
+				"",
+				&pkg.Answer{Kind: pkg.SkipAnswerKind},
+				nil,
+			)
 			Expect(err).NotTo(BeNil())
 		})
 
@@ -314,8 +387,11 @@ var _ = Describe("Questions and cardinality", func() {
 			err := pkg.Answers{
 				{
 					Question: "Chores",
-					Answer:   pkg.Answer{Kind: pkg.OptionAnswerKind, Value: "a"},
-					Values:   []string{"b"},
+					Answer: pkg.Answer{
+						Kind:   pkg.OptionAnswerKind,
+						Value:  "a",
+						Values: []string{"b"},
+					},
 				},
 			}.Validate(ctx)
 			Expect(err).NotTo(BeNil())
@@ -325,15 +401,19 @@ var _ = Describe("Questions and cardinality", func() {
 			Expect(pkg.Answers{
 				{
 					Question: "Chores",
-					Answer:   pkg.Answer{Kind: pkg.SkipAnswerKind},
-					Values:   []string{"a"},
+					Answer: pkg.Answer{
+						Kind:   pkg.SkipAnswerKind,
+						Values: []string{"a"},
+					},
 				},
 			}.Validate(ctx)).NotTo(BeNil())
 			Expect(pkg.Answers{
 				{
 					Question: "Chores",
-					Answer:   pkg.Answer{Kind: pkg.TextAnswerKind},
-					Values:   []string{"a"},
+					Answer: pkg.Answer{
+						Kind:   pkg.TextAnswerKind,
+						Values: []string{"a"},
+					},
 				},
 			}.Validate(ctx)).NotTo(BeNil())
 		})

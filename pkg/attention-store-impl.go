@@ -271,13 +271,17 @@ func (a *attentionStore) Answer(
 		// caller on the same reasoning: one entry per tab, and never backfilled
 		// from the arm, the decision or the single answer.
 		item.Answers = answers
-		// ⚠️ The answer fields are validated here rather than only in
+		// ⚠️ Both answer validators are called here rather than only in
 		// Item.Validate, because this path does not call Item.Validate: it mutates
-		// a stored item and writes it back. Without this call an answer naming a
-		// question the item does not carry was accepted and stored, and the
-		// mutual-exclusion rule went unenforced on the one path a caller can
-		// actually violate it. A rejection aborts the transaction, so the item
+		// a stored item and writes it back. Without them an answer naming a
+		// question the item does not carry was accepted and stored, and so was a
+		// single label on a question declared `multiple` — the mutual-exclusion
+		// and cardinality rules went unenforced on the one path a caller can
+		// actually violate them. A rejection aborts the transaction, so the item
 		// stays open rather than half-written.
+		if err := item.validateAnswer(ctx); err != nil {
+			return errors.Wrap(ctx, err, "validate answer failed")
+		}
 		if err := item.validateAnswers(ctx); err != nil {
 			return errors.Wrap(ctx, err, "validate answers failed")
 		}

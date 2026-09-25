@@ -299,10 +299,20 @@ document.querySelectorAll('form.answer').forEach(function (form) {
       showNote(form, 'Pick an option or write an answer first.', true);
       return;
     }
-    if (multi) { request.answers = entries; } else { request.answer = { kind: entries[0].kind, value: entries[0].value }; }
+    if (multi) { request.answers = entries; } else { request.answer = singleAnswer(entries[0]); }
     sendAnswer(form, request);
   });
 });
+/* singleAnswer maps one collected entry onto the item-level answer shape.
+   It carries values when the question took several picks: a single-question item
+   declared multiple has no other field for them, so sending only value would
+   drop every pick but the first, and the store rejects the resulting body. */
+function singleAnswer(entry) {
+  var answer = { kind: entry.kind };
+  if (entry.values) { answer.values = entry.values; }
+  else if (entry.value) { answer.value = entry.value; }
+  return answer;
+}
 /* collectAnswers reads one entry per question the operator actually answered. A
    question left alone contributes nothing: an entry there would read back as a
    value where the operator gave none. */

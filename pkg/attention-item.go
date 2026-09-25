@@ -345,7 +345,7 @@ func (i Item) validateAnswersMatchQuestions(ctx context.Context) error {
 				answer.Question,
 			)
 		}
-		if err := validateAnswerCarrier(ctx, answer, cardinality); err != nil {
+		if err := validateAnswerCarrier(ctx, answer.Answer, answer.Question, cardinality); err != nil {
 			return err
 		}
 	}
@@ -360,7 +360,8 @@ func (i Item) validateAnswersMatchQuestions(ctx context.Context) error {
 // there is no set of labels to list.
 func validateAnswerCarrier(
 	ctx context.Context,
-	answer QuestionAnswer,
+	answer Answer,
+	question string,
 	cardinality AnswerCardinality,
 ) error {
 	if answer.Kind != OptionAnswerKind {
@@ -371,8 +372,8 @@ func validateAnswerCarrier(
 			return errors.Wrapf(
 				ctx,
 				validation.Error,
-				"question '%s' takes several picks, so its answer carries values, not value",
-				answer.Question,
+				"%s takes several picks, so its answer carries values, not value",
+				questionLabel(question),
 			)
 		}
 		return nil
@@ -381,11 +382,21 @@ func validateAnswerCarrier(
 		return errors.Wrapf(
 			ctx,
 			validation.Error,
-			"question '%s' takes one pick, so its answer carries value, not values",
-			answer.Question,
+			"%s takes one pick, so its answer carries value, not values",
+			questionLabel(question),
 		)
 	}
 	return nil
+}
+
+// questionLabel names the question a carrier error is about, so one rule reads
+// correctly on both paths it serves: the per-tab path, which names a tab, and
+// the single-question path, which has no tab to name.
+func questionLabel(tab string) string {
+	if tab == "" {
+		return "the item's question"
+	}
+	return "question '" + tab + "'"
 }
 
 // validateAnswer validates the answer content when one was recorded, and treats
@@ -398,5 +409,29 @@ func (i Item) validateAnswer(ctx context.Context) error {
 	if i.Answer == nil {
 		return nil
 	}
-	return errors.Wrap(ctx, i.Answer.Validate(ctx), "validate answer failed")
+	// An item carrying questions is answered through `answers`, one entry per
+	// tab. Accepting the single field here would store an answer with no tab
+	// attached, so the producer reading `answers` back would find nothing for any
+	// question and the routing `questions` exist to provide would be gone. The
+	// mutual exclusion is therefore enforced in both directions, not only when
+	// both fields are present.
+	if len(i.Questions) > 0 {
+		return errors.Wrap(
+			ctx,
+			validation.Error,
+			"an item carrying questions is answered through answers, not answer",
+		)
+	}
+	if err := i.Answer.Validate(ctx); err != nil {
+		return errors.Wrap(ctx, err, "validate answer failed")
+	}
+	// The single-question carrier is the item's own AnswerCardinality, so the
+	// same pairing the per-tab path enforces applies here. Without it a
+	// single-question item declared `multiple` could record one label in `value`
+	// and silently drop the rest, and a `single` item could record a set where a
+	// value was asked for.
+	if err := validateAnswerCarrier(ctx, *i.Answer, "", i.AnswerCardinality); err != nil {
+		return errors.Wrap(ctx, err, "validate answer failed")
+	}
+	return nil
 }
