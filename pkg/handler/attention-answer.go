@@ -70,12 +70,36 @@ func handleAttentionAnswer(
 			map[string]any{"reason": "request body is not valid JSON"},
 		)
 	}
+	if err := validateAnswerRequest(ctx, request.Decision); err != nil {
+		return err
+	}
 	item, err := store.Answer(ctx, itemID, request.AnsweredBy, request.ResolvedBy, request.Decision)
 	if err != nil {
 		return wrapAnswerError(ctx, err, itemID)
 	}
 	if err := libhttp.SendJSONResponse(ctx, resp, item, http.StatusOK); err != nil {
 		return errors.Wrap(ctx, err, "send response failed")
+	}
+	return nil
+}
+
+// validateAnswerRequest rejects a decision the schema's enum does not allow,
+// before the store is touched — the same shape validatePushRequest uses.
+//
+// It checks the decision alone. answered_by and resolved_by are free-form
+// declarations with no value domain, while decision is an enum whose whole
+// purpose is membership, so it is the one field here that can be wrong in a way
+// the store could not notice. An OMITTED decision is deliberately not rejected:
+// the schema declines to add that rule, so an empty value stores an item with
+// no verdict recorded. Only a non-empty unknown value fails.
+func validateAnswerRequest(ctx context.Context, decision pkg.Decision) error {
+	if err := decision.Validate(ctx); err != nil {
+		return libhttp.WrapWithDetails(
+			errors.Wrap(ctx, err, "validate answer request failed"),
+			libhttp.ErrorCodeValidation,
+			http.StatusBadRequest,
+			map[string]any{"decision": decision.String()},
+		)
 	}
 	return nil
 }
