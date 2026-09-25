@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.10.0
 
 - feat: add an optional `description` to each `options` entry in the push request and the item, so the board renders a muted cost/risk line beneath an option's label — the label named *what* a choice was and nothing about *what it costs*, which left the cost invisible at the moment of choosing. It is per-option rather than per-item, so it could not ride `payload` or `context`, whose contract is plain operator-facing sentences carrying no machine handles; an option carrying none renders its label alone
 - feat: add producer-declared `answer_cardinality` (`single`|`multiple`) to the push request and the item, so the board knows whether a question takes one pick or many and renders a radio button or a checkbox accordingly. It is declared and never derived, because the option count does not carry it — a one-option question and a many-option single-pick question are different shapes with the same list — and an absent value reads as `single`, which is what every item pushed before this field existed reads as. `message`-only, rejected with HTTP 400 elsewhere exactly as `options` is
