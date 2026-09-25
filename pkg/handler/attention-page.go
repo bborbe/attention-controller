@@ -45,11 +45,12 @@ import (
 // end-to-end on 2026-09-24 — so a link does resolve. The command stays, because
 // an operator may still want to paste it, and the button is added beside it.
 //
-// The button's href is a path on *this* board, never the fleet-jump URL: that
+// The button's target is a path on *this* board, never the fleet-jump URL: that
 // URL carries the shared token as a query parameter, and the token must not
-// reach the browser. Following /jump/<itemID> re-resolves the pane and
-// redirects with the token appended server-side, so the token stays on the
-// server and out of the served document.
+// reach the browser. The path is called in the background, and the board
+// performs the jump server-side, so the token stays on the server and out of
+// the served document — and the click leaves the page where it was, which is
+// the behaviour the operator asked for.
 //
 // Rendering goes through html/template, which escapes every interpolated value
 // for the context it lands in. ProducerID is a producer-supplied free string
@@ -165,7 +166,8 @@ li.item {
   border-radius: 6px;
   padding: 6px 12px;
   font-size: 13px;
-  text-decoration: none;
+  font-family: inherit;
+  cursor: pointer;
 }
 .jump-button:hover { border-color: var(--muted); }
 /* A control's outcome is shown, never swallowed into a reload — a silent catch
@@ -192,7 +194,7 @@ li.item {
 <button type="submit" name="kind" value="text">Send</button>
 {{if $.Speak}}<button type="button" class="speak" data-speak>Read aloud</button>
 {{end}}</form>
-{{end}}{{if or .Jump .JumpURL}}<div class="jump">{{if .Jump}}<span>Approve in the session that asked: <code>{{ .Jump }}</code></span>{{end}}{{if .JumpURL}}<a class="jump-button" href="{{ .JumpURL }}">Jump to session</a>{{end}}</div>
+{{end}}{{if or .Jump .JumpURL}}<div class="jump">{{if .Jump}}<span>Approve in the session that asked: <code>{{ .Jump }}</code></span>{{end}}{{if .JumpURL}}<button type="button" class="jump-button" data-jump="{{ .JumpURL }}">Jump to session</button>{{end}}</div>
 {{end}}<div class="meta">{{ .Item.State }} - {{ .Item.CreatedAt }}</div>
 </li>
 {{end}}</ul>
@@ -257,6 +259,34 @@ document.querySelectorAll('button[data-speak]').forEach(function (button) {
       });
   });
 });
+/* ⚠️ The Jump control is a button, not a link, and the difference is the
+   operator's ask: "so we dont switch the screen". A link navigates the browser
+   to the fleet-jump server, taking the board out of view. This calls the
+   board's own endpoint, which performs the jump server-side and answers 204 —
+   so a click switches WezTerm and leaves this page exactly where it was. */
+document.querySelectorAll('button[data-jump]').forEach(function (button) {
+  button.addEventListener('click', function () {
+    var row = button.closest('li.item');
+    fetch(button.getAttribute('data-jump'), { method: 'GET' })
+      .then(function (response) {
+        if (response.ok) { showJumpNote(row, 'Jumped.', false); return; }
+        return response.text().then(function (body) {
+          showJumpNote(row, 'Jump failed - HTTP ' + response.status + ' - ' + body, true);
+        });
+      }).catch(function (error) {
+        showJumpNote(row, 'Jump failed - ' + String(error), true);
+      });
+  });
+});
+function showJumpNote(row, message, isError) {
+  var container = row.querySelector('.jump');
+  var previous = container.querySelector('.note');
+  if (previous) { previous.remove(); }
+  var note = document.createElement('span');
+  note.className = isError ? 'note failed' : 'note';
+  note.textContent = message;
+  container.appendChild(note);
+}
 </script>
 </body>
 </html>
@@ -336,9 +366,10 @@ func jumpCommand(item pkg.Item, provenance pkg.Provenance) string {
 // the fleet-jump server's URL.
 //
 // The fleet-jump URL carries the shared token as a query parameter, so putting
-// it in an href would publish the token in the served document on every page
-// load. Following this path re-resolves the pane and redirects with the token
-// appended server-side instead, which keeps the token on the server.
+// it in the page would publish the token in the served document on every load.
+// This path is called in the background and the board performs the jump
+// server-side, which keeps the token on the server — and keeps the browser on
+// the board, since a real link would navigate it away.
 //
 // Empty when no pane resolved, or when enabled is false — the same absence rule
 // as jumpCommand, so a row with no resolvable pane, and a host with no readable
