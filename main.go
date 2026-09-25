@@ -56,7 +56,14 @@ type application struct {
 	// Empty resolves to ~/.claude/secrets/jump-token, the same path
 	// claude-supervisor's jump-link.py reads, so the two surfaces cannot drift
 	// onto different tokens. ⚠️ A credential: never logged, never rendered.
-	JumpTokenPath string `required:"false" arg:"jump-token-path"     env:"JUMP_TOKEN_PATH"     usage:"file holding the fleet-jump server's shared token (empty resolves to ~/.claude/secrets/jump-token)"`
+	//
+	// ⚠️ The field holds the token's *path*, not the token, so it is not itself
+	// secret material. It carries display:"length" anyway: argument.Parse()
+	// dumps the config at startup, the field name matches the secret-shaped
+	// rule, and the tag costs nothing but a less useful startup line. Both the
+	// local review funnel and the bot flagged the omission, and a tag that is
+	// correct for a credential-adjacent field is the cheaper default.
+	JumpTokenPath string `required:"false" arg:"jump-token-path"     env:"JUMP_TOKEN_PATH"     usage:"file holding the fleet-jump server's shared token (empty resolves to ~/.claude/secrets/jump-token)" display:"length"`
 	// TTSURL is the tts server's base URL. Optional: with no value the
 	// read-aloud route is not registered and the page renders no read-aloud
 	// control, so a host without a tts server serves the same page minus one
