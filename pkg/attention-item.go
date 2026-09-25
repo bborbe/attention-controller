@@ -126,6 +126,17 @@ type Item struct {
 	// `permission` item is approve-shaped and its verdict is Decision, so
 	// options there would describe a choice the mechanism does not offer.
 	Options AnswerOptions `json:"options,omitempty"`
+	// AnswerCardinality is whether this item's question takes one pick or many.
+	// Producer-declared, never derived, and rejected on a `permission` or `ack`
+	// item exactly as Options is. Absent means single, which is what every item
+	// pushed before this field existed reads as.
+	AnswerCardinality AnswerCardinality `json:"answer_cardinality,omitempty"`
+	// Questions are the question units of an item that carries more than one —
+	// one per tab the board renders. Absent on a single-question item, which
+	// uses Payload, Options and AnswerCardinality as its one unit; when present
+	// it supersedes those three as the question units, and Payload becomes the
+	// card's title rather than a question.
+	Questions Questions `json:"questions,omitempty"`
 	// State is where the item is in its lifecycle. Written by the store.
 	State State `json:"state"`
 	// CreatedAt is when the item entered the stack. Written by the store.
@@ -178,6 +189,16 @@ type Item struct {
 	// empty object: a struct field carrying omitempty still serialises, which
 	// would make every unanswered item look like one holding a blank answer.
 	Answer *Answer `json:"answer,omitempty"`
+	// Answers is what the operator said on each question of a multi-question
+	// item — an ordered list of {question, kind, value}, where question is the
+	// Tab of the Questions entry it answers.
+	//
+	// It is distinct from Answer rather than a replacement for it, so a
+	// single-question item's wire shape is unchanged from the one already
+	// shipped. The two are mutually exclusive: an item carrying both would have
+	// two places the operator's content could be and no rule for which wins,
+	// which validateAnswers rejects rather than leaving to convention.
+	Answers Answers `json:"answers,omitempty"`
 	// ClosedAt is when the item left the queue. Absent while open or answered.
 	ClosedAt *libtime.DateTime `json:"closed_at,omitempty"`
 	// ExpiresAt is the producer's own deadline, if it has one. Absent means the
@@ -197,9 +218,15 @@ func (i Item) Validate(ctx context.Context) error {
 		validation.Name("InterruptClass", validation.NotEmptyString(i.InterruptClass)),
 		validation.Name("Payload", validation.NotEmptyString(i.Payload)),
 		validation.Name("Options", validation.HasValidationFunc(i.validateOptions)),
+		validation.Name(
+			"AnswerCardinality",
+			validation.HasValidationFunc(i.validateAnswerCardinality),
+		),
+		validation.Name("Questions", validation.HasValidationFunc(i.validateQuestions)),
 		validation.Name("AnswerMechanism", i.AnswerMechanism),
 		validation.Name("Decision", i.Decision),
 		validation.Name("Answer", validation.HasValidationFunc(i.validateAnswer)),
+		validation.Name("Answers", validation.HasValidationFunc(i.validateAnswers)),
 		validation.Name("State", i.State),
 		validation.Name("CreatedAt", i.CreatedAt),
 	}.Validate(ctx)
@@ -226,6 +253,152 @@ func (i Item) validateOptions(ctx context.Context) error {
 	return i.Options.Validate(ctx)
 }
 
+// validateAnswerCardinality enforces the schema's message-only rule for
+// `answer_cardinality`, for the same reason validateOptions enforces it for
+// `options`: neither a `permission` nor an `ack` item offers the operator a
+// choice whose shape could be declared.
+func (i Item) validateAnswerCardinality(ctx context.Context) error {
+	if i.AnswerCardinality == "" {
+		return nil
+	}
+	if i.AnswerMechanism != MessageAnswerMechanism {
+		return errors.Wrapf(
+			ctx,
+			validation.Error,
+			"answerCardinality is only allowed on a message item, got answerMechanism '%s'",
+			i.AnswerMechanism,
+		)
+	}
+	return i.AnswerCardinality.Validate(ctx)
+}
+
+// validateQuestions enforces the message-only rule for `questions` and
+// validates the units when present.
+func (i Item) validateQuestions(ctx context.Context) error {
+	if len(i.Questions) == 0 {
+		return nil
+	}
+	if i.AnswerMechanism != MessageAnswerMechanism {
+		return errors.Wrapf(
+			ctx,
+			validation.Error,
+			"questions are only allowed on a message item, got answerMechanism '%s'",
+			i.AnswerMechanism,
+		)
+	}
+	return i.Questions.Validate(ctx)
+}
+
+// validateAnswers validates the per-question answers when present, and rejects
+// an item carrying both Answer and Answers.
+//
+// The mutual exclusion is the schema's: the two fields are two places the
+// operator's content could be, and an item holding both would leave a reader no
+// rule for which is authoritative. An absent value stays legal, so an item
+// answered before this field existed reads as it did.
+func (i Item) validateAnswers(ctx context.Context) error {
+	if len(i.Answers) == 0 {
+		return nil
+	}
+	if i.Answer != nil {
+		return errors.Wrap(
+			ctx,
+			validation.Error,
+			"answer and answers are mutually exclusive, got both",
+		)
+	}
+	if err := i.Answers.Validate(ctx); err != nil {
+		return err
+	}
+	return i.validateAnswersMatchQuestions(ctx)
+}
+
+// validateAnswersMatchQuestions returns an error when an answer names a tab no
+// question on this item carries, or carries its content in the field its
+// question's declared cardinality does not name.
+//
+// The membership rule is what makes an answer routable: an answer to a question
+// the item does not ask would leave the producer reading back a value for a tab
+// that is not on the card, with nothing saying which question it was meant for.
+//
+// The carrier rule is what keeps a multi-pick answer reversible. The schema
+// fixes `value` for a `single` question and `values` for a `multiple` one, and
+// an entry using the other field would be indistinguishable on read-back from
+// the shape it is not — a two-pick answer and a one-pick answer whose label
+// happens to contain ", " would be the same string.
+//
+// This is the only place the pairing can be checked, because it is the only
+// place both sides are in hand: QuestionAnswer does not hold its question's
+// cardinality.
+func (i Item) validateAnswersMatchQuestions(ctx context.Context) error {
+	cardinalityOf := make(map[string]AnswerCardinality, len(i.Questions))
+	for _, question := range i.Questions {
+		cardinalityOf[question.Tab] = question.Cardinality
+	}
+	for _, answer := range i.Answers {
+		cardinality, ok := cardinalityOf[answer.Question]
+		if !ok {
+			return errors.Wrapf(
+				ctx,
+				validation.Error,
+				"answer names question '%s', which no question on this item carries",
+				answer.Question,
+			)
+		}
+		if err := validateAnswerCarrier(ctx, answer.Answer, answer.Question, cardinality); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateAnswerCarrier returns an error when an answer carries its content in
+// the field the question's cardinality does not name.
+//
+// A `skip` carries neither field, and a `text` answer carries `value` whatever
+// the cardinality: the operator's own words are one string either way, and
+// there is no set of labels to list.
+func validateAnswerCarrier(
+	ctx context.Context,
+	answer Answer,
+	question string,
+	cardinality AnswerCardinality,
+) error {
+	if answer.Kind != OptionAnswerKind {
+		return nil
+	}
+	if cardinality == MultipleAnswerCardinality {
+		if len(answer.Values) == 0 {
+			return errors.Wrapf(
+				ctx,
+				validation.Error,
+				"%s takes several picks, so its answer carries values, not value",
+				questionLabel(question),
+			)
+		}
+		return nil
+	}
+	if answer.Value == "" {
+		return errors.Wrapf(
+			ctx,
+			validation.Error,
+			"%s takes one pick, so its answer carries value, not values",
+			questionLabel(question),
+		)
+	}
+	return nil
+}
+
+// questionLabel names the question a carrier error is about, so one rule reads
+// correctly on both paths it serves: the per-tab path, which names a tab, and
+// the single-question path, which has no tab to name.
+func questionLabel(tab string) string {
+	if tab == "" {
+		return "the item's question"
+	}
+	return "question '" + tab + "'"
+}
+
 // validateAnswer validates the answer content when one was recorded, and treats
 // an absent answer as legal.
 //
@@ -236,5 +409,29 @@ func (i Item) validateAnswer(ctx context.Context) error {
 	if i.Answer == nil {
 		return nil
 	}
-	return errors.Wrap(ctx, i.Answer.Validate(ctx), "validate answer failed")
+	// An item carrying questions is answered through `answers`, one entry per
+	// tab. Accepting the single field here would store an answer with no tab
+	// attached, so the producer reading `answers` back would find nothing for any
+	// question and the routing `questions` exist to provide would be gone. The
+	// mutual exclusion is therefore enforced in both directions, not only when
+	// both fields are present.
+	if len(i.Questions) > 0 {
+		return errors.Wrap(
+			ctx,
+			validation.Error,
+			"an item carrying questions is answered through answers, not answer",
+		)
+	}
+	if err := i.Answer.Validate(ctx); err != nil {
+		return errors.Wrap(ctx, err, "validate answer failed")
+	}
+	// The single-question carrier is the item's own AnswerCardinality, so the
+	// same pairing the per-tab path enforces applies here. Without it a
+	// single-question item declared `multiple` could record one label in `value`
+	// and silently drop the rest, and a `single` item could record a set where a
+	// value was asked for.
+	if err := validateAnswerCarrier(ctx, *i.Answer, "", i.AnswerCardinality); err != nil {
+		return errors.Wrap(ctx, err, "validate answer failed")
+	}
+	return nil
 }

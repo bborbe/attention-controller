@@ -37,6 +37,16 @@ import (
 // (`answered_by: attention-board`) and states this reversal; silence 12 is the
 // field change that made it possible.
 //
+// The card is shaped by the declared cardinality rather than by taste: a
+// question that allows several picks renders checkboxes and one that allows a
+// single pick renders radio buttons, both read from the producer's
+// AnswerCardinality and never inferred from the option count — a one-option
+// question and a many-option single-pick question carry lists of different
+// lengths and ask for different things, so a board that read the length would
+// render a checkbox for a question admitting one answer. An item carrying
+// `questions` renders one tab per question, each with its own payload, options
+// and control; a single-question item renders one card with no tab strip.
+//
 // ⚠️ The jump handover is a button as well as a copyable command, and that
 // reverses a second decision recorded here. It was a command only, on the
 // reasoning that "a browser cannot activate a WezTerm tab, so an anchor here
@@ -82,6 +92,12 @@ const attentionPageTemplate = `<!DOCTYPE html>
   --text: #e8edf2;
   --muted: #8b95a3;
   --warn: #d08b5b;
+  /* The two green tokens are the only addition to the palette, and they exist
+     for one control: Next is the forward move, so it reads as the affirmative
+     one beside a muted Dismiss. They are tokens rather than literals so the
+     pair stays one decision. */
+  --green: #8fd39a;
+  --green-bg: #2c4a37;
 }
 * { box-sizing: border-box; }
 body {
@@ -120,32 +136,71 @@ li.item {
 .provenance .unroutable { color: var(--warn); }
 .meta { color: var(--muted); font-size: 12px; }
 .empty { color: var(--muted); font-size: 14px; }
-/* Answer controls, rendered for message items only. The context line carries
+/* The answer card, rendered for message items only. The context line carries
    the background the producer declared, kept separate from the question so the
    ask stays readable on its own at the top of the row. */
 .context { color: var(--muted); font-size: 13px; line-height: 1.45; margin: 0 0 8px; white-space: pre-wrap; }
-.answer { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 10px 0 0; }
-.answer button {
-  background: var(--panel);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 6px 12px;
-  font-size: 13px;
+/* One tab per question of a multi-question item. The active tab is outlined
+   rather than filled, so the strip reads as a set of labels with one selected
+   rather than as a row of buttons competing with Next. */
+.tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 20px; }
+.tab {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid transparent;
+  border-radius: 9px;
+  padding: 7px 15px;
+  font-size: 14px;
+  font-family: inherit;
   cursor: pointer;
 }
-.answer button:hover { border-color: var(--muted); }
-.answer button.recommended { border-color: var(--warn); }
-.answer .rec { color: var(--warn); font-size: 11px; }
-.answer input[type=text] {
-  flex: 1 1 200px;
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--text); background: var(--bg); border-color: var(--muted); }
+/* A multi-question item's own payload: the card's title rather than a question,
+   so it is muted and the tabs carry the questions. */
+.card-title { color: var(--muted); font-size: 15px; line-height: 1.45; margin: 0 0 16px; white-space: pre-wrap; }
+/* The question line. The cardinality hint rides on it in the producer's own
+   wording, so the operator reads what the control will accept before using it. */
+.question { font-size: 17px; font-weight: 600; line-height: 1.4; margin: 0 0 20px; }
+.question .hint { font-weight: 400; color: var(--muted); }
+.options { display: flex; flex-direction: column; gap: 18px; margin: 0 0 22px; }
+.option { display: flex; align-items: flex-start; gap: 12px; cursor: pointer; }
+/* The control is aligned to the label's first line rather than to the row, so
+   the label and its muted cost line read as one block beside it. */
+.option input { flex: none; width: 16px; height: 16px; margin: 3px 0 0; accent-color: var(--muted); }
+.option-body { flex: 1 1 auto; min-width: 0; }
+.option-label { display: block; font-size: 15px; line-height: 1.4; }
+.option-label .recommended { color: var(--muted); }
+.option-desc { display: block; color: var(--muted); font-size: 14px; line-height: 1.45; margin-top: 4px; }
+.other {
+  width: 100%;
   background: var(--bg);
   color: var(--text);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 6px 10px;
-  font-size: 13px;
+  border-radius: 9px;
+  padding: 13px 15px;
+  font-size: 14px;
+  font-family: inherit;
+  margin: 0 0 20px;
 }
+.other::placeholder { color: var(--muted); }
+.actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.actions button {
+  font-family: inherit;
+  font-size: 14px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 9px 18px;
+  cursor: pointer;
+}
+/* Dismiss is the skip, so it is muted and Next carries the colour: the one
+   forward move should be the one that reads as the affirmative. */
+.actions .dismiss { background: transparent; color: var(--muted); }
+.actions .dismiss:hover { color: var(--text); border-color: var(--muted); }
+.actions .next { background: var(--green-bg); color: var(--green); border-color: var(--green-bg); font-weight: 500; }
+.actions .next:hover { border-color: var(--green); }
+.actions .speak { background: transparent; color: var(--muted); }
+.actions .speak:hover { color: var(--text); border-color: var(--muted); }
 /* The jump handover: a copyable command for the operator who wants to paste it,
    and a button for the one who wants to click. The button's href is a path on
    this board, which redirects to the fleet-jump URL server-side — the token is
@@ -184,16 +239,21 @@ li.item {
 {{if .Items}}<ul class="items">
 {{range .Items}}<li class="item" data-item-id="{{ .Item.ItemID }}">
 <div class="producer">{{ .Item.ProducerID }} ({{ .Item.ProducerKind }})</div>
-<div class="payload">{{ .Item.Payload }}</div>
-{{if .Item.Context}}<div class="context">{{ .Item.Context }}</div>
+{{if not .Message}}<div class="payload">{{ .Item.Payload }}</div>
+{{end}}{{if .Item.Context}}<div class="context">{{ .Item.Context }}</div>
 {{end}}{{if .Provenance.Resolved}}<div class="provenance">{{if .Provenance.Host}}<span class="host">{{ .Provenance.Host }}</span>{{end}}{{if .Provenance.Cwd}}<span class="cwd">{{ .Provenance.Cwd }}</span>{{end}}{{if .Provenance.Tool}}<span class="tool">{{ .Provenance.Tool }}</span>{{end}}{{if .Provenance.Pane}}<span class="pane">pane {{ .Provenance.Pane }}</span>{{else if .Provenance.PaneRecorded}}<span class="unroutable">unroutable</span>{{end}}</div>
-{{end}}{{if .Message}}<form class="answer">
-{{range .Item.Options}}<button type="submit" name="kind" value="option" data-value="{{ .Label }}"{{if .Recommended}} class="recommended"{{end}}>{{ .Label }}{{if .Recommended}} <span class="rec">recommended</span>{{end}}</button>
-{{end}}<button type="submit" name="kind" value="skip">Skip</button>
-<input type="text" name="text" placeholder="or answer in your own words">
-<button type="submit" name="kind" value="text">Send</button>
-{{if $.Speak}}<button type="button" class="speak" data-speak>Read aloud</button>
-{{end}}</form>
+{{end}}{{if .Message}}<form class="answer" data-multi="{{ .Tabs }}">
+{{if .Tabs}}<div class="tabs">{{range .Questions}}<button type="button" class="tab{{if .Active}} active{{end}}" data-tab="{{ .Tab }}">{{ .Tab }}</button>{{end}}</div>
+<div class="card-title">{{ .Item.Payload }}</div>
+{{end}}{{range .Questions}}{{$question := .}}<div class="panel" data-question="{{ $question.Tab }}" data-multi-pick="{{ $question.Multi }}"{{if not $question.Active}} hidden{{end}}>
+<div class="question">{{ $question.Payload }}{{if $question.Hint}} <span class="hint">({{ $question.Hint }})</span>{{end}}</div>
+{{if $question.Options}}<div class="options">
+{{range $question.Options}}<label class="option"><input type="{{ if $question.Multi }}checkbox{{ else }}radio{{ end }}" name="{{ $question.Name }}" value="{{ .Label }}" data-option="{{ .Label }}"><span class="option-body"><span class="option-label">{{ .Label }}{{if .Recommended}} <span class="recommended">(Recommended)</span>{{end}}</span>{{if .Description}}<span class="option-desc">{{ .Description }}</span>{{end}}</span></label>
+{{end}}</div>
+{{end}}<input class="other" type="text" name="text" placeholder="Other...">
+</div>
+{{end}}<div class="actions"><button type="submit" name="kind" value="skip" class="dismiss">✕ Dismiss</button><button type="submit" name="kind" value="send" class="next">✓ Next</button>{{if $.Speak}}<button type="button" class="speak" data-speak>Read aloud</button>{{end}}</div>
+</form>
 {{end}}{{if or .Jump .JumpURL}}<div class="jump">{{if .Jump}}<span>Approve in the session that asked: <code>{{ .Jump }}</code></span>{{end}}{{if .JumpURL}}<button type="button" class="jump-button" data-jump="{{ .JumpURL }}">Jump to session</button>{{end}}</div>
 {{end}}<div class="meta">{{ .Item.State }} - {{ .Item.CreatedAt }}</div>
 </li>
@@ -201,6 +261,22 @@ li.item {
 {{else}}<p class="empty">Nothing needs attention.</p>
 {{end}}
 <script>
+/* Tabs switch which question panel is visible. Nothing reloads and no panel is
+   re-rendered: every panel ships in the document and only its visibility
+   changes, so a half-typed Other field survives a look at the other question. */
+document.querySelectorAll('.tabs').forEach(function (tabs) {
+  var row = tabs.closest('li.item');
+  tabs.querySelectorAll('button[data-tab]').forEach(function (tab) {
+    tab.addEventListener('click', function () {
+      tabs.querySelectorAll('button[data-tab]').forEach(function (other) {
+        other.classList.toggle('active', other === tab);
+      });
+      row.querySelectorAll('.panel').forEach(function (panel) {
+        panel.hidden = panel.getAttribute('data-question') !== tab.getAttribute('data-tab');
+      });
+    });
+  });
+});
 /* Answer controls exist for message items only, and the form is intercepted so
    a failed answer is shown rather than swallowed into a reload: a bare catch
    that reloads anyway reports a code fault as a connection problem. */
@@ -208,26 +284,87 @@ document.querySelectorAll('form.answer').forEach(function (form) {
   form.addEventListener('submit', function (event) {
     event.preventDefault();
     var button = event.submitter;
-    var kind = button ? button.value : 'text';
-    var value = '';
-    if (kind === 'option') { value = button.getAttribute('data-value') || ''; }
-    if (kind === 'text') { value = form.querySelector('input[name=text]').value; }
-    var answer = { kind: kind };
-    if (value) { answer.value = value; }
-    fetch('/api/1.0/attention/' + encodeURIComponent(form.closest('li.item').getAttribute('data-item-id')) + '/answer', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ answered_by: 'attention-board', answer: answer })
-    }).then(function (response) {
-      if (response.ok) { window.location.reload(); return; }
-      return response.text().then(function (body) {
-        showNote(form, 'Answer failed - HTTP ' + response.status + ' - ' + body, true);
-      });
-    }).catch(function (error) {
-      showNote(form, 'Answer failed - ' + String(error), true);
-    });
+    var kind = button ? button.value : 'send';
+    var multi = form.getAttribute('data-multi') === 'true';
+    var request = { answered_by: 'attention-board' };
+    if (kind === 'skip') {
+      /* Dismiss declines the whole card, so a multi-question item records a
+         declined answer on every tab rather than on none. */
+      if (multi) { request.answers = skipAll(form); } else { request.answer = { kind: 'skip' }; }
+      sendAnswer(form, request);
+      return;
+    }
+    var entries = collectAnswers(form);
+    if (!entries.length) {
+      showNote(form, 'Pick an option or write an answer first.', true);
+      return;
+    }
+    if (multi) { request.answers = entries; } else { request.answer = singleAnswer(entries[0]); }
+    sendAnswer(form, request);
   });
 });
+/* singleAnswer maps one collected entry onto the item-level answer shape.
+   It carries values when the question took several picks: a single-question item
+   declared multiple has no other field for them, so sending only value would
+   drop every pick but the first, and the store rejects the resulting body. */
+function singleAnswer(entry) {
+  var answer = { kind: entry.kind };
+  if (entry.values) { answer.values = entry.values; }
+  else if (entry.value) { answer.value = entry.value; }
+  return answer;
+}
+/* collectAnswers reads one entry per question the operator actually answered. A
+   question left alone contributes nothing: an entry there would read back as a
+   value where the operator gave none. */
+function collectAnswers(form) {
+  var entries = [];
+  form.querySelectorAll('.panel').forEach(function (panel) {
+    var question = panel.getAttribute('data-question') || '';
+    var picks = [];
+    panel.querySelectorAll('input:checked').forEach(function (input) {
+      picks.push(input.getAttribute('data-option') || '');
+    });
+    var other = panel.querySelector('input[name=text]');
+    var text = other ? other.value.trim() : '';
+    if (text) {
+      entries.push({ question: question, kind: 'text', value: text });
+      return;
+    }
+    if (!picks.length) { return; }
+    /* The carrier is fixed by the question's declared cardinality, not chosen
+       here: a single-pick question carries value, a multi-pick one carries
+       values. Joining the picks into one string would be lossy — a label
+       containing ", " would read back as two picks — and the store rejects an
+       entry using the field its question's cardinality does not name. */
+    if (panel.getAttribute('data-multi-pick') === 'true') {
+      entries.push({ question: question, kind: 'option', values: picks });
+    } else {
+      entries.push({ question: question, kind: 'option', value: picks[0] });
+    }
+  });
+  return entries;
+}
+function skipAll(form) {
+  var entries = [];
+  form.querySelectorAll('.panel').forEach(function (panel) {
+    entries.push({ question: panel.getAttribute('data-question') || '', kind: 'skip' });
+  });
+  return entries;
+}
+function sendAnswer(form, request) {
+  fetch('/api/1.0/attention/' + encodeURIComponent(form.closest('li.item').getAttribute('data-item-id')) + '/answer', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request)
+  }).then(function (response) {
+    if (response.ok) { window.location.reload(); return; }
+    return response.text().then(function (body) {
+      showNote(form, 'Answer failed - HTTP ' + response.status + ' - ' + body, true);
+    });
+  }).catch(function (error) {
+    showNote(form, 'Answer failed - ' + String(error), true);
+  });
+}
 function showNote(form, message, isError) {
   var previous = form.querySelector('.note');
   if (previous) { previous.remove(); }
@@ -292,6 +429,38 @@ function showJumpNote(row, message, isError) {
 </html>
 `
 
+// attentionPageQuestion is one question unit as the card renders it: the unit a
+// tab selects and a panel shows. A single-question item renders exactly one of
+// these, built from the item's own Payload, Options and AnswerCardinality, so
+// the template has one panel shape to render rather than two.
+type attentionPageQuestion struct {
+	// Tab is the tab label, and the key an answer names. Empty on a
+	// single-question item, which renders no tab strip.
+	Tab string
+	// Payload is the question itself.
+	Payload pkg.Payload
+	// Hint is the cardinality hint appended to the question line in the
+	// producer's own wording, e.g. "pick any number". Empty when the question
+	// offers no options, where a statement about picks would describe a choice
+	// the question does not offer.
+	Hint string
+	// Multi reports whether the question takes several picks. It selects the
+	// control — a checkbox when true, a radio button when false — and is read
+	// from the declared cardinality, never from the option count.
+	Multi bool
+	// Active marks the question whose panel renders open. Exactly one carries it,
+	// which is what the tab strip and the panels agree on before any click.
+	Active bool
+	// Name is the input group name for this question's controls, scoped to the
+	// item as well as to the question so two cards on one page cannot share a
+	// radio group — a shared name would let a pick on one card clear another's.
+	Name string
+	// Options are this question's choices, in the order the producer declared
+	// them. They are the schema's own type rather than a mirror of it, exactly as
+	// Provenance is, so the card cannot drift from the field it renders.
+	Options pkg.AnswerOptions
+}
+
 // attentionPageRow is one item paired with what could be resolved about its
 // origin. Pairing here rather than in the template keeps the lookup out of the
 // template language: a map indexed by item id inside `range` is exactly the
@@ -305,6 +474,21 @@ type attentionPageRow struct {
 	// operator may answer it in the session that raised it, so a control there
 	// would be the permission laundering the schema forbids.
 	Message bool
+	// Questions are the question units this row's card renders: the item's own
+	// when it carries several, otherwise a single unit built from the item's own
+	// Payload, Options and AnswerCardinality. Empty when the row renders no card,
+	// which is what keeps the template's card a single `if .Message` away from a
+	// `permission` row rather than a second thing to remember.
+	//
+	// Precomputed here for the reason Provenance is: html/template cannot index a
+	// map inside `range`, and a zero-value question one typo away would render a
+	// card with no controls at all.
+	Questions []attentionPageQuestion
+	// Tabs reports whether the card renders a tab strip — true when the item
+	// carries several questions. It is the flag the template reads and the flag
+	// the page's own script reads, so the strip and the wire shape cannot
+	// disagree about whether this item answers by `answer` or by `answers`.
+	Tabs bool
 	// Jump is the copyable command handing a non-`message` item back to the
 	// session that raised it. Empty when no pane resolved — an unresolvable
 	// value renders absent rather than as a stand-in, per the schema's silence 7.
@@ -334,6 +518,94 @@ type attentionPageData struct {
 	// tts server is configured, so the page never offers a control whose
 	// endpoint is unrouted.
 	Speak bool
+}
+
+// newAttentionPageRow pairs an item with what could be resolved about its origin
+// and precomputes the question units its card renders.
+//
+// The question units are built only for a `message` item. A `permission` item
+// renders no card, so building units it would never render would be a value
+// carried for nothing — and, worse, one a later change could render by
+// accident.
+func newAttentionPageRow(
+	item pkg.Item,
+	provenance pkg.Provenance,
+	jumpEnabled bool,
+) attentionPageRow {
+	row := attentionPageRow{
+		Item:       item,
+		Provenance: provenance,
+		Message:    item.AnswerMechanism == pkg.MessageAnswerMechanism,
+		Jump:       jumpCommand(item, provenance),
+		JumpURL:    jumpURL(item, provenance, jumpEnabled),
+	}
+	if row.Message {
+		row.Questions = pageQuestions(item)
+		row.Tabs = len(item.Questions) > 0
+	}
+	return row
+}
+
+// pageQuestions builds the question units a row's card renders. An item carrying
+// `questions` renders one unit per question in the declared order; a
+// single-question item renders exactly one, built from the item's own Payload,
+// Options and AnswerCardinality — which is what makes the template's panel loop
+// the only rendering path rather than one of two.
+//
+// The first unit is the active one, so the strip and the panels agree on which
+// question is open before any click.
+func pageQuestions(item pkg.Item) []attentionPageQuestion {
+	if len(item.Questions) == 0 {
+		return []attentionPageQuestion{
+			{
+				Payload: item.Payload,
+				Hint:    cardinalityHint(item.AnswerCardinality, len(item.Options)),
+				Multi:   item.AnswerCardinality == pkg.MultipleAnswerCardinality,
+				Active:  true,
+				Name:    optionName(item.ItemID, ""),
+				Options: item.Options,
+			},
+		}
+	}
+	questions := make([]attentionPageQuestion, 0, len(item.Questions))
+	for index, question := range item.Questions {
+		questions = append(questions, attentionPageQuestion{
+			Tab:     question.Tab,
+			Payload: question.Payload,
+			Hint:    cardinalityHint(question.Cardinality, len(question.Options)),
+			Multi:   question.Cardinality == pkg.MultipleAnswerCardinality,
+			Active:  index == 0,
+			Name:    optionName(item.ItemID, question.Tab),
+			Options: question.Options,
+		})
+	}
+	return questions
+}
+
+// cardinalityHint renders the parenthetical that rides the question line, in the
+// producer's own wording rather than as a machine value.
+//
+// An absent cardinality reads as single, exactly as the schema says it does, so
+// a pre-change item renders the single-pick hint rather than none — the control
+// it gets is a radio button, and a hint agreeing with the control is what makes
+// the card self-explaining. A question offering no options renders no hint at
+// all: a statement about picks would describe a choice the question does not
+// offer.
+func cardinalityHint(cardinality pkg.AnswerCardinality, optionCount int) string {
+	if optionCount == 0 {
+		return ""
+	}
+	if cardinality == pkg.MultipleAnswerCardinality {
+		return "pick any number"
+	}
+	return "pick one"
+}
+
+// optionName is the input group name for one question's controls. It carries the
+// item id as well as the tab so two cards on one page cannot share a radio
+// group: a shared name would let a pick on one card clear another's.
+func optionName(itemID pkg.ItemID, tab string) string {
+	return "option-" + itemID.String() + "-" + tab
 }
 
 // jumpCommand renders the copyable half of the handover for an item the board
@@ -450,14 +722,10 @@ func NewAttentionPageHandler(
 				}
 				rows := make([]attentionPageRow, 0, len(items))
 				for _, item := range items {
-					resolved := provenances[item.ItemID]
-					rows = append(rows, attentionPageRow{
-						Item:       item,
-						Provenance: resolved,
-						Message:    item.AnswerMechanism == pkg.MessageAnswerMechanism,
-						Jump:       jumpCommand(item, resolved),
-						JumpURL:    jumpURL(item, resolved, jumpEnabled),
-					})
+					rows = append(
+						rows,
+						newAttentionPageRow(item, provenances[item.ItemID], jumpEnabled),
+					)
 				}
 				// Rendered into a buffer first so a render failure can still
 				// produce the standard JSON error body. Writing straight to the
