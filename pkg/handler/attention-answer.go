@@ -228,13 +228,31 @@ func wrapItemClosedError(
 	store pkg.AttentionStore,
 ) error {
 	details := map[string]any{"item_id": itemID.String()}
-	if item, getErr := store.Get(ctx, itemID); getErr == nil && item.ClosedAt != nil {
+	item, getErr := store.Get(ctx, itemID)
+	if getErr == nil && item.ClosedAt != nil {
 		// ClosedAt is written by the same transition that makes the item
 		// unanswerable, so an item that failed this way carries it. It is
 		// guarded rather than assumed: an item closed by a path that left it
 		// unset would otherwise report a zero time as the moment it left.
+		//
+		// It rides the message as well as the details, so the line is
+		// self-sufficient for a reader who has only the log — the details are
+		// for a client that parses, and a bare "left the queue" leaves the
+		// question the timestamp answers.
 		details["state"] = item.State.String()
 		details["closed_at"] = item.ClosedAt.String()
+		return libhttp.WrapWithDetails(
+			errors.Wrapf(
+				ctx,
+				err,
+				"item %s was already closed at %s and can no longer be answered",
+				itemID,
+				item.ClosedAt,
+			),
+			ErrorCodeItemClosed,
+			http.StatusConflict,
+			details,
+		)
 	}
 	return libhttp.WrapWithDetails(
 		errors.Wrapf(ctx, err, "item %s left the queue before the answer arrived", itemID),

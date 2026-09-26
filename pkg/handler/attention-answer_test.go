@@ -174,6 +174,11 @@ var _ = Describe("AttentionAnswerHandler", func() {
 		Expect(errorResponse.Error.Details).To(HaveKeyWithValue("state", pkg.ClosedState.String()))
 		Expect(errorResponse.Error.Details).
 			To(HaveKeyWithValue("closed_at", closed.ClosedAt.String()))
+		// The message carries the timestamp too, so a reader who has only the
+		// log is not left asking when the item left. Asserted rather than left
+		// to the details, because the two travel to different readers.
+		Expect(errorResponse.Error.Message).To(ContainSubstring("already closed at"))
+		Expect(errorResponse.Error.Message).To(ContainSubstring(closed.ClosedAt.String()))
 
 		// A rejected answer writes nothing. Without this the next reader would
 		// see an answered item that was never answered.
