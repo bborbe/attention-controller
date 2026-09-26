@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.12.0
 
 - feat: record `answered_client` when an arm answers or closes an item, so the store can say something about the **client** that posted the answer and not only which **arm** carried it. `answered_by` is a caller declaration, so a human clicking the board and any client posting the same body write the identical value — which means every arm or sweep that reads *answered* as *the operator saw it* is corrupted by a scripted click, silently. The load-bearing members, `user_agent` and `remote_addr`, are **derived by the store from the HTTP request and never accepted from the body**; the third, `automation`, is the page's own `navigator.webdriver` reading and is deliberately the weaker one, because a caller can lie about it. It identifies a *mechanism* — a CDP-driven browser — not an *identity*, and a `false` does not exonerate a browser driving the page through `chrome.debugger`. Written inside the same compare-and-set as `answered_at` and `answered_by`, so a rejected transition records nothing; on the `open` → `closed` row only when an arm caused the close, and never overwriting the client that answered. The schema is amended first, per this repo's § Schema discipline: silence 19 on the item-schema page, and the field table at 26
 
