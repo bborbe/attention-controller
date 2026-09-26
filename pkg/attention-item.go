@@ -146,7 +146,22 @@ type Item struct {
 	AnsweredAt *libtime.DateTime `json:"answered_at,omitempty"`
 	// AnsweredBy is which arm supplied the answer. Recorded so the
 	// one-item-many-arms property is auditable rather than merely asserted.
+	//
+	// ⚠️ It is a caller declaration, so it cannot tell a human's click from a
+	// scripted client posting the same body. AnsweredClient carries what the
+	// store itself can say about the client instead.
 	AnsweredBy string `json:"answered_by,omitempty"`
+	// AnsweredClient is what the store can say about the client that posted the
+	// answer — derived from the request, never declared by it. UserAgent and
+	// RemoteAddr are read from the HTTP request itself; Automation carries the
+	// page's own navigator.webdriver reading and is explicitly the weaker member.
+	//
+	// It is store-written inside the same compare-and-set that writes AnsweredAt
+	// and AnsweredBy, so a rejected transition records nothing: set on the
+	// `open` -> `answered` transition and on an arm-caused `open` -> `closed`.
+	// Absent on every item answered before this field existed, and its pointer
+	// with omitempty is what keeps such an item reading exactly as it did.
+	AnsweredClient *AnsweredClient `json:"answered_client,omitempty"`
 	// EscalatedBy is which session escalated this item to the operator — a
 	// session id, never a pane id and never a boolean. A pane id is recycled
 	// across tab moves and WezTerm restarts, so a stale one returns another

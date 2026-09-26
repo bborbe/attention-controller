@@ -76,6 +76,17 @@ func handleAttentionAnswer(
 		// no per-question content recorded. It is mutually exclusive with Answer,
 		// and a call carrying both is rejected rather than resolved by convention.
 		Answers pkg.Answers `json:"answers"`
+		// Automation is the page's own navigator.webdriver reading, and it is the
+		// only member of the answered client the body may carry: user_agent and
+		// remote_addr are read from the request itself, so a body carrying either
+		// has nowhere to land and is ignored rather than honoured.
+		//
+		// It is a pointer so an omitted hint is absent rather than a positive
+		// claim that the client was not automated — the distinction the field
+		// exists to keep. Optional: an omitted value stores a client record with
+		// no automation reading, which is what a client that cannot read it
+		// reports.
+		Automation *bool `json:"automation"`
 	}
 	if err := json.NewDecoder(req.Body).Decode(&request); err != nil {
 		return libhttp.WrapWithDetails(
@@ -96,6 +107,10 @@ func handleAttentionAnswer(
 		request.Decision,
 		request.Answer,
 		request.Answers,
+		// Composed here rather than accepted from the body: the two derived
+		// members come from the request itself, and only the automation hint
+		// comes from what the page posted.
+		answeredClientFromRequest(req, request.Automation),
 	)
 	if err != nil {
 		return wrapAnswerError(ctx, err, itemID)

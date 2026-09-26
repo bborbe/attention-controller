@@ -47,6 +47,16 @@ func NewAttentionCloseHandler(store pkg.AttentionStore) http.Handler {
 					// item acknowledged from the board reads back with
 					// answered_by set and answered_at unset.
 					AnsweredBy string `json:"answered_by"`
+					// Automation is the page's own navigator.webdriver reading,
+					// and it is the only member of the answered client the body
+					// may carry: user_agent and remote_addr are read from the
+					// request itself, so a body carrying either has nowhere to
+					// land and is ignored rather than honoured.
+					//
+					// It is a pointer so an omitted hint is absent rather than a
+					// positive claim that the client was not automated. Optional,
+					// exactly as AnsweredBy is.
+					Automation *bool `json:"automation"`
 				}
 				if err := json.NewDecoder(req.Body).Decode(&request); err != nil &&
 					!errors.Is(err, io.EOF) {
@@ -57,7 +67,16 @@ func NewAttentionCloseHandler(store pkg.AttentionStore) http.Handler {
 						map[string]any{"reason": "request body is not valid JSON"},
 					)
 				}
-				item, err := store.Close(ctx, itemID, request.AnsweredBy)
+				// Composed here rather than accepted from the body, for the same
+				// reason the answer route composes it: the two derived members
+				// come from the request itself. The store writes it on the
+				// arm-caused open -> closed row only.
+				item, err := store.Close(
+					ctx,
+					itemID,
+					request.AnsweredBy,
+					answeredClientFromRequest(req, request.Automation),
+				)
 				if err != nil {
 					return wrapTransitionError(ctx, err, itemID)
 				}

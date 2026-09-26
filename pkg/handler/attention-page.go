@@ -292,7 +292,12 @@ document.querySelectorAll('form.answer').forEach(function (form) {
     var button = event.submitter;
     var kind = button ? button.value : 'send';
     var multi = form.getAttribute('data-multi') === 'true';
-    var request = { answered_by: 'attention-board' };
+    /* automation carries the page's own navigator.webdriver reading, which only
+       this script can read. It is the one answered-client member the body may
+       carry and explicitly the weaker one; user_agent and remote_addr are read
+       by the store from the request and a body cannot set either. It is omitted
+       rather than sent as false when the browser does not report it. */
+    var request = { answered_by: 'attention-board', automation: navigator.webdriver };
     if (kind === 'skip') {
       /* Dismiss declines the whole card, so a multi-question item records a
          declined answer on every tab rather than on none. */
@@ -442,7 +447,10 @@ document.querySelectorAll('button[data-ack]').forEach(function (button) {
     fetch('/api/1.0/attention/' + encodeURIComponent(row.getAttribute('data-item-id')) + '/close', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ answered_by: 'attention-board' })
+      /* automation is the page's own navigator.webdriver reading — the one
+         answered-client member the body may carry; the store reads user_agent
+         and remote_addr from the request itself. */
+      body: JSON.stringify({ answered_by: 'attention-board', automation: navigator.webdriver })
     }).then(function (response) {
       if (response.ok) { window.location.reload(); return; }
       return response.text().then(function (body) {

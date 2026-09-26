@@ -222,7 +222,7 @@ var _ = Describe("Questions and cardinality", func() {
 
 			_, err = store.Answer(ctx, pushed.ItemID, "attention-board", "", "", nil, pkg.Answers{
 				{Question: "Nonsense", Answer: pkg.Answer{Kind: pkg.OptionAnswerKind, Value: "x"}},
-			})
+			}, nil)
 			Expect(err).NotTo(BeNil())
 		})
 
@@ -255,8 +255,7 @@ var _ = Describe("Questions and cardinality", func() {
 						},
 					},
 					{Question: "Priority", Answer: pkg.Answer{Kind: pkg.SkipAnswerKind}},
-				},
-			)
+				}, nil)
 			Expect(err).To(BeNil())
 			Expect(answered.State).To(Equal(pkg.AnsweredState))
 			Expect(answered.Answers).To(HaveLen(2))
@@ -290,7 +289,7 @@ var _ = Describe("Questions and cardinality", func() {
 					Question: "Chores",
 					Answer:   pkg.Answer{Kind: pkg.OptionAnswerKind, Value: "Broken wikilinks"},
 				},
-			})
+			}, nil)
 			Expect(err).NotTo(BeNil())
 		})
 
@@ -310,7 +309,7 @@ var _ = Describe("Questions and cardinality", func() {
 						Values: []string{"Broken wikilinks"},
 					},
 				},
-			})
+			}, nil)
 			Expect(err).NotTo(BeNil())
 		})
 
@@ -335,6 +334,7 @@ var _ = Describe("Questions and cardinality", func() {
 				"",
 				&pkg.Answer{Kind: pkg.OptionAnswerKind, Values: []string{"a", "b"}},
 				nil,
+				nil,
 			)
 			Expect(err).To(BeNil())
 			Expect(answered.Answer).NotTo(BeNil())
@@ -357,6 +357,7 @@ var _ = Describe("Questions and cardinality", func() {
 				"",
 				&pkg.Answer{Kind: pkg.OptionAnswerKind, Value: "a"},
 				nil,
+				nil,
 			)
 			Expect(err).NotTo(BeNil())
 		})
@@ -378,6 +379,7 @@ var _ = Describe("Questions and cardinality", func() {
 				"",
 				"",
 				&pkg.Answer{Kind: pkg.SkipAnswerKind},
+				nil,
 				nil,
 			)
 			Expect(err).NotTo(BeNil())
@@ -431,7 +433,10 @@ var _ = Describe("Questions and cardinality", func() {
 				"",
 				"",
 				&pkg.Answer{Kind: pkg.SkipAnswerKind},
-				pkg.Answers{{Question: "Chores", Answer: pkg.Answer{Kind: pkg.SkipAnswerKind}}},
+				pkg.Answers{
+					{Question: "Chores", Answer: pkg.Answer{Kind: pkg.SkipAnswerKind}},
+				},
+				nil,
 			)
 			Expect(err).NotTo(BeNil())
 		})
@@ -453,6 +458,7 @@ var _ = Describe("Questions and cardinality", func() {
 				"",
 				"",
 				&pkg.Answer{Kind: pkg.OptionAnswerKind, Value: "Yes"},
+				nil,
 				nil,
 			)
 			Expect(err).To(BeNil())
