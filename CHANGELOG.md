@@ -8,6 +8,11 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- fix: render an acknowledge control on the board's `ack` card, so a report-only item can be cleared from the only surface that shows it. An `ack` item is a condition report — it asks nothing and routes nothing back — and the board derived its affordance from a single boolean with no `ack` branch anywhere, so an `ack` row fell through the same path as a `permission` row and rendered its payload and a state line and nothing else: no input, no button, not even a Skip. Measured before the change, 8 of the 15 cards on the board were `compact:<sid>` reports rendering exactly that. The control is a single **Acknowledge** rather than a Dismiss, because Dismiss on a `message` card means the `skip` answer — a meaningful thing to say about a question — and an `ack` item has no question to skip
+- fix: record which arm caused a close, so a board acknowledgement is distinguishable from a producer withdrawing its own item or from the store's producer-exit sweep. `Close` gains an optional `answered_by`, written **only on the `open` → `closed` row**: on the `answered` → `closed` row the field already names the arm that *answered*, and overwriting it there would replace that with the arm that merely closed. `POST /close` accepts the value in an optional body, so an empty body — the shape every existing caller sends — is unchanged. The schema is amended first, per this repo's § Schema discipline: § Lifecycle's `open` → `closed` row named no arm as a causer at all, so the board rendering such a control would have been a causer invented in code
+
 ## v0.11.0
 
 ## v0.10.0

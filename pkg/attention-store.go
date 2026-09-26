@@ -107,7 +107,19 @@ type AttentionStore interface {
 
 	// Close applies open -> closed or answered -> closed. Closing an item that
 	// is already closed is rejected with ErrIllegalTransition.
-	Close(ctx context.Context, itemID ItemID) (*Item, error)
+	//
+	// answeredBy names the arm that caused the close, and it is recorded **only
+	// on the open -> closed row** — the acknowledgement of an `ack` item, which
+	// the schema routes to `answered_by` with `answered_at` left unset because
+	// nothing is routed back. It may be empty: the row's other causers (the
+	// producer withdrawing its own item, the store on a producer-exit sweep) are
+	// not arms, and an empty value stores a close with no arm recorded, which is
+	// what every item closed before this parameter existed reads as.
+	//
+	// On the answered -> closed row the value is deliberately NOT written: that
+	// row is the store's own step after an answer, and overwriting answeredBy
+	// there would replace the arm that *answered* with the one that closed.
+	Close(ctx context.Context, itemID ItemID, answeredBy string) (*Item, error)
 }
 
 // Items is a collection of Item.

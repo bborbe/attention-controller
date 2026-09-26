@@ -199,7 +199,7 @@ var _ = Describe("AttentionPageHandler", func() {
 			pushRequest("producer-closed", "gate-closed", "already done"),
 		)
 		Expect(err).To(BeNil())
-		_, err = store.Close(ctx, closed.ItemID)
+		_, err = store.Close(ctx, closed.ItemID, "")
 		Expect(err).To(BeNil())
 
 		body := get("GET").Body.String()
@@ -552,5 +552,71 @@ var _ = Describe("AttentionPageHandler", func() {
 			Expect(permissionBlock).NotTo(ContainSubstring("<button"))
 			Expect(permissionBlock).NotTo(ContainSubstring("<input"))
 		})
+	})
+
+	// ackRequest builds a report-only declaration. An `ack` item is a condition
+	// report, so it declares no options and no cardinality, and its liveness
+	// model is a session so the pruning Read keeps it while the session is live.
+	ackRequest := func(dedupKey pkg.DedupKey) pkg.PushRequest {
+		producerID := pkg.ProducerID("producer-" + dedupKey.String())
+		return pkg.PushRequest{
+			ProducerID:      producerID,
+			ProducerKind:    pkg.SessionProducerKind,
+			LivenessRef:     pkg.LivenessRef("session:" + producerID.String()),
+			DedupKey:        dedupKey,
+			InterruptClass:  "approve",
+			Payload:         "the nightly sweep failed",
+			AnswerMechanism: pkg.AckAnswerMechanism,
+		}
+	}
+
+	It("renders the acknowledge control on an ack row, and on no other class", func() {
+		ack, err := store.Push(ctx, ackRequest("report-ack"))
+		Expect(err).To(BeNil())
+		message, err := store.Push(ctx, pushRequest("producer-m", "gate-m", "deploy prod?"))
+		Expect(err).To(BeNil())
+
+		body := get("GET").Body.String()
+
+		// The positive case: a report-only item carries a control where it used
+		// to carry none, which is the defect this change exists to fix.
+		ackBlock := rowOf(body, ack.ItemID)
+		Expect(ackBlock).To(ContainSubstring("data-ack"))
+		Expect(ackBlock).To(ContainSubstring("Acknowledge"))
+		// It carries no answer form, and no Other field: an ack item asks
+		// nothing, so the message card's controls would describe a choice it
+		// does not offer.
+		Expect(ackBlock).NotTo(ContainSubstring("<form"))
+		Expect(ackBlock).NotTo(ContainSubstring(`class="other"`))
+
+		// The negative control: the control is derived from the mechanism, so a
+		// message row must not gain one. Without this the positive case would
+		// pass on a page that rendered one identical control for every class.
+		messageBlock := rowOf(body, message.ItemID)
+		Expect(messageBlock).NotTo(ContainSubstring("data-ack"))
+	})
+
+	It("keeps a permission row free of every control, acknowledge included", func() {
+		permission, err := store.Push(ctx, pkg.PushRequest{
+			ProducerID:      "producer-perm",
+			ProducerKind:    pkg.SessionProducerKind,
+			LivenessRef:     pkg.LivenessRef("session:producer-perm"),
+			DedupKey:        "gate-perm",
+			InterruptClass:  "approve",
+			Payload:         "approve the deploy",
+			AnswerMechanism: pkg.PermissionAnswerMechanism,
+		})
+		Expect(err).To(BeNil())
+
+		block := rowOf(get("GET").Body.String(), permission.ItemID)
+
+		// A permission item is approve-shaped and only the operator may answer
+		// it in the session that raised it, so a control here would be the
+		// permission laundering the schema forbids — the acknowledge control
+		// included, which is why the ack branch must not reach it.
+		Expect(block).NotTo(ContainSubstring("data-ack"))
+		Expect(block).NotTo(ContainSubstring("<form"))
+		Expect(block).NotTo(ContainSubstring("<button"))
+		Expect(block).NotTo(ContainSubstring("<input"))
 	})
 })

@@ -378,7 +378,11 @@ func (a *attentionStore) Escalate(
 }
 
 // Close applies open -> closed or answered -> closed.
-func (a *attentionStore) Close(ctx context.Context, itemID ItemID) (*Item, error) {
+func (a *attentionStore) Close(
+	ctx context.Context,
+	itemID ItemID,
+	answeredBy string,
+) (*Item, error) {
 	var result *Item
 	err := a.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
 		item, err := a.store.Get(ctx, tx, itemID.String())
@@ -388,12 +392,22 @@ func (a *attentionStore) Close(ctx context.Context, itemID ItemID) (*Item, error
 			}
 			return errors.Wrap(ctx, err, "get item failed")
 		}
-		if err := ValidateTransition(ctx, item.State, ClosedState); err != nil {
+		from := item.State
+		if err := ValidateTransition(ctx, from, ClosedState); err != nil {
 			return err
 		}
 		now := a.currentDateTimeGetter.Now()
 		item.State = ClosedState
 		item.ClosedAt = &now
+		// The arm is recorded on the open -> closed row only — that row is the
+		// acknowledgement of an `ack` item, which the schema routes to
+		// answered_by with answered_at left unset because nothing is routed
+		// back. On the answered -> closed row answered_by already names the arm
+		// that answered, and writing here would replace it with the arm that
+		// merely closed.
+		if from == OpenState {
+			item.AnsweredBy = answeredBy
+		}
 		if err := a.store.Add(ctx, tx, item.ItemID.String(), *item); err != nil {
 			return errors.Wrap(ctx, err, "update item failed")
 		}
