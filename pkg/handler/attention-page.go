@@ -370,11 +370,44 @@ function sendAnswer(form, request) {
   }).then(function (response) {
     if (response.ok) { window.location.reload(); return; }
     return response.text().then(function (body) {
+      var failure = answerFailure(body);
+      if (failure.leftQueue) {
+        /* The item left the queue between this page being drawn and this answer
+           arriving — a lost race against the producer's exit, not a malformed
+           request. The line is shown AND the page returns to the queue, in that
+           order and with a beat between them. Reloading first would swallow the
+           outcome into a reload, which the rule above forbids; staying put would
+           leave a card in front of the operator for an item that no longer
+           exists, which is the defect this branch exists to fix. Both halves
+           are the point, so neither is dropped. */
+        showNote(form, failure.message, true);
+        window.setTimeout(function () { window.location.reload(); }, 2500);
+        return;
+      }
       showNote(form, 'Answer failed - HTTP ' + response.status + ' - ' + body, true);
     });
   }).catch(function (error) {
     showNote(form, 'Answer failed - ' + String(error), true);
   });
+}
+/* answerFailure reads the store's error envelope and reports whether the item
+   had already left the queue. Only that one code is special-cased: every other
+   failure keeps the raw body, because the body is what a reader needs to tell a
+   code fault from a connection problem. A body that is not JSON at all — a
+   proxy's error page, a truncated response — reads as "not this case" rather
+   than throwing, so the caller still reaches its raw-body line. */
+function answerFailure(body) {
+  var envelope;
+  try { envelope = JSON.parse(body); } catch (error) { return { leftQueue: false }; }
+  var failure = envelope && envelope.error;
+  if (!failure || failure.code !== 'ITEM_CLOSED') { return { leftQueue: false }; }
+  var closedAt = (failure.details && failure.details.closed_at) || '';
+  return {
+    leftQueue: true,
+    message: closedAt
+      ? 'This item was already closed at ' + closedAt + ' - it left the queue before this answer arrived. Returning to the queue.'
+      : 'This item had already left the queue before this answer arrived. Returning to the queue.'
+  };
 }
 function showNote(form, message, isError) {
   var previous = form.querySelector('.note');

@@ -6,11 +6,13 @@ package handler_test
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 
 	libboltkv "github.com/bborbe/boltkv"
+	libhttp "github.com/bborbe/http"
 	libkv "github.com/bborbe/kv"
 	libtime "github.com/bborbe/time"
 	"github.com/gorilla/mux"
@@ -147,5 +149,58 @@ var _ = Describe("AttentionAnswerHandler", func() {
 		Expect(err).To(BeNil())
 		Expect(got.State).To(Equal(pkg.OpenState))
 		Expect(got.Decision).To(BeEmpty())
+	})
+
+	// The render-snapshot race, which is the failure the operator actually hit:
+	// the item was open when the arm drew it, and the producer's exit closed it
+	// before the answer arrived. The response must name the terminal state and
+	// when it happened — reporting a well-formed answer to a real item as a
+	// malformed request sends the caller looking for a bug in its own body.
+	It("reports an answer to a closed item as ITEM_CLOSED, carrying its closed_at", func() {
+		item := pushParkedGate()
+		closed, err := store.Close(ctx, item.ItemID, "", nil)
+		Expect(err).To(BeNil())
+		Expect(closed.ClosedAt).NotTo(BeNil())
+
+		rec := answer(item.ItemID, `{"answered_by":"attention-board"}`)
+		Expect(rec.Code).To(Equal(http.StatusConflict))
+
+		// Decoded rather than substring-matched, so a body that merely resembles
+		// the standard shape does not pass: the code is the machine-readable
+		// point and the timestamp is the only part the caller can act on.
+		var errorResponse libhttp.ErrorResponse
+		Expect(json.NewDecoder(rec.Body).Decode(&errorResponse)).To(BeNil())
+		Expect(errorResponse.Error.Code).To(Equal(handler.ErrorCodeItemClosed))
+		Expect(errorResponse.Error.Details).To(HaveKeyWithValue("state", pkg.ClosedState.String()))
+		Expect(errorResponse.Error.Details).
+			To(HaveKeyWithValue("closed_at", closed.ClosedAt.String()))
+
+		// A rejected answer writes nothing. Without this the next reader would
+		// see an answered item that was never answered.
+		got, err := store.Get(ctx, item.ItemID)
+		Expect(err).To(BeNil())
+		Expect(got.State).To(Equal(pkg.ClosedState))
+		Expect(got.AnsweredAt).To(BeNil())
+		Expect(got.AnsweredBy).To(BeEmpty())
+	})
+
+	// The discriminator that keeps the new code from swallowing the lost race.
+	// An item another arm answered is a different failure and must still say so,
+	// naming the arm that won: "already handled" and "no longer exists" are the
+	// two readings the operator has to be able to tell apart, and a handler that
+	// mapped every non-open state to ITEM_CLOSED would pass the spec above while
+	// erasing the second one.
+	It("still reports a lost race as ALREADY_ANSWERED, naming the arm that won", func() {
+		item := pushParkedGate()
+		_, err := store.Answer(ctx, item.ItemID, "telegram", "", "", nil, nil, nil)
+		Expect(err).To(BeNil())
+
+		rec := answer(item.ItemID, `{"answered_by":"attention-board"}`)
+		Expect(rec.Code).To(Equal(http.StatusConflict))
+
+		var errorResponse libhttp.ErrorResponse
+		Expect(json.NewDecoder(rec.Body).Decode(&errorResponse)).To(BeNil())
+		Expect(errorResponse.Error.Code).To(Equal(handler.ErrorCodeAlreadyAnswered))
+		Expect(errorResponse.Error.Message).To(ContainSubstring("telegram"))
 	})
 })
