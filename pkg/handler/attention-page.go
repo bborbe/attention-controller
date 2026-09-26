@@ -158,6 +158,16 @@ li.item {
    template emitting trailing separators for values that were omitted. */
 .provenance span + span::before { content: " · "; }
 .provenance .unroutable { color: var(--warn); }
+/* The explanation a row carries when it has no jump control at all. Muted
+   rather than warned: a designed absence is not a fault, and colouring it like
+   one would put the board back where the operator could not tell the two
+   apart — the defect this line exists to remove.
+
+   ⚠️ Its own class rather than the control's, so a row that renders this and a
+   row that renders the control stay distinguishable in the DOM as well as on
+   screen: the two are the two arms of one condition, and reusing the control's
+   class would make "this row has a jump control" unanswerable by class. */
+.jump-reason .no-jump { color: var(--muted); }
 .meta { color: var(--muted); font-size: 12px; }
 .empty { color: var(--muted); font-size: 14px; }
 /* The answer card, rendered for message items only. The context line carries
@@ -623,6 +633,7 @@ function showAckNote(row, message, isError) {
 </form>
 {{end}}{{if .Ack}}<div class="actions"><button type="button" class="ack" data-ack>Acknowledge</button></div>
 {{end}}{{if or .Jump .JumpURL}}<div class="jump">{{if .Jump}}<span>Approve in the session that asked: <code>{{ .Jump }}</code></span>{{end}}{{if .JumpURL}}<button type="button" class="jump-button" data-jump="{{ .JumpURL }}">Jump to session</button>{{end}}</div>
+{{else if .NoJump}}<div class="jump-reason"><span class="no-jump">{{ .NoJump }}</span></div>
 {{end}}<div class="meta">{{ .Item.State }} - {{ .Item.CreatedAt }}</div>
 </li>{{end}}
 `
@@ -723,6 +734,16 @@ type attentionPageRow struct {
 	// it rendered before this change. Gating the whole div on JumpURL would
 	// silently drop the command too.
 	JumpURL string
+	// NoJump explains why this row carries no jump control, and is empty
+	// whenever it carries one — the template reads it in the `else` of the same
+	// condition, so the explanation and the control are one decision rather than
+	// two that could drift apart.
+	//
+	// It is a rendering of an absence, never a stand-in for a value: it names no
+	// pane, host or cwd, so it does not present an unresolvable value as
+	// resolved. See [[Attention Item Schema]] silence 20 for the one case it
+	// covers that the schema does not yet state a rule for.
+	NoJump string
 	// Speak reports whether this row renders the read-aloud control. It is
 	// carried on the row rather than read from the page root because the row is
 	// a sub-template: `{{template "attention-row" .}}` passes the row as the
@@ -762,6 +783,7 @@ func newAttentionPageRow(
 		Ack:        item.AnswerMechanism == pkg.AckAnswerMechanism,
 		Jump:       jumpCommand(item, provenance),
 		JumpURL:    jumpURL(item, provenance, jumpEnabled),
+		NoJump:     noJumpReason(item, provenance, jumpEnabled),
 		Speak:      speak,
 	}
 	if row.Message {
@@ -879,6 +901,41 @@ func jumpURL(item pkg.Item, provenance pkg.Provenance, enabled bool) string {
 		return ""
 	}
 	return "/jump/" + string(item.ItemID)
+}
+
+// noJumpReason explains, in the row's own words, why it carries no jump control.
+//
+// Empty whenever the row carries one. ⚠️ It asks jumpCommand and jumpURL
+// themselves rather than restating their guards, so the explanation cannot drift
+// from the control it explains: there is one decision, read twice.
+//
+// ⚠️ Three sentences, not one per code path, and the coarseness is read rather
+// than chosen. The reasons a pane is absent subdivide by *writer* — no state dir,
+// an unopenable one, a missing producer log, a log with no line for the key — but
+// readEvents collapses every one of its own failures into the same empty map and
+// Resolve cannot tell "no entry" from "no log", so the board has no fact to
+// separate them by. A finer split would have to be invented here rather than
+// read from the resolver, and it would name host-internal paths on a card the
+// operator reads. See [[A Card With No Jump Target Explains Why Instead of
+// Rendering Nothing]] § Results.
+func noJumpReason(item pkg.Item, provenance pkg.Provenance, jumpEnabled bool) string {
+	if jumpCommand(item, provenance) != "" || jumpURL(item, provenance, jumpEnabled) != "" {
+		return ""
+	}
+	switch {
+	case provenance.Pane != "":
+		// The pane resolved, so the absence is the host's handover rather than
+		// the item's pane. Saying "no pane" here would be false, and would send
+		// the operator looking at the wrong thing.
+		return "Jump is unavailable on this host — the handover token could not be read."
+	case provenance.PaneRecorded:
+		// A pane was recorded and does not resolve to this session: the case
+		// silence 7 marks `unroutable`. The provenance line still carries that
+		// marker; this sentence is additive rather than a replacement for it.
+		return "The pane recorded for this item does not resolve to this session."
+	default:
+		return "No pane was recorded for this item, so there is no session to jump to."
+	}
 }
 
 // NewAttentionPageHandler creates the read-only HTML page a human opens to see
