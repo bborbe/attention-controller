@@ -83,14 +83,20 @@ func (a *application) Run(ctx context.Context, sentryClient libsentry.Client) er
 	}
 	defer db.Close()
 
-	store, err := a.createAttentionStore(ctx, db)
+	rawStore, err := a.createAttentionStore(ctx, db)
 	if err != nil {
 		return err
 	}
 
+	// One notifier, passed both ways: wrapped into the store so a successful
+	// write signals it, and into the server so the board's live channel can
+	// subscribe to it. Two instances would be a channel nothing writes to.
+	notifier := pkg.NewAttentionChangeNotifier()
+	store := pkg.NewNotifyingAttentionStore(rawStore, notifier)
+
 	return service.Run(
 		ctx,
-		a.createHTTPServer(sentryClient, db, store),
+		a.createHTTPServer(sentryClient, db, store, notifier),
 	)
 
 }
@@ -222,6 +228,7 @@ func (a *application) createHTTPServer(
 	sentryClient libsentry.Client,
 	db libkv.DB,
 	store pkg.AttentionStore,
+	notifier pkg.AttentionChangeNotifier,
 ) run.Func {
 	return func(ctx context.Context) error {
 		ctx, cancel := context.WithCancel(ctx)
@@ -260,6 +267,20 @@ func (a *application) createHTTPServer(
 		router.Path("/").
 			Methods(http.MethodGet, http.MethodHead).
 			Handler(factory.CreateAttentionPageHandler(store, provenance, a.TTSURL != "", jumpTokens))
+
+		// The board's live channel. It is registered here, ahead of the
+		// `/api/1.0/attention/{itemID}` route below, because gorilla mux matches
+		// in registration order: registered after it, this path would resolve as
+		// an item whose id is literally `stream`.
+		router.Path("/api/1.0/attention/stream").
+			Methods(http.MethodGet).
+			Handler(factory.CreateAttentionStreamHandler(
+				store,
+				notifier,
+				provenance,
+				a.TTSURL != "",
+				jumpTokens,
+			))
 
 		// Business routes live under /api/1.0/, never in the admin block above.
 		// The push entry point takes a producer's declaration; nothing scrapes
