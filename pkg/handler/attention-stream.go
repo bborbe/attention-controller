@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"html/template"
 	"net/http"
+	"time"
 
 	"github.com/bborbe/errors"
 	"github.com/golang/glog"
@@ -84,6 +85,24 @@ func (a *attentionStreamHandler) ServeHTTP(resp http.ResponseWriter, req *http.R
 	}
 	changes, unsubscribe := a.notifier.Subscribe()
 	defer unsubscribe()
+
+	// ⚠️ libhttp's NewServer sets a 30-second WriteTimeout by default, and a write
+	// deadline is fatal to a stream: once it passes, the connection is killed
+	// mid-response, the browser reports ERR_INCOMPLETE_CHUNKED_ENCODING, and
+	// EventSource silently reconnects. The board would look like it worked while
+	// actually dropping and re-establishing the channel every 30 seconds — and it
+	// would pass a restart-and-reconnect criterion for the wrong reason, because
+	// reconnection was happening constantly anyway. Measured 2026-09-26: two
+	// ERR_INCOMPLETE_CHUNKED_ENCODING on this route within a minute of a page
+	// load, with nothing in the service log, because the deadline fires in the
+	// net/http layer rather than in this handler.
+	//
+	// Cleared for THIS response rather than by raising the server's WriteTimeout,
+	// which is shared by every route and would remove a real protection from the
+	// handlers that do finish.
+	if err := http.NewResponseController(resp).SetWriteDeadline(time.Time{}); err != nil {
+		glog.V(2).Infof("stream write deadline not cleared: %v", err)
+	}
 
 	// Subscribe and baseline BEFORE the headers go out, so a client that has
 	// received a response is guaranteed to be both attached and baselined.

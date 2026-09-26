@@ -195,3 +195,109 @@ var _ = Describe("AttentionStreamHandler", func() {
 		Expect(event["item_id"]).Should(Equal(item.ItemID.String()))
 	})
 })
+
+// The stream has to outlive the server's write deadline. libhttp's NewServer
+// imposes a 30-second WriteTimeout by default, and a write deadline is fatal to a
+// stream: the connection is killed mid-response, the browser reports
+// ERR_INCOMPLETE_CHUNKED_ENCODING, and EventSource silently reconnects. The board
+// then looks like it works while dropping and re-establishing the channel every
+// 30 seconds — and it would satisfy a restart-and-reconnect criterion for the
+// wrong reason, because reconnection was happening constantly anyway.
+//
+// This is the only spec that can catch it. httptest's default server sets no
+// write deadline, so every spec above passes whether or not the handler clears
+// one: the defect is a property of the server the handler runs under, not of the
+// handler's own logic. Measured on the deployed service 2026-09-26 — two
+// ERR_INCOMPLETE_CHUNKED_ENCODING on this route within a minute of a page load,
+// with nothing in the service log, because the deadline fires in net/http rather
+// than in the handler.
+var _ = Describe("AttentionStreamHandler under a write deadline", func() {
+	var ctx context.Context
+	var db libkv.DB
+	var notifier pkg.AttentionChangeNotifier
+	var store pkg.AttentionStore
+	var server *httptest.Server
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		var err error
+		db, err = libboltkv.OpenTemp(ctx)
+		Expect(err).Should(BeNil())
+
+		sessionLivenessChecker := &mocks.SessionLivenessChecker{}
+		sessionLivenessChecker.IsLiveReturns(true)
+
+		notifier = pkg.NewAttentionChangeNotifier()
+		store = pkg.NewNotifyingAttentionStore(
+			pkg.NewAttentionStore(
+				db,
+				pkg.NewItemIDGenerator(),
+				sessionLivenessChecker,
+				libtime.NewCurrentDateTime(),
+				libtime.Duration(15*60*1e9),
+			),
+			notifier,
+		)
+
+		// One second rather than the real 30: the mechanism is identical and the
+		// assertion is the same, and a spec that waited out the real default
+		// would cost half a minute for no extra evidence.
+		server = httptest.NewUnstartedServer(handler.NewAttentionStreamHandler(
+			store,
+			notifier,
+			&mocks.ProvenanceResolver{},
+			false,
+			nil,
+		))
+		server.Config.WriteTimeout = 1 * time.Second
+		server.Start()
+	})
+
+	AfterEach(func() {
+		server.Close()
+	})
+
+	It("still delivers an event after the deadline would have expired", func() {
+		streamCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(streamCtx, http.MethodGet, server.URL, nil)
+		Expect(err).Should(BeNil())
+		resp, err := http.DefaultClient.Do(req)
+		Expect(err).Should(BeNil())
+		defer resp.Body.Close()
+		reader := bufio.NewReader(resp.Body)
+
+		// Past the server's write deadline. Without the handler clearing it the
+		// connection is already dead here, and the read below fails rather than
+		// returning an event.
+		time.Sleep(2 * time.Second)
+
+		_, err = store.Push(ctx, pkg.PushRequest{
+			ProducerID:      "producer-a",
+			ProducerKind:    pkg.SessionProducerKind,
+			LivenessRef:     pkg.LivenessRef("session:producer-a"),
+			DedupKey:        "after-deadline",
+			InterruptClass:  "approve",
+			Payload:         "past the deadline",
+			AnswerMechanism: pkg.MessageAnswerMechanism,
+		})
+		Expect(err).Should(BeNil())
+
+		var payload string
+		for {
+			line, err := reader.ReadString('\n')
+			Expect(err).Should(BeNil(), "stream closed before delivering the event")
+			line = strings.TrimRight(line, "\n")
+			if line == "" {
+				break
+			}
+			if after, found := strings.CutPrefix(line, "data: "); found {
+				payload = after
+			}
+		}
+		var event map[string]string
+		Expect(json.Unmarshal([]byte(payload), &event)).Should(BeNil())
+		Expect(event["type"]).Should(Equal("upsert"))
+		Expect(event["html"]).Should(ContainSubstring("past the deadline"))
+	})
+})
