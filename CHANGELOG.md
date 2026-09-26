@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.16.0
 
 - feat: give every board card a corner **X** that skips it, except a `permission` card. The X is one affordance whose act is the mechanism's own dominant act, so it adds no lifecycle row and no field: on a `message` card it is an alias of the `Dismiss` the card already carries (`open` → `answered`, `answer.kind: skip`), and on an `ack` card it is an alias of the `Acknowledge` it already carries (`open` → `closed`, `answered_at` unset). A `permission` card is untouched and stays jump-link-only with zero answer controls — the operator's own ruling, and independently § Answer routing's who-answers-what rule, since a board control there would be the permission laundering the schema forbids. The alternative on a `message` card — an X that closes without answering — was rejected because § Lifecycle's table has **no** `open` → `closed` row for a `message` item, so it would have the board perform a transition the schema never names it as performing. The schema is amended first, per § Schema discipline: § Answer routing gains the corner X paragraph and the X in the control-set table's `message`/`open` and `ack`/`open` rows. The corner X also joins the census of controls a non-human click can reach, which [[The Attention Record Cannot Tell an Operator's Answer From a Scripted One]] owns — handed over, not solved here
 
