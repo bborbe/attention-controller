@@ -57,6 +57,18 @@ var _ = Describe("ProvenanceResolver", func() {
 		}
 	}
 
+	// sessionItem is `item` plus the liveness ref, which is where the session id
+	// actually lives — the item carries no session_id field of its own. The
+	// heartbeat form is the store's live shape: the watcher touches one file per
+	// session, so the final path segment is the session id.
+	sessionItem := func(itemID, producerID, dedupKey, sessionID string) pkg.Item {
+		it := item(itemID, producerID, dedupKey)
+		it.LivenessRef = pkg.LivenessRef(
+			"heartbeat:/w/heartbeat/" + sessionID,
+		)
+		return it
+	}
+
 	BeforeEach(func() {
 		ctx = context.Background()
 		stateDir = GinkgoT().TempDir()
@@ -162,15 +174,162 @@ var _ = Describe("ProvenanceResolver", func() {
 		Expect(provenance.Cwd).To(Equal("/w/x"))
 	})
 
-	It("resolves nothing for an item whose producer wrote no event log", func() {
+	It(
+		"makes no claim for an item whose producer wrote no event log and is not in the registry",
+		func() {
+			// ⚠️ The retitle is the point. This case used to stand for "no event
+			// log", and it no longer does: an item with no event line now resolves
+			// through the name-keyed fallback when its session is nameable. What
+			// this actually covers is the *unnameable* session — the producer is in
+			// neither the log nor the registry — and that is the case that must
+			// still render nothing.
+			resolved := resolver.Resolve(
+				ctx,
+				pkg.Items{item("item-6", "producer-absent", "key-absent")},
+			)
+			provenance := resolved[pkg.ItemID("item-6")]
+
+			Expect(provenance.Resolved()).To(BeFalse())
+			Expect(provenance.PaneRecorded).To(BeFalse())
+		},
+	)
+
+	It("resolves a pane for an item whose producer wrote no line for its dedup key", func() {
+		// Cause 1 of the second resolution source. The producer's log exists and
+		// carries other items, but nothing for this item's dedup key — the live
+		// shape, where the log postdates the push. The registry and the pane
+		// listing are the only remaining route to the pane.
+		writeEvents("producer-h",
+			eventLine("some-other-key", "session-h", "burn", "/w/other", "", "77"))
+		writeSession("1", "session-h", "⚙ Session H")
+		paneLister.ListReturns(map[int]pkg.Pane{
+			12: {PaneID: 12, Title: "✳ ⚙ Session H"},
+		}, nil)
+
 		resolved := resolver.Resolve(
 			ctx,
-			pkg.Items{item("item-6", "producer-absent", "key-absent")},
+			pkg.Items{sessionItem("item-11", "producer-h", "key-h", "session-h")},
 		)
-		provenance := resolved[pkg.ItemID("item-6")]
 
+		provenance := resolved[pkg.ItemID("item-11")]
+		Expect(provenance.Pane).To(Equal("12"))
+		Expect(provenance.PaneRecorded).To(BeTrue())
+		Expect(provenance.Routable).To(BeTrue())
+	})
+
+	It("resolves a pane for a producer id carrying the session: prefix", func() {
+		// Cause 2. `session:` belongs on the item's LivenessRef, never on its
+		// ProducerID, but ProducerID is validated only as non-empty so a
+		// producer can push the marker in the wrong field. readEvents then opens
+		// `session:<id>.events.jsonl`, which cannot exist — the log is named for
+		// the bare id.
+		//
+		// The bare log deliberately exists and carries a DIFFERENT key. That is
+		// the pair that makes this test about the prefix rather than about a
+		// missing log: the prefixed name is absent, the bare name is present, and
+		// the item's own key is in neither — so the only route to pane 34 is the
+		// session join. Writing `key-j` into the bare log instead would let the
+		// event path resolve it and the prefix would never be exercised.
+		writeEvents("session-j",
+			eventLine("some-other-key", "session-j", "burn", "/w/j", "", "88"))
+		writeSession("2", "session-j", "⚙ Session J")
+		paneLister.ListReturns(map[int]pkg.Pane{
+			34: {PaneID: 34, Title: "◐ ⚙ Session J"},
+		}, nil)
+
+		_, err := os.Stat(filepath.Join(stateDir, "session:session-j.events.jsonl"))
+		Expect(os.IsNotExist(err)).To(BeTrue(), "the prefixed log must not exist")
+		bare, err := os.ReadFile(filepath.Join(stateDir, "session-j.events.jsonl"))
+		Expect(err).To(BeNil())
+		Expect(string(bare)).To(ContainSubstring("some-other-key"))
+		Expect(string(bare)).NotTo(ContainSubstring("key-j"))
+
+		resolved := resolver.Resolve(
+			ctx,
+			pkg.Items{sessionItem("item-12", "session:session-j", "key-j", "session-j")},
+		)
+
+		provenance := resolved[pkg.ItemID("item-12")]
+		Expect(provenance.Pane).To(Equal("34"))
+		Expect(provenance.PaneRecorded).To(BeTrue())
+	})
+
+	It("makes no claim when the session is registered but owns no matching pane", func() {
+		// The negative half, and the one that keeps the fallback honest: the
+		// session is nameable, so OwnsPane would treat an empty name as
+		// unprovable-and-therefore-owned, but there is no pane whose title
+		// matches. Nothing is claimed and nothing is marked unroutable — there
+		// is no recorded pane to distrust.
+		writeSession("3", "session-k", "⚙ Session K")
+		paneLister.ListReturns(map[int]pkg.Pane{
+			56: {PaneID: 56, Title: "⚙ Some Other Session"},
+		}, nil)
+
+		resolved := resolver.Resolve(
+			ctx,
+			pkg.Items{sessionItem("item-13", "session-k", "key-k", "session-k")},
+		)
+
+		provenance := resolved[pkg.ItemID("item-13")]
 		Expect(provenance.Resolved()).To(BeFalse())
 		Expect(provenance.PaneRecorded).To(BeFalse())
+	})
+
+	It(
+		"selects only the pane whose glyph-stripped title matches, not the first pane found",
+		func() {
+			// Positive control (a): a fallback that returned the first pane it saw
+			// would pass every other test in this file. The matching pane is
+			// deliberately not the first in map order.
+			writeSession("4", "session-l", "⚙ Session L")
+			paneLister.ListReturns(map[int]pkg.Pane{
+				90: {PaneID: 90, Title: "⚙ Unrelated"},
+				91: {PaneID: 91, Title: "⚙ Session L"},
+				92: {PaneID: 92, Title: "⚙ Also Unrelated"},
+			}, nil)
+
+			resolved := resolver.Resolve(
+				ctx,
+				pkg.Items{sessionItem("item-14", "session-l", "key-l", "session-l")},
+			)
+
+			Expect(resolved[pkg.ItemID("item-14")].Pane).To(Equal("91"))
+		},
+	)
+
+	It("makes no claim when the pane listing cannot be read", func() {
+		// Same direction as build: an unreadable listing proves nothing, so the
+		// row makes no pane claim at all rather than being marked unroutable.
+		writeSession("5", "session-m", "⚙ Session M")
+		paneLister.ListReturns(nil, errors.New(ctx, "wezterm unreachable"))
+
+		resolved := resolver.Resolve(
+			ctx,
+			pkg.Items{sessionItem("item-15", "session-m", "key-m", "session-m")},
+		)
+
+		provenance := resolved[pkg.ItemID("item-15")]
+		Expect(provenance.Resolved()).To(BeFalse())
+		Expect(provenance.PaneRecorded).To(BeFalse())
+	})
+
+	It("still prefers the event log when the item has a line for its dedup key", func() {
+		// The regression guard: the fallback must not displace the logged path.
+		// The log says pane 61 and the registry-name join would say 62; the log
+		// wins, and host/cwd still come from the event.
+		writeEvents("producer-n", eventLine("key-n", "session-n", "burn", "/w/n", "", "61"))
+		writeSession("6", "session-n", "⚙ Session N")
+		paneLister.ListReturns(map[int]pkg.Pane{
+			61: {PaneID: 61, Title: "⚙ Session N"},
+			62: {PaneID: 62, Title: "⚙ Session N"},
+		}, nil)
+
+		resolved := resolver.Resolve(ctx, pkg.Items{item("item-16", "producer-n", "key-n")})
+
+		provenance := resolved[pkg.ItemID("item-16")]
+		Expect(provenance.Pane).To(Equal("61"))
+		Expect(provenance.Host).To(Equal("burn"))
+		Expect(provenance.Cwd).To(Equal("/w/n"))
 	})
 
 	It("resolves nothing when the state directory is unavailable", func() {
