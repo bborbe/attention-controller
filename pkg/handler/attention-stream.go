@@ -149,7 +149,7 @@ func (a *attentionStreamHandler) push(
 			ItemID: itemID,
 			HTML:   html,
 		}); err != nil {
-			return err
+			return errors.Wrapf(ctx, err, "write upsert for %s failed", itemID)
 		}
 	}
 	for itemID := range *rendered {
@@ -160,7 +160,7 @@ func (a *attentionStreamHandler) push(
 			Type:   "remove",
 			ItemID: itemID,
 		}); err != nil {
-			return err
+			return errors.Wrapf(ctx, err, "write remove for %s failed", itemID)
 		}
 	}
 	*rendered = next

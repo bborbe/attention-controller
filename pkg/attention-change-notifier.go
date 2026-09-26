@@ -8,6 +8,8 @@ import (
 	"sync"
 )
 
+//counterfeiter:generate -o ../mocks/attention-change-notifier.go --fake-name AttentionChangeNotifier . AttentionChangeNotifier
+
 // AttentionChangeNotifier signals that the attention store changed, so a live
 // view can re-read rather than poll for the difference.
 //
