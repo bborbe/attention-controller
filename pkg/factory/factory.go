@@ -77,6 +77,36 @@ func CreateAttentionPageHandler(
 	return handler.NewAttentionPageHandler(store, provenance, speakEnabled, jumpTokens)
 }
 
+// CreateAttentionStreamHandler creates the board's live channel: the
+// server-sent event stream the page subscribes to so a changed row reaches an
+// open board without a reload.
+//
+// It takes the notifier as well as the store because the two are separate
+// halves of one mechanism — the store signals, the stream listens — and the
+// notifier is passed in rather than constructed here for the same reason the
+// provenance resolver is: `pkg/factory` is pure plumbing, and a notifier built
+// here would be a second instance nothing writes to.
+//
+// speakEnabled and jumpTokens are threaded through so a row arriving over the
+// stream renders exactly as the same row does on a fresh page load. A row that
+// dropped either would be a control that disappears when the board updates
+// itself.
+func CreateAttentionStreamHandler(
+	store pkg.AttentionStore,
+	notifier pkg.AttentionChangeNotifier,
+	provenance pkg.ProvenanceResolver,
+	speakEnabled bool,
+	jumpTokens pkg.JumpTokenReader,
+) http.Handler {
+	return handler.NewAttentionStreamHandler(
+		store,
+		notifier,
+		provenance,
+		jumpTokens,
+		speakEnabled,
+	)
+}
+
 // CreateAttentionJumpHandler creates the endpoint the board's Jump button calls
 // to hand an item back to the session that raised it.
 //
