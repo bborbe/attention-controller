@@ -165,7 +165,7 @@ func (r *provenanceResolver) Resolve(ctx context.Context, items Items) Provenanc
 		}
 		events, ok := byProducer[item.ProducerID]
 		if !ok {
-			events = r.readEvents(ctx, item.ProducerID)
+			events = r.readEventsForProducer(ctx, item.ProducerID)
 			byProducer[item.ProducerID] = events
 		}
 		record, found := events[string(item.DedupKey)]
@@ -173,11 +173,138 @@ func (r *provenanceResolver) Resolve(ctx context.Context, items Items) Provenanc
 			// No event for this item: its producer wrote no log line, or the
 			// log has been pruned. Render absent rather than falling back to
 			// the session's newest event, which describes a different item.
+			//
+			// The event log is not the only way to locate the producer's pane,
+			// though. The session registry and the pane listing are both keyed
+			// on the session itself, so an item with no event line can still
+			// resolve a pane by name — see resolveByName.
+			if fallback, ok := r.resolveByName(item, names, panes, panesAvailable); ok {
+				resolved[item.ItemID] = fallback
+			}
 			continue
 		}
 		resolved[item.ItemID] = r.build(record, names, panes, panesAvailable)
 	}
 	return resolved
+}
+
+// LivenessRef markers, and the session id each carries.
+//
+// The session id is not on the item as its own field — § Fields gives the item
+// `producer_id` and `liveness_ref`, and the schema's `session:<id>` form is the
+// only place a session is named outright. The store's live shape is the other
+// marker: `heartbeat:<path>/<session-id>`, where the watcher touches a file per
+// session and the file's name *is* the session id.
+const (
+	// sessionLivenessPrefix marks a `session:<id>` ref.
+	sessionLivenessPrefix = "session:"
+	// heartbeatLivenessPrefix marks a `heartbeat:<path>` ref whose final path
+	// segment is the session id.
+	heartbeatLivenessPrefix = "heartbeat:"
+	// sessionProducerPrefix is the same `session:` marker, seen where it does
+	// NOT belong: on a ProducerID.
+	//
+	// A producer that puts it in the wrong field is a live case, not a
+	// hypothetical one. The store held an item whose ProducerID was
+	// `session:<uuid>` while its LivenessRef carried the same marker, and
+	// because ProducerID is validated only as a non-empty string the push was
+	// accepted. `readEvents` then opened `session:<uuid>.events.jsonl`, which
+	// cannot exist — the log is named for the bare id — so the item resolved
+	// nothing even though its producer had written a perfectly good log.
+	//
+	// Stripping it is confined to locating the session; it does not rewrite the
+	// stored value and does not relax the producer contract. A push carrying the
+	// marker in the wrong field remains a producer bug to fix at the producer.
+	sessionProducerPrefix = "session:"
+)
+
+// sessionIDFromItem recovers the session an item belongs to, or "" when the
+// item names none.
+//
+// Both liveness models are handled because both are legal and the store uses
+// them: `session:<id>` names the session directly, and `heartbeat:<path>`
+// names a file the watcher maintains whose base name is the session id. An
+// item on neither model — a cron job, a dark-factory run, an agent — yields
+// "", which is the honest answer: those producers have no session to look up,
+// so the name-keyed join cannot apply to them.
+//
+// A `session:`-prefixed ProducerID is accepted as a last resort, because the
+// resolver must still work on items pushed before this fallback existed and on
+// any push that puts the marker in the wrong field. LivenessRef is preferred:
+// it is the field the marker belongs in.
+func sessionIDFromItem(item Item) string {
+	if ref := string(item.LivenessRef); ref != "" {
+		if id, ok := strings.CutPrefix(ref, sessionLivenessPrefix); ok {
+			return strings.TrimSpace(id)
+		}
+		if path, ok := strings.CutPrefix(ref, heartbeatLivenessPrefix); ok {
+			return filepath.Base(strings.TrimSpace(path))
+		}
+	}
+	return strings.TrimPrefix(string(item.ProducerID), sessionProducerPrefix)
+}
+
+// resolveByName locates an item's pane without an event line, by joining the
+// item's session to its pane.
+//
+// ⚠️ The join key is the item's **SessionID**, not its ProducerID. The two are
+// usually the same string but they are not the same key: the session registry
+// is indexed by `sessionId`, and ProducerID is only *documented* as a session
+// id — it may equally be an agent id or a job id (see the field's own comment).
+// Looking the registry up by ProducerID would work for every session producer
+// and silently fail for every other kind, which is exactly the class this
+// fallback exists to serve.
+//
+// ⚠️ This asserts a name-keyed join rather than an ownership proof. The
+// registry records no pane id (sessionRegistryEntry carries SessionID and Name
+// only) and the pane listing carries no session id (Pane carries PaneID and
+// Title only), so the glyph-stripped title-vs-name comparison is the only
+// session→pane join the controller can observe. Two same-named sessions with
+// two panes titled that name are therefore indistinguishable, and no available
+// field separates them.
+//
+// It reports ok=false — making no pane claim at all — when the session cannot
+// be named. That is deliberate and is the load-bearing safety property here:
+// OwnsPane treats an empty session name as *unprovable* and returns true, so
+// handing it an unnamed session would mark every pane as owned and stamp a
+// confident route onto a row the controller knows nothing about — the precise
+// failure § Silence 7 forbids. A named session still goes through OwnsPane
+// unchanged, so the ownership gate is fed rather than bypassed.
+func (r *provenanceResolver) resolveByName(
+	item Item,
+	names map[string]string,
+	panes map[int]Pane,
+	panesAvailable bool,
+) (Provenance, bool) {
+	if !panesAvailable {
+		// The listing could not be read, so nothing can be said about any pane
+		// either way. Same direction as build: no claim, never a negative one.
+		return Provenance{}, false
+	}
+	sessionID := sessionIDFromItem(item)
+	if sessionID == "" {
+		// The item names no session — a cron job, a dark-factory run, an agent.
+		// There is nothing to look up, so nothing is claimed.
+		return Provenance{}, false
+	}
+	name := names[sessionID]
+	if name == "" {
+		// The session is not in the registry — it exited, or this host has no
+		// registry. Either way there is no name to compare, so no pane can be
+		// proven this session's and none is claimed.
+		return Provenance{}, false
+	}
+	wanted := StripStatusGlyph(name)
+	for paneID, pane := range panes {
+		if StripStatusGlyph(pane.Title) != wanted {
+			continue
+		}
+		if !OwnsPane(panes, paneID, name) {
+			continue
+		}
+		return Provenance{Pane: strconv.Itoa(paneID), PaneRecorded: true, Routable: true}, true
+	}
+	return Provenance{}, false
 }
 
 // build turns one event record into a Provenance, applying the pane rule.
@@ -217,6 +344,30 @@ func (r *provenanceResolver) build(
 		provenance.Pane = strconv.Itoa(paneID)
 	}
 	return provenance
+}
+
+// readEventsForProducer indexes a producer's event log, tolerating a ProducerID
+// that carries the `session:` marker it should have put on its LivenessRef.
+//
+// The bare name is tried first, so the ordinary case is one open and the
+// prefixed name is only consulted when the log is genuinely absent — the
+// prefixed file cannot exist in a correct deployment, since the watcher names
+// its log for the bare id. The retry is what lets an item whose producer wrote
+// a perfectly good log resolve it, instead of silently rendering nothing
+// because the resolver asked for a filename that was never going to exist.
+func (r *provenanceResolver) readEventsForProducer(
+	ctx context.Context,
+	producerID ProducerID,
+) map[string]eventRecord {
+	events := r.readEvents(ctx, producerID)
+	if len(events) > 0 {
+		return events
+	}
+	bare, ok := strings.CutPrefix(string(producerID), sessionProducerPrefix)
+	if !ok {
+		return events
+	}
+	return r.readEvents(ctx, ProducerID(bare))
 }
 
 // readEvents indexes a producer's event log by the item id each line carries.
