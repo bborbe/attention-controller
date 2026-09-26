@@ -49,8 +49,8 @@ func NewAttentionStreamHandler(
 	store pkg.AttentionStore,
 	notifier pkg.AttentionChangeNotifier,
 	provenance pkg.ProvenanceResolver,
-	jumpTokens pkg.JumpTokenReader,
 	speakEnabled bool,
+	jumpTokens pkg.JumpTokenReader,
 ) http.Handler {
 	// The same template the page parses, so `attention-row` renders from one
 	// definition rather than from a copy kept in step by hand.

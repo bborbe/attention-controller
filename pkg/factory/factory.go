@@ -102,8 +102,8 @@ func CreateAttentionStreamHandler(
 		store,
 		notifier,
 		provenance,
-		jumpTokens,
 		speakEnabled,
+		jumpTokens,
 	)
 }
 

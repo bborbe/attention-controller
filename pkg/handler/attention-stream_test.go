@@ -74,8 +74,8 @@ var _ = Describe("AttentionStreamHandler", func() {
 			store,
 			notifier,
 			&mocks.ProvenanceResolver{},
-			nil,
 			false,
+			nil,
 		))
 	})
 
