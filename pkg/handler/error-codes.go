@@ -26,4 +26,26 @@ const (
 	// ErrorCodeAlreadyAnswered is the code an arm receives when another arm
 	// answered the item first.
 	ErrorCodeAlreadyAnswered = "ALREADY_ANSWERED"
+
+	// ErrorCodeItemClosed is the code an arm receives when it answers an item
+	// that left the queue between the render and the answer — the
+	// render-snapshot race. The item was real and open when the arm drew it; the
+	// producer's exit closed it underneath the arm before the answer arrived.
+	//
+	// It is deliberately not ErrorCodeValidation. The request was well formed
+	// and named a real item, so reporting it as a malformed request asks the
+	// caller to correct something that is not wrong — and the operator reading
+	// that body cannot tell "I sent it wrong" from "this had already gone".
+	//
+	// It is deliberately not ErrorCodeAlreadyAnswered either. A lost race means
+	// another arm answered and the answer was routed; this means nobody did and
+	// nothing was routed. The store keeps the two apart — ErrAlreadyAnswered
+	// names the arm that won, ErrIllegalTransition names no arm because there
+	// was none — and collapsing them here would erase the distinction between
+	// "already handled" and "no longer exists".
+	//
+	// The response carries the item's closed_at, because the terminal state is
+	// the whole of what the caller can act on: the item is not coming back, and
+	// the arm's next move is to return to the queue rather than to retry.
+	ErrorCodeItemClosed = "ITEM_CLOSED"
 )

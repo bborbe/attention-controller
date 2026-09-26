@@ -113,7 +113,7 @@ func handleAttentionAnswer(
 		answeredClientFromRequest(req, request.Automation),
 	)
 	if err != nil {
-		return wrapAnswerError(ctx, err, itemID)
+		return wrapAnswerError(ctx, err, itemID, store)
 	}
 	if err := libhttp.SendJSONResponse(ctx, resp, item, http.StatusOK); err != nil {
 		return errors.Wrap(ctx, err, "send response failed")
@@ -169,10 +169,15 @@ func validateAnswerRequest(
 	return nil
 }
 
-// wrapAnswerError maps the store's three distinct answer failures onto three
-// distinct responses, so a caller can tell a lost race from an impossible move
-// from a missing item.
-func wrapAnswerError(ctx context.Context, err error, itemID pkg.ItemID) error {
+// wrapAnswerError maps the store's four distinct answer failures onto four
+// distinct responses, so a caller can tell a lost race from an item that left
+// the queue from a missing item from a request the store refused.
+func wrapAnswerError(
+	ctx context.Context,
+	err error,
+	itemID pkg.ItemID,
+	store pkg.AttentionStore,
+) error {
 	switch {
 	case errors.Is(err, pkg.ErrItemNotFound):
 		return libhttp.WrapWithDetails(
@@ -188,6 +193,8 @@ func wrapAnswerError(ctx context.Context, err error, itemID pkg.ItemID) error {
 			http.StatusConflict,
 			map[string]any{"item_id": itemID.String()},
 		)
+	case errors.Is(err, pkg.ErrIllegalTransition):
+		return wrapItemClosedError(ctx, err, itemID, store)
 	default:
 		return libhttp.WrapWithDetails(
 			errors.Wrap(ctx, err, "answer failed"),
@@ -196,4 +203,61 @@ func wrapAnswerError(ctx context.Context, err error, itemID pkg.ItemID) error {
 			map[string]any{"item_id": itemID.String()},
 		)
 	}
+}
+
+// wrapItemClosedError reports an answer against an item that had already left
+// the queue, naming the terminal state and when it happened.
+//
+// The store's own error carries neither. ErrIllegalTransition says the move is
+// not a row of the schema's table — a fact about the table, not about this item
+// — so the item is read back for its state and its closed_at. The read cannot
+// race the answer that just failed: `closed` is terminal, so nothing can move
+// the item again, and the store's Read prunes only open items, so a closed one
+// is never removed.
+//
+// The item id is the only thing read back that the caller already had, and it
+// is carried anyway so the details shape matches every other answer failure.
+//
+// A failed read degrades to the code without a timestamp rather than turning a
+// terminal item into a 500. The caller still learns the item has left the
+// queue, which is the part it acts on; only the "when" is lost.
+func wrapItemClosedError(
+	ctx context.Context,
+	err error,
+	itemID pkg.ItemID,
+	store pkg.AttentionStore,
+) error {
+	details := map[string]any{"item_id": itemID.String()}
+	item, getErr := store.Get(ctx, itemID)
+	if getErr == nil && item.ClosedAt != nil {
+		// ClosedAt is written by the same transition that makes the item
+		// unanswerable, so an item that failed this way carries it. It is
+		// guarded rather than assumed: an item closed by a path that left it
+		// unset would otherwise report a zero time as the moment it left.
+		//
+		// It rides the message as well as the details, so the line is
+		// self-sufficient for a reader who has only the log — the details are
+		// for a client that parses, and a bare "left the queue" leaves the
+		// question the timestamp answers.
+		details["state"] = item.State.String()
+		details["closed_at"] = item.ClosedAt.String()
+		return libhttp.WrapWithDetails(
+			errors.Wrapf(
+				ctx,
+				err,
+				"item %s was already closed at %s and can no longer be answered",
+				itemID,
+				item.ClosedAt,
+			),
+			ErrorCodeItemClosed,
+			http.StatusConflict,
+			details,
+		)
+	}
+	return libhttp.WrapWithDetails(
+		errors.Wrapf(ctx, err, "item %s left the queue before the answer arrived", itemID),
+		ErrorCodeItemClosed,
+		http.StatusConflict,
+		details,
+	)
 }

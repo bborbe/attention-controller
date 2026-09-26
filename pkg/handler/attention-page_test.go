@@ -552,6 +552,33 @@ var _ = Describe("AttentionPageHandler", func() {
 			Expect(permissionBlock).NotTo(ContainSubstring("<button"))
 			Expect(permissionBlock).NotTo(ContainSubstring("<input"))
 		})
+
+		// The answer arm's terminal-state branch. The failure it exists for is an
+		// item that left the queue between the render and the answer, and the
+		// operator's report was of exactly that: a raw JSON body printed into a
+		// failed note, and a card left in front of them for an item that no longer
+		// existed. The script is inline and has no unit harness, so the assertions
+		// are on what it ships — the code it recognises, the human line it writes,
+		// and the return to the queue that follows. The browser click-through in
+		// the task's Definition of Done is the half this cannot supply.
+		It("recognises a closed item and returns the operator to the queue", func() {
+			body := get("GET").Body.String()
+
+			// The code is read out of the store's envelope rather than matched in
+			// the raw body, so the branch fires on the classification and not on a
+			// substring some other failure's message happens to contain.
+			Expect(body).To(ContainSubstring("failure.code !== 'ITEM_CLOSED'"))
+			Expect(body).To(ContainSubstring("failure.details.closed_at"))
+			Expect(body).To(ContainSubstring("left the queue before this answer arrived"))
+
+			// The line is shown AND the queue is returned to. A branch that
+			// reloaded without showing would swallow the outcome into a reload,
+			// which this file's own rule forbids; one that showed without
+			// reloading would leave the stale card, which is the defect.
+			Expect(body).To(ContainSubstring("showNote(form, failure.message, true)"))
+			Expect(body).
+				To(ContainSubstring("window.setTimeout(function () { window.location.reload(); }, 2500)"))
+		})
 	})
 
 	// ackRequest builds a report-only declaration. An `ack` item is a condition
