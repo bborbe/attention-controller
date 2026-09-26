@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.12.1
 
 - fix: report an answer against an item that left the queue between the render and the answer as its own code, `ITEM_CLOSED`, carrying the item's `closed_at` — instead of `VALIDATION_ERROR` with the store's raw message. The item is real and was open when the arm drew it; the producer's exit closed it underneath the arm, which `attention-watcher.py`'s dead-session sweep does within one poll. Reporting a well-formed answer to a real item as a **malformed request** sent the operator looking for a bug in their own click, and left no way to tell *already handled* from *no longer exists*. The two failures stay apart rather than collapsing into one: a lost race still returns `ALREADY_ANSWERED` naming the arm that won, and the terminal-state case names no arm because there was none. `closed → answered` stays absent from `AvailableTransitions` — the schema says `closed` is terminal — so this is a classification and rendering fix, never a state-machine change
 - fix: the board's answer arm reads that code and leaves the card behind — a human line naming the item as already closed, with its `closed_at`, and a return to the queue. The line is shown **and** the queue is returned to, in that order and with a beat between them: reloading first would swallow the outcome into a reload, which the page's own rule forbids, and staying put is what left the operator looking at a card for an item that no longer existed
