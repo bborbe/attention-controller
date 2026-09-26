@@ -7,11 +7,12 @@ package pkg
 // AnsweredClient is what the store can say about the client that posted an
 // answer — derived from the request, never declared by it.
 //
-// It exists because AnsweredBy is a caller declaration: a human clicking Next
-// and a scripted client posting the identical body write the identical value
-// there, so an arm or a sweep that reads `answered` as *the operator saw it* is
-// corrupted by it. This field is store-written for the same reason EscalatedAt
-// is: a fact the store already holds is not one to accept from a caller.
+// It exists because AnsweredBy is a caller declaration: a human clicking Submit
+// answer and a scripted client posting the identical body write the identical
+// value there, so an arm or a sweep that reads `answered` as *the operator saw
+// it* is corrupted by it. This field is store-written for the same reason
+// EscalatedAt is: a fact the store already holds is not one to accept from a
+// caller.
 //
 // The server-read members are the load-bearing ones: the store reads them from
 // the HTTP request itself and never accepts them from the request body.
