@@ -150,12 +150,21 @@ var _ = Describe("Attention page board controls", func() {
 			Expect(rowBlock(body, item.ItemID)).NotTo(ContainSubstring("/supervisor:jump"))
 		})
 
-		It("renders a read-aloud control", func() {
+		// The control's accessible name is asserted from its own attribute, never
+		// from the text node. The text node alone already satisfied "it has a name"
+		// before this change, so a `Read aloud` substring assertion passes either
+		// way and pins nothing: the `aria-label` is what a screen reader reads and
+		// what a later edit could silently drop.
+		It("renders a read-aloud control carrying its own accessible name", func() {
 			body, item := renderPage(messageRequest(), pkg.Provenance{})
 			block := rowBlock(body, item.ItemID)
 
 			Expect(block).To(ContainSubstring("data-speak"))
 			Expect(block).To(ContainSubstring("Read aloud"))
+			Expect(block).To(ContainSubstring(`aria-label="Read aloud"`))
+			Expect(block).To(ContainSubstring(`title="Read aloud"`))
+			Expect(block).To(ContainSubstring(`class="speak-icon"`))
+			Expect(block).To(ContainSubstring(`aria-hidden="true"`))
 		})
 	})
 
