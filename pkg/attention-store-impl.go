@@ -129,34 +129,112 @@ func (a *attentionStore) Get(ctx context.Context, itemID ItemID) (*Item, error) 
 //
 // An item is removed only when all three hold: its state is open, its producer
 // is not live, and it is a question the producer asked rather than a report it
-// made. An `answered` or `closed` item is never pruned — it is no longer
-// rendered anyway, and removing it would rewrite history the schema says is
-// never rewritten.
+// made. An `answered` or `closed` item is never pruned — removing it would
+// rewrite history the schema says is never rewritten.
+//
+// It deliberately excludes `answered`. Read answers "what should an arm act on
+// now", and the JSON read API hands what it returns to consumers that answer
+// it; an item that already has an answer is not one of those. The board also
+// renders the record of what was answered, and reads through ReadBoard for it.
 func (a *attentionStore) Read(ctx context.Context) (Items, error) {
+	return a.read(ctx, false)
+}
+
+// ReadBoard returns the items the board renders: the open items Read returns,
+// plus the `answered` items the board shows as dimmed records carrying the
+// answer the store recorded.
+//
+// The two readers differ by intent rather than by a flag a caller flipped. Read
+// feeds the JSON read API, whose consumers act on what they are given, so an
+// answered item there would offer an answer to a question that already has one.
+// The board is the surface where the operator checks what stands recorded in
+// their name — and `answered_by` is a caller declaration (schema silence 19),
+// so a card that vanished the instant it was answered would destroy that
+// evidence at exactly the moment it could be noticed.
+//
+// `closed` items stay absent in both: the card leaves when the item leaves the
+// queue, which is the lifetime the operator asked for.
+//
+// The prune is shared with Read rather than reimplemented, and widening the
+// filter did not widen it: only `open` items are ever removed, and only when
+// their producer is gone and it asked rather than reported. An `answered` item
+// is exempt by the schema's rule that its history is never rewritten, so it is
+// returned without a liveness test — passing it through that branch would prune
+// it.
+func (a *attentionStore) ReadBoard(ctx context.Context) (Items, error) {
+	return a.read(ctx, true)
+}
+
+// readDisposition is what the read does with one item: keep it in the result,
+// remove it from the store, or neither.
+type readDisposition struct {
+	keep   bool
+	remove bool
+}
+
+// classifyForRead decides what one item's read does with it.
+//
+// It is a method rather than an inline branch because the state check, the
+// liveness check and the asked/reported split together exceed the complexity
+// budget the linter allows the read loop — and because the answered case must
+// return *before* the liveness check, which is easier to see stated once here
+// than as an early return buried in a closure.
+//
+// ⚠️ The answered case is first on purpose. It is not a widening of the state
+// condition below it: it returns before the liveness branch, so an answered
+// item is never liveness-tested and never pruned, which is the schema's rule
+// that its history is never rewritten.
+func (a *attentionStore) classifyForRead(
+	ctx context.Context,
+	item Item,
+	includeAnswered bool,
+) (readDisposition, error) {
+	if item.State == AnsweredState && includeAnswered {
+		// Rendered as a dimmed record. Never liveness-tested and never pruned.
+		return readDisposition{keep: true}, nil
+	}
+	if item.State != OpenState {
+		return readDisposition{}, nil
+	}
+	live, err := a.isProducerLive(ctx, &item)
+	if err != nil {
+		return readDisposition{}, errors.Wrap(ctx, err, "check producer liveness failed")
+	}
+	if live {
+		return readDisposition{keep: true}, nil
+	}
+	if isAsked(&item) {
+		glog.V(2).
+			Infof("removing item %s: producer %s asked and is gone", item.ItemID, item.ProducerID)
+		return readDisposition{remove: true}, nil
+	}
+	// The producer reported a condition rather than asking a question.
+	// The operator can still act on it, so it stays open.
+	return readDisposition{keep: true}, nil
+}
+
+// read is the shared body of Read and ReadBoard; includeAnswered is their only
+// difference.
+//
+// ⚠️ The state check is not merely a filter. It also guards the
+// producer-liveness branch and the prune below it, so an item admitted past it
+// must be returned deliberately rather than falling through — which is why the
+// `answered` case returns early instead of widening the condition.
+func (a *attentionStore) read(ctx context.Context, includeAnswered bool) (Items, error) {
 	items := make(Items, 0)
 	dead := make([]string, 0)
 	err := a.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
 		err := a.store.Map(ctx, tx, func(ctx context.Context, key string, item Item) error {
-			if item.State != OpenState {
-				return nil
-			}
-			live, err := a.isProducerLive(ctx, &item)
+			disposition, err := a.classifyForRead(ctx, item, includeAnswered)
 			if err != nil {
-				return errors.Wrap(ctx, err, "check producer liveness failed")
+				return errors.Wrap(ctx, err, "classify item failed")
 			}
-			if live {
+			if disposition.keep {
 				items = append(items, item)
-				return nil
 			}
-			if isAsked(&item) {
-				glog.V(2).
-					Infof("removing item %s: producer %s asked and is gone", item.ItemID, item.ProducerID)
+			if disposition.remove {
 				dead = append(dead, key)
-				return nil
 			}
-			// The producer reported a condition rather than asking a question.
-			// The operator can still act on it, so it stays open.
-			items = append(items, item)
 			return nil
 		})
 		if err != nil {
