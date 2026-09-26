@@ -518,7 +518,7 @@ var _ = Describe("AttentionPageHandler", func() {
 			Expect(block).NotTo(ContainSubstring(`class="card-title"`))
 		})
 
-		It("renders Dismiss and Next, and no card on a permission row", func() {
+		It("renders Dismiss and Submit answer, and no card on a permission row", func() {
 			message, err := store.Push(
 				ctx,
 				messageRequest("gate-buttons", pkg.SingleAnswerCardinality),
@@ -542,7 +542,11 @@ var _ = Describe("AttentionPageHandler", func() {
 			// asserted rather than left to the label.
 			Expect(block).To(ContainSubstring(`value="skip"`))
 			Expect(block).To(ContainSubstring("Dismiss"))
-			Expect(block).To(ContainSubstring("Next"))
+			// The submit control is named for what it does rather than for an
+			// advance: `Next` was inherited from the Paseo reference card, where
+			// it means *advance to the next card*, while this control submits the
+			// whole card. See [[Attention Item Schema]] § Answer routing.
+			Expect(block).To(ContainSubstring("Submit answer"))
 
 			// The card is one `if .Message` away from a permission row, so the
 			// negative case is asserted beside the positive one rather than only
