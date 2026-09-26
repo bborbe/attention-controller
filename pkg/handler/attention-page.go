@@ -93,9 +93,9 @@ const attentionPageTemplate = `<!DOCTYPE html>
   --muted: #8b95a3;
   --warn: #d08b5b;
   /* The two green tokens are the only addition to the palette, and they exist
-     for one control: Next is the forward move, so it reads as the affirmative
-     one beside a muted Dismiss. They are tokens rather than literals so the
-     pair stays one decision. */
+     for one control: Submit answer is the forward move, so it reads as the
+     affirmative one beside a muted Dismiss. They are tokens rather than
+     literals so the pair stays one decision. */
   --green: #8fd39a;
   --green-bg: #2c4a37;
 }
@@ -142,7 +142,7 @@ li.item {
 .context { color: var(--muted); font-size: 13px; line-height: 1.45; margin: 0 0 8px; white-space: pre-wrap; }
 /* One tab per question of a multi-question item. The active tab is outlined
    rather than filled, so the strip reads as a set of labels with one selected
-   rather than as a row of buttons competing with Next. */
+   rather than as a row of buttons competing with Submit answer. */
 .tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 20px; }
 .tab {
   background: transparent;
@@ -193,8 +193,8 @@ li.item {
   padding: 9px 18px;
   cursor: pointer;
 }
-/* Dismiss is the skip, so it is muted and Next carries the colour: the one
-   forward move should be the one that reads as the affirmative. */
+/* Dismiss is the skip, so it is muted and Submit answer carries the colour:
+   the one forward move should be the one that reads as the affirmative. */
 .actions .dismiss { background: transparent; color: var(--muted); }
 .actions .dismiss:hover { color: var(--text); border-color: var(--muted); }
 .actions .next { background: var(--green-bg); color: var(--green); border-color: var(--green-bg); font-weight: 500; }
@@ -202,8 +202,8 @@ li.item {
 .actions .speak { background: transparent; color: var(--muted); }
 .actions .speak:hover { color: var(--text); border-color: var(--muted); }
 /* The acknowledge control is the only action a report-only card carries, so it
-   takes the affirmative colour the message card gives Next: on a card that
-   offers no other move, it is the forward one. */
+   takes the affirmative colour the message card gives Submit answer: on a card
+   that offers no other move, it is the forward one. */
 .actions .ack { background: var(--green-bg); color: var(--green); border-color: var(--green-bg); font-weight: 500; }
 .actions .ack:hover { border-color: var(--green); }
 /* The jump handover: a copyable command for the operator who wants to paste it,
@@ -567,7 +567,7 @@ function showAckNote(row, message, isError) {
 {{end}}</div>
 {{end}}<input class="other" type="text" name="text" placeholder="Other...">
 </div>
-{{end}}<div class="actions"><button type="submit" name="kind" value="skip" class="dismiss">✕ Dismiss</button><button type="submit" name="kind" value="send" class="next">✓ Next</button>{{if .Speak}}<button type="button" class="speak" data-speak>Read aloud</button>{{end}}</div>
+{{end}}<div class="actions"><button type="submit" name="kind" value="skip" class="dismiss">✕ Dismiss</button><button type="submit" name="kind" value="send" class="next">✓ Submit answer</button>{{if .Speak}}<button type="button" class="speak" data-speak>Read aloud</button>{{end}}</div>
 </form>
 {{end}}{{if .Ack}}<div class="actions"><button type="button" class="ack" data-ack>Acknowledge</button></div>
 {{end}}{{if or .Jump .JumpURL}}<div class="jump">{{if .Jump}}<span>Approve in the session that asked: <code>{{ .Jump }}</code></span>{{end}}{{if .JumpURL}}<button type="button" class="jump-button" data-jump="{{ .JumpURL }}">Jump to session</button>{{end}}</div>
