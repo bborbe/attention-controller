@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 
 	libboltkv "github.com/bborbe/boltkv"
@@ -344,6 +346,162 @@ var _ = Describe("AttentionPageHandler", func() {
 		}
 		Expect(body).NotTo(ContainSubstring(`class="provenance"`))
 	})
+
+	It("explains a row that carries no jump control, without naming a value", func() {
+		item, err := store.Push(
+			ctx,
+			pushRequest("producer-nojump", "gate-nojump", "why is there no button?"),
+		)
+		Expect(err).To(BeNil())
+		// A record exists but recorded no pane. This is the row the operator
+		// reported three times in six hours: a card with no control and nothing
+		// saying why, indistinguishable from a board whose button failed to
+		// render.
+		provenance.ResolveReturns(pkg.Provenances{
+			item.ItemID: pkg.Provenance{Host: "burn", Cwd: "/tmp"},
+		})
+
+		row := rowOf(get("GET").Body.String(), item.ItemID)
+
+		// Positive control: the row rendered at all, so the assertions below
+		// cannot pass on a page that dropped it.
+		Expect(row).To(ContainSubstring(item.Payload.String()))
+		Expect(row).NotTo(ContainSubstring(`class="jump-button"`))
+		Expect(row).NotTo(ContainSubstring(`<code>/supervisor:jump`))
+		Expect(row).To(ContainSubstring(`<span class="no-jump">`))
+		Expect(row).To(ContainSubstring("No pane was recorded for this item"))
+		// The explanation is its own element, never the control's. A row that
+		// renders the explanation must stay distinguishable by class from a row
+		// that renders the control, or "does this row have a jump control?"
+		// stops being answerable from the DOM — and an existing spec that asks
+		// exactly that starts failing.
+		Expect(row).To(ContainSubstring(`class="jump-reason"`))
+		Expect(row).NotTo(ContainSubstring(`class="jump"`))
+	})
+
+	It("gives the unroutable row its own sentence and keeps silence 7's marker", func() {
+		item, err := store.Push(
+			ctx,
+			pushRequest("producer-nojump-unroutable", "gate-nojump-unroutable", "who owns this?"),
+		)
+		Expect(err).To(BeNil())
+		provenance.ResolveReturns(pkg.Provenances{
+			item.ItemID: pkg.Provenance{
+				Host:         "burn",
+				Cwd:          "/tmp",
+				PaneRecorded: true,
+				Routable:     false,
+			},
+		})
+
+		row := rowOf(get("GET").Body.String(), item.ItemID)
+
+		// The marker is kept and the sentence is added beside it, never a
+		// replacement — which is what the negative assertion rules out.
+		Expect(row).To(ContainSubstring(`<span class="unroutable">unroutable</span>`))
+		Expect(
+			row,
+		).To(ContainSubstring("The pane recorded for this item does not resolve to this session."))
+		Expect(row).NotTo(ContainSubstring("No pane was recorded"))
+	})
+
+	It("explains a resolved pane's absent control as a host fact, not as an absent pane", func() {
+		item, err := store.Push(
+			ctx,
+			pushRequest("producer-nojump-token", "gate-nojump-token", "token is gone?"),
+		)
+		Expect(err).To(BeNil())
+		// The pane resolved; the token is what could not be read, because the
+		// fixture handler is built with an empty token path. Saying "no pane"
+		// here would send the operator looking at the wrong thing.
+		provenance.ResolveReturns(pkg.Provenances{
+			item.ItemID: pkg.Provenance{
+				Host:         "burn",
+				Cwd:          "/tmp",
+				Pane:         "1140",
+				PaneRecorded: true,
+				Routable:     true,
+			},
+		})
+
+		row := rowOf(get("GET").Body.String(), item.ItemID)
+
+		Expect(row).To(ContainSubstring("Jump is unavailable on this host"))
+		Expect(row).NotTo(ContainSubstring("No pane was recorded"))
+		Expect(row).NotTo(ContainSubstring("does not resolve to this session"))
+	})
+
+	It("renders a control and no explanation where the pane resolved and the token reads", func() {
+		item, err := store.Push(
+			ctx,
+			pushRequest("producer-nojump-control", "gate-nojump-control", "jump me?"),
+		)
+		Expect(err).To(BeNil())
+		provenance.ResolveReturns(pkg.Provenances{
+			item.ItemID: pkg.Provenance{
+				Host:         "burn",
+				Cwd:          "/tmp",
+				Pane:         "1140",
+				PaneRecorded: true,
+				Routable:     true,
+			},
+		})
+
+		tokenPath := filepath.Join(GinkgoT().TempDir(), "jump-token")
+		Expect(os.WriteFile(tokenPath, []byte("sentinel\n"), 0o600)).To(BeNil())
+		// The same store, the same row and the same provenance, on a host whose
+		// token reads. This is the positive control for every spec above: the
+		// explanation renders only where the control does not, so no criterion
+		// here can pass by rendering the explanation unconditionally.
+		jumpHandler := handler.NewAttentionPageHandler(
+			store,
+			provenance,
+			false,
+			pkg.NewJumpTokenReader(tokenPath),
+		)
+		resp := httptest.NewRecorder()
+		jumpHandler.ServeHTTP(resp, httptest.NewRequest("GET", "/", nil))
+
+		row := rowOf(resp.Body.String(), item.ItemID)
+
+		Expect(row).To(ContainSubstring(`class="jump-button"`))
+		Expect(row).NotTo(ContainSubstring(`class="no-jump"`))
+	})
+
+	It(
+		"derives the explanation per load, so a changed reason changes the text with no store write",
+		func() {
+			item, err := store.Push(
+				ctx,
+				pushRequest("producer-nojump-render", "gate-nojump-render", "does this change?"),
+			)
+			Expect(err).To(BeNil())
+			// A record with no pane: the absence is the item's own.
+			provenance.ResolveReturns(pkg.Provenances{
+				item.ItemID: pkg.Provenance{Host: "burn", Cwd: "/tmp"},
+			})
+			first := rowOf(get("GET").Body.String(), item.ItemID)
+			Expect(first).To(ContainSubstring("No pane was recorded for this item"))
+
+			// The same item and the same store, with nothing written between the two
+			// loads: only the resolution changed — a pane now exists and does not
+			// belong to this session. The explanation follows the resolution rather
+			// than a value stored on the item, which is what makes it impossible for
+			// the explanation and the control to disagree.
+			provenance.ResolveReturns(pkg.Provenances{
+				item.ItemID: pkg.Provenance{
+					Host:         "burn",
+					Cwd:          "/tmp",
+					PaneRecorded: true,
+					Routable:     false,
+				},
+			})
+			second := rowOf(get("GET").Body.String(), item.ItemID)
+
+			Expect(second).To(ContainSubstring("does not resolve to this session"))
+			Expect(second).NotTo(ContainSubstring("No pane was recorded"))
+		},
+	)
 
 	It("returns the standard JSON error body when the read fails", func() {
 		Expect(db.Close()).To(BeNil())
