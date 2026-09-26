@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.11.0
 
 - feat: stamp `escalated_at` on the escalation path — written from the store's own clock inside the same compare-and-set that writes `escalated_by`, never supplied by the caller, so the two are always present together. The operator rung previously had a count and no latency: the time from escalation to answer had no starting stamp, and a reader that borrowed `closed_at` would have measured how long the item sat instead. Also reject an `escalated_by` that is not a well-formed session id rather than storing it — a placeholder such as `session-a` has no UUID to normalize to, so "repair" could only mean inventing an identity, and the live store was carrying three such values against the schema's own rule
 
