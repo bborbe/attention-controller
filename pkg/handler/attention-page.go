@@ -247,8 +247,16 @@ li.item {
 .actions .dismiss:hover { color: var(--text); border-color: var(--muted); }
 .actions .next { background: var(--green-bg); color: var(--green); border-color: var(--green-bg); font-weight: 500; }
 .actions .next:hover { border-color: var(--green); }
-.actions .speak { background: transparent; color: var(--muted); }
+.actions .speak { background: transparent; color: var(--muted); display: inline-flex; align-items: center; gap: 7px; }
 .actions .speak:hover { color: var(--text); border-color: var(--muted); }
+/* The speaker glyph is inline SVG, not a font character: the page loads no web
+   fonts, so a glyph taken from the system font would vary by platform and
+   family. It inherits the button's own muted colour through currentColor, so it
+   adds no colour to the palette, and it is sized here rather than in width /
+   height attributes so it tracks the button's font size. The svg is
+   aria-hidden and focusable="false" so it contributes no second accessible
+   name: the control's name is its own aria-label, never the glyph. */
+.actions .speak-icon { width: 14px; height: 14px; flex: none; }
 /* The acknowledge control is the only action a report-only card carries, so it
    takes the affirmative colour the message card gives Submit answer: on a card
    that offers no other move, it is the forward one. */
@@ -644,7 +652,7 @@ function showAckNote(row, message, isError) {
 {{end}}</div>
 {{end}}<input class="other" type="text" name="text" placeholder="Other...">
 </div>
-{{end}}<div class="actions"><button type="submit" name="kind" value="skip" class="dismiss">✕ Dismiss</button><button type="submit" name="kind" value="send" class="next">✓ Submit answer</button>{{if .Speak}}<button type="button" class="speak" data-speak>Read aloud</button>{{end}}</div>
+{{end}}<div class="actions"><button type="submit" name="kind" value="skip" class="dismiss">✕ Dismiss</button><button type="submit" name="kind" value="send" class="next">✓ Submit answer</button>{{if .Speak}}<button type="button" class="speak" data-speak aria-label="Read aloud" title="Read aloud"><svg class="speak-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2.75 5.25 5.5H2.75v5h2.5L9 13.25z"/><path d="M11.5 5.75a3.25 3.25 0 0 1 0 4.5"/><path d="M13.5 3.75a6 6 0 0 1 0 8.5"/></svg>Read aloud</button>{{end}}</div>
 </form>
 {{end}}{{if and .Ack (not .Dimmed)}}<div class="actions"><button type="button" class="ack" data-ack>Acknowledge</button></div>
 {{end}}{{if or .Jump .JumpURL}}<div class="jump">{{if .Jump}}<span>Approve in the session that asked: <code>{{ .Jump }}</code></span>{{end}}{{if .JumpURL}}<button type="button" class="jump-button" data-jump="{{ .JumpURL }}">Jump to session</button>{{end}}</div>
