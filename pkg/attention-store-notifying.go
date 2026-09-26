@@ -60,6 +60,15 @@ func (n *notifyingAttentionStore) Read(ctx context.Context) (Items, error) {
 	return n.store.Read(ctx)
 }
 
+// ReadBoard delegates and never signals, on the same reasoning as Read: it is a
+// read, and the prune it shares with Read is driven by a producer's liveness
+// rather than by this call. Signalling from it would make each live view's own
+// re-read wake every other one — the read is what the board does on every
+// change, so a signal here would be a feedback loop.
+func (n *notifyingAttentionStore) ReadBoard(ctx context.Context) (Items, error) {
+	return n.store.ReadBoard(ctx)
+}
+
 // History delegates and never signals: it is a counting read.
 func (n *notifyingAttentionStore) History(ctx context.Context) (Items, error) {
 	return n.store.History(ctx)
