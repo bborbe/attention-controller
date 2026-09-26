@@ -114,6 +114,19 @@ type AttentionStore struct {
 		result1 pkg.Items
 		result2 error
 	}
+	ReadBoardStub        func(context.Context) (pkg.Items, error)
+	readBoardMutex       sync.RWMutex
+	readBoardArgsForCall []struct {
+		arg1 context.Context
+	}
+	readBoardReturns struct {
+		result1 pkg.Items
+		result2 error
+	}
+	readBoardReturnsOnCall map[int]struct {
+		result1 pkg.Items
+		result2 error
+	}
 	invocations      map[string][][]interface{}
 	invocationsMutex sync.RWMutex
 }
@@ -575,6 +588,70 @@ func (fake *AttentionStore) ReadReturnsOnCall(i int, result1 pkg.Items, result2 
 		})
 	}
 	fake.readReturnsOnCall[i] = struct {
+		result1 pkg.Items
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *AttentionStore) ReadBoard(arg1 context.Context) (pkg.Items, error) {
+	fake.readBoardMutex.Lock()
+	ret, specificReturn := fake.readBoardReturnsOnCall[len(fake.readBoardArgsForCall)]
+	fake.readBoardArgsForCall = append(fake.readBoardArgsForCall, struct {
+		arg1 context.Context
+	}{arg1})
+	stub := fake.ReadBoardStub
+	fakeReturns := fake.readBoardReturns
+	fake.recordInvocation("ReadBoard", []interface{}{arg1})
+	fake.readBoardMutex.Unlock()
+	if stub != nil {
+		return stub(arg1)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *AttentionStore) ReadBoardCallCount() int {
+	fake.readBoardMutex.RLock()
+	defer fake.readBoardMutex.RUnlock()
+	return len(fake.readBoardArgsForCall)
+}
+
+func (fake *AttentionStore) ReadBoardCalls(stub func(context.Context) (pkg.Items, error)) {
+	fake.readBoardMutex.Lock()
+	defer fake.readBoardMutex.Unlock()
+	fake.ReadBoardStub = stub
+}
+
+func (fake *AttentionStore) ReadBoardArgsForCall(i int) context.Context {
+	fake.readBoardMutex.RLock()
+	defer fake.readBoardMutex.RUnlock()
+	argsForCall := fake.readBoardArgsForCall[i]
+	return argsForCall.arg1
+}
+
+func (fake *AttentionStore) ReadBoardReturns(result1 pkg.Items, result2 error) {
+	fake.readBoardMutex.Lock()
+	defer fake.readBoardMutex.Unlock()
+	fake.ReadBoardStub = nil
+	fake.readBoardReturns = struct {
+		result1 pkg.Items
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *AttentionStore) ReadBoardReturnsOnCall(i int, result1 pkg.Items, result2 error) {
+	fake.readBoardMutex.Lock()
+	defer fake.readBoardMutex.Unlock()
+	fake.ReadBoardStub = nil
+	if fake.readBoardReturnsOnCall == nil {
+		fake.readBoardReturnsOnCall = make(map[int]struct {
+			result1 pkg.Items
+			result2 error
+		})
+	}
+	fake.readBoardReturnsOnCall[i] = struct {
 		result1 pkg.Items
 		result2 error
 	}{result1, result2}

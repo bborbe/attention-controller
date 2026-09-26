@@ -976,6 +976,130 @@ var _ = Describe("AttentionStore", func() {
 		})
 	})
 
+	// ReadBoard is Read plus the answered items the board renders as dimmed
+	// records. The two readers share one private body, so the pair below asserts
+	// both halves of that sharing: an answered item is returned and survives, and
+	// a dead open asker is still removed in the same pass. The first half alone
+	// is satisfied by a store that returns every stored row; the second alone by
+	// the old Read. Together they pin the widened filter to the answered item and
+	// prove the prune was not disabled with it.
+	Describe("ReadBoard", func() {
+		// itemIDs lists the ids a read returned, so membership is asserted rather
+		// than a length that a different item could satisfy.
+		itemIDs := func(items pkg.Items) []pkg.ItemID {
+			ids := make([]pkg.ItemID, 0, len(items))
+			for _, item := range items {
+				ids = append(ids, item.ItemID)
+			}
+			return ids
+		}
+
+		It("returns an answered item that Read omits", func() {
+			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
+			Expect(err).To(BeNil())
+			_, err = store.Answer(ctx, item.ItemID, "telegram", "", "", nil, nil, nil)
+			Expect(err).To(BeNil())
+
+			read, err := store.Read(ctx)
+			Expect(err).To(BeNil())
+			Expect(itemIDs(read)).NotTo(ContainElement(item.ItemID))
+
+			board, err := store.ReadBoard(ctx)
+			Expect(err).To(BeNil())
+			Expect(itemIDs(board)).To(ContainElement(item.ItemID))
+		})
+
+		It("still returns an open item", func() {
+			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
+			Expect(err).To(BeNil())
+
+			board, err := store.ReadBoard(ctx)
+			Expect(err).To(BeNil())
+			Expect(itemIDs(board)).To(ConsistOf(item.ItemID))
+			Expect(board[0].State).To(Equal(pkg.OpenState))
+		})
+
+		// The `closed` item leaves the queue and the card leaves with it, in both
+		// readers. The pair is a table because the rule is about the readers, not
+		// about either one alone.
+		DescribeTable("omits a closed item",
+			func(reader string) {
+				item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
+				Expect(err).To(BeNil())
+				_, err = store.Close(ctx, item.ItemID, "", nil)
+				Expect(err).To(BeNil())
+
+				var items pkg.Items
+				switch reader {
+				case "Read":
+					items, err = store.Read(ctx)
+				case "ReadBoard":
+					items, err = store.ReadBoard(ctx)
+				default:
+					Fail("unknown reader " + reader)
+				}
+				Expect(err).To(BeNil())
+				Expect(itemIDs(items)).NotTo(ContainElement(item.ItemID))
+			},
+			Entry("Read", "Read"),
+			Entry("ReadBoard", "ReadBoard"),
+		)
+
+		// The answered item is never liveness-tested, so its producer being gone
+		// cannot prune it. Asserted as returned *and* still in the store: a store
+		// that merely filtered it out at read time would pass the second half
+		// alone.
+		It("returns an answered item whose producer is gone, without pruning it", func() {
+			item, err := store.Push(ctx, pushRequest("session-dead", "gate-answered"))
+			Expect(err).To(BeNil())
+			_, err = store.Answer(ctx, item.ItemID, "telegram", "", "", nil, nil, nil)
+			Expect(err).To(BeNil())
+
+			// The producer exited after the item was answered.
+			sessionLivenessChecker.IsLiveReturns(false)
+
+			board, err := store.ReadBoard(ctx)
+			Expect(err).To(BeNil())
+			Expect(itemIDs(board)).To(ContainElement(item.ItemID))
+
+			got, err := store.Get(ctx, item.ItemID)
+			Expect(err).To(BeNil())
+			Expect(got.State).To(Equal(pkg.AnsweredState))
+		})
+
+		// The other half of the pair: widening the filter must not have widened
+		// the prune. One sweep, two dead producers, opposite outcomes — an
+		// answered item survives and an open question is removed. The removal is
+		// asserted against the store, not merely against the returned slice.
+		It("still removes a dead open asker in the same read that keeps the answered item", func() {
+			answered, err := store.Push(ctx, pushRequest("session-dead-a", "gate-answered"))
+			Expect(err).To(BeNil())
+			_, err = store.Answer(ctx, answered.ItemID, "telegram", "", "", nil, nil, nil)
+			Expect(err).To(BeNil())
+
+			asked, err := store.Push(ctx, pushRequest("session-dead-b", "gate-asked"))
+			Expect(err).To(BeNil())
+
+			// Both producers are gone by the time the board reads.
+			sessionLivenessChecker.IsLiveReturns(false)
+
+			board, err := store.ReadBoard(ctx)
+			Expect(err).To(BeNil())
+			Expect(itemIDs(board)).To(ContainElement(answered.ItemID))
+			Expect(itemIDs(board)).NotTo(ContainElement(asked.ItemID))
+
+			// The removal actually happened: the row is gone, not filtered at read
+			// time. A read that only omitted it would leave it retrievable.
+			_, err = store.Get(ctx, asked.ItemID)
+			Expect(errors.Is(err, pkg.ErrItemNotFound)).To(BeTrue())
+
+			// And the sweep did not take the answered item with it.
+			got, err := store.Get(ctx, answered.ItemID)
+			Expect(err).To(BeNil())
+			Expect(got.State).To(Equal(pkg.AnsweredState))
+		})
+	})
+
 	Describe("durability", func() {
 		It("returns the same rows from a fresh store over the same database", func() {
 			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))

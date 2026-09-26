@@ -37,6 +37,19 @@ type AttentionStore interface {
 	// the window between producer-exit and removal is one read at most.
 	Read(ctx context.Context) (Items, error)
 
+	// ReadBoard returns the items the board renders: the open items Read
+	// returns, plus the `answered` items the board shows as dimmed records
+	// carrying the answer the store recorded. A `closed` item is absent from
+	// both.
+	//
+	// It is a second method rather than a parameter on Read because the two
+	// readers differ by intent: Read feeds the JSON read API, whose consumers
+	// act on what they are given, while the board is the surface where the
+	// operator checks what stands recorded in their name. It prunes exactly as
+	// Read does — an `answered` item is never removed, because the schema says
+	// its history is never rewritten.
+	ReadBoard(ctx context.Context) (Items, error)
+
 	// History returns every item regardless of state, for counting what
 	// resolved and what escalated rather than for rendering.
 	//

@@ -226,4 +226,283 @@ var _ = Describe("Attention page board controls", func() {
 			Expect(rowBlock(body, permission.ItemID)).NotTo(ContainSubstring("<button"))
 		},
 	)
+
+	// The dimmed record is the answered item's card: it carries what was
+	// recorded and offers nothing to act on. The positive controls are the
+	// load-bearing half — a page that rendered no rows at all, or that dimmed
+	// every row, would pass the negative assertions alone.
+	Describe("an answered item", func() {
+		// render serves the board once and returns the document, so a case can
+		// push several items and assert on the single page they share.
+		render := func() string {
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			resp := httptest.NewRecorder()
+			httpHandler.ServeHTTP(resp, req)
+			Expect(resp.Code).To(Equal(http.StatusOK))
+			return resp.Body.String()
+		}
+
+		// dimmedRow reports whether the row for itemID carries the dimmed class.
+		// The class sits in the opening <li> tag, before data-item-id, so rowBlock
+		// — which starts at that attribute — would not see it.
+		dimmedRow := func(body string, itemID pkg.ItemID) bool {
+			return strings.Contains(
+				body,
+				`class="item dimmed" data-item-id="`+itemID.String()+`"`,
+			)
+		}
+
+		// messageItem builds a `message` declaration with a caller-supplied key and
+		// payload, so two rows can coexist on one page without dedup collapsing
+		// them into one.
+		messageItem := func(dedupKey pkg.DedupKey, payload pkg.Payload) pkg.PushRequest {
+			producerID := pkg.ProducerID("producer-" + dedupKey.String())
+			return pkg.PushRequest{
+				ProducerID:      producerID,
+				ProducerKind:    pkg.SessionProducerKind,
+				LivenessRef:     pkg.LivenessRef("session:" + producerID.String()),
+				DedupKey:        dedupKey,
+				InterruptClass:  "pick",
+				Payload:         payload,
+				AnswerMechanism: pkg.MessageAnswerMechanism,
+			}
+		}
+
+		It("renders a dimmed card carrying the recorded answer", func() {
+			item, err := store.Push(ctx, messageItem("answered-1", "Which surface?"))
+			Expect(err).To(BeNil())
+			answer := pkg.Answer{Kind: pkg.TextAnswerKind, Value: "the board"}
+			_, err = store.Answer(ctx, item.ItemID, "attention-board", "", "", &answer, nil, nil)
+			Expect(err).To(BeNil())
+
+			body := render()
+			Expect(dimmedRow(body, item.ItemID)).To(BeTrue())
+
+			block := rowBlock(body, item.ItemID)
+			Expect(block).To(ContainSubstring("record-answer"))
+			Expect(block).To(ContainSubstring("answered: the board"))
+		})
+
+		It(
+			"renders no form and no acknowledge, dismiss or next control on the dimmed card",
+			func() {
+				item, err := store.Push(ctx, messageItem("answered-2", "Which surface?"))
+				Expect(err).To(BeNil())
+				answer := pkg.Answer{Kind: pkg.TextAnswerKind, Value: "the board"}
+				_, err = store.Answer(
+					ctx,
+					item.ItemID,
+					"attention-board",
+					"",
+					"",
+					&answer,
+					nil,
+					nil,
+				)
+				Expect(err).To(BeNil())
+
+				block := rowBlock(render(), item.ItemID)
+				Expect(block).NotTo(ContainSubstring("<form"))
+				Expect(block).NotTo(ContainSubstring("Acknowledge"))
+				Expect(block).NotTo(ContainSubstring("Dismiss"))
+				Expect(block).NotTo(ContainSubstring("Next"))
+			},
+		)
+
+		// Positive control: an open row on the same page must stay a prompt. A page
+		// that dimmed every row would pass the negative assertions above and is
+		// caught here.
+		It("leaves an open message item undimmed with its answer form, in the same render", func() {
+			answered, err := store.Push(ctx, messageItem("answered-3", "Answered question?"))
+			Expect(err).To(BeNil())
+			answer := pkg.Answer{Kind: pkg.TextAnswerKind, Value: "the board"}
+			_, err = store.Answer(
+				ctx,
+				answered.ItemID,
+				"attention-board",
+				"",
+				"",
+				&answer,
+				nil,
+				nil,
+			)
+			Expect(err).To(BeNil())
+			open, err := store.Push(ctx, messageItem("open-3", "Open question?"))
+			Expect(err).To(BeNil())
+
+			body := render()
+
+			Expect(dimmedRow(body, answered.ItemID)).To(BeTrue())
+			Expect(rowBlock(body, answered.ItemID)).NotTo(ContainSubstring("<form"))
+
+			Expect(dimmedRow(body, open.ItemID)).To(BeFalse())
+			Expect(rowBlock(body, open.ItemID)).To(ContainSubstring("<form"))
+		})
+
+		// Positive control alongside: the open row must be on the page, so an empty
+		// document cannot pass this by rendering nothing.
+		It("omits a closed item from the board entirely", func() {
+			open, err := store.Push(ctx, messageItem("open-4", "Still open?"))
+			Expect(err).To(BeNil())
+			closed, err := store.Push(ctx, messageItem("closed-4", "Already closed?"))
+			Expect(err).To(BeNil())
+			_, err = store.Close(ctx, closed.ItemID, "", nil)
+			Expect(err).To(BeNil())
+
+			body := render()
+			Expect(body).To(ContainSubstring(`data-item-id="` + open.ItemID.String() + `"`))
+			Expect(body).NotTo(ContainSubstring(`data-item-id="` + closed.ItemID.String() + `"`))
+		})
+
+		It("renders the decision on a dimmed permission item", func() {
+			item, err := store.Push(ctx, permissionRequest())
+			Expect(err).To(BeNil())
+			_, err = store.Answer(
+				ctx,
+				item.ItemID,
+				"operator",
+				"",
+				pkg.AllowDecision,
+				nil,
+				nil,
+				nil,
+			)
+			Expect(err).To(BeNil())
+
+			body := render()
+			Expect(dimmedRow(body, item.ItemID)).To(BeTrue())
+
+			block := rowBlock(body, item.ItemID)
+			Expect(block).To(ContainSubstring("decision: allow"))
+			// A renderer reading `answer` for every mechanism would show this blank.
+			Expect(block).NotTo(ContainSubstring("no decision recorded"))
+		})
+
+		// The per-kind matrix the store records: a text answer, an option answer, a
+		// skip, and a permission item's allow and deny. A table because the rule is
+		// "read the field the mechanism names", asserted once per kind.
+		DescribeTable("renders the recorded answer for each answer kind",
+			func(request pkg.PushRequest, answerItem func(itemID pkg.ItemID), expected string) {
+				item, err := store.Push(ctx, request)
+				Expect(err).To(BeNil())
+				answerItem(item.ItemID)
+
+				body := render()
+				Expect(dimmedRow(body, item.ItemID)).To(BeTrue())
+
+				block := rowBlock(body, item.ItemID)
+				Expect(block).To(ContainSubstring("record-answer"))
+				Expect(block).To(ContainSubstring(expected))
+			},
+			Entry("a text answer",
+				messageItem("kind-text", "Q?"),
+				func(itemID pkg.ItemID) {
+					answer := pkg.Answer{Kind: pkg.TextAnswerKind, Value: "a free-text answer"}
+					_, err := store.Answer(
+						ctx,
+						itemID,
+						"attention-board",
+						"",
+						"",
+						&answer,
+						nil,
+						nil,
+					)
+					Expect(err).To(BeNil())
+				}, "a free-text answer"),
+			Entry("an option answer",
+				messageItem("kind-option", "Q?"),
+				func(itemID pkg.ItemID) {
+					answer := pkg.Answer{Kind: pkg.OptionAnswerKind, Value: "the board"}
+					_, err := store.Answer(
+						ctx,
+						itemID,
+						"attention-board",
+						"",
+						"",
+						&answer,
+						nil,
+						nil,
+					)
+					Expect(err).To(BeNil())
+				}, "the board"),
+			Entry("a skip",
+				messageItem("kind-skip", "Q?"),
+				func(itemID pkg.ItemID) {
+					answer := pkg.Answer{Kind: pkg.SkipAnswerKind}
+					_, err := store.Answer(
+						ctx,
+						itemID,
+						"attention-board",
+						"",
+						"",
+						&answer,
+						nil,
+						nil,
+					)
+					Expect(err).To(BeNil())
+				}, "skipped"),
+			Entry("an allow decision",
+				permissionRequest(),
+				func(itemID pkg.ItemID) {
+					_, err := store.Answer(
+						ctx,
+						itemID,
+						"operator",
+						"",
+						pkg.AllowDecision,
+						nil,
+						nil,
+						nil,
+					)
+					Expect(err).To(BeNil())
+				}, "decision: allow"),
+			Entry("a deny decision",
+				permissionRequest(),
+				func(itemID pkg.ItemID) {
+					_, err := store.Answer(
+						ctx,
+						itemID,
+						"operator",
+						"",
+						pkg.DenyDecision,
+						nil,
+						nil,
+						nil,
+					)
+					Expect(err).To(BeNil())
+				}, "decision: deny"),
+		)
+
+		// The `answers` branch: one entry per tab, rendered for the operator to read
+		// back. Separate from the table because it asserts two questions on one card
+		// rather than one answer kind.
+		It("renders every tab's answer on a dimmed multi-question item", func() {
+			request := messageItem("multi-1", "Two questions?")
+			request.Questions = pkg.Questions{
+				{Tab: "left", Payload: "Left?"},
+				{Tab: "right", Payload: "Right?"},
+			}
+			item, err := store.Push(ctx, request)
+			Expect(err).To(BeNil())
+			_, err = store.Answer(
+				ctx,
+				item.ItemID,
+				"attention-board",
+				"",
+				"",
+				nil,
+				pkg.Answers{
+					{Question: "left", Answer: pkg.Answer{Kind: pkg.TextAnswerKind, Value: "one"}},
+					{Question: "right", Answer: pkg.Answer{Kind: pkg.TextAnswerKind, Value: "two"}},
+				},
+				nil,
+			)
+			Expect(err).To(BeNil())
+
+			block := rowBlock(render(), item.ItemID)
+			Expect(block).To(ContainSubstring("left: one"))
+			Expect(block).To(ContainSubstring("right: two"))
+		})
+	})
 })

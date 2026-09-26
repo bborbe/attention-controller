@@ -9,6 +9,7 @@ import (
 	"context"
 	"html/template"
 	"net/http"
+	"strings"
 
 	"github.com/bborbe/errors"
 	libhttp "github.com/bborbe/http"
@@ -110,6 +111,19 @@ body {
 }
 h1 { font-size: 20px; margin: 0 0 16px; }
 ul.items { list-style: none; padding: 0; margin: 0; }
+/* An answered item stays on the board as a dimmed record rather than
+   disappearing: the operator asked to see what they answered, and the record is
+   the only place the answer standing in their name is visible. It leaves when
+   the item is closed. */
+.item.dimmed {
+  opacity: .5;
+}
+.item.dimmed .record-question {
+  font-weight: 600;
+}
+.item.dimmed .record-answer {
+  margin-top: .25rem;
+}
 li.item {
   background: var(--panel);
   border: 1px solid var(--border);
@@ -242,12 +256,13 @@ li.item {
 <body>
 <h1>Attention</h1>
 {{if .Items}}<ul class="items">
-{{range .Items}}<li class="item" data-item-id="{{ .Item.ItemID }}">
+{{range .Items}}<li class="item{{if .Dimmed}} dimmed{{end}}" data-item-id="{{ .Item.ItemID }}">
 <div class="producer">{{ .Item.ProducerID }} ({{ .Item.ProducerKind }})</div>
 {{if not .Message}}<div class="payload">{{ .Item.Payload }}</div>
 {{end}}{{if .Item.Context}}<div class="context">{{ .Item.Context }}</div>
 {{end}}{{if .Provenance.Resolved}}<div class="provenance">{{if .Provenance.Host}}<span class="host">{{ .Provenance.Host }}</span>{{end}}{{if .Provenance.Cwd}}<span class="cwd">{{ .Provenance.Cwd }}</span>{{end}}{{if .Provenance.Tool}}<span class="tool">{{ .Provenance.Tool }}</span>{{end}}{{if .Provenance.Pane}}<span class="pane">pane {{ .Provenance.Pane }}</span>{{else if .Provenance.PaneRecorded}}<span class="unroutable">unroutable</span>{{end}}</div>
-{{end}}{{if .Message}}<form class="answer" data-multi="{{ .Tabs }}">
+{{end}}{{if .Dimmed}}<div class="record"><div class="record-question">{{ .Item.Payload }}</div><div class="record-answer">answered: {{ .Record }}</div></div>
+{{else if .Message}}<form class="answer" data-multi="{{ .Tabs }}">
 {{if .Tabs}}<div class="tabs">{{range .Questions}}<button type="button" class="tab{{if .Active}} active{{end}}" data-tab="{{ .Tab }}">{{ .Tab }}</button>{{end}}</div>
 <div class="card-title">{{ .Item.Payload }}</div>
 {{end}}{{range .Questions}}{{$question := .}}<div class="panel" data-question="{{ $question.Tab }}" data-multi-pick="{{ $question.Multi }}"{{if not $question.Active}} hidden{{end}}>
@@ -259,7 +274,7 @@ li.item {
 </div>
 {{end}}<div class="actions"><button type="submit" name="kind" value="skip" class="dismiss">✕ Dismiss</button><button type="submit" name="kind" value="send" class="next">✓ Next</button>{{if $.Speak}}<button type="button" class="speak" data-speak>Read aloud</button>{{end}}</div>
 </form>
-{{end}}{{if .Ack}}<div class="actions"><button type="button" class="ack" data-ack>Acknowledge</button></div>
+{{end}}{{if and .Ack (not .Dimmed)}}<div class="actions"><button type="button" class="ack" data-ack>Acknowledge</button></div>
 {{end}}{{if or .Jump .JumpURL}}<div class="jump">{{if .Jump}}<span>Approve in the session that asked: <code>{{ .Jump }}</code></span>{{end}}{{if .JumpURL}}<button type="button" class="jump-button" data-jump="{{ .JumpURL }}">Jump to session</button>{{end}}</div>
 {{end}}<div class="meta">{{ .Item.State }} - {{ .Item.CreatedAt }}</div>
 </li>
@@ -586,6 +601,19 @@ type attentionPageRow struct {
 	// the page's own script reads, so the strip and the wire shape cannot
 	// disagree about whether this item answers by `answer` or by `answers`.
 	Tabs bool
+	// Dimmed reports whether this row is the dimmed record of an item that has
+	// already been answered, rather than an open card. It is what the template
+	// branches on to render a record instead of a prompt: a dimmed row carries
+	// no form, no option row, no Dismiss and no Next, because a control there
+	// would offer an answer to a question that already has one.
+	//
+	// It is derived from the item's state, never from the answer's presence: an
+	// item answered before `answer` existed carries no content and is still a
+	// record.
+	Dimmed bool
+	// Record is the answer the store recorded, rendered for the dimmed card by
+	// recordAnswer. Empty on every row that is not dimmed.
+	Record string
 	// Jump is the copyable command handing a non-`message` item back to the
 	// session that raised it. Empty when no pane resolved — an unresolvable
 	// value renders absent rather than as a stand-in, per the schema's silence 7.
@@ -637,11 +665,67 @@ func newAttentionPageRow(
 		Jump:       jumpCommand(item, provenance),
 		JumpURL:    jumpURL(item, provenance, jumpEnabled),
 	}
+	if item.State == pkg.AnsweredState {
+		// The board renders the record of what was answered so the operator can
+		// see the answer standing in their name. `answered_by` is a caller
+		// declaration, so a card that vanished on answering would destroy that
+		// evidence at exactly the moment it could be noticed.
+		row.Dimmed = true
+		row.Record = recordAnswer(item)
+	}
 	if row.Message {
 		row.Questions = pageQuestions(item)
 		row.Tabs = len(item.Questions) > 0
 	}
 	return row
+}
+
+// recordAnswer renders the answer the store recorded, as the dimmed card shows
+// it. It reads the field the schema names for each mechanism rather than
+// guessing at one: `decision` carries a `permission` item's verdict, `answers`
+// carries a multi-question item's entry per tab, and `answer` carries a
+// single-question `message` item's content. ⚠️ A `permission` item never
+// carries `answer`, so a renderer reading that field for every mechanism would
+// show every permission record blank.
+func recordAnswer(item pkg.Item) string {
+	switch {
+	case item.AnswerMechanism == pkg.PermissionAnswerMechanism:
+		if item.Decision == "" {
+			return "no decision recorded"
+		}
+		return "decision: " + string(item.Decision)
+	case len(item.Answers) > 0:
+		parts := make([]string, 0, len(item.Answers))
+		for _, answer := range item.Answers {
+			parts = append(parts, answer.Question+": "+answerText(answer.Answer))
+		}
+		return strings.Join(parts, " · ")
+	case item.Answer != nil:
+		return answerText(*item.Answer)
+	default:
+		// An item answered before `answer` existed carries none — the schema
+		// adds no write-time rejection, so it reads as an item with no recorded
+		// content rather than as an error.
+		return "no answer recorded"
+	}
+}
+
+// answerText renders one answer's content from its kind. `skip` is the case
+// that needs saying out loud: it carries neither value nor values, so a card
+// rendering the empty string would be indistinguishable from one whose answer
+// failed to load.
+func answerText(answer pkg.Answer) string {
+	switch answer.Kind {
+	case pkg.SkipAnswerKind:
+		return "skipped"
+	case pkg.OptionAnswerKind, pkg.TextAnswerKind:
+		if len(answer.Values) > 0 {
+			return strings.Join(answer.Values, ", ")
+		}
+		return answer.Value
+	default:
+		return "no answer recorded"
+	}
 }
 
 // pageQuestions builds the question units a row's card renders. An item carrying
@@ -792,7 +876,11 @@ func NewAttentionPageHandler(
 	return libhttp.NewJSONErrorHandler(
 		libhttp.WithErrorFunc(
 			func(ctx context.Context, resp http.ResponseWriter, req *http.Request) error {
-				items, err := store.Read(ctx)
+				// ReadBoard, not Read: the board renders the answered items as
+				// dimmed records as well as the open ones. Read stays as it is
+				// for the JSON read API, whose consumers act on what they are
+				// given and must not be handed an already-answered item.
+				items, err := store.ReadBoard(ctx)
 				if err != nil {
 					return libhttp.WrapWithCode(
 						errors.Wrap(ctx, err, "read failed"),
