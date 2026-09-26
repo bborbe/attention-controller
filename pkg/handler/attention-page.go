@@ -201,6 +201,11 @@ li.item {
 .actions .next:hover { border-color: var(--green); }
 .actions .speak { background: transparent; color: var(--muted); }
 .actions .speak:hover { color: var(--text); border-color: var(--muted); }
+/* The acknowledge control is the only action a report-only card carries, so it
+   takes the affirmative colour the message card gives Next: on a card that
+   offers no other move, it is the forward one. */
+.actions .ack { background: var(--green-bg); color: var(--green); border-color: var(--green-bg); font-weight: 500; }
+.actions .ack:hover { border-color: var(--green); }
 /* The jump handover: a copyable command for the operator who wants to paste it,
    and a button for the one who wants to click. The button's href is a path on
    this board, which redirects to the fleet-jump URL server-side — the token is
@@ -254,6 +259,7 @@ li.item {
 </div>
 {{end}}<div class="actions"><button type="submit" name="kind" value="skip" class="dismiss">✕ Dismiss</button><button type="submit" name="kind" value="send" class="next">✓ Next</button>{{if $.Speak}}<button type="button" class="speak" data-speak>Read aloud</button>{{end}}</div>
 </form>
+{{end}}{{if .Ack}}<div class="actions"><button type="button" class="ack" data-ack>Acknowledge</button></div>
 {{end}}{{if or .Jump .JumpURL}}<div class="jump">{{if .Jump}}<span>Approve in the session that asked: <code>{{ .Jump }}</code></span>{{end}}{{if .JumpURL}}<button type="button" class="jump-button" data-jump="{{ .JumpURL }}">Jump to session</button>{{end}}</div>
 {{end}}<div class="meta">{{ .Item.State }} - {{ .Item.CreatedAt }}</div>
 </li>
@@ -424,6 +430,38 @@ function showJumpNote(row, message, isError) {
   note.textContent = message;
   container.appendChild(note);
 }
+/* ⚠️ The acknowledge control closes the item — open -> closed — and it is the
+   only control a report-only card carries. It posts the board as the arm that
+   caused the close, which is what lets a reader tell a board acknowledgement
+   from a producer withdrawing its own item or from the store's producer-exit
+   sweep: neither of those records an answered_by at all. answered_at stays
+   unset, because an ack item routes nothing back to its producer. */
+document.querySelectorAll('button[data-ack]').forEach(function (button) {
+  button.addEventListener('click', function () {
+    var row = button.closest('li.item');
+    fetch('/api/1.0/attention/' + encodeURIComponent(row.getAttribute('data-item-id')) + '/close', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ answered_by: 'attention-board' })
+    }).then(function (response) {
+      if (response.ok) { window.location.reload(); return; }
+      return response.text().then(function (body) {
+        showAckNote(row, 'Acknowledge failed - HTTP ' + response.status + ' - ' + body, true);
+      });
+    }).catch(function (error) {
+      showAckNote(row, 'Acknowledge failed - ' + String(error), true);
+    });
+  });
+});
+function showAckNote(row, message, isError) {
+  var container = row.querySelector('.actions');
+  var previous = container.querySelector('.note');
+  if (previous) { previous.remove(); }
+  var note = document.createElement('span');
+  note.className = isError ? 'note failed' : 'note';
+  note.textContent = message;
+  container.appendChild(note);
+}
 </script>
 </body>
 </html>
@@ -474,6 +512,24 @@ type attentionPageRow struct {
 	// operator may answer it in the session that raised it, so a control there
 	// would be the permission laundering the schema forbids.
 	Message bool
+	// Ack reports whether this row renders the acknowledge control. True for
+	// `ack` items only.
+	//
+	// ⚠️ This is the second half of an affordance that used to be a single
+	// boolean, and the gap it closes was not cosmetic. An `ack` item is a
+	// condition report: it asks nothing and routes nothing back, so the schema
+	// closes it by acknowledgement — `open` → `closed` with `answered_at`
+	// unset — and names an arm as a causer of that row. With no branch for it,
+	// an `ack` row fell through the same `not .Message` path as a `permission`
+	// row and rendered its payload and a state line and nothing else, so it sat
+	// on the only surface that showed it and could not be cleared from there.
+	//
+	// A `permission` row is deliberately still in that position: it is
+	// approve-shaped, only the operator may answer it in the session that
+	// raised it, and a control here would be the permission laundering the
+	// schema forbids. The two classes rendering identically was the accident;
+	// they are separated by this field rather than by a shared absence.
+	Ack bool
 	// Questions are the question units this row's card renders: the item's own
 	// when it carries several, otherwise a single unit built from the item's own
 	// Payload, Options and AnswerCardinality. Empty when the row renders no card,
@@ -536,6 +592,7 @@ func newAttentionPageRow(
 		Item:       item,
 		Provenance: provenance,
 		Message:    item.AnswerMechanism == pkg.MessageAnswerMechanism,
+		Ack:        item.AnswerMechanism == pkg.AckAnswerMechanism,
 		Jump:       jumpCommand(item, provenance),
 		JumpURL:    jumpURL(item, provenance, jumpEnabled),
 	}

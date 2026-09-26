@@ -28,11 +28,12 @@ type AttentionStore struct {
 		result1 *pkg.Item
 		result2 error
 	}
-	CloseStub        func(context.Context, pkg.ItemID) (*pkg.Item, error)
+	CloseStub        func(context.Context, pkg.ItemID, string) (*pkg.Item, error)
 	closeMutex       sync.RWMutex
 	closeArgsForCall []struct {
 		arg1 context.Context
 		arg2 pkg.ItemID
+		arg3 string
 	}
 	closeReturns struct {
 		result1 *pkg.Item
@@ -185,19 +186,20 @@ func (fake *AttentionStore) AnswerReturnsOnCall(i int, result1 *pkg.Item, result
 	}{result1, result2}
 }
 
-func (fake *AttentionStore) Close(arg1 context.Context, arg2 pkg.ItemID) (*pkg.Item, error) {
+func (fake *AttentionStore) Close(arg1 context.Context, arg2 pkg.ItemID, arg3 string) (*pkg.Item, error) {
 	fake.closeMutex.Lock()
 	ret, specificReturn := fake.closeReturnsOnCall[len(fake.closeArgsForCall)]
 	fake.closeArgsForCall = append(fake.closeArgsForCall, struct {
 		arg1 context.Context
 		arg2 pkg.ItemID
-	}{arg1, arg2})
+		arg3 string
+	}{arg1, arg2, arg3})
 	stub := fake.CloseStub
 	fakeReturns := fake.closeReturns
-	fake.recordInvocation("Close", []interface{}{arg1, arg2})
+	fake.recordInvocation("Close", []interface{}{arg1, arg2, arg3})
 	fake.closeMutex.Unlock()
 	if stub != nil {
-		return stub(arg1, arg2)
+		return stub(arg1, arg2, arg3)
 	}
 	if specificReturn {
 		return ret.result1, ret.result2
@@ -211,17 +213,17 @@ func (fake *AttentionStore) CloseCallCount() int {
 	return len(fake.closeArgsForCall)
 }
 
-func (fake *AttentionStore) CloseCalls(stub func(context.Context, pkg.ItemID) (*pkg.Item, error)) {
+func (fake *AttentionStore) CloseCalls(stub func(context.Context, pkg.ItemID, string) (*pkg.Item, error)) {
 	fake.closeMutex.Lock()
 	defer fake.closeMutex.Unlock()
 	fake.CloseStub = stub
 }
 
-func (fake *AttentionStore) CloseArgsForCall(i int) (context.Context, pkg.ItemID) {
+func (fake *AttentionStore) CloseArgsForCall(i int) (context.Context, pkg.ItemID, string) {
 	fake.closeMutex.RLock()
 	defer fake.closeMutex.RUnlock()
 	argsForCall := fake.closeArgsForCall[i]
-	return argsForCall.arg1, argsForCall.arg2
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3
 }
 
 func (fake *AttentionStore) CloseReturns(result1 *pkg.Item, result2 error) {

@@ -6,6 +6,8 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 
 	"github.com/bborbe/errors"
@@ -34,7 +36,28 @@ func NewAttentionCloseHandler(store pkg.AttentionStore) http.Handler {
 						http.StatusBadRequest,
 					)
 				}
-				item, err := store.Close(ctx, itemID)
+				// The body is optional, and an empty one is the shape every
+				// caller of this route used before the field existed: a close
+				// with no arm — a producer withdrawing its own item, or the
+				// store on a producer-exit sweep — carries none. A body that is
+				// present but malformed is still rejected.
+				var request struct {
+					// AnsweredBy names the arm that caused the close. It is
+					// recorded on the open -> closed row only, so an `ack`
+					// item acknowledged from the board reads back with
+					// answered_by set and answered_at unset.
+					AnsweredBy string `json:"answered_by"`
+				}
+				if err := json.NewDecoder(req.Body).Decode(&request); err != nil &&
+					!errors.Is(err, io.EOF) {
+					return libhttp.WrapWithDetails(
+						errors.Wrap(ctx, err, "decode request failed"),
+						libhttp.ErrorCodeValidation,
+						http.StatusBadRequest,
+						map[string]any{"reason": "request body is not valid JSON"},
+					)
+				}
+				item, err := store.Close(ctx, itemID, request.AnsweredBy)
 				if err != nil {
 					return wrapTransitionError(ctx, err, itemID)
 				}

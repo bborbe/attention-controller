@@ -303,7 +303,7 @@ var _ = Describe("AttentionStore", func() {
 			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
 			Expect(err).To(BeNil())
 
-			closed, err := store.Close(ctx, item.ItemID)
+			closed, err := store.Close(ctx, item.ItemID, "")
 			Expect(err).To(BeNil())
 			Expect(closed.ResolvedBy).To(BeEmpty())
 		})
@@ -457,7 +457,7 @@ var _ = Describe("AttentionStore", func() {
 			Expect(err).To(BeNil())
 			_, err = store.Answer(ctx, answered.ItemID, "telegram", "manager-1", "", nil, nil)
 			Expect(err).To(BeNil())
-			_, err = store.Close(ctx, closed.ItemID)
+			_, err = store.Close(ctx, closed.ItemID, "")
 			Expect(err).To(BeNil())
 
 			read, err := store.Read(ctx)
@@ -516,7 +516,7 @@ var _ = Describe("AttentionStore", func() {
 		It("rejects an answer to a closed item as an illegal transition", func() {
 			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
 			Expect(err).To(BeNil())
-			_, err = store.Close(ctx, item.ItemID)
+			_, err = store.Close(ctx, item.ItemID, "")
 			Expect(err).To(BeNil())
 
 			_, err = store.Answer(ctx, item.ItemID, "telegram", "", "", nil, nil)
@@ -718,7 +718,7 @@ var _ = Describe("AttentionStore", func() {
 		It("rejects escalation of a closed item", func() {
 			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
 			Expect(err).To(BeNil())
-			_, err = store.Close(ctx, item.ItemID)
+			_, err = store.Close(ctx, item.ItemID, "")
 			Expect(err).To(BeNil())
 
 			_, err = store.Escalate(ctx, item.ItemID, managerSessionID)
@@ -809,7 +809,7 @@ var _ = Describe("AttentionStore", func() {
 		It("applies open -> closed", func() {
 			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
 			Expect(err).To(BeNil())
-			closed, err := store.Close(ctx, item.ItemID)
+			closed, err := store.Close(ctx, item.ItemID, "")
 			Expect(err).To(BeNil())
 			Expect(closed.State).To(Equal(pkg.ClosedState))
 			Expect(closed.ClosedAt).NotTo(BeNil())
@@ -820,7 +820,7 @@ var _ = Describe("AttentionStore", func() {
 			Expect(err).To(BeNil())
 			_, err = store.Answer(ctx, item.ItemID, "telegram", "", "", nil, nil)
 			Expect(err).To(BeNil())
-			closed, err := store.Close(ctx, item.ItemID)
+			closed, err := store.Close(ctx, item.ItemID, "")
 			Expect(err).To(BeNil())
 			Expect(closed.State).To(Equal(pkg.ClosedState))
 		})
@@ -828,9 +828,9 @@ var _ = Describe("AttentionStore", func() {
 		It("rejects closed -> closed", func() {
 			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
 			Expect(err).To(BeNil())
-			_, err = store.Close(ctx, item.ItemID)
+			_, err = store.Close(ctx, item.ItemID, "")
 			Expect(err).To(BeNil())
-			_, err = store.Close(ctx, item.ItemID)
+			_, err = store.Close(ctx, item.ItemID, "")
 			Expect(err).NotTo(BeNil())
 			Expect(errors.Is(err, pkg.ErrIllegalTransition)).To(BeTrue())
 		})
