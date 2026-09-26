@@ -218,6 +218,41 @@ var _ = Describe("Answered client over HTTP", func() {
 			Expect(err).To(BeNil())
 			Expect(string(encoded)).NotTo(ContainSubstring("automation"))
 		})
+
+		// ⚠️ Nothing to record is not the same record as a client that said
+		// nothing. A request carrying no User-Agent, no source address and no
+		// automation hint must leave the key off the record entirely, so a reader
+		// can tell "the store recorded nothing about the client" from "the store
+		// recorded a client whose every member is empty" — which is the
+		// distinction the pointer and its omitempty exist to preserve. The store's
+		// contract says a nil value stores an item with no client recorded, and
+		// this route is the only path that can produce one.
+		It("leaves the field absent when the request carries nothing to record", func() {
+			item := pushMessage()
+
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"/api/1.0/attention/"+item.ItemID.String()+"/answer",
+				strings.NewReader(`{"answered_by":"attention-board"}`),
+			)
+			req = mux.SetURLVars(req, map[string]string{"itemID": item.ItemID.String()})
+			// httptest.NewRequest fills RemoteAddr with a placeholder, so it is
+			// cleared rather than merely left unset; no User-Agent header is set at
+			// all.
+			req.RemoteAddr = ""
+			rec := httptest.NewRecorder()
+			answerHandler.ServeHTTP(rec, req)
+			Expect(rec.Code).To(Equal(http.StatusOK))
+
+			got, err := store.Get(ctx, item.ItemID)
+			Expect(err).To(BeNil())
+			Expect(got.State).To(Equal(pkg.AnsweredState))
+			Expect(got.AnsweredClient).To(BeNil())
+
+			encoded, err := json.Marshal(got)
+			Expect(err).To(BeNil())
+			Expect(string(encoded)).NotTo(ContainSubstring("answered_client"))
+		})
 	})
 
 	Describe("The close route", func() {

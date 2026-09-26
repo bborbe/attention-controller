@@ -152,9 +152,11 @@ type Item struct {
 	// store itself can say about the client instead.
 	AnsweredBy string `json:"answered_by,omitempty"`
 	// AnsweredClient is what the store can say about the client that posted the
-	// answer — derived from the request, never declared by it. UserAgent and
-	// RemoteAddr are read from the HTTP request itself; Automation carries the
-	// page's own navigator.webdriver reading and is explicitly the weaker member.
+	// answer — derived from the request, never declared by it. RemoteAddr is the
+	// only member a caller cannot spoof; UserAgent is server-read but
+	// caller-set — the caller writes its own User-Agent header — so it sits in
+	// the weaker class with Automation, which carries the page's own
+	// navigator.webdriver reading.
 	//
 	// It is store-written inside the same compare-and-set that writes AnsweredAt
 	// and AnsweredBy, so a rejected transition records nothing: set on the

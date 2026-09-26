@@ -13,10 +13,12 @@ package pkg
 // corrupted by it. This field is store-written for the same reason EscalatedAt
 // is: a fact the store already holds is not one to accept from a caller.
 //
-// The server-derived members are the load-bearing ones. A caller can lie about
-// Automation, but cannot lie about its own source address, so UserAgent and
-// RemoteAddr are read by the store from the HTTP request itself and are never
-// accepted from the request body.
+// The server-read members are the load-bearing ones: the store reads them from
+// the HTTP request itself and never accepts them from the request body.
+// RemoteAddr is the only member a caller cannot spoof. UserAgent is
+// server-read but caller-set — the caller writes its own User-Agent header —
+// so it sits in the same weaker class as Automation, which is the one member
+// the body carries.
 type AnsweredClient struct {
 	// UserAgent is the request's own User-Agent header, read by the store from
 	// the request. Never accepted from the request body.
@@ -25,9 +27,9 @@ type AnsweredClient struct {
 	// request. Never accepted from the request body.
 	RemoteAddr string `json:"remote_addr,omitempty"`
 	// Automation is the page's own navigator.webdriver reading — the one member
-	// the body carries, because only the page's own script can read it. It is
-	// explicitly the weaker member: it is a client declaration, and a scripted
-	// client can lie about it.
+	// the body carries, because only the page's own script can read it. It sits
+	// in the weaker class with UserAgent: it is a client declaration, and a
+	// scripted client can lie about it.
 	//
 	// It is a pointer so that absent is distinguishable from false. An item
 	// answered before this field existed, and a request that omits the hint, must

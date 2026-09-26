@@ -12,6 +12,7 @@ import (
 	"github.com/bborbe/errors"
 	libkv "github.com/bborbe/kv"
 	libtime "github.com/bborbe/time"
+	"github.com/bborbe/validation"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -208,8 +209,11 @@ var _ = Describe("Answered client", func() {
 			Expect(string(encoded)).To(ContainSubstring(`"automation":false`))
 		})
 
-		// The field is written inside the compare-and-set, so a rejected answer
-		// records nothing at all — not even the client of the caller that lost.
+		// What this actually exercises is the state switch's rejection, which
+		// returns before the client is assigned — so it shows that a losing answer
+		// records nothing at all, not that the assignment sits inside the
+		// compare-and-set. The validator rejection below is the branch that
+		// reaches the rollback.
 		It("records no client when the answer loses the race", func() {
 			item := pushItem("question-1")
 
@@ -233,6 +237,56 @@ var _ = Describe("Answered client", func() {
 			Expect(err).To(BeNil())
 			Expect(got.AnsweredBy).To(Equal("attention-board"))
 			Expect(got.AnsweredClient).To(BeNil())
+		})
+
+		// ⚠️ The rollback branch, and the spec that actually reaches it. The client
+		// is assigned to the item before the item's own validators run, so a
+		// validator rejection is the one rejection a rollback has to undo — the
+		// state switch above returns before the assignment and proves nothing
+		// about it. The item is pushed as a `multiple` question and answered with a
+		// single label: Answer.Validate does not hold the question's cardinality,
+		// so that pairing passes every check made before the store, and the
+		// store's own validateAnswer is where it fails.
+		It("records no client when the answer is rejected by the item's own validator", func() {
+			item, err := store.Push(ctx, pkg.PushRequest{
+				ProducerID:        "session-a",
+				ProducerKind:      pkg.SessionProducerKind,
+				LivenessRef:       pkg.LivenessRef("session:session-a"),
+				DedupKey:          pkg.DedupKey("question-1"),
+				InterruptClass:    "pick",
+				Payload:           "Which surface should the answer land on?",
+				AnswerMechanism:   pkg.MessageAnswerMechanism,
+				AnswerCardinality: pkg.MultipleAnswerCardinality,
+			})
+			Expect(err).To(BeNil())
+
+			_, err = store.Answer(
+				ctx,
+				item.ItemID,
+				"attention-board",
+				"",
+				"",
+				&pkg.Answer{Kind: pkg.OptionAnswerKind, Value: "one"},
+				nil,
+				client("curl/8.7.1", "198.51.100.7:41000", automation(true)),
+			)
+			Expect(err).NotTo(BeNil())
+			// Pinned to the validator, so the spec cannot pass on some other
+			// rejection: this is the branch reached after the client is assigned.
+			Expect(errors.Is(err, validation.Error)).To(BeTrue())
+
+			got, err := store.Get(ctx, item.ItemID)
+			Expect(err).To(BeNil())
+			// The whole write is rolled back rather than only the client field: the
+			// item is still open and carries no answered_at or answered_by either.
+			Expect(got.State).To(Equal(pkg.OpenState))
+			Expect(got.AnsweredAt).To(BeNil())
+			Expect(got.AnsweredBy).To(BeEmpty())
+			Expect(got.AnsweredClient).To(BeNil())
+
+			encoded, err := json.Marshal(got)
+			Expect(err).To(BeNil())
+			Expect(string(encoded)).NotTo(ContainSubstring("answered_client"))
 		})
 	})
 
