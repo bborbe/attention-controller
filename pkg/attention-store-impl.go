@@ -210,6 +210,11 @@ func (a *attentionStore) History(ctx context.Context) (Items, error) {
 // resolved the item. Resolution rides this transition rather than introducing
 // one — the schema's § Resolution is explicit that resolution is not a fourth
 // state, so ValidateTransition is called exactly as it was before.
+//
+// answeredClient is stamped in the same compare-and-set, so a rejected
+// transition records no client at all rather than recording one for an item that
+// stayed open. It is deliberately not derived here: the store has no request to
+// read, so the caller composes it and the store stores what it is given.
 func (a *attentionStore) Answer(
 	ctx context.Context,
 	itemID ItemID,
@@ -218,6 +223,7 @@ func (a *attentionStore) Answer(
 	decision Decision,
 	answer *Answer,
 	answers Answers,
+	answeredClient *AnsweredClient,
 ) (*Item, error) {
 	var result *Item
 	err := a.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
@@ -271,6 +277,12 @@ func (a *attentionStore) Answer(
 		// caller on the same reasoning: one entry per tab, and never backfilled
 		// from the arm, the decision or the single answer.
 		item.Answers = answers
+		// What the store can say about the client that posted the answer, stamped
+		// from the caller for the same reason again and inside this same
+		// compare-and-set, so a rejected answer records no client. A nil value
+		// leaves the field absent, which is what a caller that has no request to
+		// read — and every item answered before this field existed — reads as.
+		item.AnsweredClient = answeredClient
 		// ⚠️ Both answer validators are called here rather than only in
 		// Item.Validate, because this path does not call Item.Validate: it mutates
 		// a stored item and writes it back. Without them an answer naming a
@@ -382,6 +394,7 @@ func (a *attentionStore) Close(
 	ctx context.Context,
 	itemID ItemID,
 	answeredBy string,
+	answeredClient *AnsweredClient,
 ) (*Item, error) {
 	var result *Item
 	err := a.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
@@ -405,8 +418,17 @@ func (a *attentionStore) Close(
 		// back. On the answered -> closed row answered_by already names the arm
 		// that answered, and writing here would replace it with the arm that
 		// merely closed.
+		//
+		// The client rides that same row and only when an arm caused it, because
+		// the schema sets the field on an *arm-caused* open -> closed: a producer
+		// withdrawing its own item through this route names no arm, and recording
+		// a client for it would put a causer on the record that the schema does
+		// not name.
 		if from == OpenState {
 			item.AnsweredBy = answeredBy
+			if answeredBy != "" {
+				item.AnsweredClient = answeredClient
+			}
 		}
 		if err := a.store.Add(ctx, tx, item.ItemID.String(), *item); err != nil {
 			return errors.Wrap(ctx, err, "update item failed")

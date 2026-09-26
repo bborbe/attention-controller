@@ -199,7 +199,7 @@ var _ = Describe("AttentionPageHandler", func() {
 			pushRequest("producer-closed", "gate-closed", "already done"),
 		)
 		Expect(err).To(BeNil())
-		_, err = store.Close(ctx, closed.ItemID, "")
+		_, err = store.Close(ctx, closed.ItemID, "", nil)
 		Expect(err).To(BeNil())
 
 		body := get("GET").Body.String()

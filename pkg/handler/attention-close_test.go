@@ -158,7 +158,7 @@ var _ = Describe("AttentionCloseHandler", func() {
 
 	It("does not overwrite the arm that answered when closing an answered item", func() {
 		item := pushQuestion()
-		_, err := store.Answer(ctx, item.ItemID, "supervisor:attention-next", "", "", nil, nil)
+		_, err := store.Answer(ctx, item.ItemID, "supervisor:attention-next", "", "", nil, nil, nil)
 		Expect(err).To(BeNil())
 
 		resp := closeItem(item.ItemID, `{"answered_by":"attention-board"}`)

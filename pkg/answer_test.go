@@ -162,7 +162,7 @@ var _ = Describe("Board answers", func() {
 			answered, err := store.Answer(ctx, item.ItemID, "attention-board", "", "", &pkg.Answer{
 				Kind:  pkg.OptionAnswerKind,
 				Value: "the board",
-			}, nil)
+			}, nil, nil)
 			Expect(err).To(BeNil())
 			Expect(answered.Answer).NotTo(BeNil())
 
@@ -180,7 +180,7 @@ var _ = Describe("Board answers", func() {
 
 			_, err := store.Answer(ctx, item.ItemID, "attention-board", "", "", &pkg.Answer{
 				Kind: pkg.SkipAnswerKind,
-			}, nil)
+			}, nil, nil)
 			Expect(err).To(BeNil())
 
 			got, err := store.Get(ctx, item.ItemID)
@@ -195,7 +195,7 @@ var _ = Describe("Board answers", func() {
 			_, err := store.Answer(ctx, item.ItemID, "attention-board", "", "", &pkg.Answer{
 				Kind:  pkg.TextAnswerKind,
 				Value: "neither — put it in the notification core",
-			}, nil)
+			}, nil, nil)
 			Expect(err).To(BeNil())
 
 			got, err := store.Get(ctx, item.ItemID)
@@ -207,7 +207,7 @@ var _ = Describe("Board answers", func() {
 		It("leaves the answer absent when the caller omits one", func() {
 			item := pushQuestion()
 
-			_, err := store.Answer(ctx, item.ItemID, "telegram", "", "", nil, nil)
+			_, err := store.Answer(ctx, item.ItemID, "telegram", "", "", nil, nil, nil)
 			Expect(err).To(BeNil())
 
 			got, err := store.Get(ctx, item.ItemID)
@@ -239,13 +239,13 @@ var _ = Describe("Board answers", func() {
 			_, err := store.Answer(ctx, item.ItemID, "attention-board", "", "", &pkg.Answer{
 				Kind:  pkg.OptionAnswerKind,
 				Value: "the board",
-			}, nil)
+			}, nil, nil)
 			Expect(err).To(BeNil())
 
 			_, err = store.Answer(ctx, item.ItemID, "telegram", "", "", &pkg.Answer{
 				Kind:  pkg.OptionAnswerKind,
 				Value: "the tab",
-			}, nil)
+			}, nil, nil)
 			Expect(err).NotTo(BeNil())
 			Expect(errors.Is(err, pkg.ErrAlreadyAnswered)).To(BeTrue())
 

@@ -76,6 +76,16 @@ type AttentionStore interface {
 	// item holding both would have two places the operator's content could be
 	// and no rule for which wins, so a call carrying both is rejected rather
 	// than resolved by convention.
+	//
+	// answeredClient is what the store can say about the client that posted the
+	// answer, composed by the caller from the HTTP request and the page's own
+	// automation hint. It is separate from answeredBy for the reason the field
+	// exists: answeredBy is a caller declaration, so a human's click and a
+	// scripted client posting the same body write the identical value there.
+	// Unlike every other argument above it is not a declaration the caller is
+	// trusted for — the two server-derived members come from the request itself.
+	// It may be nil, and a nil value stores an item with no client recorded,
+	// which is what every item answered before this field existed reads as.
 	Answer(
 		ctx context.Context,
 		itemID ItemID,
@@ -84,6 +94,7 @@ type AttentionStore interface {
 		decision Decision,
 		answer *Answer,
 		answers Answers,
+		answeredClient *AnsweredClient,
 	) (*Item, error)
 
 	// Escalate records which session is carrying this item to the operator, as
@@ -119,7 +130,21 @@ type AttentionStore interface {
 	// On the answered -> closed row the value is deliberately NOT written: that
 	// row is the store's own step after an answer, and overwriting answeredBy
 	// there would replace the arm that *answered* with the one that closed.
-	Close(ctx context.Context, itemID ItemID, answeredBy string) (*Item, error)
+	//
+	// answeredClient is what the store can say about the client that caused the
+	// close, composed by the caller from the HTTP request and the page's own
+	// automation hint. It rides the same rule as answeredBy rather than a rule of
+	// its own: it is written on the arm-caused `open` -> `closed` row and left
+	// alone on `answered` -> `closed`, where it already names the client that
+	// answered. A close no arm caused — a producer withdrawing its own item —
+	// records none, because the schema sets the field on an arm-caused row only.
+	// It may be nil, exactly as answeredBy may be empty.
+	Close(
+		ctx context.Context,
+		itemID ItemID,
+		answeredBy string,
+		answeredClient *AnsweredClient,
+	) (*Item, error)
 }
 
 // Items is a collection of Item.
