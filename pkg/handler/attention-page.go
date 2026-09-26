@@ -111,6 +111,7 @@ body {
 h1 { font-size: 20px; margin: 0 0 16px; }
 ul.items { list-style: none; padding: 0; margin: 0; }
 li.item {
+  position: relative;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -123,6 +124,29 @@ li.item {
   font-size: 12px;
   letter-spacing: 0.04em;
 }
+/* The corner X. It is the card's whole skip affordance, so it takes the
+   header's right edge and stays legible at a glance rather than reading as
+   one more control in the row. Anchored to the card, which is positioned, so
+   it lands in the corner of the card however tall the card grows — a tall
+   multi-question card puts its Dismiss button far below the fold, and the
+   corner is exactly what the operator asked for instead. */
+.corner-x {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.corner-x:hover { color: var(--text); border-color: var(--border); }
 .payload { font-size: 15px; line-height: 1.45; margin: 6px 0 8px; white-space: pre-wrap; }
 .provenance {
   color: var(--muted);
@@ -447,30 +471,57 @@ function showJumpNote(row, message, isError) {
   note.textContent = message;
   container.appendChild(note);
 }
-/* ⚠️ The acknowledge control closes the item — open -> closed — and it is the
-   only control a report-only card carries. It posts the board as the arm that
-   caused the close, which is what lets a reader tell a board acknowledgement
-   from a producer withdrawing its own item or from the store's producer-exit
-   sweep: neither of those records an answered_by at all. answered_at stays
-   unset, because an ack item routes nothing back to its producer. */
+/* ⚠️ The acknowledge path closes the item — open -> closed — and on a
+   report-only card it is the only move that card offers. It posts the board as
+   the arm that caused the close, which is what lets a reader tell a board
+   acknowledgement from a producer withdrawing its own item or from the store's
+   producer-exit sweep: neither of those records an answered_by at all.
+   answered_at stays unset, because an ack item routes nothing back to its
+   producer.
+   It is a named function rather than an inline listener because two controls
+   reach it — the acknowledge button and the corner X — and both must perform
+   the same write, not two writes that happen to agree. */
+function closeAck(row) {
+  fetch('/api/1.0/attention/' + encodeURIComponent(row.getAttribute('data-item-id')) + '/close', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    /* automation is the page's own navigator.webdriver reading — the one
+       answered-client member the body may carry; the store reads user_agent
+       and remote_addr from the request itself. */
+    body: JSON.stringify({ answered_by: 'attention-board', automation: navigator.webdriver })
+  }).then(function (response) {
+    if (response.ok) { showAckNote(row, 'Acknowledged.', false); return; }
+    return response.text().then(function (body) {
+      showAckNote(row, 'Acknowledge failed - HTTP ' + response.status + ' - ' + body, true);
+    });
+  }).catch(function (error) {
+    showAckNote(row, 'Acknowledge failed - ' + String(error), true);
+  });
+}
 document.querySelectorAll('button[data-ack]').forEach(function (button) {
+  button.addEventListener('click', function () { closeAck(button.closest('li.item')); });
+});
+/* The corner X is one affordance whose act is the mechanism's own dominant act,
+   which is why this handler dispatches rather than posting: on a message card
+   it is the Dismiss the card already carries (the skip answer, open -> answered,
+   answer.kind: skip) and on an ack card it is the Acknowledge it already carries
+   (the close, open -> closed, answered_at unset). It adds no transition and no
+   field — see [[Attention Item Schema]] § Answer routing, § The corner X.
+   A permission card renders no X at all, so there is no third branch: a control
+   there would be the permission laundering the schema forbids. */
+document.querySelectorAll('button[data-corner-x]').forEach(function (button) {
   button.addEventListener('click', function () {
     var row = button.closest('li.item');
-    fetch('/api/1.0/attention/' + encodeURIComponent(row.getAttribute('data-item-id')) + '/close', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      /* automation is the page's own navigator.webdriver reading — the one
-         answered-client member the body may carry; the store reads user_agent
-         and remote_addr from the request itself. */
-      body: JSON.stringify({ answered_by: 'attention-board', automation: navigator.webdriver })
-    }).then(function (response) {
-      if (response.ok) { showAckNote(row, 'Acknowledged.', false); return; }
-      return response.text().then(function (body) {
-        showAckNote(row, 'Acknowledge failed - HTTP ' + response.status + ' - ' + body, true);
-      });
-    }).catch(function (error) {
-      showAckNote(row, 'Acknowledge failed - ' + String(error), true);
-    });
+    var form = row.querySelector('form.answer');
+    /* A message card's X is the Dismiss submit, dispatched rather than
+       re-implemented: the form's own submit handler owns the skip payload, the
+       ITEM_CLOSED branch and the note placement, and a second copy here would
+       be a second thing to keep in step. */
+    if (form) {
+      var dismiss = form.querySelector('button[value=skip]');
+      if (dismiss) { dismiss.click(); return; }
+    }
+    closeAck(row);
   });
 });
 function showAckNote(row, message, isError) {
@@ -554,7 +605,8 @@ function showAckNote(row, message, isError) {
      it, which is why Speak is carried on the row and read as dot-Speak here. */}}
 {{define "attention-row"}}<li class="item" data-item-id="{{ .Item.ItemID }}">
 <div class="producer">{{ .Item.ProducerID }} ({{ .Item.ProducerKind }})</div>
-{{if not .Message}}<div class="payload">{{ .Item.Payload }}</div>
+{{if or .Message .Ack}}<button type="button" class="corner-x" data-corner-x aria-label="Skip this item">✕</button>
+{{end}}{{if not .Message}}<div class="payload">{{ .Item.Payload }}</div>
 {{end}}{{if .Item.Context}}<div class="context">{{ .Item.Context }}</div>
 {{end}}{{if .Provenance.Resolved}}<div class="provenance">{{if .Provenance.Host}}<span class="host">{{ .Provenance.Host }}</span>{{end}}{{if .Provenance.Cwd}}<span class="cwd">{{ .Provenance.Cwd }}</span>{{end}}{{if .Provenance.Tool}}<span class="tool">{{ .Provenance.Tool }}</span>{{end}}{{if .Provenance.Pane}}<span class="pane">pane {{ .Provenance.Pane }}</span>{{else if .Provenance.PaneRecorded}}<span class="unroutable">unroutable</span>{{end}}</div>
 {{end}}{{if .Message}}<form class="answer" data-multi="{{ .Tabs }}">

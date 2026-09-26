@@ -650,4 +650,92 @@ var _ = Describe("AttentionPageHandler", func() {
 		Expect(block).NotTo(ContainSubstring("<button"))
 		Expect(block).NotTo(ContainSubstring("<input"))
 	})
+
+	// The corner X. It is one affordance whose act is the mechanism's own
+	// dominant act — an alias of Dismiss on a message card, of Acknowledge on an
+	// ack card — so it adds no transition and no field. See [[Attention Item
+	// Schema]] § Answer routing, § The corner X. The browser click-through in the
+	// task's Definition of Done is the half these cannot supply.
+	Describe("the corner X", func() {
+		It("renders on a message row and dispatches the Dismiss the card already carries", func() {
+			message, err := store.Push(
+				ctx,
+				messageRequest("corner-x-message", pkg.SingleAnswerCardinality),
+			)
+			Expect(err).To(BeNil())
+
+			body := get("GET").Body.String()
+			block := rowOf(body, message.ItemID)
+
+			Expect(block).To(ContainSubstring("data-corner-x"))
+			Expect(block).To(ContainSubstring(`aria-label="Skip this item"`))
+
+			// The X's act is the Dismiss's act, and the assertion is on the
+			// mechanism rather than on the label: the card already carries the
+			// skip submit, so the X dispatches it instead of posting a second
+			// write that merely agrees with it.
+			Expect(block).To(ContainSubstring(`value="skip"`))
+			Expect(body).To(ContainSubstring("button[data-corner-x]"))
+			Expect(body).To(ContainSubstring(`form.querySelector('button[value=skip]')`))
+		})
+
+		It("renders on an ack row and shares the acknowledge close", func() {
+			ack, err := store.Push(ctx, ackRequest("corner-x-ack"))
+			Expect(err).To(BeNil())
+
+			body := get("GET").Body.String()
+			block := rowOf(body, ack.ItemID)
+
+			Expect(block).To(ContainSubstring("data-corner-x"))
+			Expect(block).To(ContainSubstring("data-ack"))
+
+			// The ack card carries no form, so the X reaches the close path by
+			// the named function both controls share rather than by dispatching
+			// a submit that does not exist here.
+			Expect(block).NotTo(ContainSubstring("<form"))
+			Expect(body).To(ContainSubstring("function closeAck(row)"))
+			Expect(body).To(ContainSubstring("closeAck(row);"))
+		})
+
+		// The criterion that fails if the X is rendered unconditionally. Without
+		// it the two cases above would pass on a page that put an X on every
+		// card, which is exactly what the operator's ruling forbids.
+		It("renders no corner X on a permission row", func() {
+			permission, err := store.Push(ctx, pkg.PushRequest{
+				ProducerID:      "producer-corner-x-perm",
+				ProducerKind:    pkg.SessionProducerKind,
+				LivenessRef:     pkg.LivenessRef("session:producer-corner-x-perm"),
+				DedupKey:        "corner-x-permission",
+				InterruptClass:  "approve",
+				Payload:         "approve the deploy",
+				AnswerMechanism: pkg.PermissionAnswerMechanism,
+			})
+			Expect(err).To(BeNil())
+
+			block := rowOf(get("GET").Body.String(), permission.ItemID)
+
+			// A permission card stays jump-link-only with zero answer controls.
+			// The X is an answer control on every mechanism that renders it, so
+			// it is excluded here with the rest.
+			Expect(block).NotTo(ContainSubstring("data-corner-x"))
+			Expect(block).NotTo(ContainSubstring("<button"))
+		})
+
+		// The positive control read from the other end: a regression that
+		// stripped the X from the whole page must fail here rather than pass
+		// silently on the permission case alone.
+		It("renders the X on both message and ack rows in the same run", func() {
+			message, err := store.Push(
+				ctx,
+				messageRequest("corner-x-both-m", pkg.SingleAnswerCardinality),
+			)
+			Expect(err).To(BeNil())
+			ack, err := store.Push(ctx, ackRequest("corner-x-both-a"))
+			Expect(err).To(BeNil())
+
+			body := get("GET").Body.String()
+			Expect(rowOf(body, message.ItemID)).To(ContainSubstring("data-corner-x"))
+			Expect(rowOf(body, ack.ItemID)).To(ContainSubstring("data-corner-x"))
+		})
+	})
 })
