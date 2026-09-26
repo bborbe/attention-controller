@@ -252,29 +252,7 @@ li.item {
 <body>
 <h1>Attention</h1>
 {{if .Items}}<ul class="items">
-{{range .Items}}<li class="item" data-item-id="{{ .Item.ItemID }}">
-<div class="producer">{{ .Item.ProducerID }} ({{ .Item.ProducerKind }})</div>
-{{if not .Message}}<div class="payload">{{ .Item.Payload }}</div>
-{{end}}{{if .Item.Context}}<div class="context">{{ .Item.Context }}</div>
-{{end}}{{if .Provenance.Resolved}}<div class="provenance">{{if .Provenance.Host}}<span class="host">{{ .Provenance.Host }}</span>{{end}}{{if .Provenance.Cwd}}<span class="cwd">{{ .Provenance.Cwd }}</span>{{end}}{{if .Provenance.Tool}}<span class="tool">{{ .Provenance.Tool }}</span>{{end}}{{if .Provenance.Pane}}<span class="pane">pane {{ .Provenance.Pane }}</span>{{else if .Provenance.PaneRecorded}}<span class="unroutable">unroutable</span>{{end}}</div>
-{{end}}{{if .Message}}<form class="answer" data-multi="{{ .Tabs }}">
-{{if .Tabs}}<div class="tabs">{{range .Questions}}<button type="button" class="tab{{if .Active}} active{{end}}" data-tab="{{ .Tab }}">{{ .Tab }}</button>{{end}}</div>
-<div class="card-title">{{ .Item.Payload }}</div>
-{{end}}{{range .Questions}}{{$question := .}}<div class="panel" data-question="{{ $question.Tab }}" data-multi-pick="{{ $question.Multi }}"{{if not $question.Active}} hidden{{end}}>
-<div class="question">{{ $question.Payload }}{{if $question.Hint}} <span class="hint">({{ $question.Hint }})</span>{{end}}</div>
-{{if $question.Options}}<div class="options">
-{{range $question.Options}}<label class="option"><input type="{{ if $question.Multi }}checkbox{{ else }}radio{{ end }}" name="{{ $question.Name }}" value="{{ .Label }}" data-option="{{ .Label }}"><span class="option-body"><span class="option-label">{{ .Label }}{{if .Recommended}} <span class="recommended">(Recommended)</span>{{end}}</span>{{if .Description}}<span class="option-desc">{{ .Description }}</span>{{end}}</span></label>
-{{end}}</div>
-{{end}}<input class="other" type="text" name="text" placeholder="Other...">
-</div>
-{{end}}<div class="actions"><button type="submit" name="kind" value="skip" class="dismiss">✕ Dismiss</button><button type="submit" name="kind" value="send" class="next">✓ Submit answer</button>{{if $.Speak}}<button type="button" class="speak" data-speak>Read aloud</button>{{end}}</div>
-</form>
-{{end}}{{if .Ack}}<div class="actions"><button type="button" class="ack" data-ack>Acknowledge</button></div>
-{{end}}{{if or .Jump .JumpURL}}<div class="jump">{{if .Jump}}<span>Approve in the session that asked: <code>{{ .Jump }}</code></span>{{end}}{{if .JumpURL}}<button type="button" class="jump-button" data-jump="{{ .JumpURL }}">Jump to session</button>{{end}}</div>
-{{else if .NoJump}}<div class="jump-reason"><span class="no-jump">{{ .NoJump }}</span></div>
-{{end}}<div class="meta">{{ .Item.State }} - {{ .Item.CreatedAt }}</div>
-</li>
-{{end}}</ul>
+{{range .Items}}{{template "attention-row" .}}{{end}}</ul>
 {{else}}<p class="empty">Nothing needs attention.</p>
 {{end}}
 <script>
@@ -379,7 +357,7 @@ function sendAnswer(form, request) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(request)
   }).then(function (response) {
-    if (response.ok) { window.location.reload(); return; }
+    if (response.ok) { showNote(form, 'Answer sent.', false); return; }
     return response.text().then(function (body) {
       var failure = answerFailure(body);
       if (failure.leftQueue) {
@@ -496,7 +474,7 @@ document.querySelectorAll('button[data-ack]').forEach(function (button) {
          and remote_addr from the request itself. */
       body: JSON.stringify({ answered_by: 'attention-board', automation: navigator.webdriver })
     }).then(function (response) {
-      if (response.ok) { window.location.reload(); return; }
+      if (response.ok) { showAckNote(row, 'Acknowledged.', false); return; }
       return response.text().then(function (body) {
         showAckNote(row, 'Acknowledge failed - HTTP ' + response.status + ' - ' + body, true);
       });
@@ -514,9 +492,98 @@ function showAckNote(row, message, isError) {
   note.textContent = message;
   container.appendChild(note);
 }
+/* The live channel. The page subscribes once and swaps rows in place as the
+   store changes, so an open board tracks the store instead of freezing at load.
+   The stream carries a RENDERED ROW rather than an item: the markup comes from
+   the server's own template, so there is one renderer and a row arriving here
+   cannot drift from the same row on a fresh load — which is also why this stays
+   plain DOM work with no framework and no build step.
+
+   Nothing reloads, here or after an action. An earlier version reloaded the
+   page once an answer was accepted; that is exactly the manual step this board
+   exists to remove, and it would also defeat the channel's own negative control
+   — with the stream blocked, a reload would make the row change anyway, and the
+   control could not then tell the channel from a coincidence. */
+(function () {
+  if (typeof EventSource === 'undefined') { return; }
+  function rowFor(itemID) {
+    /* Compared rather than selected: the id lands in a selector string
+       otherwise, and a generated id is not the place to rely on. */
+    var rows = document.querySelectorAll('li.item');
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].getAttribute('data-item-id') === itemID) { return rows[i]; }
+    }
+    return null;
+  }
+  function collapseIfEmpty() {
+    var list = document.querySelector('ul.items');
+    if (!list || list.querySelector('li.item')) { return; }
+    var empty = document.createElement('p');
+    empty.className = 'empty';
+    empty.textContent = 'Nothing needs attention.';
+    list.parentNode.replaceChild(empty, list);
+  }
+  function upsertRow(itemID, html) {
+    var row = rowFor(itemID);
+    if (row) { row.outerHTML = html; return; }
+    var list = document.querySelector('ul.items');
+    if (!list) {
+      /* The board rendered its empty state, so the list does not exist yet.
+         The new list takes that paragraph's place rather than being appended,
+         so a row arriving into an empty board lands where a row belongs. */
+      var empty = document.querySelector('p.empty');
+      if (!empty) { return; }
+      list = document.createElement('ul');
+      list.className = 'items';
+      empty.parentNode.replaceChild(list, empty);
+    }
+    list.insertAdjacentHTML('beforeend', html);
+  }
+  var source = new EventSource('/api/1.0/attention/stream');
+  /* No reconnect handler: EventSource reconnects on its own, which is the
+     property that lets the board survive a restart of the store. */
+  source.onmessage = function (event) {
+    var change = JSON.parse(event.data);
+    if (change.type === 'remove') {
+      var row = rowFor(change.item_id);
+      if (row) { row.remove(); }
+      collapseIfEmpty();
+      return;
+    }
+    upsertRow(change.item_id, change.html);
+  };
+})();
 </script>
 </body>
 </html>
+{{/* One item row, as a sub-template rather than inline in the list. The live
+     stream sends a changed row to the open page as rendered HTML and the page
+     swaps that node in place, so the row markup has to be renderable on its own
+     — and it must be the SAME markup, not a second renderer that would drift
+     from this one. The dollar sign inside a sub-template is the value passed to
+     it, which is why Speak is carried on the row and read as dot-Speak here. */}}
+{{define "attention-row"}}<li class="item" data-item-id="{{ .Item.ItemID }}">
+<div class="producer">{{ .Item.ProducerID }} ({{ .Item.ProducerKind }})</div>
+{{if not .Message}}<div class="payload">{{ .Item.Payload }}</div>
+{{end}}{{if .Item.Context}}<div class="context">{{ .Item.Context }}</div>
+{{end}}{{if .Provenance.Resolved}}<div class="provenance">{{if .Provenance.Host}}<span class="host">{{ .Provenance.Host }}</span>{{end}}{{if .Provenance.Cwd}}<span class="cwd">{{ .Provenance.Cwd }}</span>{{end}}{{if .Provenance.Tool}}<span class="tool">{{ .Provenance.Tool }}</span>{{end}}{{if .Provenance.Pane}}<span class="pane">pane {{ .Provenance.Pane }}</span>{{else if .Provenance.PaneRecorded}}<span class="unroutable">unroutable</span>{{end}}</div>
+{{end}}{{if .Message}}<form class="answer" data-multi="{{ .Tabs }}">
+{{if .Tabs}}<div class="tabs">{{range .Questions}}<button type="button" class="tab{{if .Active}} active{{end}}" data-tab="{{ .Tab }}">{{ .Tab }}</button>{{end}}</div>
+<div class="card-title">{{ .Item.Payload }}</div>
+{{end}}{{range .Questions}}{{$question := .}}<div class="panel" data-question="{{ $question.Tab }}" data-multi-pick="{{ $question.Multi }}"{{if not $question.Active}} hidden{{end}}>
+<div class="question">{{ $question.Payload }}{{if $question.Hint}} <span class="hint">({{ $question.Hint }})</span>{{end}}</div>
+{{if $question.Options}}<div class="options">
+{{range $question.Options}}<label class="option"><input type="{{ if $question.Multi }}checkbox{{ else }}radio{{ end }}" name="{{ $question.Name }}" value="{{ .Label }}" data-option="{{ .Label }}"><span class="option-body"><span class="option-label">{{ .Label }}{{if .Recommended}} <span class="recommended">(Recommended)</span>{{end}}</span>{{if .Description}}<span class="option-desc">{{ .Description }}</span>{{end}}</span></label>
+{{end}}</div>
+{{end}}<input class="other" type="text" name="text" placeholder="Other...">
+</div>
+{{end}}<div class="actions"><button type="submit" name="kind" value="skip" class="dismiss">✕ Dismiss</button><button type="submit" name="kind" value="send" class="next">✓ Submit answer</button>{{if .Speak}}<button type="button" class="speak" data-speak>Read aloud</button>{{end}}</div>
+</form>
+{{end}}{{if .Ack}}<div class="actions"><button type="button" class="ack" data-ack>Acknowledge</button></div>
+{{end}}{{if or .Jump .JumpURL}}<div class="jump">{{if .Jump}}<span>Approve in the session that asked: <code>{{ .Jump }}</code></span>{{end}}{{if .JumpURL}}<button type="button" class="jump-button" data-jump="{{ .JumpURL }}">Jump to session</button>{{end}}</div>
+{{else if .NoJump}}<div class="jump-reason"><span class="no-jump">{{ .NoJump }}</span></div>
+{{end}}<div class="meta">{{ .Item.State }} - {{ .Item.CreatedAt }}</div>
+</li>{{end}}
 `
 
 // attentionPageQuestion is one question unit as the card renders it: the unit a
@@ -625,6 +692,12 @@ type attentionPageRow struct {
 	// resolved. See [[Attention Item Schema]] silence 20 for the one case it
 	// covers that the schema does not yet state a rule for.
 	NoJump string
+	// Speak reports whether this row renders the read-aloud control. It is
+	// carried on the row rather than read from the page root because the row is
+	// a sub-template: `{{template "attention-row" .}}` passes the row as the
+	// data, so `$` inside it is the row and not the page, and a `$.Speak` left
+	// in place would resolve against the wrong value.
+	Speak bool
 }
 
 // attentionPageData is what the template renders: the items the store's read
@@ -649,6 +722,7 @@ func newAttentionPageRow(
 	item pkg.Item,
 	provenance pkg.Provenance,
 	jumpEnabled bool,
+	speak bool,
 ) attentionPageRow {
 	row := attentionPageRow{
 		Item:       item,
@@ -658,6 +732,7 @@ func newAttentionPageRow(
 		Jump:       jumpCommand(item, provenance),
 		JumpURL:    jumpURL(item, provenance, jumpEnabled),
 		NoJump:     noJumpReason(item, provenance, jumpEnabled),
+		Speak:      speak,
 	}
 	if row.Message {
 		row.Questions = pageQuestions(item)
@@ -879,7 +954,12 @@ func NewAttentionPageHandler(
 				for _, item := range items {
 					rows = append(
 						rows,
-						newAttentionPageRow(item, provenances[item.ItemID], jumpEnabled),
+						newAttentionPageRow(
+							item,
+							provenances[item.ItemID],
+							jumpEnabled,
+							speakEnabled,
+						),
 					)
 				}
 				// Rendered into a buffer first so a render failure can still
