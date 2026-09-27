@@ -499,6 +499,14 @@ func (a *attentionStore) rebuildLiveIndex(ctx context.Context, tx libkv.Tx) erro
 		return errors.Wrap(ctx, err, "scan live index failed")
 	}
 	for _, key := range stale {
+		// Same shape `storeTx.Map` uses, and for the same reason: on a drifted
+		// index this loop can run over the whole index, so it must not be the
+		// one place in the rebuild that ignores a cancelled context.
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
 		if err := a.liveIndex.Remove(ctx, tx, key); err != nil {
 			return errors.Wrapf(ctx, err, "remove stale live index entry %s failed", key)
 		}
