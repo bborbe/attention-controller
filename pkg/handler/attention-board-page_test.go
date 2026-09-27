@@ -179,7 +179,17 @@ var _ = Describe("Attention page board controls", func() {
 			block := rowBlock(body, item.ItemID)
 
 			Expect(block).NotTo(ContainSubstring("<form"))
-			Expect(block).NotTo(ContainSubstring("<button"))
+			// ⚠️ AMENDED 2026-09-27 — a permission row now DOES render one
+			// button: the jump corner, disabled, because the operator's ask is
+			// that the control sit in the same place on every card, and with the
+			// previous exception 2 of 77 live cards rendered none. What stays
+			// true, and is what this spec is for, is that a permission row
+			// carries no ANSWER control.
+			Expect(block).NotTo(ContainSubstring("data-ack"))
+			Expect(block).NotTo(ContainSubstring("<input"))
+			Expect(block).To(ContainSubstring(`class="jump-corner"`))
+			Expect(block).To(ContainSubstring(`disabled`))
+			Expect(block).NotTo(ContainSubstring(`data-jump`))
 		})
 
 		It("renders the copyable jump command when a pane resolved", func() {
