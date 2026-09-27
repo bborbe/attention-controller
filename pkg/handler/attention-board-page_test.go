@@ -529,13 +529,14 @@ var _ = Describe("Attention page board controls", func() {
 	// rows its selector matches. The filter's own behaviour in both positions
 	// is measured on the running page, not here.
 	Describe("the answerable filter", func() {
-		render := func() string {
-			req := httptest.NewRequest(http.MethodGet, "/", nil)
+		renderAt := func(target string) string {
+			req := httptest.NewRequest(http.MethodGet, target, nil)
 			resp := httptest.NewRecorder()
 			httpHandler.ServeHTTP(resp, req)
 			Expect(resp.Code).To(Equal(http.StatusOK))
 			return resp.Body.String()
 		}
+		render := func() string { return renderAt("/") }
 
 		// dimmedRow reports whether the row for itemID carries the class the
 		// filter selects on. The class sits in the opening <li> tag, before
@@ -617,6 +618,54 @@ var _ = Describe("Attention page board controls", func() {
 				`<button type="button" class="board-filter" data-board-filter ` +
 					`role="switch" aria-checked="false">`,
 			))
+		})
+
+		It("carries the filter in the URL, and still serves the rows it hides", func() {
+			// The operator asked for the view state to be addressable:
+			// *"The hide button at the top should be a URL parameter, so a
+			// reload of the page keeps the preview setting."* The server renders
+			// the switch's initial position from that parameter, so the served
+			// markup agrees with the URL the operator is looking at.
+			item, err := store.Push(ctx, messageRequest())
+			Expect(err).To(BeNil())
+			answer := pkg.Answer{Kind: pkg.TextAnswerKind, Value: "the board"}
+			_, err = store.Answer(ctx, item.ItemID, "attention-board", "", "", &answer, nil, nil)
+			Expect(err).To(BeNil())
+			provenance.ResolveReturns(pkg.Provenances{item.ItemID: pkg.Provenance{}})
+
+			body := renderAt("/?hide=answered")
+			Expect(body).To(ContainSubstring(`aria-checked="true"`))
+
+			// ⚠️ The dimmed row is still SERVED. The filter is client-side and
+			// the switch has to be able to restore what it hid, so a server that
+			// dropped these rows would make the control one-way — the opposite
+			// of what a view filter is.
+			Expect(dimmedRow(body, item.ItemID)).To(BeTrue())
+		})
+
+		It("leaves the switch off for an absent or unrecognised value", func() {
+			item, err := store.Push(ctx, messageRequest())
+			Expect(err).To(BeNil())
+			provenance.ResolveReturns(pkg.Provenances{item.ItemID: pkg.Provenance{}})
+
+			// The value names the SET that is hidden, so anything that is not
+			// that set leaves the default rendering alone rather than guessing
+			// at an intent the URL did not state.
+			Expect(renderAt("/")).To(ContainSubstring(`aria-checked="false"`))
+			Expect(renderAt("/?hide=")).To(ContainSubstring(`aria-checked="false"`))
+			Expect(renderAt("/?hide=closed")).To(ContainSubstring(`aria-checked="false"`))
+		})
+
+		It("reads the filter alongside other parameters rather than instead of them", func() {
+			item, err := store.Push(ctx, messageRequest())
+			Expect(err).To(BeNil())
+			provenance.ResolveReturns(pkg.Provenances{item.ItemID: pkg.Provenance{}})
+
+			// The operator's own example URL carries answer-form state too. The
+			// filter is read from the same query string, so neither parameter
+			// can displace the other.
+			body := renderAt("/?text=y&kind=send&hide=answered")
+			Expect(body).To(ContainSubstring(`aria-checked="true"`))
 		})
 
 		It("leaves an open permission card outside the filter's target set", func() {
