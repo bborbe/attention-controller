@@ -668,6 +668,24 @@ var _ = Describe("Attention page board controls", func() {
 			Expect(body).To(ContainSubstring(`aria-checked="true"`))
 		})
 
+		It("pins the script's own copy of the view parameter", func() {
+			item, err := store.Push(ctx, messageRequest())
+			Expect(err).To(BeNil())
+			provenance.ResolveReturns(pkg.Provenances{item.ItemID: pkg.Provenance{}})
+
+			// The parameter name and value exist twice — as Go consts and as
+			// literals in the page's script — because the server renders the
+			// switch's initial position while the script applies the filter and
+			// writes the parameter back. Drift is silent in the direction that
+			// matters: change the Go value and the server renders from one
+			// parameter while the script writes another, so a reload stops
+			// reproducing the view with every other spec still green. The
+			// rendered body is already in hand, so the assertion costs nothing.
+			body := render()
+			Expect(body).To(ContainSubstring(`var HIDE_PARAM = 'hide';`))
+			Expect(body).To(ContainSubstring(`var HIDE_ANSWERED = 'answered';`))
+		})
+
 		It("leaves an open permission card outside the filter's target set", func() {
 			item, err := store.Push(ctx, permissionRequest())
 			Expect(err).To(BeNil())

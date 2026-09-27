@@ -1264,6 +1264,31 @@ func noJumpReason(item pkg.Item, provenance pkg.Provenance, jumpEnabled bool) st
 	}
 }
 
+// boardHideParam is the query parameter carrying the board's view state, and
+// boardHideAnswered is the one value it recognises. Together they make the view
+// addressable — `?hide=answered` survives a reload, a bookmark and a shared
+// link instead of resetting — which is what the operator asked for: *"The hide
+// button at the top should be a URL parameter, so a reload of the page keeps
+// the preview setting."*
+//
+// ⚠️ The value names the SET that is hidden rather than being a boolean, so the
+// parameter can describe a different view later without a second parameter
+// name, and so the URL reads as an instruction rather than as a flag whose
+// meaning depends on knowing what it refers to.
+//
+// ⚠️ Both are mirrored as HIDE_PARAM and HIDE_ANSWERED in the page's script,
+// because the server renders the switch's initial position while the script
+// applies the filter and writes the parameter back. That mirror is the only
+// thing in this file that exists in two languages, so a spec asserts the script
+// carries the same two literals: drift there would leave the server rendering
+// from one parameter while the script writes another, and the
+// reload-reproduces-the-view property would stop working with every other test
+// still green.
+const (
+	boardHideParam    = "hide"
+	boardHideAnswered = "answered"
+)
+
 // NewAttentionPageHandler creates the read-only HTML page a human opens to see
 // what currently needs attention.
 //
@@ -1289,27 +1314,6 @@ func noJumpReason(item pkg.Item, provenance pkg.Provenance, jumpEnabled bool) st
 // at construction, so a token removed while the service runs drops the button
 // on the next load — a control whose endpoint would refuse is a value presented
 // as working that is not.
-// The board's view state is addressable. `?hide=answered` carries the filter in
-// the URL, so a reload, a bookmark or a shared link reproduces the view instead
-// of resetting it — which is what the operator asked for: *"The hide button at
-// the top should be a URL parameter, so a reload of the page keeps the preview
-// setting."*
-//
-// ⚠️ The value names the SET that is hidden rather than a boolean, so the
-// parameter can describe a different view later without a second parameter
-// name, and so the URL reads as an instruction rather than as a flag whose
-// meaning depends on knowing what it refers to.
-//
-// The name and value are mirrored in the page's script (see the PARAMS object
-// in the template), because the server renders the switch's initial position
-// while the script applies the filter and writes the parameter back. They are
-// the one thing in this file that exists in two languages, and the spec asserts
-// both halves agree.
-const (
-	boardHideParam    = "hide"
-	boardHideAnswered = "answered"
-)
-
 func NewAttentionPageHandler(
 	store pkg.AttentionStore,
 	provenance pkg.ProvenanceResolver,
