@@ -21,6 +21,21 @@ import (
 	"github.com/bborbe/attention-controller/pkg/handler"
 )
 
+// filterSwitchOn and filterSwitchOff are the filter switch's two rendered
+// opening sequences. Specs must assert the FULL sequence rather than a bare
+// `aria-checked="true"`: the page's stylesheet carries
+// `.board-filter[aria-checked="true"]` selectors, so a bare substring matches
+// the CSS and stays green whatever the switch renders — a check that cannot
+// fail. Found 2026-09-27 by the falsification step on the default-flip change:
+// reverting the handler to the old default left the bare-substring assertions
+// green while the two specs using the full sequence went red. The predecessor's
+// bare `aria-checked="false"` assertions discriminated only by luck, because no
+// CSS selector happens to use `false`.
+const (
+	filterSwitchOn  = `data-board-filter role="switch" aria-checked="true"`
+	filterSwitchOff = `data-board-filter role="switch" aria-checked="false"`
+)
+
 // The board renders no ANSWER control on any class, from 2026-09-27. Before
 // that date it rendered them for `message` items and none for any other class,
 // and the negative half was the load-bearing one: an ANSWER control on a
@@ -859,7 +874,7 @@ var _ = Describe("Attention page board controls", func() {
 			Expect(strings.Index(body, "<h1>")).To(BeNumerically("<", control))
 		})
 
-		It("defaults to off and leaves the dimmed record on the served page", func() {
+		It("defaults to on and still serves the dimmed record it hides", func() {
 			item, err := store.Push(ctx, messageRequest())
 			Expect(err).To(BeNil())
 			answer := pkg.Answer{Kind: pkg.TextAnswerKind, Value: "the board"}
@@ -867,16 +882,25 @@ var _ = Describe("Attention page board controls", func() {
 			Expect(err).To(BeNil())
 			provenance.ResolveReturns(pkg.Provenances{item.ItemID: pkg.Provenance{}})
 
+			// ⚠️ The default REVERSED on 2026-09-27. This spec previously pinned
+			// `aria-checked="false"` here, on the rationale that the dimmed record
+			// is the detector for an answer recorded in the operator's name that
+			// they did not give. The operator asked for the opposite — *"can we
+			// make hide answers the default — so open http://127.0.0.1:18080/ ...
+			// show no answer?"* — so the initial position is now ON. The spec is
+			// updated rather than deleted, and the property it was protecting is
+			// kept in the control below: hidden is not deleted.
 			body := render()
 			Expect(
 				body,
-			).To(ContainSubstring(`data-board-filter role="switch" aria-checked="false"`))
+			).To(ContainSubstring(filterSwitchOn))
 
-			// The positive control for the default position: the record the
-			// filter would hide is on the page to be hidden. A build that
-			// defaulted the filter on, or stopped serving dimmed rows, fails
-			// here — and the dimmed record is the detector this topic built, so
-			// losing it silently is the failure this pins.
+			// The positive control for the default position, and the reason the
+			// reversal is safe: the record the filter hides is still ON THE PAGE
+			// to be hidden. A build that stopped serving dimmed rows would make
+			// the switch one-way and delete the detector — the failure the
+			// original default-off was written to prevent, and the one this pins
+			// now that the default is on.
 			Expect(dimmedRow(body, item.ItemID)).To(BeTrue())
 		})
 
@@ -893,7 +917,7 @@ var _ = Describe("Attention page board controls", func() {
 			// is pinned here rather than left to taste.
 			body := render()
 			Expect(body).To(ContainSubstring(`role="switch"`))
-			Expect(body).To(ContainSubstring(`aria-checked="false"`))
+			Expect(body).To(ContainSubstring(filterSwitchOn))
 			Expect(body).To(ContainSubstring(`class="switch-track"`))
 			Expect(body).To(ContainSubstring(`class="switch-knob"`))
 			Expect(body).To(ContainSubstring(`<span class="switch-label">Hide answered</span>`))
@@ -906,7 +930,7 @@ var _ = Describe("Attention page board controls", func() {
 			// does not break this spec for an unrelated reason.
 			Expect(body).To(ContainSubstring(
 				`<button type="button" class="board-filter" data-board-filter ` +
-					`role="switch" aria-checked="false">`,
+					`role="switch" aria-checked="true">`,
 			))
 		})
 
@@ -924,7 +948,7 @@ var _ = Describe("Attention page board controls", func() {
 			provenance.ResolveReturns(pkg.Provenances{item.ItemID: pkg.Provenance{}})
 
 			body := renderAt("/?hide=answered")
-			Expect(body).To(ContainSubstring(`aria-checked="true"`))
+			Expect(body).To(ContainSubstring(filterSwitchOn))
 
 			// ⚠️ The dimmed row is still SERVED. The filter is client-side and
 			// the switch has to be able to restore what it hid, so a server that
@@ -933,18 +957,38 @@ var _ = Describe("Attention page board controls", func() {
 			Expect(dimmedRow(body, item.ItemID)).To(BeTrue())
 		})
 
-		It("leaves the switch off for an absent or unrecognised value", func() {
-			item, err := store.Push(ctx, messageRequest())
-			Expect(err).To(BeNil())
-			provenance.ResolveReturns(pkg.Provenances{item.ItemID: pkg.Provenance{}})
+		It(
+			"leaves the switch on for an absent or unrecognised value, and off only for the off-spelling",
+			func() {
+				item, err := store.Push(ctx, messageRequest())
+				Expect(err).To(BeNil())
+				provenance.ResolveReturns(pkg.Provenances{item.ItemID: pkg.Provenance{}})
 
-			// The value names the SET that is hidden, so anything that is not
-			// that set leaves the default rendering alone rather than guessing
-			// at an intent the URL did not state.
-			Expect(renderAt("/")).To(ContainSubstring(`aria-checked="false"`))
-			Expect(renderAt("/?hide=")).To(ContainSubstring(`aria-checked="false"`))
-			Expect(renderAt("/?hide=closed")).To(ContainSubstring(`aria-checked="false"`))
-		})
+				// ⚠️ Reversed 2026-09-27 along with the default. The value still names
+				// the SET that is hidden and `none` names the empty set — so absence
+				// and anything unrecognised fall back to the DEFAULT, which is now the
+				// filtered view, rather than guessing at an intent the URL did not
+				// state. Only the explicit off-spelling turns the filter off.
+				//
+				// ⚠️ The control is asserted as the FULL `data-board-filter role=...`
+				// sequence, never as a bare `aria-checked="true"`. The page's own
+				// stylesheet carries `.board-filter[aria-checked="true"]` selectors, so
+				// a bare substring matches the CSS and passes whatever the switch
+				// renders — a check that cannot fail. This was found by the
+				// falsification step: with the handler reverted to the old default
+				// these lines stayed green while the two specs using the full sequence
+				// went red. The predecessor's bare `aria-checked="false"` assertions
+				// discriminated only by luck — no CSS selector uses `false`.
+				Expect(renderAt("/")).To(ContainSubstring(filterSwitchOn))
+				Expect(renderAt("/?hide=")).To(ContainSubstring(filterSwitchOn))
+				Expect(renderAt("/?hide=closed")).To(ContainSubstring(filterSwitchOn))
+
+				// The off-spelling is the whole of the difference. Without this line a
+				// build that ignored the parameter entirely would pass every
+				// assertion above — the positive control for the reversal.
+				Expect(renderAt("/?hide=none")).To(ContainSubstring(filterSwitchOff))
+			},
+		)
 
 		It("reads the filter alongside other parameters rather than instead of them", func() {
 			item, err := store.Push(ctx, messageRequest())
@@ -955,7 +999,7 @@ var _ = Describe("Attention page board controls", func() {
 			// filter is read from the same query string, so neither parameter
 			// can displace the other.
 			body := renderAt("/?text=y&kind=send&hide=answered")
-			Expect(body).To(ContainSubstring(`aria-checked="true"`))
+			Expect(body).To(ContainSubstring(filterSwitchOn))
 		})
 
 		It("pins the script's own copy of the view parameter", func() {
@@ -974,6 +1018,7 @@ var _ = Describe("Attention page board controls", func() {
 			body := render()
 			Expect(body).To(ContainSubstring(`var HIDE_PARAM = 'hide';`))
 			Expect(body).To(ContainSubstring(`var HIDE_ANSWERED = 'answered';`))
+			Expect(body).To(ContainSubstring(`var HIDE_NONE = 'none';`))
 		})
 
 		It("leaves an open permission card outside the filter's target set", func() {
