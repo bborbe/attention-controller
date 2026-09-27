@@ -316,6 +316,12 @@ func (a *application) createHTTPServer(
 			router.Path("/api/1.0/attention/{itemID}/speak").
 				Methods(http.MethodPost).
 				Handler(factory.CreateAttentionSpeakHandler(store, a.TTSURL))
+			// The stop half of the same control, on the same condition: a
+			// toggle whose stop endpoint is unrouted is a control that looks
+			// like it can be stopped and cannot.
+			router.Path("/api/1.0/attention/{itemID}/cancel").
+				Methods(http.MethodPost).
+				Handler(factory.CreateAttentionCancelHandler(a.TTSURL))
 		}
 		// Single-item read, distinct from the render path above: an arm reads
 		// open items, but a caller checking a transition's outcome (or the
