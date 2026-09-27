@@ -829,18 +829,15 @@ document.querySelectorAll('button[data-ack]').forEach(function (button) {
 document.querySelectorAll('button[data-corner-x]').forEach(function (button) {
   button.addEventListener('click', function () {
     var row = button.closest('li.item');
-    /* ⚠️ The X is a CLEAR on every row, and from 2026-09-27 that includes
-       message rows. It used to dispatch the message card's Dismiss submit
-       instead, which made the X *answer* the card rather than clear it — and
-       once a board answer stopped releasing a gate (see the attention-item
-       schema page, section Answer routing) that recorded state:answered with
-       nothing routed back: the card cleared while the asking session stayed
-       frozen. Re-routing it here makes the X the same act on every mechanism,
-       which is what "every card without any excludes" always meant — the
-       exclusion was in the *act*, not the rendering. A message row no longer
-       carries a form, so there is deliberately no branch below: message, ack
-       and permission rows share one dispatch because they share one act.
-       NOTE: no backticks in this comment — it sits inside a Go raw string. */
+    var form = row.querySelector('form.answer');
+    /* A message card's X is the Dismiss submit, dispatched rather than
+       re-implemented: the form's own submit handler owns the skip payload, the
+       ITEM_CLOSED branch and the note placement, and a second copy here would
+       be a second thing to keep in step. */
+    if (form) {
+      var dismiss = form.querySelector('button[value=skip]');
+      if (dismiss) { dismiss.click(); return; }
+    }
     closeCard(row);
   });
 });
@@ -1103,18 +1100,18 @@ function showCloseNote(row, message, isError) {
 {{end}}{{if .Item.Context}}<div class="context">{{ .Item.Context }}</div>
 {{end}}{{if .Provenance.Resolved}}<div class="provenance">{{if .Provenance.Host}}<span class="host">{{ .Provenance.Host }}</span>{{end}}{{if .Provenance.Cwd}}<span class="cwd">{{ .Provenance.Cwd }}</span>{{end}}{{if .Provenance.Tool}}<span class="tool">{{ .Provenance.Tool }}</span>{{end}}{{if .Provenance.Pane}}<span class="pane">pane {{ .Provenance.Pane }}</span>{{else if .Provenance.PaneRecorded}}<span class="unroutable">unroutable</span>{{end}}</div>
 {{end}}{{if .Dimmed}}<div class="record"><div class="record-question">{{ .Item.Payload }}</div><div class="record-answer">answered: {{ .Record }}</div></div>
-{{else if .Message}}<div class="answer-readonly" data-multi="{{ .Tabs }}">
+{{else if .Message}}<form class="answer" data-multi="{{ .Tabs }}">
 {{if .Tabs}}<div class="tabs">{{range .Questions}}<button type="button" class="tab{{if .Active}} active{{end}}" data-tab="{{ .Tab }}">{{ .Tab }}</button>{{end}}</div>
 <div class="card-title">{{ .Item.Payload }}</div>
 {{end}}{{range .Questions}}{{$question := .}}<div class="panel" data-question="{{ $question.Tab }}" data-multi-pick="{{ $question.Multi }}"{{if not $question.Active}} hidden{{end}}>
 <div class="question">{{ $question.Payload }}{{if $question.Hint}} <span class="hint">({{ $question.Hint }})</span>{{end}}</div>
 {{if $question.Options}}<div class="options">
-{{range $question.Options}}<div class="option"><span class="option-body"><span class="option-label">{{ .Label }}{{if .Recommended}} <span class="recommended">(Recommended)</span>{{end}}</span>{{if .Description}}<span class="option-desc">{{ .Description }}</span>{{end}}</span></div>
+{{range $question.Options}}<label class="option"><input type="{{ if $question.Multi }}checkbox{{ else }}radio{{ end }}" name="{{ $question.Name }}" value="{{ .Label }}" data-option="{{ .Label }}"><span class="option-body"><span class="option-label">{{ .Label }}{{if .Recommended}} <span class="recommended">(Recommended)</span>{{end}}</span>{{if .Description}}<span class="option-desc">{{ .Description }}</span>{{end}}</span></label>
 {{end}}</div>
-{{end}}
+{{end}}<input class="other" type="text" name="text" placeholder="Other...">
 </div>
-{{end}}<div class="readonly-note">Answer in the session that asked. A board answer no longer releases the gate.</div>
-</div>
+{{end}}<div class="actions"><button type="submit" name="kind" value="skip" class="dismiss">✕ Dismiss</button><button type="submit" name="kind" value="send" class="next">✓ Submit answer</button></div>
+</form>
 {{end}}{{if and .Ack (not .Dimmed)}}<div class="actions"><button type="button" class="ack" data-ack>Acknowledge</button></div>
 {{end}}{{if or .Jump .JumpURL}}<div class="jump">{{if .Jump}}<span>Approve in the session that asked: <code>{{ .Jump }}</code></span>{{end}}</div>
 {{else if .NoJump}}<div class="jump-reason"><span class="no-jump">{{ .NoJump }}</span></div>

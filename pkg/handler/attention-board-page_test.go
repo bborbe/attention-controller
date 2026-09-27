@@ -21,9 +21,8 @@ import (
 	"github.com/bborbe/attention-controller/pkg/handler"
 )
 
-// The board renders no ANSWER control on any class, from 2026-09-27. Before
-// that date it rendered them for `message` items and none for any other class,
-// and the negative half was the load-bearing one: an ANSWER control on a
+// The board renders ANSWER controls for `message` items and none for any other
+// class. The negative half is the load-bearing one: an ANSWER control on a
 // `permission` item would let the board answer a gate that only the operator
 // may answer, in the session that raised it, which the schema calls permission
 // laundering. See the attention item schema § Answer routing and silence 12.
@@ -40,15 +39,6 @@ import (
 // "carries no control" and have been amended for it — twice when the jump corner
 // and the X landed, once more when the read-aloud control did. Assert on the
 // ANSWER-control markers (`data-ack`, `<form`, `<input`), never on `<button`.
-//
-// ⚠️ AMENDED AGAIN 2026-09-27: a board answer no longer releases a gate — the
-// consumer requires `resolved_by`, which the board's JavaScript never sends — so
-// a `message` card is display-only and renders no ANSWER control either. Its
-// wrapper is `<div class="answer-readonly">`, each option is a plain div rather
-// than a `<label>` around an input, and the card ends with the `readonly-note`
-// saying so. The ANSWER-control markers below therefore read the same on every
-// class — present nowhere — and the specs that pinned the removed form, skip,
-// radio, checkbox and free-text controls now pin their absence instead.
 var _ = Describe("Attention page board controls", func() {
 	var ctx context.Context
 	var db libkv.DB
@@ -159,24 +149,14 @@ var _ = Describe("Attention page board controls", func() {
 			},
 		)
 
-		It(
-			"renders a read-only card instead of a form, a skip control and a free-text field",
-			func() {
-				body, item := renderPage(messageRequest(), pkg.Provenance{})
-				block := rowBlock(body, item.ItemID)
+		It("renders a form, a skip control and a free-text field", func() {
+			body, item := renderPage(messageRequest(), pkg.Provenance{})
+			block := rowBlock(body, item.ItemID)
 
-				// ⚠️ AMENDED 2026-09-27 — the contract changed: a board answer no
-				// longer releases a gate, so the message card is display-only. The
-				// form, the skip control and the free-text field are gone; the
-				// read-only note stands in their place.
-				Expect(block).To(ContainSubstring(`class="answer-readonly"`))
-				Expect(block).To(ContainSubstring(`class="readonly-note"`))
-				Expect(block).To(ContainSubstring("A board answer no longer releases the gate."))
-				Expect(block).NotTo(ContainSubstring("<form"))
-				Expect(block).NotTo(ContainSubstring(`value="skip"`))
-				Expect(block).NotTo(ContainSubstring(`type="text"`))
-			},
-		)
+			Expect(block).To(ContainSubstring("<form"))
+			Expect(block).To(ContainSubstring(`value="skip"`))
+			Expect(block).To(ContainSubstring(`type="text"`))
+		})
 
 		It("renders no jump command", func() {
 			body, item := renderPage(messageRequest(), pkg.Provenance{Pane: "1907"})
@@ -200,13 +180,9 @@ var _ = Describe("Attention page board controls", func() {
 			// name -> svg -> close with no text node anywhere inside the button.
 			Expect(block).To(ContainSubstring(`title="Read aloud"><svg`))
 			Expect(block).To(ContainSubstring(`</svg></button>`))
-			// ⚠️ AMENDED 2026-09-27 — the contract changed: a board answer no
-			// longer releases a gate, so a message card renders no actions row at
-			// all. The read-aloud control is a utility rather than a decision, so
-			// it sits in the card's corner and never in a row of answer controls —
-			// and there is no longer a row for it to sit in.
-			Expect(block).NotTo(ContainSubstring(`class="actions"`))
-			Expect(block).NotTo(ContainSubstring("Submit answer"))
+			// And it is out of the actions row: that row now ends at Submit answer,
+			// so it carries exactly the two decisions the card offers.
+			Expect(block).To(ContainSubstring(`✓ Submit answer</button></div>`))
 		})
 	})
 
@@ -290,12 +266,8 @@ var _ = Describe("Attention page board controls", func() {
 	// when the corner X landed on permission rows; the property that survives,
 	// and the one the two-classes-must-not-bleed framing is for, is that the
 	// permission row carries no ANSWER control.
-	// ⚠️ AMENDED AGAIN 2026-09-27: a board answer no longer releases a gate, so
-	// the message row's card is display-only and carries no answer control
-	// either. The row-scoped split this spec guards is now "the message row
-	// renders the read-only card, the permission row renders no card at all".
 	It(
-		"renders a read-only card on the message row and no card on the permission row of the same page",
+		"renders answer controls on the message row and none on the permission row of the same page",
 		func() {
 			message, err := store.Push(ctx, messageRequest())
 			Expect(err).To(BeNil())
@@ -310,13 +282,7 @@ var _ = Describe("Attention page board controls", func() {
 			httpHandler.ServeHTTP(resp, req)
 			body := resp.Body.String()
 
-			// ⚠️ AMENDED 2026-09-27: the message card is display-only, so the
-			// positive assertion is the read-only wrapper and the negative one is
-			// the form it replaced — both halves, so the spec fails if the form
-			// comes back.
-			Expect(rowBlock(body, message.ItemID)).To(ContainSubstring(`class="answer-readonly"`))
-			Expect(rowBlock(body, message.ItemID)).NotTo(ContainSubstring("<form"))
-			Expect(rowBlock(body, message.ItemID)).NotTo(ContainSubstring("<input"))
+			Expect(rowBlock(body, message.ItemID)).To(ContainSubstring("<form"))
 			Expect(rowBlock(body, permission.ItemID)).NotTo(ContainSubstring("<form"))
 			// ⚠️ AMENDED 2026-09-27 (second time) — the `<button` proxy again.
 			// The permission row renders the jump corner, the corner X and the
@@ -609,39 +575,32 @@ var _ = Describe("Attention page board controls", func() {
 		// Positive control: an open row on the same page must stay a prompt. A page
 		// that dimmed every row would pass the negative assertions above and is
 		// caught here.
-		It(
-			"leaves an open message item undimmed with its read-only card, in the same render",
-			func() {
-				answered, err := store.Push(ctx, messageItem("answered-3", "Answered question?"))
-				Expect(err).To(BeNil())
-				answer := pkg.Answer{Kind: pkg.TextAnswerKind, Value: "the board"}
-				_, err = store.Answer(
-					ctx,
-					answered.ItemID,
-					"attention-board",
-					"",
-					"",
-					&answer,
-					nil,
-					nil,
-				)
-				Expect(err).To(BeNil())
-				open, err := store.Push(ctx, messageItem("open-3", "Open question?"))
-				Expect(err).To(BeNil())
+		It("leaves an open message item undimmed with its answer form, in the same render", func() {
+			answered, err := store.Push(ctx, messageItem("answered-3", "Answered question?"))
+			Expect(err).To(BeNil())
+			answer := pkg.Answer{Kind: pkg.TextAnswerKind, Value: "the board"}
+			_, err = store.Answer(
+				ctx,
+				answered.ItemID,
+				"attention-board",
+				"",
+				"",
+				&answer,
+				nil,
+				nil,
+			)
+			Expect(err).To(BeNil())
+			open, err := store.Push(ctx, messageItem("open-3", "Open question?"))
+			Expect(err).To(BeNil())
 
-				body := render()
+			body := render()
 
-				Expect(dimmedRow(body, answered.ItemID)).To(BeTrue())
-				Expect(rowBlock(body, answered.ItemID)).NotTo(ContainSubstring("<form"))
+			Expect(dimmedRow(body, answered.ItemID)).To(BeTrue())
+			Expect(rowBlock(body, answered.ItemID)).NotTo(ContainSubstring("<form"))
 
-				Expect(dimmedRow(body, open.ItemID)).To(BeFalse())
-				// ⚠️ AMENDED 2026-09-27 — the contract changed: a board answer no
-				// longer releases a gate, so the open row's card is display-only. Its
-				// read-only card is what marks it a prompt rather than a record.
-				Expect(rowBlock(body, open.ItemID)).To(ContainSubstring(`class="answer-readonly"`))
-				Expect(rowBlock(body, open.ItemID)).NotTo(ContainSubstring("<form"))
-			},
-		)
+			Expect(dimmedRow(body, open.ItemID)).To(BeFalse())
+			Expect(rowBlock(body, open.ItemID)).To(ContainSubstring("<form"))
+		})
 
 		// Positive control alongside: the open row must be on the page, so an empty
 		// document cannot pass this by rendering nothing.
