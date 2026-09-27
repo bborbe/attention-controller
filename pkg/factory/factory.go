@@ -129,6 +129,18 @@ func CreateAttentionSpeakHandler(store pkg.AttentionStore, ttsURL string) http.H
 	return handler.NewAttentionSpeakHandler(store, ttsURL)
 }
 
+// CreateAttentionCancelHandler creates the handler that stops a reading this
+// board started, through the tts server at ttsURL.
+//
+// It takes no store, unlike its speak sibling: the cancel is addressed by the
+// tts message id the board's own /speak response returned, so there is nothing
+// to look up. Reading the store here would add a failure mode rather than
+// remove one — an item answered or closed between the speak and the stop would
+// 404 and leave the operator unable to stop a reading they can hear.
+func CreateAttentionCancelHandler(ttsURL string) http.Handler {
+	return handler.NewAttentionCancelHandler(ttsURL)
+}
+
 // CreateTestLoglevelHandler creates an HTTP handler that tests different glog verbosity levels.
 func CreateTestLoglevelHandler() http.Handler {
 	return handler.NewTestLoglevelHandler()

@@ -284,6 +284,16 @@ li.item {
   cursor: pointer;
 }
 .speak:hover { color: var(--text); border-color: var(--border); }
+/* The control is a toggle now, so its two states have to be told apart at a
+   glance. The Style Guide's rule is the reason: "a button that looks live and
+   does nothing is the failure the operator cannot debug from the page" — and
+   its inverse is the one that bites here, a control that looks idle while it
+   is the only thing on the page that can stop the audio. Only the colour and
+   the border move: the glyph, the size and the corner placement are untouched,
+   so "nothing else about the control changes" still holds. The green is the
+   palette's existing affirmative, the same token the actions row uses. */
+.speak[data-state="speaking"] { color: var(--green); border-color: var(--green); }
+.speak[data-state="speaking"]:hover { color: var(--green); border-color: var(--green); }
 /* The speaker glyph is inline SVG, not a font character: the page loads no web
    fonts, so a glyph taken from the system font would vary by platform and
    family. It inherits the button's own muted colour through currentColor, so it
@@ -588,9 +598,9 @@ function showNote(form, message, isError) {
   note.textContent = message;
   form.appendChild(note);
 }
-/* The read-aloud control is type="button" so it never submits the answer form.
-   It reports the tts message id rather than reloading, because the item is
-   still open and the id is what a caller polls for playback status.
+/* The read-aloud control is a TOGGLE: a click while its own item is playing
+   stops that playback, and a click when nothing of its own is playing starts a
+   reading. It is type="button" so it never submits the answer form.
    Both the item id and the note's home are found from the ROW, never from a
    form ancestor: the control sits in the card's top-right corner, outside the
    answer form, so a form-ancestor lookup here returns null and this handler
@@ -607,7 +617,103 @@ function showNote(form, message, isError) {
    already shipped once at v0.19.0, and the Jump control was converted to
    delegation to fix its half of it — the read-aloud control was left behind
    until 2026-09-27, when the permission-card ruling made the inert case
-   routine rather than occasional. */
+   routine rather than occasional.
+
+   ⚠️ What this page is playing lives HERE, in the script's own scope, and NOT
+   on the button. upsertRow replaces a row's whole outerHTML, so a message id
+   written onto the control dies with the node it was written to — the same
+   defect one layer down, and the reason the repaint is re-applied from the map
+   rather than trusted to survive. Two consequences worth stating:
+
+   The click handler decides from the MAP, never from the button's data-state,
+   so what the control DOES is right even in the window before the repaint
+   lands. And the map is declared in this outer scope rather than inside the
+   stream's IIFE because both halves need it: the handler below reads it, and
+   upsertRow re-applies it after a swap. It does not survive a full page
+   reload — that limit, and why it was accepted, is recorded in the task's
+   # Results. */
+var speaking = {};
+/* The read-aloud control for an item, found by comparing data-item-id rather
+   than by building a selector — the same reason the stream's own findRow
+   gives: a generated id is not the place to rely on. It is a second lookup
+   rather than a call to findRow because findRow lives inside the stream's IIFE
+   below, and this scope cannot reach it. */
+function speakControl(itemID) {
+  var rows = document.querySelectorAll('li.item');
+  for (var i = 0; i < rows.length; i++) {
+    if (rows[i].getAttribute('data-item-id') === itemID) {
+      return rows[i].querySelector('button[data-speak]');
+    }
+  }
+  return null;
+}
+function speakButtonState(button, isSpeaking) {
+  if (!button) { return; }
+  if (isSpeaking) {
+    button.setAttribute('data-state', 'speaking');
+    button.setAttribute('aria-label', 'Stop reading');
+    button.setAttribute('title', 'Stop reading');
+    return;
+  }
+  button.removeAttribute('data-state');
+  button.setAttribute('aria-label', 'Read aloud');
+  button.setAttribute('title', 'Read aloud');
+}
+function startReading(itemID, noteHost) {
+  fetch('/api/1.0/attention/' + encodeURIComponent(itemID) + '/speak', { method: 'POST' })
+    .then(function (response) {
+      return response.text().then(function (body) {
+        if (!response.ok) {
+          showNote(noteHost, 'Read aloud failed - HTTP ' + response.status + ' - ' + body, true);
+          return;
+        }
+        /* The id is what makes the next click a stop, so a response that
+           carries none leaves the control a start button rather than marking
+           it as playing and stranding the operator. */
+        var messageID = '';
+        try { messageID = (JSON.parse(body) || {}).message_id || ''; } catch (error) { messageID = ''; }
+        if (messageID) {
+          speaking[itemID] = messageID;
+          speakButtonState(speakControl(itemID), true);
+        }
+        showNote(noteHost, 'Reading aloud (' + body + ')', false);
+      });
+    }).catch(function (error) {
+      showNote(noteHost, 'Read aloud failed - ' + String(error), true);
+    });
+}
+function stopReading(itemID, messageID, noteHost) {
+  fetch('/api/1.0/attention/' + encodeURIComponent(itemID) + '/cancel', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message_id: messageID })
+  })
+    .then(function (response) {
+      return response.text().then(function (body) {
+        /* Cleared on a 404 as well as on success: that status means the id
+           aged out of the tts server's status table, so there is nothing left
+           to stop and the reading is over either way. A control left showing
+           "speaking" with nothing playing is the one-way control this toggle
+           replaces. Only a genuine failure keeps the state, so a retry is
+           still possible. */
+        if (response.ok || response.status === 404) {
+          delete speaking[itemID];
+          speakButtonState(speakControl(itemID), false);
+        }
+        if (response.ok) {
+          showNote(noteHost, 'Stopped reading', false);
+          return;
+        }
+        if (response.status === 404) {
+          showNote(noteHost, 'Stopped reading - it had already finished', false);
+          return;
+        }
+        showNote(noteHost, 'Stop reading failed - HTTP ' + response.status + ' - ' + body, true);
+      });
+    }).catch(function (error) {
+      showNote(noteHost, 'Stop reading failed - ' + String(error), true);
+    });
+}
 document.addEventListener('click', function (event) {
   if (!event.target || !event.target.closest) { return; }
   var button = event.target.closest('button[data-speak]');
@@ -615,20 +721,12 @@ document.addEventListener('click', function (event) {
   var row = button.closest('li.item');
   var itemID = row.getAttribute('data-item-id');
   var noteHost = row.querySelector('form.answer') || row;
-  fetch('/api/1.0/attention/' + encodeURIComponent(itemID) + '/speak', { method: 'POST' })
-    .then(function (response) {
-      return response.text().then(function (body) {
-        showNote(
-          noteHost,
-          response.ok
-            ? 'Reading aloud (' + body + ')'
-            : 'Read aloud failed - HTTP ' + response.status + ' - ' + body,
-          !response.ok
-        );
-      });
-    }).catch(function (error) {
-      showNote(noteHost, 'Read aloud failed - ' + String(error), true);
-    });
+  var messageID = speaking[itemID];
+  if (messageID) {
+    stopReading(itemID, messageID, noteHost);
+    return;
+  }
+  startReading(itemID, noteHost);
 });
 /* ⚠️ The Jump control is a button, not a link, and the difference is the
    operator's ask: "so we dont switch the screen". A link navigates the browser
@@ -929,6 +1027,14 @@ function showCloseNote(row, message, isError) {
       var list = ensureList();
       if (!list) { return; }
       list.insertAdjacentHTML('beforeend', html);
+    }
+    /* The row's node was just replaced, so the toggle's repainted state went
+       with it. Re-applied from the map rather than re-rendered by the server,
+       because the map lives in this page: the server keeps no record of what
+       this page is playing. A row with no control — a dimmed record card —
+       has nothing to mark, and speakButtonState tolerates that. */
+    if (speaking[itemID]) {
+      speakButtonState(speakControl(itemID), true);
     }
     /* Applied after the swap, so a card that becomes answered while the
        filter is on is parked rather than left standing as an open card. */
