@@ -519,4 +519,98 @@ var _ = Describe("Attention page board controls", func() {
 			Expect(block).To(ContainSubstring("right: two"))
 		})
 	})
+
+	// The board's own view filter: a control at the top of the page that hides
+	// the dimmed answered records, so the operator can ask what is left rather
+	// than reading records beside open prompts. The filtering is client-side —
+	// the page must not re-request the document — so what these specs pin is
+	// the contract the script relies on: where the control sits, that it
+	// defaults to the rendering the board had before it existed, and which
+	// rows its selector matches. The filter's own behaviour in both positions
+	// is measured on the running page, not here.
+	Describe("the answerable filter", func() {
+		render := func() string {
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			resp := httptest.NewRecorder()
+			httpHandler.ServeHTTP(resp, req)
+			Expect(resp.Code).To(Equal(http.StatusOK))
+			return resp.Body.String()
+		}
+
+		// dimmedRow reports whether the row for itemID carries the class the
+		// filter selects on. The class sits in the opening <li> tag, before
+		// data-item-id, so rowBlock — which starts at that attribute — would
+		// not see it.
+		dimmedRow := func(body string, itemID pkg.ItemID) bool {
+			return strings.Contains(
+				body,
+				`class="item dimmed" data-item-id="`+itemID.String()+`"`,
+			)
+		}
+
+		It("renders the control above the first card", func() {
+			item, err := store.Push(ctx, messageRequest())
+			Expect(err).To(BeNil())
+			provenance.ResolveReturns(pkg.Provenances{item.ItemID: pkg.Provenance{}})
+
+			body := render()
+			control := strings.Index(body, `data-board-filter`)
+			Expect(control).To(BeNumerically(">=", 0), "no filter control rendered")
+
+			firstRow := strings.Index(body, `data-item-id="`)
+			Expect(firstRow).To(BeNumerically(">=", 0), "no row rendered")
+			Expect(control).To(BeNumerically("<", firstRow))
+
+			// Positive control: the control sits below the board's own heading.
+			// "At the top of the board" is a claim about the board, so a
+			// document that put the control in the head or above the heading
+			// would not satisfy it by being first of nothing.
+			Expect(strings.Index(body, "<h1>")).To(BeNumerically("<", control))
+		})
+
+		It("defaults to off and leaves the dimmed record on the served page", func() {
+			item, err := store.Push(ctx, messageRequest())
+			Expect(err).To(BeNil())
+			answer := pkg.Answer{Kind: pkg.TextAnswerKind, Value: "the board"}
+			_, err = store.Answer(ctx, item.ItemID, "attention-board", "", "", &answer, nil, nil)
+			Expect(err).To(BeNil())
+			provenance.ResolveReturns(pkg.Provenances{item.ItemID: pkg.Provenance{}})
+
+			body := render()
+			Expect(body).To(ContainSubstring(`data-board-filter aria-pressed="false"`))
+
+			// The positive control for the default position: the record the
+			// filter would hide is on the page to be hidden. A build that
+			// defaulted the filter on, or stopped serving dimmed rows, fails
+			// here — and the dimmed record is the detector this topic built, so
+			// losing it silently is the failure this pins.
+			Expect(dimmedRow(body, item.ItemID)).To(BeTrue())
+		})
+
+		It("leaves an open permission card outside the filter's target set", func() {
+			item, err := store.Push(ctx, permissionRequest())
+			Expect(err).To(BeNil())
+			provenance.ResolveReturns(pkg.Provenances{item.ItemID: pkg.Provenance{}})
+
+			// The ruling keeps permission cards under both toggle positions:
+			// they are unresolved and the operator is their only resolver. The
+			// filter keys on the dimmed class, so an open permission row
+			// carrying that class would be hidden — the ruling reversed by a
+			// renderer rather than by a decision.
+			body := render()
+			Expect(dimmedRow(body, item.ItemID)).To(BeFalse())
+			// Positive control: the row is on the page, so this cannot pass by
+			// rendering nothing.
+			Expect(body).To(ContainSubstring(`data-item-id="` + item.ItemID.String() + `"`))
+		})
+
+		It("renders the control on a board with no rows", func() {
+			// A control that appeared and disappeared with the store's contents
+			// would move under the operator's cursor. With nothing to filter it
+			// is inert rather than absent.
+			body := render()
+			Expect(body).To(ContainSubstring(`data-board-filter`))
+			Expect(body).To(ContainSubstring("Nothing needs attention."))
+		})
+	})
 })

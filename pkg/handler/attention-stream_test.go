@@ -142,6 +142,43 @@ var _ = Describe("AttentionStreamHandler", func() {
 		Expect(event["html"]).Should(ContainSubstring("deploy prod?"))
 	})
 
+	// The dimmed record reaches an open board over the live channel, not only
+	// on the next load. The channel reads through ReadBoard, the same reader
+	// the page uses, so an item that is answered arrives as a dimmed upsert
+	// rather than leaving the rendered set.
+	//
+	// ⚠️ This is also the class the board's view filter keys on. A row that
+	// arrived undimmed would render as a live card offering an answer to a
+	// question that already has one, and the filter would have nothing to
+	// hide — which is why the reader is asserted here rather than left to the
+	// page's own specs.
+	It("streams the dimmed record when an item is answered", func() {
+		reader, cancel := connect()
+		defer cancel()
+
+		item := push("already answered?")
+
+		// Positive control: the same row arrives undimmed while the item is
+		// open, so this cannot pass on a channel that dims everything it
+		// sends.
+		open := readEvent(reader)
+		Expect(open["type"]).Should(Equal("upsert"))
+		Expect(open["item_id"]).Should(Equal(item.ItemID.String()))
+		Expect(open["html"]).Should(ContainSubstring(`data-item-id="` + item.ItemID.String() + `"`))
+		Expect(open["html"]).ShouldNot(ContainSubstring("item dimmed"))
+
+		answer := pkg.Answer{Kind: pkg.TextAnswerKind, Value: "yes"}
+		_, err := store.Answer(ctx, item.ItemID, "attention-board", "", "", &answer, nil, nil)
+		Expect(err).Should(BeNil())
+
+		event := readEvent(reader)
+		Expect(event["type"]).Should(Equal("upsert"))
+		Expect(event["item_id"]).Should(Equal(item.ItemID.String()))
+		Expect(event["html"]).Should(ContainSubstring(
+			`class="item dimmed" data-item-id="` + item.ItemID.String() + `"`,
+		))
+	})
+
 	It("sends a removal when the item is resolved elsewhere", func() {
 		reader, cancel := connect()
 		defer cancel()
