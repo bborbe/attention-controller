@@ -101,12 +101,43 @@ var _ = Describe("Legacy pane-addressed jump", func() {
 		Expect(activator.ActivateCallCount()).To(Equal(0))
 	})
 
-	It("allows a bare localhost Host with no port", func() {
-		resp := request("/jump?pane=1907&t="+legacyTokenSentinel, "localhost")
+	// ⚠️ Loopback is a FAMILY, not two strings. The first version of this guard
+	// accepted only `127.0.0.1` and `localhost`, which refused every IPv6 form —
+	// and `-jump-listen` takes any address, so a host on `[::1]:1337` would have
+	// had every jump refused by its own guard. The mapped form is included
+	// because a dual-stack listener reports a v4 peer that way.
+	DescribeTable("accepts every loopback form",
+		func(host string) {
+			resp := request("/jump?pane=1907&t="+legacyTokenSentinel, host)
 
-		Expect(resp.Code).To(Equal(http.StatusOK))
-		Expect(activator.ActivateCallCount()).To(Equal(1))
-	})
+			Expect(resp.Code).To(Equal(http.StatusOK))
+			Expect(activator.ActivateCallCount()).To(Equal(1))
+		},
+		Entry("IPv4 with port", "127.0.0.1:1337"),
+		Entry("IPv4 bare", "127.0.0.1"),
+		Entry("another 127/8 address", "127.0.0.2:1337"),
+		Entry("localhost with port", "localhost:1337"),
+		Entry("localhost bare", "localhost"),
+		Entry("IPv6 with port", "[::1]:1337"),
+		Entry("IPv6 bare, bracketed", "[::1]"),
+		Entry("IPv4-mapped IPv6", "[::ffff:127.0.0.1]:1337"),
+	)
+
+	// The guard must still refuse a non-loopback address in either family — the
+	// table above widens what is accepted, and these are what stop the widening
+	// from becoming a hole.
+	DescribeTable("refuses a non-loopback Host in either family",
+		func(host string) {
+			resp := request("/jump?pane=1907&t="+legacyTokenSentinel, host)
+
+			Expect(resp.Code).To(Equal(http.StatusForbidden))
+			Expect(activator.ActivateCallCount()).To(Equal(0))
+		},
+		Entry("a public IPv4", "93.184.216.34:1337"),
+		Entry("a public IPv6", "[2001:db8::1]:1337"),
+		Entry("a domain that merely starts with 127", "127.0.0.1.evil.example.com"),
+		Entry("a bracketed non-loopback", "[::2]"),
+	)
 
 	DescribeTable("refuses a request without a matching token",
 		func(target string) {

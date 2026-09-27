@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/bborbe/errors"
 	"github.com/golang/glog"
@@ -145,20 +146,38 @@ func NewLegacyJumpHandler(
 // domain in Host, so the request reaches this port while claiming to be
 // somewhere else. Checking Host is cheap and closes a hole the token does not.
 //
+// ⚠️ **Loopback is decided by net.IP.IsLoopback, not by string comparison.**
+// The first version accepted exactly `127.0.0.1` and `localhost`, which refused
+// every IPv6 loopback form — `[::1]:1337`, `::1`, and the IPv4-mapped
+// `[::ffff:127.0.0.1]:1337`. That is a real gap rather than a theoretical one:
+// `-jump-listen` takes any address, so a host configured on `[::1]:1337` would
+// have had every jump refused by its own guard. IsLoopback covers the whole
+// family — 127.0.0.0/8, ::1, and the mapped forms — without enumerating them.
+//
+// ⚠️ `localhost` is still accepted by name, because it is a name and not an
+// address: ParseIP cannot classify it, and resolving it here would make the
+// guard depend on the host's resolver — a DNS-rebinding guard that asks DNS is
+// the wrong shape.
+//
 // ⚠️ The port is stripped with net.SplitHostPort, and a bare host is NOT an
 // error here: the header is frequently `localhost` with no port at all, which
 // that call reports as a failure. Treating the whole header as the host in that
-// case is what makes the two accepted forms — `127.0.0.1` and `127.0.0.1:1337`
-// — behave the same.
+// case is what makes `127.0.0.1` and `127.0.0.1:1337` behave the same.
 func requireLoopbackHost(ctx context.Context, req *http.Request) error {
+	// SplitHostPort is IPv6-aware and strips the brackets: `[::1]:1337` yields
+	// `::1`, which ParseIP accepts. A bare `[::1]` has no port and fails the
+	// split, so the brackets are trimmed on the fallback path.
 	host, _, err := net.SplitHostPort(req.Host)
 	if err != nil {
-		host = req.Host
+		host = strings.TrimSuffix(strings.TrimPrefix(req.Host, "["), "]")
 	}
-	if host != "127.0.0.1" && host != "localhost" {
-		return errors.Errorf(ctx, "host %q is not loopback", host)
+	if host == "localhost" {
+		return nil
 	}
-	return nil
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return nil
+	}
+	return errors.Errorf(ctx, "host %q is not loopback", host)
 }
 
 // requireJumpToken checks the request's token against the configured one.
