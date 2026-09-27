@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.24.1
 
 - fix: restore the answer form on `message` rows — radios, checkboxes, the `Other…` field, `Dismiss` and `Submit answer` — reverting v0.23.4's display-only change. The operator's report, 2026-09-27: *"ui is now broken … we had radio boxes, check boxes and inputs … i want a quick fix"*. The corner X on `message` rows is restored to its pre-v0.23.4 act with it.
 
