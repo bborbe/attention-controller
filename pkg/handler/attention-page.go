@@ -975,15 +975,22 @@ function showCloseNote(row, message, isError) {
      here would re-create the exception. See [[Attention Item Schema]] § The
      corner X, and the dispatch comment on the data-corner-x handler below. */}}<button type="button" class="corner-x" data-corner-x aria-label="Skip this item">✕</button>
 {{/* The read-aloud control renders on every row whose Speak is set, from
-     2026-09-27. It was gated on 'and .Message .Speak', which excepted
-     permission rows on the reasoning that read-aloud is an answer control — it
-     is not; it is a utility that records no answer, and the operator ruled that
-     permission cards carry it too. ⚠️ The two gates reconciled here are the X
-     task's (the X becomes ungated) and this one's (the Message conjunct is
-     dropped); they sat on adjacent lines and were merged on 2026-09-27. See
-     [[Attention Item Schema]] § Answer routing. ⚠️ The '.Speak' conjunct is the
-     whole gate and must stay: with no tts server configured, no row renders a
-     speaker. */}}{{if .Speak}}<button type="button" class="speak" data-speak aria-label="Read aloud" title="Read aloud"><svg class="speak-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2.75 5.25 5.5H2.75v5h2.5L9 13.25z"/><path d="M11.5 5.75a3.25 3.25 0 0 1 0 4.5"/><path d="M13.5 3.75a6 6 0 0 1 0 8.5"/></svg></button>
+     2026-09-27 — except the dimmed record card, from 2026-09-27. It was gated on
+     'and .Message .Speak', which excepted permission rows on the reasoning that
+     read-aloud is an answer control — it is not; it is a utility that records no
+     answer, and the operator ruled that permission cards carry it too. ⚠️ The
+     two gates reconciled here are the X task's (the X becomes ungated) and this
+     one's (the Message conjunct is dropped); they sat on adjacent lines and were
+     merged on 2026-09-27. See [[Attention Item Schema]] § Answer routing.
+     ⚠️ The dimmed record card is a record, not a prompt, so it carries no
+     control that offers an answer — this one included: it asks the tts server to
+     read the QUESTION aloud, which is the act of a prompt on a row whose whole
+     purpose is to be a record. The (not .Dimmed) conjunct renders that rule, and
+     it is the same idiom the ack control below already uses. .Dimmed is exactly
+     'item.State == AnsweredState', so the one conjunct covers every mechanism a
+     dimmed card can reach — the dimmed message and dimmed permission cards alike
+     — while leaving the control on every open row. ⚠️ The '.Speak' conjunct must
+     stay: with no tts server configured, no row renders a speaker. */}}{{if and .Speak (not .Dimmed)}}<button type="button" class="speak" data-speak aria-label="Read aloud" title="Read aloud"><svg class="speak-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2.75 5.25 5.5H2.75v5h2.5L9 13.25z"/><path d="M11.5 5.75a3.25 3.25 0 0 1 0 4.5"/><path d="M13.5 3.75a6 6 0 0 1 0 8.5"/></svg></button>
 {{end}}{{if .JumpURL}}<button type="button" class="jump-corner" data-jump="{{ .JumpURL }}" aria-label="Jump to session" title="Jump to session"><svg class="jump-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.75 3.25h8.5a1.5 1.5 0 0 1 1.5 1.5v6.5a1.5 1.5 0 0 1-1.5 1.5h-8.5a1.5 1.5 0 0 1-1.5-1.5v-6.5a1.5 1.5 0 0 1 1.5-1.5z"/><path d="M5.75 6.5 7.5 8.25 5.75 10"/><path d="M9 10h1.75"/></svg></button>
 {{else if .NoJump}}<button type="button" class="jump-corner" disabled aria-label="Jump to session" title="Jump to session"><svg class="jump-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.75 3.25h8.5a1.5 1.5 0 0 1 1.5 1.5v6.5a1.5 1.5 0 0 1-1.5 1.5h-8.5a1.5 1.5 0 0 1-1.5-1.5v-6.5a1.5 1.5 0 0 1 1.5-1.5z"/><path d="M5.75 6.5 7.5 8.25 5.75 10"/><path d="M9 10h1.75"/></svg></button>
 {{end}}{{if not .Message}}<div class="payload">{{ .Item.Payload }}</div>
