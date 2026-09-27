@@ -193,7 +193,7 @@ var _ = Describe("Attention jump handover", func() {
 			Expect(resp.Code).To(Equal(http.StatusOK))
 			block := rowBlock(resp.Body.String(), item.ItemID)
 
-			Expect(block).To(ContainSubstring(`class="jump-button"`))
+			Expect(block).To(ContainSubstring(`class="jump-corner"`))
 			Expect(block).To(ContainSubstring(`<button type="button"`))
 			Expect(block).To(ContainSubstring(`data-jump="/jump/` + item.ItemID.String() + `"`))
 			Expect(block).NotTo(ContainSubstring(jumpBaseURL))
@@ -235,7 +235,7 @@ var _ = Describe("Attention jump handover", func() {
 
 			block := renderRow(item.ItemID)
 
-			Expect(block).To(ContainSubstring(`class="jump-button"`))
+			Expect(block).To(ContainSubstring(`class="jump-corner"`))
 			Expect(block).To(ContainSubstring(`data-jump="/jump/` + item.ItemID.String() + `"`))
 			Expect(block).NotTo(ContainSubstring("/supervisor:jump"))
 			Expect(block).NotTo(ContainSubstring("Approve in the session that asked"))

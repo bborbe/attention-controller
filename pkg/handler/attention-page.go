@@ -186,7 +186,14 @@ li.item {
    ⚠️ Its own class rather than the control's, so a row that renders this and a
    row that renders the control stay distinguishable in the DOM as well as on
    screen: the two are the two arms of one condition, and reusing the control's
-   class would make "this row has a jump control" unanswerable by class. */
+   class would make "this row has a jump control" unanswerable by class.
+   ⚠️ AMENDED 2026-09-27: the two arms are no longer mutually exclusive. A row
+   that renders this explanation now also renders the corner control, present
+   but disabled, so the operator finds it in the same place on every card —
+   [[Attention Item Schema]] silence 20's resolution. The classes stay
+   distinct and the distinction still reads the same way in the DOM, but
+   "this row has a jump control" is now answered by a :not(:disabled) test on
+   the corner control rather than by the presence of the corner at all. */
 .jump-reason .no-jump { color: var(--muted); }
 .meta { color: var(--muted); font-size: 12px; }
 .empty { color: var(--muted); font-size: 14px; }
@@ -285,16 +292,65 @@ li.item {
    it did beside a text label, because the control is icon-only: its aria-label
    is the only name it has. */
 .speak .speak-icon { width: 15px; height: 15px; flex: none; }
+/* The jump handover's clickable half, in the corner beside the X and the
+   speaker. Icon-only for the same reason the speaker is, and in the corner for
+   the reason the X gives: a control anchored to the card lands in the same
+   place however tall the card grows, where the text button it replaces sat
+   below the payload and moved with the card's content — the operator's ask,
+   verbatim, 2026-09-27: "a button at the top next to the speaker symbol and
+   the X ... a small icon and it's always at the same place."
+   Its geometry mirrors the two controls to its right rather than sharing a
+   rule with either: the X is pinned at right: 12px and the speaker at
+   right: 48px, both 28px wide with an 8px gap, so right: 84px places this 8px
+   to the speaker's left and no control's position depends on another's. */
+.jump-corner {
+  position: absolute;
+  top: 10px;
+  right: 84px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.jump-corner:hover { color: var(--text); border-color: var(--border); }
+/* ⚠️ A disabled control must not look pressable — a button that looks live and
+   does nothing is the failure the operator cannot debug from the page. The
+   corner's value is that it is the same on every card, so a row with no
+   handover renders this control present-but-unavailable rather than absent.
+   ⚠️ It is the real disabled attribute and it carries NO data-jump, and both
+   halves are load-bearing: the page's jump handler is delegated at the
+   document, so a control that still dispatched would be matched by
+   closest('button[data-jump]'), fetch a null URL, and reach showJumpNote with
+   no .jump container to append into — a throw on a row that renders no
+   explanation div at all. */
+.jump-corner:disabled { cursor: default; opacity: 0.4; }
+.jump-corner:disabled:hover { color: var(--muted); border-color: transparent; }
+.jump-corner .jump-icon { width: 15px; height: 15px; flex: none; }
 /* The acknowledge control is the only action a report-only card carries, so it
    takes the affirmative colour the message card gives Submit answer: on a card
    that offers no other move, it is the forward one. */
 .actions .ack { background: var(--green-bg); color: var(--green); border-color: var(--green-bg); font-weight: 500; }
 .actions .ack:hover { border-color: var(--green); }
-/* The jump handover: a copyable command for the operator who wants to paste it,
-   and a button for the one who wants to click. The button's href is a path on
-   this board, which redirects to the fleet-jump URL server-side — the token is
-   a query parameter of that URL and never reaches the document. */
+/* The jump handover's copyable half: a command for the operator who wants to
+   paste it.
+   ⚠️ The clickable half left this div on 2026-09-27 — the button is the corner
+   control now — so the div carries the command alone and is EMPTY on a
+   message item, which has no command by design (jumpCommand returns "" for
+   MessageAnswerMechanism). It still renders whenever the row carries a
+   handover, and that is deliberate rather than incidental: this div is also
+   the outcome note's home, and showJumpNote resolves it with
+   row.querySelector('.jump') before appending, so a row that rendered the
+   corner control without this container would throw on the first click. An
+   empty div contributes no spacing. */
 .jump { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; color: var(--muted); font-size: 12px; margin: 8px 0 0; }
+.jump:empty { margin: 0; }
 .jump code {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   background: var(--bg);
@@ -303,17 +359,6 @@ li.item {
   padding: 2px 6px;
   user-select: all;
 }
-.jump-button {
-  background: var(--panel);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 6px 12px;
-  font-size: 13px;
-  font-family: inherit;
-  cursor: pointer;
-}
-.jump-button:hover { border-color: var(--muted); }
 /* The board's filter is a switch, not a button, because that is what it is: a
    control with two states that stays where it is, rather than one that fires an
    action and returns. The track carries the state in colour and the knob
@@ -880,6 +925,8 @@ function showAckNote(row, message, isError) {
 <div class="producer">{{ .Item.ProducerID }} ({{ .Item.ProducerKind }})</div>
 {{if or .Message .Ack}}<button type="button" class="corner-x" data-corner-x aria-label="Skip this item">✕</button>
 {{end}}{{if and .Message .Speak}}<button type="button" class="speak" data-speak aria-label="Read aloud" title="Read aloud"><svg class="speak-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2.75 5.25 5.5H2.75v5h2.5L9 13.25z"/><path d="M11.5 5.75a3.25 3.25 0 0 1 0 4.5"/><path d="M13.5 3.75a6 6 0 0 1 0 8.5"/></svg></button>
+{{end}}{{if .JumpURL}}<button type="button" class="jump-corner" data-jump="{{ .JumpURL }}" aria-label="Jump to session" title="Jump to session"><svg class="jump-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.75 3.25h8.5a1.5 1.5 0 0 1 1.5 1.5v6.5a1.5 1.5 0 0 1-1.5 1.5h-8.5a1.5 1.5 0 0 1-1.5-1.5v-6.5a1.5 1.5 0 0 1 1.5-1.5z"/><path d="M5.75 6.5 7.5 8.25 5.75 10"/><path d="M9 10h1.75"/></svg></button>
+{{else if and .NoJump (not .Permission)}}<button type="button" class="jump-corner" disabled aria-label="Jump to session" title="Jump to session"><svg class="jump-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.75 3.25h8.5a1.5 1.5 0 0 1 1.5 1.5v6.5a1.5 1.5 0 0 1-1.5 1.5h-8.5a1.5 1.5 0 0 1-1.5-1.5v-6.5a1.5 1.5 0 0 1 1.5-1.5z"/><path d="M5.75 6.5 7.5 8.25 5.75 10"/><path d="M9 10h1.75"/></svg></button>
 {{end}}{{if not .Message}}<div class="payload">{{ .Item.Payload }}</div>
 {{end}}{{if .Item.Context}}<div class="context">{{ .Item.Context }}</div>
 {{end}}{{if .Provenance.Resolved}}<div class="provenance">{{if .Provenance.Host}}<span class="host">{{ .Provenance.Host }}</span>{{end}}{{if .Provenance.Cwd}}<span class="cwd">{{ .Provenance.Cwd }}</span>{{end}}{{if .Provenance.Tool}}<span class="tool">{{ .Provenance.Tool }}</span>{{end}}{{if .Provenance.Pane}}<span class="pane">pane {{ .Provenance.Pane }}</span>{{else if .Provenance.PaneRecorded}}<span class="unroutable">unroutable</span>{{end}}</div>
@@ -897,7 +944,7 @@ function showAckNote(row, message, isError) {
 {{end}}<div class="actions"><button type="submit" name="kind" value="skip" class="dismiss">✕ Dismiss</button><button type="submit" name="kind" value="send" class="next">✓ Submit answer</button></div>
 </form>
 {{end}}{{if and .Ack (not .Dimmed)}}<div class="actions"><button type="button" class="ack" data-ack>Acknowledge</button></div>
-{{end}}{{if or .Jump .JumpURL}}<div class="jump">{{if .Jump}}<span>Approve in the session that asked: <code>{{ .Jump }}</code></span>{{end}}{{if .JumpURL}}<button type="button" class="jump-button" data-jump="{{ .JumpURL }}">Jump to session</button>{{end}}</div>
+{{end}}{{if or .Jump .JumpURL}}<div class="jump">{{if .Jump}}<span>Approve in the session that asked: <code>{{ .Jump }}</code></span>{{end}}</div>
 {{else if .NoJump}}<div class="jump-reason"><span class="no-jump">{{ .NoJump }}</span></div>
 {{end}}<div class="meta">{{ .Item.State }} - {{ .Item.CreatedAt }}</div>
 </li>{{end}}
@@ -966,6 +1013,19 @@ type attentionPageRow struct {
 	// schema forbids. The two classes rendering identically was the accident;
 	// they are separated by this field rather than by a shared absence.
 	Ack bool
+	// Permission reports whether this row is a `permission` item — the class
+	// that renders jump-link-only with zero controls. It is carried explicitly
+	// rather than inferred from `not .Message and not .Ack`, so a fourth
+	// mechanism added later cannot silently inherit the permission row's rule.
+	//
+	// ⚠️ The jump corner reads it, and the reason is a rule rather than a
+	// preference: a permission row with **no resolved pane renders no control at
+	// all**. The jump button is that row's one control and it appears only when
+	// there is a target — so the disabled corner SC7 adds on every other
+	// no-target row must not render here. [[A Permission Card Carries a Jump
+	// Button and No Answer Control]] owns changing that rule, and it is a
+	// separate task, which is why this field exists rather than the change.
+	Permission bool
 	// Questions are the question units this row's card renders: the item's own
 	// when it carries several, otherwise a single unit built from the item's own
 	// Payload, Options and AnswerCardinality. Empty when the row renders no card,
@@ -1065,6 +1125,7 @@ func newAttentionPageRow(
 		Provenance: provenance,
 		Message:    item.AnswerMechanism == pkg.MessageAnswerMechanism,
 		Ack:        item.AnswerMechanism == pkg.AckAnswerMechanism,
+		Permission: item.AnswerMechanism == pkg.PermissionAnswerMechanism,
 		Jump:       jumpCommand(item, provenance),
 		JumpURL:    jumpURL(item, provenance, jumpEnabled),
 		NoJump:     noJumpReason(item, provenance, jumpEnabled),

@@ -366,15 +366,25 @@ var _ = Describe("AttentionPageHandler", func() {
 		// Positive control: the row rendered at all, so the assertions below
 		// cannot pass on a page that dropped it.
 		Expect(row).To(ContainSubstring(item.Payload.String()))
-		Expect(row).NotTo(ContainSubstring(`class="jump-button"`))
+		// ⚠️ AMENDED 2026-09-27 — this row now CARRIES the corner control,
+		// present but disabled, so the corner is the same on every card
+		// ([[Attention Item Schema]] silence 20's resolution). The control is a
+		// real disabled attribute carrying no data-jump, and both halves matter:
+		// the page's jump handler is delegated at the document, so a control that
+		// still dispatched would be matched by closest('button[data-jump]'), fetch
+		// a null URL, and reach showJumpNote with no .jump container to append
+		// into — a throw on a row that renders no explanation div at all.
+		Expect(row).To(ContainSubstring(`class="jump-corner"`))
+		Expect(row).To(ContainSubstring(`disabled`))
+		Expect(row).NotTo(ContainSubstring(`data-jump`))
 		Expect(row).NotTo(ContainSubstring(`<code>/supervisor:jump`))
 		Expect(row).To(ContainSubstring(`<span class="no-jump">`))
 		Expect(row).To(ContainSubstring("No pane was recorded for this item"))
-		// The explanation is its own element, never the control's. A row that
-		// renders the explanation must stay distinguishable by class from a row
-		// that renders the control, or "does this row have a jump control?"
-		// stops being answerable from the DOM — and an existing spec that asks
-		// exactly that starts failing.
+		// The explanation is its own element, never the control's. The two stay
+		// distinguishable by class — and that is still load-bearing after the
+		// amendment above: "does this row have a usable jump control?" is now
+		// answered by a :not(:disabled) test on the corner, not by whether the
+		// corner is there at all.
 		Expect(row).To(ContainSubstring(`class="jump-reason"`))
 		Expect(row).NotTo(ContainSubstring(`class="jump"`))
 	})
@@ -464,7 +474,9 @@ var _ = Describe("AttentionPageHandler", func() {
 
 		row := rowOf(resp.Body.String(), item.ItemID)
 
-		Expect(row).To(ContainSubstring(`class="jump-button"`))
+		Expect(row).To(ContainSubstring(`class="jump-corner"`))
+		Expect(row).To(ContainSubstring(`data-jump=`))
+		Expect(row).NotTo(ContainSubstring(`disabled`))
 		Expect(row).NotTo(ContainSubstring(`class="no-jump"`))
 	})
 
