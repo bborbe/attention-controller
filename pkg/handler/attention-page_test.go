@@ -915,7 +915,11 @@ var _ = Describe("AttentionPageHandler", func() {
 			// what keeps the gate answerable only by the operator. The X closes
 			// it without answering, so both assertions hold at once.
 			Expect(block).To(ContainSubstring("data-corner-x"))
-			Expect(block).NotTo(ContainSubstring(`class="answer"`))
+			// ⚠️ `<form`, not `class="answer"`: the two are on the same element
+			// and equivalent, but `<form` is one of the three ANSWER-control
+			// markers this change declared as the set to assert on. Using a
+			// fourth spelling here would quietly widen that set.
+			Expect(block).NotTo(ContainSubstring("<form"))
 			// The jump corner is navigation rather than an answer, so it
 			// renders here too — disabled when the row has no target.
 			Expect(block).To(ContainSubstring(`class="jump-corner"`))
