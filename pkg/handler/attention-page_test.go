@@ -1010,4 +1010,92 @@ var _ = Describe("AttentionPageHandler", func() {
 		// load-bearing: it excludes the catch line, which carries no status.
 		Expect(strings.Count(body, "attention board: answer failed - HTTP ")).To(Equal(2))
 	})
+
+	// The reserved prefix is asserted here as well as in the spec above, so a
+	// later change that introduces a tenth occurrence fails loudly instead of
+	// silently widening a name another spec depends on.
+	It("keeps the reserved console prefix at exactly nine lines", func() {
+		Expect(strings.Count(get("GET").Body.String(), "attention board: ")).To(Equal(9))
+	})
+
+	// The stream's own health. A stream that has stopped for good — a 404 after
+	// a redeploy, a persistent 500 — left the board frozen at its load-time
+	// state with no signal at all, so the operator read a stale board as a
+	// current one. The state is a visible element rather than a console line
+	// because reading it without devtools is the whole point.
+	// These specs assert presence in the served source, which is the boundary
+	// this change crosses. They do NOT verify browser behaviour: the script is
+	// inline and has no unit harness, and the operator's own click-through is
+	// the half that runs outside this container.
+	It("says when the stream has stopped, beside the board's filter switch", func() {
+		body := get("GET").Body.String()
+
+		// The handler that raises the state, and the class that styles it in
+		// the palette's existing warn colour.
+		Expect(body).To(ContainSubstring("source.onerror"))
+		Expect(body).To(ContainSubstring("stream-stale"))
+
+		// It sits in the board's control row, beside the filter switch — the
+		// element that describes the board rather than an item. Scoped to the
+		// row's own block, so a copy of the class elsewhere on the page cannot
+		// satisfy this.
+		controls := strings.Index(body, `<div class="board-controls">`)
+		Expect(controls).To(BeNumerically(">=", 0), "no control row rendered")
+		rest := body[controls:]
+		end := strings.Index(rest, "</div>")
+		Expect(end).To(BeNumerically(">=", 0))
+		Expect(rest[:end]).To(ContainSubstring(`data-stream-stale`))
+		Expect(rest[:end]).To(ContainSubstring(`data-board-filter`))
+
+		// ⚠️ Hidden in the served markup, and that is a requirement rather than
+		// a detail: a healthy load, an empty board and a board whose stream is
+		// merely quiet must each render exactly what they rendered before. Only
+		// the stream's own onerror can show it.
+		Expect(body).To(ContainSubstring(
+			`<span class="stream-stale" data-stream-stale hidden>`,
+		))
+
+		// And it clears itself on the next message, so a brief restart of the
+		// store shows it only for the gap. Both directions are counted, so a
+		// handler that raised the state and never cleared it fails here.
+		Expect(strings.Count(body, "setTracking(false)")).To(Equal(1))
+		Expect(strings.Count(body, "setTracking(true)")).To(Equal(1))
+	})
+
+	// A failure note is a child of the row it was rendered into, and the stream
+	// replaces a row's whole node on every event — so the note the operator was
+	// reading was destroyed mid-sentence. The most recent failure per item is
+	// kept in a map keyed on the item id, mirroring the speaking map, and
+	// re-rendered after the swap on both the visible and the parked path.
+	It("re-renders a failure note after the stream replaces its row", func() {
+		body := get("GET").Body.String()
+
+		// The map itself, keyed the way speaking is.
+		Expect(body).To(ContainSubstring("var failures = {}"))
+
+		// Recorded when a helper renders a failure, and cleared when the same
+		// action next succeeds: a stale failure note outliving its cause is a
+		// worse defect than the one being fixed, because it reports a failure
+		// that is no longer true.
+		Expect(body).To(ContainSubstring("failures[itemID] = { kind: kind, message: message }"))
+		Expect(body).To(ContainSubstring("delete failures[itemID]"))
+
+		// Every note helper records, asserted one by one rather than as a
+		// count, so a helper that stopped recording is caught rather than
+		// satisfied by its neighbour's call.
+		Expect(body).To(ContainSubstring("rememberFailure(form, 'form', message, isError)"))
+		Expect(body).To(ContainSubstring("rememberFailure(row, 'jump', message, isError)"))
+		Expect(body).To(ContainSubstring("rememberFailure(row, 'close', message, isError)"))
+
+		// Re-rendered on the visible path after the node is swapped...
+		Expect(body).To(ContainSubstring("replayFailure(findRow(itemID))"))
+		// ...and on the parked path, where the row exists only as the markup
+		// the filter stored and so has to be parsed to be re-rendered into.
+		Expect(body).To(ContainSubstring("parked[hidden].html = replayedHTML(html, itemID)"))
+
+		// Through the helper that rendered the note, never through a second
+		// renderer that could drift from the three note helpers.
+		Expect(body).To(ContainSubstring("showJumpNote(row, failure.message, true)"))
+		Expect(body).To(ContainSubstring("showCloseNote(row, failure.message, true)"))
+	})
 })
