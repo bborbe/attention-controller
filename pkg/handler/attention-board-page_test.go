@@ -150,21 +150,26 @@ var _ = Describe("Attention page board controls", func() {
 			Expect(rowBlock(body, item.ItemID)).NotTo(ContainSubstring("/supervisor:jump"))
 		})
 
-		// The control's accessible name is asserted from its own attribute, never
-		// from the text node. The text node alone already satisfied "it has a name"
-		// before this change, so a `Read aloud` substring assertion passes either
-		// way and pins nothing: the `aria-label` is what a screen reader reads and
-		// what a later edit could silently drop.
-		It("renders a read-aloud control carrying its own accessible name", func() {
+		// The control is icon-only, so its `aria-label` is the only name it has —
+		// and the assertion reads that attribute, never a text node. A bare
+		// `Read aloud` substring check would also pass on a text button carrying no
+		// accessible name at all, which is the shape this change moved away from.
+		It("renders an icon-only read-aloud control carrying its own accessible name", func() {
 			body, item := renderPage(messageRequest(), pkg.Provenance{})
 			block := rowBlock(body, item.ItemID)
 
 			Expect(block).To(ContainSubstring("data-speak"))
-			Expect(block).To(ContainSubstring("Read aloud"))
 			Expect(block).To(ContainSubstring(`aria-label="Read aloud"`))
 			Expect(block).To(ContainSubstring(`title="Read aloud"`))
 			Expect(block).To(ContainSubstring(`class="speak-icon"`))
 			Expect(block).To(ContainSubstring(`aria-hidden="true"`))
+			// Icon-only: the svg is the control's whole content, so the markup runs
+			// name -> svg -> close with no text node anywhere inside the button.
+			Expect(block).To(ContainSubstring(`title="Read aloud"><svg`))
+			Expect(block).To(ContainSubstring(`</svg></button>`))
+			// And it is out of the actions row: that row now ends at Submit answer,
+			// so it carries exactly the two decisions the card offers.
+			Expect(block).To(ContainSubstring(`✓ Submit answer</button></div>`))
 		})
 	})
 
