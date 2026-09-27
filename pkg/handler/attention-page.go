@@ -303,14 +303,7 @@ li.item {
   padding: 2px 6px;
   user-select: all;
 }
-/* The filter reuses the jump button's geometry and colours rather than
-   declaring a second button style: the page has one button vocabulary, and a
-   control that looks unlike every other control invites the reading that it
-   behaves unlike them. Its pressed state takes the affirmative colours the
-   card's Submit answer uses, so "on" is legible from the page rather than
-   only from the wording — a toggle whose state lives only in its label is a
-   control the operator cannot read back. */
-.jump-button, .board-filter {
+.jump-button {
   background: var(--panel);
   color: var(--text);
   border: 1px solid var(--border);
@@ -320,13 +313,46 @@ li.item {
   font-family: inherit;
   cursor: pointer;
 }
-.jump-button:hover, .board-filter:hover { border-color: var(--muted); }
-.board-filter[aria-pressed="true"] {
-  background: var(--green-bg);
-  color: var(--green);
-  border-color: var(--green-bg);
-  font-weight: 500;
+.jump-button:hover { border-color: var(--muted); }
+/* The board's filter is a switch, not a button, because that is what it is: a
+   control with two states that stays where it is, rather than one that fires an
+   action and returns. The track carries the state in colour and the knob
+   carries it in position, so "on" is legible from the page itself and not only
+   from the label — a toggle whose state lives only in its wording is one the
+   operator cannot read back. The knob stays light in both states, as the
+   reference the operator supplied does; only the track changes colour, and it
+   takes the same affirmative pair the card's Submit answer uses rather than
+   adding one to the palette. */
+.board-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
 }
+.board-filter .switch { width: 44px; height: 24px; display: block; flex: none; }
+.board-filter .switch-track {
+  fill: var(--panel);
+  stroke: var(--border);
+  stroke-width: 2;
+  transition: fill 120ms ease, stroke 120ms ease;
+}
+.board-filter .switch-knob { fill: var(--text); transition: transform 120ms ease; }
+.board-filter:hover .switch-track { stroke: var(--muted); }
+/* Ordered after :hover deliberately. The two rules have equal specificity, so
+   source order is what stops the on-state colour being flattened on hover —
+   the state has to outrank the pointer, not the other way round. */
+.board-filter[aria-checked="true"] .switch-track {
+  fill: var(--green-bg);
+  stroke: var(--green);
+}
+.board-filter[aria-checked="true"] .switch-knob { transform: translateX(20px); }
+.board-filter:focus-visible .switch-track { stroke: var(--text); }
 /* A control's outcome is shown, never swallowed into a reload — a silent catch
    reports a code fault as a connection problem. The class is "note" rather than
    "failed" because the read-aloud control reports success through it too (the
@@ -345,8 +371,18 @@ li.item {
      The label names the set it hides rather than the set it leaves, because
      that is the half the ruling settled: it hides the dimmed answered records
      and keeps every permission card, which is actionable but carries no
-     answering control. "Only answerable" would read as excluding them. */}}
-<div class="board-controls"><button type="button" class="board-filter" data-board-filter aria-pressed="false">Hide answered</button></div>
+     answering control. "Only answerable" would read as excluding them.
+     ⚠️ The label stays VISIBLE beside the switch. v0.18.0 rejected an
+     icon-only read-aloud control because it would have moved the control's
+     meaning into a hover-only title plus an aria-label only assistive tech
+     sees, and this board's governing complaint was cards whose controls were
+     not discoverable at all. A bare switch here would repeat that mistake —
+     the operator would have to remember what it does. The switch carries the
+     STATE and the label carries the MEANING; neither substitutes for the
+     other. role="switch" with aria-checked is the shape a two-state control
+     is meant to have, and it replaces the aria-pressed this control shipped
+     with in v0.20.0. */}}
+<div class="board-controls"><button type="button" class="board-filter" data-board-filter role="switch" aria-checked="false"><svg class="switch" viewBox="0 0 44 24" aria-hidden="true" focusable="false"><rect class="switch-track" x="1" y="1" width="42" height="22" rx="11"/><circle class="switch-knob" cx="12" cy="12" r="8"/></svg><span class="switch-label">Hide answered</span></button></div>
 {{if .Items}}<ul class="items">
 {{range .Items}}{{template "attention-row" .}}{{end}}</ul>
 {{else}}<p class="empty">Nothing needs attention.</p>
@@ -721,7 +757,7 @@ function showAckNote(row, message, isError) {
   if (button) {
     button.addEventListener('click', function () {
       on = !on;
-      button.setAttribute('aria-pressed', on ? 'true' : 'false');
+      button.setAttribute('aria-checked', on ? 'true' : 'false');
       applyFilter();
     });
   }
