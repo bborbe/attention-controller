@@ -220,37 +220,112 @@ func (a *attentionStore) classifyForRead(
 // producer-liveness branch and the prune below it, so an item admitted past it
 // must be returned deliberately rather than falling through — which is why the
 // `answered` case returns early instead of widening the condition.
+//
+// ⚠️ It runs as three short steps, not one long transaction. It used to hold a
+// single `Update` across the whole scan *and* every per-item liveness check,
+// and bbolt permits one read-write transaction at a time — so a list read
+// blocked every other read and every Push for the length of a scan that does
+// file I/O per item. Measured 2026-09-27 against a 70-entry session registry:
+// the read path answered in 0.03 s when quiet and 10.6 s under load,
+// `attention-ask.py post` failed on every attempt because a valid write could
+// not get the lock, and the process sat at 46-82 % CPU decoding items it was
+// holding a writer lock over. The operator's direction was explicit — "don't
+// use big, long-running transactions and better to multiple small ones".
+//
+// The steps:
+//
+//  1. a short `View` that only decodes the stored items — it takes no writer
+//     lock at all, so it cannot starve a Push;
+//  2. classification, including the per-item liveness I/O, outside every
+//     transaction, so no lock is held while a file is stat'd or a registry is
+//     scanned;
+//  3. a short `Update` that removes the dead items, opened only when there is
+//     something to remove, so the common healthy read stays read-only end to
+//     end.
+//
+// ⚠️ What this trades away, stated rather than glossed: the prune is no longer
+// atomic with the scan. An item changed between steps 1 and 3 is classified
+// from the snapshot rather than from its live value. That is acceptable because
+// a `remove` disposition is derived only from state `open` plus a producer that
+// is not live plus a question that was asked, and those move in one direction —
+// an item open-and-dead in the snapshot cannot become live again. The failure
+// the atomic version protected against was pruning a live item, and this cannot
+// produce it. A key that has since vanished is tolerated rather than fatal, for
+// the same reason.
 func (a *attentionStore) read(ctx context.Context, includeAnswered bool) (Items, error) {
-	items := make(Items, 0)
+	items, err := a.readItems(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	kept := make(Items, 0, len(items))
 	dead := make([]string, 0)
-	err := a.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
-		err := a.store.Map(ctx, tx, func(ctx context.Context, key string, item Item) error {
-			disposition, err := a.classifyForRead(ctx, item, includeAnswered)
-			if err != nil {
-				return errors.Wrap(ctx, err, "classify item failed")
-			}
-			if disposition.keep {
-				items = append(items, item)
-			}
-			if disposition.remove {
-				dead = append(dead, key)
-			}
+	for _, item := range items {
+		disposition, err := a.classifyForRead(ctx, item, includeAnswered)
+		if err != nil {
+			return nil, errors.Wrap(ctx, err, "classify item failed")
+		}
+		if disposition.keep {
+			kept = append(kept, item)
+		}
+		if disposition.remove {
+			// The store keys items by their own id (see Push), so the key is
+			// carried by the item and no parallel slice is needed.
+			dead = append(dead, item.ItemID.String())
+		}
+	}
+
+	if err := a.pruneDead(ctx, dead); err != nil {
+		return nil, err
+	}
+	return kept, nil
+}
+
+// readItems decodes every stored item inside a read-only transaction.
+//
+// It is deliberately a `View` and not an `Update`: the scan itself mutates
+// nothing, and taking a writer lock for it is what let a list read block every
+// Push behind it.
+func (a *attentionStore) readItems(ctx context.Context) (Items, error) {
+	items := make(Items, 0)
+	err := a.db.View(ctx, func(ctx context.Context, tx libkv.Tx) error {
+		return a.store.Map(ctx, tx, func(ctx context.Context, key string, item Item) error {
+			items = append(items, item)
 			return nil
 		})
-		if err != nil {
-			return errors.Wrap(ctx, err, "map items failed")
-		}
+	})
+	if err != nil {
+		return nil, errors.Wrap(ctx, err, "map items failed")
+	}
+	return items, nil
+}
+
+// pruneDead removes the items a read classified as dead, in one short write
+// transaction.
+//
+// It opens no transaction when there is nothing to remove, which is the common
+// case: a store whose producers are all live never takes the writer lock on a
+// read.
+//
+// A key that is already gone is not an error. Between the scan and this prune
+// another read may have pruned the same item, and failing here would turn a
+// benign race into a failed read.
+func (a *attentionStore) pruneDead(ctx context.Context, dead []string) error {
+	if len(dead) == 0 {
+		return nil
+	}
+	err := a.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
 		for _, key := range dead {
-			if err := a.store.Remove(ctx, tx, key); err != nil {
+			if err := a.store.Remove(ctx, tx, key); err != nil && !isNotFound(err) {
 				return errors.Wrapf(ctx, err, "remove dead item %s failed", key)
 			}
 		}
 		return nil
 	})
 	if err != nil {
-		return nil, errors.Wrap(ctx, err, "read failed")
+		return errors.Wrap(ctx, err, "prune dead items failed")
 	}
-	return items, nil
+	return nil
 }
 
 // History returns every item regardless of state.
