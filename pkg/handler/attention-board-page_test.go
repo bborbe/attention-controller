@@ -21,11 +21,20 @@ import (
 	"github.com/bborbe/attention-controller/pkg/handler"
 )
 
-// The board renders answer controls for `message` items and nothing for every
-// other class. The negative half is the load-bearing one: a control on a
+// The board renders ANSWER controls for `message` items and none for any other
+// class. The negative half is the load-bearing one: an ANSWER control on a
 // `permission` item would let the board answer a gate that only the operator
 // may answer, in the session that raised it, which the schema calls permission
 // laundering. See the attention item schema § Answer routing and silence 12.
+//
+// ⚠️ AMENDED 2026-09-27: this said "and nothing for every other class", which is
+// no longer true. A `permission` row renders two controls that are NOT answers —
+// the jump corner (navigation) and the corner X (the clear). The X closes the
+// card without answering, so it launders nothing; see [[Attention Item Schema]]
+// § The corner X. ⚠️ Three specs below used `NotTo("<button")` as a proxy for
+// "carries no control" and have been amended twice for it — once when the jump
+// corner landed, once when the X did. Assert on the ANSWER-control markers
+// (`data-ack`, `<form`, `<input`), never on `<button`.
 var _ = Describe("Attention page board controls", func() {
 	var ctx context.Context
 	var db libkv.DB
@@ -202,7 +211,13 @@ var _ = Describe("Attention page board controls", func() {
 
 			Expect(block).To(ContainSubstring("/supervisor:jump 1907"))
 			Expect(block).NotTo(ContainSubstring("<form"))
-			Expect(block).NotTo(ContainSubstring("<button"))
+			// ⚠️ AMENDED 2026-09-27 (second time) — this asserted
+			// NotTo("<button"), a proxy for "carries no control". A permission
+			// row now renders TWO buttons: the jump corner and the corner X. The
+			// proxy is what broke, not the property, so it is replaced by the
+			// property: neither button is an ANSWER control.
+			Expect(block).NotTo(ContainSubstring("data-ack"))
+			Expect(block).NotTo(ContainSubstring("<input"))
 		})
 
 		// An unresolvable pane must render absent rather than as a stand-in: a
@@ -214,23 +229,36 @@ var _ = Describe("Attention page board controls", func() {
 		})
 
 		// Read-aloud is configured on this suite's page, so this is the case that
-		// matters: even with a tts server wired, a permission row carries no
-		// control at all. The read-aloud button renders on `message` rows only,
-		// which is what keeps SC2's grep clean for `<form>` and `<button>` on a
-		// permission block.
+		// matters: even with a tts server wired, a permission row renders no
+		// read-aloud control. The read-aloud button renders on `message` rows
+		// only.
+		// ⚠️ AMENDED 2026-09-27 (second time) — this also asserted
+		// NotTo("<button"), which stopped meaning "no control" once a permission
+		// row rendered any button of its own. It now renders two (the jump
+		// corner and the corner X), so the proxy is dropped and the spec keeps
+		// the assertion it is actually named for.
 		It("renders no read-aloud control even when read-aloud is enabled", func() {
 			body, item := renderPage(permissionRequest(), pkg.Provenance{Pane: "1907"})
 			block := rowBlock(body, item.ItemID)
 
+			// `data-speak` is the whole property. The `class="speak"` assertion
+			// that briefly sat here was redundant — both attributes are on the
+			// same element, so the two could only fail together, and it added no
+			// coverage over this line. Removing the `<button` proxy is the fix;
+			// replacing it with a second marker for the same control is not.
 			Expect(block).NotTo(ContainSubstring("data-speak"))
-			Expect(block).NotTo(ContainSubstring("<button"))
 		})
 	})
 
 	// The two classes must not bleed into each other: a page carrying both is
 	// the case where a page-wide grep would pass on the wrong row.
+	// ⚠️ RENAMED 2026-09-27: this read "renders controls on the message row and
+	// none on the permission row of the same page". "None" stopped being true
+	// when the corner X landed on permission rows; the property that survives,
+	// and the one the two-classes-must-not-bleed framing is for, is that the
+	// permission row carries no ANSWER control.
 	It(
-		"renders controls on the message row and none on the permission row of the same page",
+		"renders answer controls on the message row and none on the permission row of the same page",
 		func() {
 			message, err := store.Push(ctx, messageRequest())
 			Expect(err).To(BeNil())
@@ -247,7 +275,11 @@ var _ = Describe("Attention page board controls", func() {
 
 			Expect(rowBlock(body, message.ItemID)).To(ContainSubstring("<form"))
 			Expect(rowBlock(body, permission.ItemID)).NotTo(ContainSubstring("<form"))
-			Expect(rowBlock(body, permission.ItemID)).NotTo(ContainSubstring("<button"))
+			// ⚠️ AMENDED 2026-09-27 (second time) — the `<button` proxy again.
+			// The permission row renders the jump corner and the corner X; what
+			// must not reach it is an ANSWER control.
+			Expect(rowBlock(body, permission.ItemID)).NotTo(ContainSubstring("data-ack"))
+			Expect(rowBlock(body, permission.ItemID)).NotTo(ContainSubstring("<input"))
 		},
 	)
 
