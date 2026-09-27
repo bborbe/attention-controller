@@ -115,7 +115,7 @@ var _ = Describe("AttentionPageHandler", func() {
 	}
 
 	// messageRequest builds a `message` declaration whose question shape the
-	// caller supplies, so the card's control can be driven from the declared
+	// caller supplies, so the card's rendering can be driven from the declared
 	// cardinality rather than from the option count. The fixtures above carry no
 	// options at all, which is what keeps their cases about the row rather than
 	// about the card.
@@ -212,12 +212,15 @@ var _ = Describe("AttentionPageHandler", func() {
 
 	// ⚠️ This spec previously asserted the page was inert — no <form>, no
 	// <script>, no method="post" — which was the recorded design decision the
-	// board reversal overturns. It asserts the *bounded* rule instead: answer
-	// controls exist for `message` items and a `permission` item renders none,
-	// because only the operator may answer a gate, and only in the session that
-	// raised it. See the attention item schema § Answer routing, and the page
-	// handler's own doc comment for why the reversal stops there.
-	It("offers answer controls for a message item and none for a permission item", func() {
+	// board reversal overturns. It then asserted the *bounded* rule: answer
+	// controls exist for `message` items and a `permission` item renders none.
+	// ⚠️ AMENDED 2026-09-27 — the contract changed: a board answer no longer
+	// releases a gate, so the `message` card is display-only and renders no
+	// answer control either. What survives, and is what this spec is for, is the
+	// bound: a `message` item renders the card and a `permission` item renders
+	// none, because only the operator may answer a gate, in the session that
+	// raised it. See the attention item schema § Answer routing.
+	It("renders a read-only card for a message item and none for a permission item", func() {
 		message, err := store.Push(
 			ctx,
 			pushRequest("producer-readonly", "gate-readonly", "read me"),
@@ -242,7 +245,12 @@ var _ = Describe("AttentionPageHandler", func() {
 
 		// Scoped per row rather than page-wide: a page-wide grep would pass on a
 		// page where the wrong item carried the controls.
-		Expect(rowOf(body, message.ItemID)).To(ContainSubstring("<form"))
+		// ⚠️ AMENDED 2026-09-27: the message card is display-only, so the positive
+		// assertion is the read-only wrapper and the negative one is the form it
+		// replaced — both halves, so the spec fails if the form comes back.
+		Expect(rowOf(body, message.ItemID)).To(ContainSubstring(`class="answer-readonly"`))
+		Expect(rowOf(body, message.ItemID)).NotTo(ContainSubstring("<form"))
+		Expect(rowOf(body, message.ItemID)).NotTo(ContainSubstring("<input"))
 		Expect(rowOf(body, permission.ItemID)).NotTo(ContainSubstring("<form"))
 		// ⚠️ AMENDED 2026-09-27: a permission row renders the jump corner
 		// (disabled when it has no target) and, from this change, the corner X.
@@ -536,14 +544,16 @@ var _ = Describe("AttentionPageHandler", func() {
 		Expect(errorResponse.Error.Message).To(ContainSubstring("read failed"))
 	})
 
-	// The card's control is driven by the producer's declared cardinality and
+	// The card's shape is driven by the producer's declared cardinality and
 	// never by the option count: a one-option question and a many-option
 	// single-pick question carry lists of different lengths and ask for different
-	// things, so a card that read the length would render a checkbox for a
-	// question admitting one answer. See the attention item schema and the page
-	// handler's own doc comment.
+	// things, so a card that read the length would mark a question admitting one
+	// answer as multi-pick. ⚠️ AMENDED 2026-09-27: a board answer no longer
+	// releases a gate, so the card is display-only and that shape now lands on
+	// the panel's `data-multi-pick` rather than on a pick control. See the
+	// attention item schema and the page handler's own doc comment.
 	Describe("the answer card", func() {
-		It("renders a checkbox per option when the question takes several picks", func() {
+		It("renders a read-only option list when the question takes several picks", func() {
 			item, err := store.Push(
 				ctx,
 				messageRequest("gate-multiple", pkg.MultipleAnswerCardinality),
@@ -552,11 +562,18 @@ var _ = Describe("AttentionPageHandler", func() {
 
 			block := rowOf(get("GET").Body.String(), item.ItemID)
 
-			Expect(block).To(ContainSubstring(`type="checkbox"`))
+			// ⚠️ AMENDED 2026-09-27 — the contract changed: a board answer no
+			// longer releases a gate, so the card is display-only and renders no
+			// pick control. The declared cardinality still reaches the page on the
+			// panel, which is the script-facing carrier that survives.
+			Expect(block).To(ContainSubstring(`class="answer-readonly"`))
+			Expect(block).To(ContainSubstring(`data-multi-pick="true"`))
+			Expect(block).NotTo(ContainSubstring(`type="checkbox"`))
 			Expect(block).NotTo(ContainSubstring(`type="radio"`))
+			Expect(block).NotTo(ContainSubstring("<input"))
 		})
 
-		It("renders a radio button per option when the question takes one pick", func() {
+		It("renders a read-only option list when the question takes one pick", func() {
 			item, err := store.Push(
 				ctx,
 				messageRequest("gate-single", pkg.SingleAnswerCardinality),
@@ -565,22 +582,32 @@ var _ = Describe("AttentionPageHandler", func() {
 
 			block := rowOf(get("GET").Body.String(), item.ItemID)
 
-			Expect(block).To(ContainSubstring(`type="radio"`))
+			// ⚠️ AMENDED 2026-09-27 — display-only card, no pick control. The
+			// single-pick cardinality survives as the panel's data-multi-pick.
+			Expect(block).To(ContainSubstring(`class="answer-readonly"`))
+			Expect(block).To(ContainSubstring(`data-multi-pick="false"`))
+			Expect(block).NotTo(ContainSubstring(`type="radio"`))
 			Expect(block).NotTo(ContainSubstring(`type="checkbox"`))
+			Expect(block).NotTo(ContainSubstring("<input"))
 		})
 
 		// An absent cardinality is what every item pushed before the field
 		// existed carries, and the schema reads it as single. Asserted rather than
 		// assumed, because the opposite reading would render a checkbox for a
 		// question that admits one answer.
-		It("renders a radio button per option when the cardinality is absent", func() {
+		It("renders a read-only option list when the cardinality is absent", func() {
 			item, err := store.Push(ctx, messageRequest("gate-absent", ""))
 			Expect(err).To(BeNil())
 
 			block := rowOf(get("GET").Body.String(), item.ItemID)
 
-			Expect(block).To(ContainSubstring(`type="radio"`))
+			// ⚠️ AMENDED 2026-09-27 — display-only card, no pick control. The
+			// absent cardinality still reads as single on the panel.
+			Expect(block).To(ContainSubstring(`class="answer-readonly"`))
+			Expect(block).To(ContainSubstring(`data-multi-pick="false"`))
+			Expect(block).NotTo(ContainSubstring(`type="radio"`))
 			Expect(block).NotTo(ContainSubstring(`type="checkbox"`))
+			Expect(block).NotTo(ContainSubstring("<input"))
 		})
 
 		It("renders the cardinality hint and marks the recommended option", func() {
@@ -667,10 +694,14 @@ var _ = Describe("AttentionPageHandler", func() {
 				block,
 			).To(ContainSubstring(`data-question="Priority" data-multi-pick="false" hidden`))
 
-			// Each question carries its own control: the multi-pick tab renders a
-			// checkbox and the single-pick tab a radio button, on one card.
-			Expect(block).To(ContainSubstring(`type="checkbox"`))
-			Expect(block).To(ContainSubstring(`type="radio"`))
+			// ⚠️ AMENDED 2026-09-27 — the contract changed: a board answer no
+			// longer releases a gate, so the card renders no pick control. Each
+			// question's panel still carries its own declared cardinality — the
+			// multi-pick tab true, the single-pick tab false — which is the
+			// distinction the removed controls used to carry.
+			Expect(block).To(ContainSubstring(`data-question="Chores" data-multi-pick="true"`))
+			Expect(block).To(ContainSubstring(`data-question="Priority" data-multi-pick="false"`))
+			Expect(block).NotTo(ContainSubstring("<input"))
 
 			// The wire shape follows the tab strip. The script reads this attribute
 			// to decide between `answer` and `answers`, so a card rendering tabs
@@ -693,7 +724,7 @@ var _ = Describe("AttentionPageHandler", func() {
 			Expect(block).NotTo(ContainSubstring(`class="card-title"`))
 		})
 
-		It("renders Dismiss and Submit answer, and no card on a permission row", func() {
+		It("renders a read-only card, and no card on a permission row", func() {
 			message, err := store.Push(
 				ctx,
 				messageRequest("gate-buttons", pkg.SingleAnswerCardinality),
@@ -713,15 +744,18 @@ var _ = Describe("AttentionPageHandler", func() {
 			body := get("GET").Body.String()
 			block := rowOf(body, message.ItemID)
 
-			// The Dismiss value is what the script reads as the skip, so it is
-			// asserted rather than left to the label.
-			Expect(block).To(ContainSubstring(`value="skip"`))
-			Expect(block).To(ContainSubstring("Dismiss"))
-			// The submit control is named for what it does rather than for an
-			// advance: `Next` was inherited from the Paseo reference card, where
-			// it means *advance to the next card*, while this control submits the
-			// whole card. See [[Attention Item Schema]] § Answer routing.
-			Expect(block).To(ContainSubstring("Submit answer"))
+			// ⚠️ AMENDED 2026-09-27 — the contract changed: a board answer no
+			// longer releases a gate, so the message card is display-only. The
+			// Dismiss and Submit answer controls are gone, and the read-only note
+			// stands in their place.
+			Expect(block).To(ContainSubstring(`class="answer-readonly"`))
+			Expect(block).To(ContainSubstring(`class="readonly-note"`))
+			Expect(block).To(ContainSubstring("A board answer no longer releases the gate."))
+			// The negative half, kept beside the positive one so the two controls
+			// cannot come back unnoticed.
+			Expect(block).NotTo(ContainSubstring(`value="skip"`))
+			Expect(block).NotTo(ContainSubstring("Dismiss"))
+			Expect(block).NotTo(ContainSubstring("Submit answer"))
 
 			// The card is one `if .Message` away from a permission row, so the
 			// negative case is asserted beside the positive one rather than only
@@ -840,12 +874,12 @@ var _ = Describe("AttentionPageHandler", func() {
 	})
 
 	// The corner X. It is one affordance whose act is the mechanism's own
-	// dominant act — an alias of Dismiss on a message card, of Acknowledge on an
-	// ack card — so it adds no transition and no field. See [[Attention Item
-	// Schema]] § Answer routing, § The corner X. The browser click-through in the
-	// task's Definition of Done is the half these cannot supply.
+	// dominant act — the clear, through the shared closeCard, on every mechanism
+	// since 2026-09-27 — so it adds no transition and no field. See [[Attention
+	// Item Schema]] § Answer routing, § The corner X. The browser click-through in
+	// the task's Definition of Done is the half these cannot supply.
 	Describe("the corner X", func() {
-		It("renders on a message row and dispatches the Dismiss the card already carries", func() {
+		It("renders on a message row and clears the card", func() {
 			message, err := store.Push(
 				ctx,
 				messageRequest("corner-x-message", pkg.SingleAnswerCardinality),
@@ -858,13 +892,16 @@ var _ = Describe("AttentionPageHandler", func() {
 			Expect(block).To(ContainSubstring("data-corner-x"))
 			Expect(block).To(ContainSubstring(`aria-label="Skip this item"`))
 
-			// The X's act is the Dismiss's act, and the assertion is on the
-			// mechanism rather than on the label: the card already carries the
-			// skip submit, so the X dispatches it instead of posting a second
-			// write that merely agrees with it.
-			Expect(block).To(ContainSubstring(`value="skip"`))
+			// ⚠️ AMENDED 2026-09-27 — the contract changed: a board answer no
+			// longer releases a gate, so the message card carries no Dismiss for
+			// the X to dispatch. The X is a clear on every mechanism, and it
+			// reaches that clear through the shared closeCard rather than a form
+			// submit that no longer exists.
+			Expect(block).NotTo(ContainSubstring(`value="skip"`))
+			Expect(block).NotTo(ContainSubstring("<form"))
 			Expect(body).To(ContainSubstring("button[data-corner-x]"))
-			Expect(body).To(ContainSubstring(`form.querySelector('button[value=skip]')`))
+			Expect(body).To(ContainSubstring("closeCard(row);"))
+			Expect(body).NotTo(ContainSubstring(`form.querySelector('button[value=skip]')`))
 		})
 
 		It("renders on an ack row and shares the acknowledge close", func() {
