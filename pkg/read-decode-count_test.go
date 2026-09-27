@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 
 	libboltkv "github.com/bborbe/boltkv"
 	libkv "github.com/bborbe/kv"
@@ -251,6 +252,21 @@ var _ = Describe("Read decode cost", func() {
 		return counter.values
 	}
 
+	// warmLiveIndex performs the one read that BUILDS the live index and throws
+	// the reading away.
+	//
+	// ⚠️ This is not tidiness — it is the difference between a probe that
+	// measures the read and one that measures the migration. The build scans the
+	// whole items bucket, so the first read after a cold start decodes every
+	// stored item, once, by design. Leaving it in the measurement makes the
+	// FIRST bucket look expensive and the second look cheap, and the comparison
+	// between them then reads the build rather than the scan — which is exactly
+	// how this spec passed while measuring nothing.
+	warmLiveIndex := func() {
+		_, err := store.Read(ctx)
+		Expect(err).To(BeNil())
+	}
+
 	// The probe's own validity guard, and it must hold on BOTH revisions.
 	//
 	// SC6's hole is a probe that is green on both the pre-fix and the fixed
@@ -276,6 +292,7 @@ var _ = Describe("Read decode cost", func() {
 		seedOpen(openItemCount)
 
 		seedClosed(0, smallClosed)
+		warmLiveIndex()
 		smallDecodes := decodeCountOf()
 
 		seedClosed(smallClosed, largeClosed-smallClosed)
@@ -286,12 +303,22 @@ var _ = Describe("Read decode cost", func() {
 
 		GinkgoWriter.Printf(
 			"SC1 raw: open=%d closed=%d decodes=%d | closed=%d decodes=%d | delta=%d tolerance=%.0f\n",
-			openItemCount, smallClosed, smallDecodes,
-			largeClosed, largeDecodes,
-			delta, tolerance,
+			openItemCount,
+			smallClosed,
+			smallDecodes,
+			largeClosed,
+			largeDecodes,
+			delta,
+			tolerance,
 		)
 
-		Expect(largeDecodes - smallDecodes).To(BeNumerically("<", tolerance),
+		// ⚠️ The ABSOLUTE difference, not the signed one. `large - small` is
+		// negative whenever the first measurement is the larger, and a negative
+		// number satisfies "< tolerance" no matter how far apart the two counts
+		// actually are — so the signed form passes on the very defect it exists
+		// to catch. Measured: an earlier revision of this spec read 1151 and 51
+		// and PASSED on -1100.
+		Expect(math.Abs(float64(largeDecodes-smallDecodes))).To(BeNumerically("<", tolerance),
 			"decode count scales with the closed-item count — the read is decoding inert items")
 	})
 })

@@ -29,6 +29,7 @@ func NewAttentionStore(
 ) AttentionStore {
 	return &attentionStore{
 		store:                  libkv.NewStoreTx[string, Item](AttentionStoreBucketName),
+		liveIndex:              libkv.NewStoreTx[string, Item](attentionLiveIndexBucketName),
 		db:                     db,
 		itemIDGenerator:        itemIDGenerator,
 		sessionLivenessChecker: sessionLivenessChecker,
@@ -37,8 +38,33 @@ func NewAttentionStore(
 	}
 }
 
+// attentionLiveIndexBucketName is the bucket the read scans instead of the
+// items bucket. It holds a copy of every item whose state is not `ClosedState`
+// — the exact set `classifyForRead` can keep or remove — keyed by the same item
+// id, so a read decodes the live population rather than the whole store.
+//
+// ⚠️ It is a STORAGE layout, not a schema: [[Attention Item Schema]] is
+// untouched by it, which is what the task's SC5 requires. The bucket is derived
+// data and can be rebuilt from the items bucket at any time, which is what
+// makes a lost or suspect index recoverable rather than corrupting.
+var attentionLiveIndexBucketName = libkv.NewBucketName("attention-live-index")
+
+// liveIndexMarkerKey marks the live index as BUILT.
+//
+// ⚠️ Its presence is load-bearing and the bucket's own existence is NOT a
+// substitute: `putItem` creates the bucket on the first write, so a store that
+// takes a write before its first read would otherwise look "built" while
+// holding one entry — and the read would silently UNDER-return, which is the
+// failure mode this whole design is guarded against.
+//
+// `!` (0x21) sorts before every character a UUID can contain (hex digits and
+// `-`, 0x2D and up), so it can never collide with an item id, and the scan
+// skips it by key.
+const liveIndexMarkerKey = "!"
+
 type attentionStore struct {
 	store                  libkv.StoreTx[string, Item]
+	liveIndex              libkv.StoreTx[string, Item]
 	db                     libkv.DB
 	itemIDGenerator        ItemIDGenerator
 	sessionLivenessChecker SessionLivenessChecker
@@ -61,7 +87,7 @@ func (a *attentionStore) Push(ctx context.Context, request PushRequest) (*Item, 
 		if err != nil {
 			return err
 		}
-		if err := a.store.Add(ctx, tx, item.ItemID.String(), *item); err != nil {
+		if err := a.putItem(ctx, tx, *item); err != nil {
 			return errors.Wrap(ctx, err, "add item failed")
 		}
 		result = item
@@ -289,21 +315,228 @@ type storedItem struct {
 	item Item
 }
 
-// readItems decodes every stored item inside a read-only transaction.
+// liveIndexWorthy reports whether an item belongs in the live index.
+//
+// ⚠️ The predicate is deliberately "not closed" rather than "is open or
+// answered". `classifyForRead` keeps or removes only for `OpenState` and — when
+// asked — `AnsweredState`, so excluding exactly the closed items is equivalent
+// today, and a state added to the schema later lands IN the index by default.
+// That is the safe direction: over-including costs decodes, while
+// under-including makes the read return less than it should, silently.
+func liveIndexWorthy(item Item) bool {
+	return item.State != ClosedState
+}
+
+// putItem writes an item to the items bucket and reconciles its live-index
+// entry, both inside the caller's transaction.
+//
+// ⚠️ EVERY mutation in this file goes through putItem or removeItem, and that
+// is the point rather than a style. Atomicity is free here — both writes share
+// one bbolt transaction, so they commit or abort together, and bbolt admits one
+// writer at a time. Completeness is not free: the index stays correct only
+// while every write maintains it, and a call site that reached for
+// `a.store.Add` directly would drift it. Drift is not a crash — the read would
+// simply return fewer items than it should, silently, which is the failure SC3
+// exists to catch and no shape-spec can see. Routing every write through here
+// makes that unrepresentable instead of merely discouraged.
+func (a *attentionStore) putItem(ctx context.Context, tx libkv.Tx, item Item) error {
+	// Read BEFORE the write, because `Add` creates the bucket: afterwards the
+	// two cases are indistinguishable.
+	firstEver, err := a.itemsBucketAbsent(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if err := a.store.Add(ctx, tx, item.ItemID.String(), item); err != nil {
+		return errors.Wrap(ctx, err, "add item failed")
+	}
+	if firstEver {
+		// ⚠️ A store whose items bucket did not exist held no items, so this
+		// write created its first one — and the index, which this same call just
+		// maintained, is therefore complete by construction. Marking it built
+		// here is what keeps the FIRST read of a new store from opening a write
+		// transaction to discover there was nothing to build: that transaction
+		// would be a writer lock held across a scan, which is precisely the
+		// starvation v0.23.2 removed and the `read path transactions` specs pin.
+		//
+		// A store migrated from an older version has items and no marker, so it
+		// still builds — once — on its first read. That cost is bounded and
+		// one-time; the alternative, marking on any write, would mark an index
+		// built that had never seen the pre-existing items, and the read would
+		// silently under-return.
+		if err := a.liveIndex.Add(ctx, tx, liveIndexMarkerKey, Item{}); err != nil {
+			return errors.Wrap(ctx, err, "mark live index built failed")
+		}
+	}
+	if liveIndexWorthy(item) {
+		if err := a.liveIndex.Add(ctx, tx, item.ItemID.String(), item); err != nil {
+			return errors.Wrap(ctx, err, "add live index entry failed")
+		}
+		return nil
+	}
+	return a.removeIndexEntry(ctx, tx, item.ItemID.String())
+}
+
+// itemsBucketAbsent reports whether the items bucket is missing, which — read
+// before a write — means the store holds no items at all.
+func (a *attentionStore) itemsBucketAbsent(ctx context.Context, tx libkv.Tx) (bool, error) {
+	_, err := tx.Bucket(ctx, AttentionStoreBucketName)
+	if err != nil {
+		if errors.Is(err, libkv.BucketNotFoundError) {
+			return true, nil
+		}
+		return false, errors.Wrap(ctx, err, "check items bucket failed")
+	}
+	return false, nil
+}
+
+// removeItem removes an item and its live-index entry inside the caller's
+// transaction.
+func (a *attentionStore) removeItem(ctx context.Context, tx libkv.Tx, key string) error {
+	if err := a.store.Remove(ctx, tx, key); err != nil {
+		return errors.Wrapf(ctx, err, "remove item %s failed", key)
+	}
+	return a.removeIndexEntry(ctx, tx, key)
+}
+
+// removeIndexEntry drops one live-index entry, treating "not there" as success
+// so callers stay idempotent. It checks first because `kv`'s Remove would
+// otherwise create the index bucket to delete nothing from it.
+func (a *attentionStore) removeIndexEntry(ctx context.Context, tx libkv.Tx, key string) error {
+	exists, err := a.liveIndex.Exists(ctx, tx, key)
+	if err != nil {
+		return errors.Wrapf(ctx, err, "check live index entry %s failed", key)
+	}
+	if !exists {
+		return nil
+	}
+	if err := a.liveIndex.Remove(ctx, tx, key); err != nil {
+		return errors.Wrapf(ctx, err, "remove live index entry %s failed", key)
+	}
+	return nil
+}
+
+// ensureLiveIndex builds the live index if it has not been built, and is a
+// no-op otherwise.
+//
+// ⚠️ The steady-state path is a `View`, so an ordinary read still takes no
+// writer lock — the property v0.23.2 bought, which this change must not hand
+// back. Only the first read after the index is created, or after it is lost,
+// opens an `Update`.
+func (a *attentionStore) ensureLiveIndex(ctx context.Context) error {
+	built, err := a.liveIndexBuilt(ctx)
+	if err != nil || built {
+		return err
+	}
+	return a.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
+		// Re-checked inside the write transaction. bbolt admits one writer at a
+		// time, so a concurrent first read that lost the race finds the marker
+		// already written and does no work rather than rebuilding twice.
+		built, err := a.liveIndex.Exists(ctx, tx, liveIndexMarkerKey)
+		if err != nil {
+			return errors.Wrap(ctx, err, "check live index failed")
+		}
+		if built {
+			return nil
+		}
+		if err := a.rebuildLiveIndex(ctx, tx); err != nil {
+			return err
+		}
+		// The marker is written in the SAME transaction as the build, so an
+		// index can never be marked built while half-populated.
+		return a.liveIndex.Add(ctx, tx, liveIndexMarkerKey, Item{})
+	})
+}
+
+// liveIndexBuilt reports whether the marker is present, in a read-only
+// transaction.
+func (a *attentionStore) liveIndexBuilt(ctx context.Context) (bool, error) {
+	var built bool
+	err := a.db.View(ctx, func(ctx context.Context, tx libkv.Tx) error {
+		var err error
+		built, err = a.liveIndex.Exists(ctx, tx, liveIndexMarkerKey)
+		return err
+	})
+	if err != nil {
+		return false, errors.Wrap(ctx, err, "check live index failed")
+	}
+	return built, nil
+}
+
+// rebuildLiveIndex reconciles the index against the items bucket inside the
+// caller's transaction.
+//
+// ⚠️ Two passes, because the index can be wrong in two directions and adding
+// alone only fixes one. An item that is closed but still indexed is merely
+// wasteful — it costs a decode on every read. An item that is LIVE but missing
+// from the index is dropped from the read's result entirely, which is a
+// correctness failure. The second pass is what makes a drifted index
+// restorable rather than merely faster, and it is why the build is safe to
+// re-run after a crash rather than a one-shot migration.
+func (a *attentionStore) rebuildLiveIndex(ctx context.Context, tx libkv.Tx) error {
+	live := make(map[string]struct{})
+	err := a.store.Map(ctx, tx, func(ctx context.Context, key string, item Item) error {
+		if !liveIndexWorthy(item) {
+			return nil
+		}
+		live[key] = struct{}{}
+		return a.liveIndex.Add(ctx, tx, key, item)
+	})
+	if err != nil {
+		return errors.Wrap(ctx, err, "rebuild live index failed")
+	}
+
+	stale := make([]string, 0)
+	err = a.liveIndex.Map(ctx, tx, func(ctx context.Context, key string, _ Item) error {
+		if key == liveIndexMarkerKey {
+			return nil
+		}
+		if _, ok := live[key]; !ok {
+			stale = append(stale, key)
+		}
+		return nil
+	})
+	if err != nil {
+		return errors.Wrap(ctx, err, "scan live index failed")
+	}
+	for _, key := range stale {
+		if err := a.liveIndex.Remove(ctx, tx, key); err != nil {
+			return errors.Wrapf(ctx, err, "remove stale live index entry %s failed", key)
+		}
+	}
+	return nil
+}
+
+// readItems decodes the LIVE items inside a read-only transaction.
+//
+// It scans the live index rather than the items bucket, so what it decodes
+// tracks the live population instead of the whole store. On the census this
+// task was filed from that is ~131 items decoded to return ~46, against 12,472
+// for the same 46 — the ~270× the task exists to remove.
 //
 // It is deliberately a `View` and not an `Update`: the scan itself mutates
 // nothing, and taking a writer lock for it is what let a list read block every
 // Push behind it.
+//
+// ⚠️ The `key` it returns is the index key, which IS the item id — the same key
+// the items bucket uses — so `pruneDead` still removes exactly the key the scan
+// enumerated, and the property `storedItem` documents is preserved rather than
+// weakened.
 func (a *attentionStore) readItems(ctx context.Context) ([]storedItem, error) {
+	if err := a.ensureLiveIndex(ctx); err != nil {
+		return nil, err
+	}
 	items := make([]storedItem, 0)
 	err := a.db.View(ctx, func(ctx context.Context, tx libkv.Tx) error {
-		return a.store.Map(ctx, tx, func(ctx context.Context, key string, item Item) error {
+		return a.liveIndex.Map(ctx, tx, func(ctx context.Context, key string, item Item) error {
+			if key == liveIndexMarkerKey {
+				return nil
+			}
 			items = append(items, storedItem{key: key, item: item})
 			return nil
 		})
 	})
 	if err != nil {
-		return nil, errors.Wrap(ctx, err, "map items failed")
+		return nil, errors.Wrap(ctx, err, "map live index failed")
 	}
 	return items, nil
 }
@@ -349,7 +582,7 @@ func (a *attentionStore) pruneDead(ctx context.Context, keys []string) error {
 			if !remove {
 				continue
 			}
-			if err := a.store.Remove(ctx, tx, key); err != nil {
+			if err := a.removeItem(ctx, tx, key); err != nil {
 				return errors.Wrapf(ctx, err, "remove dead item %s failed", key)
 			}
 		}
@@ -521,7 +754,7 @@ func (a *attentionStore) Answer(
 		if err := item.validateAnswers(ctx); err != nil {
 			return errors.Wrap(ctx, err, "validate answers failed")
 		}
-		if err := a.store.Add(ctx, tx, item.ItemID.String(), *item); err != nil {
+		if err := a.putItem(ctx, tx, *item); err != nil {
 			return errors.Wrap(ctx, err, "update item failed")
 		}
 		result = item
@@ -601,7 +834,7 @@ func (a *attentionStore) Escalate(
 		// item returns above without reaching here, so the time never moves.
 		now := a.currentDateTimeGetter.Now()
 		item.EscalatedAt = &now
-		if err := a.store.Add(ctx, tx, item.ItemID.String(), *item); err != nil {
+		if err := a.putItem(ctx, tx, *item); err != nil {
 			return errors.Wrap(ctx, err, "update item failed")
 		}
 		result = item
@@ -654,7 +887,7 @@ func (a *attentionStore) Close(
 				item.AnsweredClient = answeredClient
 			}
 		}
-		if err := a.store.Add(ctx, tx, item.ItemID.String(), *item); err != nil {
+		if err := a.putItem(ctx, tx, *item); err != nil {
 			return errors.Wrap(ctx, err, "update item failed")
 		}
 		result = item
@@ -701,7 +934,7 @@ func (a *attentionStore) updateExistingIfLive(
 	existing.ProvenanceClass = request.ProvenanceClass
 	existing.ExpiresAt = request.ExpiresAt
 	existing.CreatedAt = a.currentDateTimeGetter.Now()
-	if err := a.store.Add(ctx, tx, existing.ItemID.String(), *existing); err != nil {
+	if err := a.putItem(ctx, tx, *existing); err != nil {
 		return nil, errors.Wrap(ctx, err, "update existing item failed")
 	}
 	return existing, nil
