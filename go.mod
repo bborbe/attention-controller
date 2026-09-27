@@ -18,6 +18,7 @@ require (
 	github.com/getsentry/sentry-go v0.49.0
 	github.com/golang/glog v1.2.5
 	github.com/gorilla/mux v1.8.1
+	github.com/mxschmitt/playwright-go v0.6201.1
 	github.com/onsi/ginkgo/v2 v2.33.0
 	github.com/onsi/gomega v1.43.1
 	github.com/prometheus/client_golang v1.24.1
@@ -30,7 +31,9 @@ require (
 	github.com/bborbe/parse v1.11.4 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	github.com/deckarep/golang-set/v2 v2.8.0 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
+	github.com/go-stack/stack v1.8.1 // indirect
 	github.com/go-task/slim-sprig/v3 v3.0.0 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/pprof v0.0.0-20260906184651-6331bc6350fe // indirect
