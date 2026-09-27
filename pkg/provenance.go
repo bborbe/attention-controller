@@ -59,8 +59,18 @@ type Provenance struct {
 // When false the page renders exactly what it rendered before this change —
 // no provenance line at all — which is how an item with no provenance source
 // degrades rather than failing.
+//
+// ⚠️ TaskName is such a fact, and it is the one member of this set that comes
+// from neither the event log nor the pane listing: the vault task a session is
+// anchored to says *what* the session was working on, which is as much about
+// where the item came from as the host or the cwd is. A Provenance carrying
+// nothing but a task name is a real shape, not a hypothetical one — it is what
+// an item resolves to when its producer wrote no event log but its session's
+// task file was found — and without this conjunct that row would render no
+// provenance line at all, so the name would be resolved correctly, drawn
+// correctly, and never appear.
 func (p Provenance) Resolved() bool {
-	return p.Host != "" || p.Cwd != "" || p.Tool != "" || p.Pane != ""
+	return p.Host != "" || p.Cwd != "" || p.Tool != "" || p.Pane != "" || p.TaskName != ""
 }
 
 // Provenances is the resolver's answer for a whole page, keyed by item id.

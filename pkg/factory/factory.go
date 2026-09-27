@@ -68,13 +68,20 @@ func CreateAttentionGetHandler(store pkg.AttentionStore) http.Handler {
 // is not.
 // jumpTokens gates the Jump button on the same principle: the page renders the
 // button only while the token the redirect needs is readable.
+//
+// vaultDir is the configured vault directory, threaded to the handler so a card
+// can link to the vault task its session is anchored to. It is passed rather
+// than read from an environment here for the same reason the provenance
+// directories are: which vault a host serves is a decision `main` owns, and an
+// empty directory renders no task link rather than failing.
 func CreateAttentionPageHandler(
 	store pkg.AttentionStore,
 	provenance pkg.ProvenanceResolver,
 	speakEnabled bool,
 	jumpTokens pkg.JumpTokenReader,
+	vaultDir string,
 ) http.Handler {
-	return handler.NewAttentionPageHandler(store, provenance, speakEnabled, jumpTokens)
+	return handler.NewAttentionPageHandler(store, provenance, speakEnabled, jumpTokens, vaultDir)
 }
 
 // CreateAttentionStreamHandler creates the board's live channel: the
@@ -91,12 +98,19 @@ func CreateAttentionPageHandler(
 // stream renders exactly as the same row does on a fresh page load. A row that
 // dropped either would be a control that disappears when the board updates
 // itself.
+//
+// vaultDir is threaded through on the same principle, and it is the third value
+// that must match the page's: a row whose task link were built from a different
+// vault name — or from none at all — would be the same card rendering
+// differently depending on whether it arrived by load or by stream, which is
+// exactly the drift this handler exists to prevent.
 func CreateAttentionStreamHandler(
 	store pkg.AttentionStore,
 	notifier pkg.AttentionChangeNotifier,
 	provenance pkg.ProvenanceResolver,
 	speakEnabled bool,
 	jumpTokens pkg.JumpTokenReader,
+	vaultDir string,
 ) http.Handler {
 	return handler.NewAttentionStreamHandler(
 		store,
@@ -104,6 +118,7 @@ func CreateAttentionStreamHandler(
 		provenance,
 		speakEnabled,
 		jumpTokens,
+		vaultDir,
 	)
 }
 

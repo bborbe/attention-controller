@@ -86,6 +86,9 @@ var _ = Describe("Attention page board controls", func() {
 			provenance,
 			true,
 			pkg.NewJumpTokenReader(""),
+			// No vault configured: these cases are about the card's controls, and
+			// the task link has its own specs in attention-page_test.
+			"",
 		)
 	})
 
@@ -332,6 +335,7 @@ var _ = Describe("Attention page board controls", func() {
 			provenance,
 			false,
 			pkg.NewJumpTokenReader(""),
+			"",
 		)
 
 		req := httptest.NewRequest(http.MethodGet, "/", nil)

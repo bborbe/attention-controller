@@ -32,6 +32,10 @@ var _ = Describe("AttentionPageHandler", func() {
 	var sessionLivenessChecker *mocks.SessionLivenessChecker
 	var provenance *mocks.ProvenanceResolver
 	var httpHandler http.Handler
+	// vaultDir ends in a known name so the task link's expected href can be a
+	// hand-written literal. The directory itself need not exist: the handler only
+	// reads its base name, and the provenance is mocked.
+	var vaultDir string
 
 	BeforeEach(func() {
 		ctx = context.Background()
@@ -65,11 +69,13 @@ var _ = Describe("AttentionPageHandler", func() {
 		// An empty token path never resolves, so the page renders no Jump
 		// button — the fail-soft path, which is what a host with no fleet-jump
 		// server looks like. The button's own cases live in attention-jump_test.
+		vaultDir = filepath.Join(GinkgoT().TempDir(), "Personal")
 		httpHandler = handler.NewAttentionPageHandler(
 			store,
 			provenance,
 			false,
 			pkg.NewJumpTokenReader(""),
+			vaultDir,
 		)
 	})
 
@@ -352,6 +358,91 @@ var _ = Describe("AttentionPageHandler", func() {
 		Expect(body).NotTo(ContainSubstring(`class="provenance"`))
 	})
 
+	// The vault task link: the one fact the card had always lacked. Host, cwd,
+	// tool and pane all say *where* a session ran and none says *what* it was
+	// working on, so judging a card meant leaving the board and opening the
+	// session it named. These specs drive the page handler and assert on the
+	// RENDERED ROW, scoped with rowOf, because a page-wide check cannot fail —
+	// other rows legitimately carry a link.
+	Describe("the vault task link", func() {
+		// taskAnchor is the served markup the link is asserted against, written
+		// as html/template actually emits it. ⚠️ A hand-written literal, never one
+		// built with the same helper the code uses: a shared helper would agree
+		// with itself whatever it produced, so neither the `%20`/`%2F` escaping
+		// nor the dropped `.md` would be asserted at all. The `&amp;` is the
+		// template's own HTML-escaping of the `&` in the attribute, which is why
+		// the assertion is a raw-string match over the served HTML.
+		taskAnchor := `<span class="task"><a href="obsidian://open?vault=Personal&amp;file=25%20Tasks%2FFix%20the%20board">Fix the board</a></span>`
+
+		It("draws the resolved task as an anchor to the vault's own URL", func() {
+			item, err := store.Push(
+				ctx,
+				pushRequest("producer-task", "gate-task", "which task is this?"),
+			)
+			Expect(err).To(BeNil())
+			provenance.ResolveReturns(pkg.Provenances{
+				item.ItemID: pkg.Provenance{
+					Host:     "burn",
+					TaskName: "Fix the board",
+					TaskPath: "25 Tasks/Fix the board.md",
+				},
+			})
+
+			row := rowOf(get("GET").Body.String(), item.ItemID)
+
+			Expect(row).To(ContainSubstring(taskAnchor))
+			// It leads the line: the task is the first span in the provenance div,
+			// which is what the wrapper span's adjacency to the host span buys.
+			Expect(row).To(ContainSubstring(`<div class="provenance"><span class="task">`))
+		})
+
+		It("renders no anchor for an item whose session anchors no task", func() {
+			item, err := store.Push(
+				ctx,
+				pushRequest("producer-notask", "gate-notask", "no task here"),
+			)
+			Expect(err).To(BeNil())
+			// ⚠️ Another resolved value is required rather than incidental: with
+			// nothing but the absent task, the provenance div never renders at all
+			// and the absence assertions below would pass vacuously.
+			provenance.ResolveReturns(pkg.Provenances{
+				item.ItemID: pkg.Provenance{Host: "burn", Cwd: "/tmp"},
+			})
+
+			row := rowOf(get("GET").Body.String(), item.ItemID)
+
+			// Positive control: the line rendered, so the absences below are a
+			// withheld link rather than an absent line.
+			Expect(row).To(ContainSubstring(`class="provenance"`))
+			Expect(row).To(ContainSubstring(`<span class="host">burn</span>`))
+			Expect(row).NotTo(ContainSubstring(`class="task"`))
+			Expect(row).NotTo(ContainSubstring("<a href="))
+		})
+
+		It("renders the provenance line for a task-only provenance", func() {
+			item, err := store.Push(
+				ctx,
+				pushRequest("producer-taskonly", "gate-taskonly", "task and nothing else"),
+			)
+			Expect(err).To(BeNil())
+			// Nothing but the task: no event-log line resolved a host or cwd and no
+			// pane validated. This is the shape the `Resolved` conjunct exists for —
+			// without it the line never renders, so the name is resolved correctly,
+			// drawn correctly, and never appears.
+			provenance.ResolveReturns(pkg.Provenances{
+				item.ItemID: pkg.Provenance{
+					TaskName: "Fix the board",
+					TaskPath: "25 Tasks/Fix the board.md",
+				},
+			})
+
+			row := rowOf(get("GET").Body.String(), item.ItemID)
+
+			Expect(row).To(ContainSubstring(`class="provenance"`))
+			Expect(row).To(ContainSubstring(taskAnchor))
+		})
+	})
+
 	It("explains a row that carries no jump control, without naming a value", func() {
 		item, err := store.Push(
 			ctx,
@@ -473,6 +564,7 @@ var _ = Describe("AttentionPageHandler", func() {
 			provenance,
 			false,
 			pkg.NewJumpTokenReader(tokenPath),
+			vaultDir,
 		)
 		resp := httptest.NewRecorder()
 		jumpHandler.ServeHTTP(resp, httptest.NewRequest("GET", "/", nil))

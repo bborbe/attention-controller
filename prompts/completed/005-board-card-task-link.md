@@ -1,7 +1,12 @@
 ---
-status: approved
+status: completed
+summary: Draw the resolved vault task as an obsidian:// link leading the attention card's provenance line, extending Provenance.Resolved to admit a task-only provenance and plumbing the vault directory through both board surfaces.
+execution_id: attention-controller-answer-control-exec-005-board-card-task-link
+dark-factory-version: v0.196.0
 created: "2026-09-27T22:34:47Z"
 queued: "2026-09-27T22:34:47Z"
+started: "2026-09-27T22:49:27Z"
+completed: "2026-09-27T23:01:22Z"
 ---
 
 # Name the task a card belongs to, as a link

@@ -164,6 +164,7 @@ var _ = Describe("Attention jump handover", func() {
 				provenance,
 				false,
 				pkg.NewJumpTokenReader(tokenPath),
+				"",
 			)
 		})
 
@@ -276,6 +277,7 @@ var _ = Describe("Attention jump handover", func() {
 				provenance,
 				false,
 				pkg.NewJumpTokenReader(""),
+				"",
 			)
 			item := pushItem(nonMessageRequest())
 			resolvedPane(item.ItemID, "1907")

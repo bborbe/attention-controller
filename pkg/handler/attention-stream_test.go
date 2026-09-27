@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -42,7 +43,11 @@ var _ = Describe("AttentionStreamHandler", func() {
 	var store pkg.AttentionStore
 	var notifier pkg.AttentionChangeNotifier
 	var sessionLivenessChecker *mocks.SessionLivenessChecker
+	var provenance *mocks.ProvenanceResolver
 	var server *httptest.Server
+	// vaultDir ends in a known name so the expected task link is a hand-written
+	// literal. The directory need not exist: the handler only reads its base name.
+	var vaultDir string
 
 	BeforeEach(func() {
 		ctx = context.Background()
@@ -70,12 +75,15 @@ var _ = Describe("AttentionStreamHandler", func() {
 			notifier,
 		)
 
+		provenance = &mocks.ProvenanceResolver{}
+		vaultDir = filepath.Join(GinkgoT().TempDir(), "Personal")
 		server = httptest.NewServer(handler.NewAttentionStreamHandler(
 			store,
 			notifier,
-			&mocks.ProvenanceResolver{},
+			provenance,
 			false,
 			nil,
+			vaultDir,
 		))
 	})
 
@@ -140,6 +148,44 @@ var _ = Describe("AttentionStreamHandler", func() {
 		Expect(event["type"]).Should(Equal("upsert"))
 		Expect(event["item_id"]).Should(Equal(item.ItemID.String()))
 		Expect(event["html"]).Should(ContainSubstring("deploy prod?"))
+	})
+
+	// The task link must arrive over the live channel as well as on a fresh load,
+	// and this is the case that catches the wiring rather than the rendering: a
+	// stream handler built with an empty vault name compiles, passes every page
+	// spec above and renders a link-less row — the same card differing by how it
+	// arrived, which is the drift this handler exists to prevent.
+	It("sends the row's vault task link over the stream", func() {
+		// Resolved from the items the handler actually asks about rather than
+		// keyed on an id the spec cannot know before the push: the stub returns a
+		// task for whatever the store hands it, so the row is linked whenever it
+		// renders rather than only if the timing happens to favour it.
+		provenance.ResolveStub = func(_ context.Context, items pkg.Items) pkg.Provenances {
+			resolved := make(pkg.Provenances, len(items))
+			for _, item := range items {
+				resolved[item.ItemID] = pkg.Provenance{
+					Host:     "burn",
+					TaskName: "Fix the board",
+					TaskPath: "25 Tasks/Fix the board.md",
+				}
+			}
+			return resolved
+		}
+
+		reader, cancel := connect()
+		defer cancel()
+
+		item := push("which task is this?")
+
+		event := readEvent(reader)
+		Expect(event["type"]).Should(Equal("upsert"))
+		Expect(event["item_id"]).Should(Equal(item.ItemID.String()))
+		// The hand-written literal, as the page's own spec writes it, so a change
+		// to the URL shape has to be made in two places rather than agreeing with
+		// itself through a shared helper.
+		Expect(event["html"]).Should(ContainSubstring(
+			`<span class="task"><a href="obsidian://open?vault=Personal&amp;file=25%20Tasks%2FFix%20the%20board">Fix the board</a></span>`,
+		))
 	})
 
 	// The dimmed record reaches an open board over the live channel, not only
@@ -285,6 +331,7 @@ var _ = Describe("AttentionStreamHandler under a write deadline", func() {
 			&mocks.ProvenanceResolver{},
 			false,
 			nil,
+			"",
 		))
 		server.Config.WriteTimeout = 1 * time.Second
 		server.Start()

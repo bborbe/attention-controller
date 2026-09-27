@@ -283,7 +283,8 @@ func (a *application) createHTTPServer(
 		// .Methods, gorilla mux would route POST and DELETE to it as well.
 		router.Path("/").
 			Methods(http.MethodGet, http.MethodHead).
-			Handler(factory.CreateAttentionPageHandler(store, provenance, a.TTSURL != "", jumpTokens))
+			Handler(factory.CreateAttentionPageHandler(
+				store, provenance, a.TTSURL != "", jumpTokens, a.VaultDir))
 
 		// The board's live channel. It is registered here, ahead of the
 		// `/api/1.0/attention/{itemID}` route below, because gorilla mux matches
@@ -292,12 +293,7 @@ func (a *application) createHTTPServer(
 		router.Path("/api/1.0/attention/stream").
 			Methods(http.MethodGet).
 			Handler(factory.CreateAttentionStreamHandler(
-				store,
-				notifier,
-				provenance,
-				a.TTSURL != "",
-				jumpTokens,
-			))
+				store, notifier, provenance, a.TTSURL != "", jumpTokens, a.VaultDir))
 
 		// Business routes live under /api/1.0/, never in the admin block above.
 		// The push entry point takes a producer's declaration; nothing scrapes

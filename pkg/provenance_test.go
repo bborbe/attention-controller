@@ -427,10 +427,17 @@ var _ = Describe("ProvenanceResolver", func() {
 			sessionItem("item-nolog", "producer-nolog", "key-nolog", "session-nolog"),
 		})[pkg.ItemID("item-nolog")]
 
-		// No pane is claimed, and nothing else resolved either.
+		// No pane is claimed and no event-log value resolved.
 		Expect(provenance.PaneRecorded).To(BeFalse())
 		Expect(provenance.Pane).To(BeEmpty())
-		Expect(provenance.Resolved()).To(BeFalse())
+		// ⚠️ INVERTED from the previous prompt's assertion, which read
+		// `Resolved() == false` while the task was carried but not drawn. The task
+		// alone now makes the provenance render, and it has to: the template gates
+		// the whole line on this method, so a task-carrying row reporting false
+		// here would resolve the name correctly, draw it correctly, and never show
+		// it. This is the exact row the change exists for — the one whose producer
+		// wrote no event log, so the task is the only thing the card can say.
+		Expect(provenance.Resolved()).To(BeTrue())
 		// The task resolves anyway — it is an independent source.
 		Expect(provenance.TaskName).To(Equal("No Log Task"))
 		Expect(provenance.TaskPath).To(Equal("25 Tasks/No Log Task.md"))
@@ -567,4 +574,24 @@ var _ = Describe("TaskIndex", func() {
 			},
 			"session-a", "", "", false),
 	)
+})
+
+// Resolved is the gate the page's provenance line hangs on: the template renders
+// that line only when it is true, so a fact that does not set it is a fact the
+// page can never show however correctly it was resolved and drawn.
+var _ = Describe("Provenance.Resolved", func() {
+	It("is true for a provenance carrying only a task name", func() {
+		// The shape an item resolves to when its producer wrote no event log but
+		// its session's task file was found: no host, cwd, tool or pane, and a
+		// task. Without the task in the gate this row renders no provenance line
+		// at all, so the name is resolved correctly, drawn correctly, and never
+		// appears.
+		Expect((pkg.Provenance{TaskName: "Fix the board"}).Resolved()).To(BeTrue())
+	})
+
+	It("is false for the zero value", func() {
+		// The degradation the page must keep: an item with no provenance source
+		// renders exactly what it rendered before the line existed.
+		Expect((pkg.Provenance{}).Resolved()).To(BeFalse())
+	})
 })
