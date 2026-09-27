@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.22.1
 
 - fix: delegate the Jump control's click handler so it survives its row being replaced by the stream. The button was bound once at page load, and `upsertRow` replaces a row's whole `outerHTML` on every event — so any card the stream had touched rendered a working-looking button that did nothing: no request, no note, no jump. The operator reported it as *"jump button stopped working"*, and again after a separate raise fix had shipped, as *"this did not work"* on one card against *"others did"* on the rest — which is the signature, because only cards not yet re-rendered in that page load still worked. It is the same failure class this repo already shipped once: v0.19.0's answer handler looked up a node that was not there, threw, and fired no request at all while the control still looked right. ⚠️ **The same once-at-load binding is used by the read-aloud control, the corner ✕, the answer form and the tabs**, so those are inert on re-rendered cards too; this change fixes the Jump control only, and the others are a follow-up. The handler is delegated on `document` rather than on `ul.items` because `ensureList()` creates that container lazily, so a container-bound listener would miss the first row. Verified by reading the served script and the stream handler from source, and by the jump server receiving **no** request for a click on a re-rendered card while adjacent cards in the same minutes logged `200 jumped pane=N`.
 
