@@ -448,6 +448,28 @@ li.item {
 {{else}}<p class="empty">Nothing needs attention.</p>
 {{end}}
 <script>
+/* A throw outside the four handled paths — a listener that dereferences a node
+   the stream replaced, a promise chain someone adds later without a catch —
+   reaches the console only if devtools happens to be open when it fires. These
+   two handlers write it there unconditionally, so a card that misbehaves leaves
+   a trail the operator can read back afterwards.
+   They log and nothing else. An uncaught error has no form and no row to host a
+   note, so surfacing one on the page would be a new visible element on a path
+   that renders none today. Registered at the top level rather than inside a
+   handler, so a throw before the first click is caught too.
+   window.onerror is given (message, source, lineno, colno, error); the error
+   object is preferred where the browser supplies one and the message is the
+   fallback, because the object carries the stack the message alone loses. */
+window.onerror = function (message, source, lineno, colno, error) {
+  console.error(error || message);
+};
+/* Every promise chain in this script carries its own .catch, so nothing escapes
+   to this handler today. It is registered for parity with window.onerror rather
+   than because a rejection currently reaches it — code added later may reject
+   without one, and a silent rejection is the failure this pair exists to end. */
+window.addEventListener('unhandledrejection', function (event) {
+  console.error(event.reason);
+});
 /* Tabs switch which question panel is visible. Nothing reloads and no panel is
    re-rendered: every panel ships in the document and only its visibility
    changes, so a half-typed Other field survives a look at the other question. */
@@ -562,13 +584,16 @@ function sendAnswer(form, request) {
            exists, which is the defect this branch exists to fix. Both halves
            are the point, so neither is dropped. */
         showNote(form, failure.message, true);
+        console.error('attention board: answer failed - HTTP ' + response.status, body);
         window.setTimeout(function () { window.location.reload(); }, 2500);
         return;
       }
       showNote(form, 'Answer failed - HTTP ' + response.status + ' - ' + body, true);
+      console.error('attention board: answer failed - HTTP ' + response.status, body);
     });
   }).catch(function (error) {
     showNote(form, 'Answer failed - ' + String(error), true);
+    console.error('attention board: answer failed - ' + String(error));
   });
 }
 /* answerFailure reads the store's error envelope and reports whether the item
@@ -665,6 +690,7 @@ function startReading(itemID, noteHost) {
       return response.text().then(function (body) {
         if (!response.ok) {
           showNote(noteHost, 'Read aloud failed - HTTP ' + response.status + ' - ' + body, true);
+          console.error('attention board: read aloud failed - HTTP ' + response.status, body);
           return;
         }
         /* The id is what makes the next click a stop, so a response that
@@ -680,6 +706,7 @@ function startReading(itemID, noteHost) {
       });
     }).catch(function (error) {
       showNote(noteHost, 'Read aloud failed - ' + String(error), true);
+      console.error('attention board: read aloud failed - ' + String(error));
     });
 }
 function stopReading(itemID, messageID, noteHost) {
@@ -756,9 +783,11 @@ document.addEventListener('click', function (event) {
       if (response.ok) { showJumpNote(row, 'Jumped.', false); return; }
       return response.text().then(function (body) {
         showJumpNote(row, 'Jump failed - HTTP ' + response.status + ' - ' + body, true);
+        console.error('attention board: jump failed - HTTP ' + response.status, body);
       });
     }).catch(function (error) {
       showJumpNote(row, 'Jump failed - ' + String(error), true);
+      console.error('attention board: jump failed - ' + String(error));
     });
 });
 function showJumpNote(row, message, isError) {
@@ -800,9 +829,16 @@ function closeCard(row) {
     if (response.ok) { showCloseNote(row, acknowledged ? 'Acknowledged.' : 'Cleared.', false); return; }
     return response.text().then(function (body) {
       showCloseNote(row, (acknowledged ? 'Acknowledge' : 'Clear') + ' failed - HTTP ' + response.status + ' - ' + body, true);
+      /* The action word is fixed at "close" rather than read off the row the way
+         the note's verb is. The note addresses the operator and names the
+         control they pressed; a console line is grepped, so a stable word is
+         what makes it findable. The two surfaces are allowed to differ, and the
+         note is the one that must not change. */
+      console.error('attention board: close failed - HTTP ' + response.status, body);
     });
   }).catch(function (error) {
     showCloseNote(row, (acknowledged ? 'Acknowledge' : 'Clear') + ' failed - ' + String(error), true);
+    console.error('attention board: close failed - ' + String(error));
   });
 }
 document.querySelectorAll('button[data-ack]').forEach(function (button) {
@@ -1055,7 +1091,18 @@ function showCloseNote(row, message, isError) {
   /* No reconnect handler: EventSource reconnects on its own, which is the
      property that lets the board survive a restart of the store. */
   source.onmessage = function (event) {
-    var change = JSON.parse(event.data);
+    var change;
+    /* A frame the page cannot read is logged and skipped rather than thrown.
+       The rest of this handler reads change.type and change.item_id, so a throw
+       here aborted the row swap with nothing said; a truncated frame or one from
+       a newer store version is not a reason to stop listening, and the stream
+       reconnects on its own. */
+    try {
+      change = JSON.parse(event.data);
+    } catch (error) {
+      console.error('unreadable stream frame: ' + String(error), event.data);
+      return;
+    }
     if (change.type === 'remove') {
       /* Dropped from the parked set as well as from the board: a row the
          store removed must not come back when the filter is switched off. */
