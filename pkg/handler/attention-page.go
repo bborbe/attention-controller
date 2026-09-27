@@ -13,7 +13,6 @@ import (
 
 	"github.com/bborbe/errors"
 	libhttp "github.com/bborbe/http"
-	"github.com/golang/glog"
 
 	"github.com/bborbe/attention-controller/pkg"
 )
@@ -1446,7 +1445,6 @@ type attentionPageData struct {
 func newAttentionPageRow(
 	item pkg.Item,
 	provenance pkg.Provenance,
-	jumpEnabled bool,
 	speak bool,
 ) attentionPageRow {
 	row := attentionPageRow{
@@ -1455,8 +1453,8 @@ func newAttentionPageRow(
 		Message:    item.AnswerMechanism == pkg.MessageAnswerMechanism,
 		Ack:        item.AnswerMechanism == pkg.AckAnswerMechanism,
 		Jump:       jumpCommand(item, provenance),
-		JumpURL:    jumpURL(item, provenance, jumpEnabled),
-		NoJump:     noJumpReason(item, provenance, jumpEnabled),
+		JumpURL:    jumpURL(item, provenance),
+		NoJump:     noJumpReason(item, provenance),
 		Speak:      speak,
 	}
 	if item.State == pkg.AnsweredState {
@@ -1616,16 +1614,18 @@ func jumpCommand(item pkg.Item, provenance pkg.Provenance) string {
 // The fleet-jump URL carries the shared token as a query parameter, so putting
 // it in the page would publish the token in the served document on every load.
 // This path is called in the background and the board performs the jump
-// server-side, which keeps the token on the server — and keeps the browser on
-// the board, since a real link would navigate it away.
+// in-process, which keeps the browser on the board, since a real link would
+// navigate it away.
 //
-// Empty when no pane resolved, or when enabled is false — the same absence rule
-// as jumpCommand, so a row with no resolvable pane, and a host with no readable
-// token, each render no button and no placeholder.
-func jumpURL(item pkg.Item, provenance pkg.Provenance, enabled bool) string {
-	if !enabled {
-		return ""
-	}
+// Empty when no pane resolved — the same absence rule as jumpCommand, so a row
+// with no resolvable pane renders no button and no placeholder.
+//
+// ⚠️ The `enabled` parameter that used to gate this on a readable jump token is
+// gone, removed by the jump fold: the endpoint this path points at no longer
+// reads a token, so gating on one would hide a control that works. The pane is
+// now the only condition, which is also why a row's button and its explanation
+// cannot disagree about why it is missing.
+func jumpURL(item pkg.Item, provenance pkg.Provenance) string {
 	if provenance.Pane == "" {
 		return ""
 	}
@@ -1647,24 +1647,23 @@ func jumpURL(item pkg.Item, provenance pkg.Provenance, enabled bool) string {
 // read from the resolver, and it would name host-internal paths on a card the
 // operator reads. See [[A Card With No Jump Target Explains Why Instead of
 // Rendering Nothing]] § Results.
-func noJumpReason(item pkg.Item, provenance pkg.Provenance, jumpEnabled bool) string {
-	if jumpCommand(item, provenance) != "" || jumpURL(item, provenance, jumpEnabled) != "" {
+// ⚠️ The "jump is unavailable on this host" sentence is gone with the token
+// gate that produced it. It explained a row that HAD a resolvable pane yet
+// carried no control — the state that existed only while the button was gated
+// on a readable token. With the gate removed that state is unreachable, so the
+// sentence is deleted rather than left as a branch nothing can take. A case
+// that cannot occur is worse than a missing one: it reads as coverage.
+func noJumpReason(item pkg.Item, provenance pkg.Provenance) string {
+	if jumpCommand(item, provenance) != "" || jumpURL(item, provenance) != "" {
 		return ""
 	}
-	switch {
-	case provenance.Pane != "":
-		// The pane resolved, so the absence is the host's handover rather than
-		// the item's pane. Saying "no pane" here would be false, and would send
-		// the operator looking at the wrong thing.
-		return "Jump is unavailable on this host — the handover token could not be read."
-	case provenance.PaneRecorded:
+	if provenance.PaneRecorded {
 		// A pane was recorded and does not resolve to this session: the case
 		// silence 7 marks `unroutable`. The provenance line still carries that
 		// marker; this sentence is additive rather than a replacement for it.
 		return "The pane recorded for this item does not resolve to this session."
-	default:
-		return "No pane was recorded for this item, so there is no session to jump to."
 	}
+	return "No pane was recorded for this item, so there is no session to jump to."
 }
 
 // boardHideParam is the query parameter carrying the board's view state, and
@@ -1725,15 +1724,20 @@ const (
 // without Claude Code, but it works *with provenance absent* rather than
 // without looking.
 //
-// jumpTokens gates the Jump button. It is checked per render rather than once
-// at construction, so a token removed while the service runs drops the button
-// on the next load — a control whose endpoint would refuse is a value presented
-// as working that is not.
+// ⚠️ The Jump button is gated on the pane alone, and the token gate that used
+// to sit here was REMOVED by the jump fold rather than merely dropped. It read
+// the jump token per render and suppressed the button when the token was
+// unreadable — a precondition that held while the button's endpoint forwarded
+// to the Python fleet-jump server, which authenticated with that token. The
+// endpoint now performs the jump in-process (NewAttentionJumpHandler) and never
+// reads a token, so the gate had become a false one: it would hide a working
+// control because of a credential the control no longer touches. The token
+// survives on the legacy pane-addressed route, which is the one surface that
+// still needs it.
 func NewAttentionPageHandler(
 	store pkg.AttentionStore,
 	provenance pkg.ProvenanceResolver,
 	speakEnabled bool,
-	jumpTokens pkg.JumpTokenReader,
 ) http.Handler {
 	// Parsed once at construction rather than per request: the template is a
 	// compile-time constant, so a parse failure is a programming error, and
@@ -1758,20 +1762,9 @@ func NewAttentionPageHandler(
 				// behind it (the pane listing, the session registry) happen once
 				// rather than once per row.
 				provenances := provenance.Resolve(ctx, items)
-				// Read per render rather than once at construction, so a token
-				// rotated or removed while the service runs is reflected on the
-				// next load. An unreadable token renders no button rather than
-				// failing the page — the same absent-not-placeholder rule the
-				// provenance line follows.
-				jumpEnabled := false
-				if jumpTokens != nil {
-					if _, err := jumpTokens.Read(ctx); err != nil {
-						glog.V(3).
-							Infof("jump token unavailable, rendering no jump buttons: %v", err)
-					} else {
-						jumpEnabled = true
-					}
-				}
+				// ⚠️ No token is read here. The Jump button is gated on the
+				// resolved pane alone — see the constructor's comment on why the
+				// token gate was removed rather than kept.
 				rows := make([]attentionPageRow, 0, len(items))
 				for _, item := range items {
 					rows = append(
@@ -1779,7 +1772,6 @@ func NewAttentionPageHandler(
 						newAttentionPageRow(
 							item,
 							provenances[item.ItemID],
-							jumpEnabled,
 							speakEnabled,
 						),
 					)
