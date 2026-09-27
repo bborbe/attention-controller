@@ -244,9 +244,10 @@ var _ = Describe("AttentionPageHandler", func() {
 		// page where the wrong item carried the controls.
 		Expect(rowOf(body, message.ItemID)).To(ContainSubstring("<form"))
 		Expect(rowOf(body, permission.ItemID)).NotTo(ContainSubstring("<form"))
-		// ⚠️ AMENDED 2026-09-27: a permission row's one button is the jump
-		// corner, disabled when it has no target. No ANSWER control — which is
-		// the property this spec exists for.
+		// ⚠️ AMENDED 2026-09-27: a permission row renders the jump corner
+		// (disabled when it has no target) and, from this change, the corner X.
+		// Neither is an ANSWER control, which is the property this spec exists
+		// for — so the assertions below are on forms and inputs, not buttons.
 		Expect(rowOf(body, permission.ItemID)).NotTo(ContainSubstring("<input"))
 		Expect(rowOf(body, permission.ItemID)).To(ContainSubstring(`class="jump-corner"`))
 
@@ -803,7 +804,13 @@ var _ = Describe("AttentionPageHandler", func() {
 		Expect(messageBlock).NotTo(ContainSubstring("data-ack"))
 	})
 
-	It("keeps a permission row free of every control, acknowledge included", func() {
+	// ⚠️ RENAMED 2026-09-27: this spec was "keeps a permission row free of every
+	// control, acknowledge included". That name stopped being true when the
+	// corner X landed on permission rows, and a passing spec with a false name
+	// is worse than no spec — it reads as coverage of a property that no longer
+	// holds. What it actually guards is narrower and still load-bearing: the
+	// ACKNOWLEDGE control must not reach a permission row.
+	It("keeps a permission row free of the acknowledge control and every answer control", func() {
 		permission, err := store.Push(ctx, pkg.PushRequest{
 			ProducerID:      "producer-perm",
 			ProducerKind:    pkg.SessionProducerKind,
@@ -817,10 +824,12 @@ var _ = Describe("AttentionPageHandler", func() {
 
 		block := rowOf(get("GET").Body.String(), permission.ItemID)
 
-		// A permission item is approve-shaped and only the operator may answer
-		// it in the session that raised it, so a control here would be the
-		// permission laundering the schema forbids — the acknowledge control
-		// included, which is why the ack branch must not reach it.
+		// A permission item is approve-shaped and only the operator may ANSWER
+		// it, in the session that raised it. The schema forbids an arm answering
+		// it, which is why the ack branch must not reach it — an acknowledge
+		// there would be the laundering. ⚠️ The corner X is not an exception to
+		// this: it CLEARS the card without answering, so it is not asserted
+		// against here. See the inverted spec above.
 		Expect(block).NotTo(ContainSubstring("data-ack"))
 		Expect(block).NotTo(ContainSubstring("<form"))
 		// ⚠️ AMENDED 2026-09-27: the jump corner renders on a permission row too.
@@ -872,14 +881,22 @@ var _ = Describe("AttentionPageHandler", func() {
 			// the named function both controls share rather than by dispatching
 			// a submit that does not exist here.
 			Expect(block).NotTo(ContainSubstring("<form"))
-			Expect(body).To(ContainSubstring("function closeAck(row)"))
-			Expect(body).To(ContainSubstring("closeAck(row);"))
+			// ⚠️ RENAMED 2026-09-27: the shared function is closeCard, not
+			// closeAck — it serves a permission card's X as well as an ack
+			// card's Acknowledge, so the ack-flavoured name misdescribed one of
+			// its two callers.
+			Expect(body).To(ContainSubstring("function closeCard(row)"))
+			Expect(body).To(ContainSubstring("closeCard(row);"))
 		})
 
-		// The criterion that fails if the X is rendered unconditionally. Without
-		// it the two cases above would pass on a page that put an X on every
-		// card, which is exactly what the operator's ruling forbids.
-		It("renders no corner X on a permission row", func() {
+		// ⚠️ INVERTED 2026-09-27 — this spec previously asserted the X was
+		// ABSENT on a permission row ("renders no corner X on a permission
+		// row"), on the reading that a control there would launder the gate.
+		// That reading conflated ANSWERING with CLEARING, and the exception it
+		// produced was disowned by the operator. The assertion is inverted
+		// rather than deleted: a regression that re-excludes permission rows
+		// must fail here, which is what keeps the exclusion from creeping back.
+		It("renders the corner X on a permission row", func() {
 			permission, err := store.Push(ctx, pkg.PushRequest{
 				ProducerID:      "producer-corner-x-perm",
 				ProducerKind:    pkg.SessionProducerKind,
@@ -893,13 +910,29 @@ var _ = Describe("AttentionPageHandler", func() {
 
 			block := rowOf(get("GET").Body.String(), permission.ItemID)
 
-			// A permission card stays jump-link-only with zero ANSWER controls.
-			// The X is an answer control on every mechanism that renders it, so
-			// it is excluded here with the rest. ⚠️ AMENDED 2026-09-27: the jump
-			// corner is navigation rather than an answer, so it now renders here
-			// — disabled when the row has no target.
-			Expect(block).NotTo(ContainSubstring("data-corner-x"))
+			// The permission card carries the X from 2026-09-27. It still
+			// carries no ANSWER control — the card renders no form, which is
+			// what keeps the gate answerable only by the operator. The X closes
+			// it without answering, so both assertions hold at once.
+			Expect(block).To(ContainSubstring("data-corner-x"))
+			Expect(block).NotTo(ContainSubstring(`class="answer"`))
+			// The jump corner is navigation rather than an answer, so it
+			// renders here too — disabled when the row has no target.
 			Expect(block).To(ContainSubstring(`class="jump-corner"`))
+
+			// ⚠️ The precondition for a defect found by the served-page check on
+			// 2026-09-27, asserted here so it cannot regress unnoticed: a
+			// permission row renders NO .actions div — that div is the answer
+			// controls' container, and only message and ack rows carry one. The
+			// X's note therefore has to tolerate its absence, which it did not:
+			// every X-click on a permission card threw a TypeError from
+			// showCloseNote. The operator never saw it, because the row leaves
+			// the page via the stream rather than via that handler — the correct
+			// outcome masked a real error, which is why it is pinned twice here:
+			// once as the missing container, once as the fallback that handles it.
+			Expect(block).NotTo(ContainSubstring(`class="actions"`))
+			Expect(get("GET").Body.String()).
+				To(ContainSubstring(`row.querySelector('.actions') || row`))
 		})
 
 		// The positive control read from the other end: a regression that

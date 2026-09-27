@@ -668,8 +668,16 @@ function showJumpNote(row, message, isError) {
    producer.
    It is a named function rather than an inline listener because two controls
    reach it — the acknowledge button and the corner X — and both must perform
-   the same write, not two writes that happen to agree. */
-function closeAck(row) {
+   the same write, not two writes that happen to agree.
+   ⚠️ RENAMED 2026-09-27 from closeAck. It serves a permission card's X as
+   well as an ack card's Acknowledge, so a name claiming one mechanism would
+   misdescribe the other — the same reason the note's verb is read off the row
+   rather than hardcoded. */
+function closeCard(row) {
+  /* The verb is per-mechanism: an ack card is acknowledged, a permission card
+     is cleared. The note is the only feedback this handler gives on a row whose
+     removal comes from the stream rather than from here. */
+  var acknowledged = !!row.querySelector('[data-ack]');
   fetch('/api/1.0/attention/' + encodeURIComponent(row.getAttribute('data-item-id')) + '/close', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -678,25 +686,35 @@ function closeAck(row) {
        and remote_addr from the request itself. */
     body: JSON.stringify({ answered_by: 'attention-board', automation: navigator.webdriver })
   }).then(function (response) {
-    if (response.ok) { showAckNote(row, 'Acknowledged.', false); return; }
+    if (response.ok) { showCloseNote(row, acknowledged ? 'Acknowledged.' : 'Cleared.', false); return; }
     return response.text().then(function (body) {
-      showAckNote(row, 'Acknowledge failed - HTTP ' + response.status + ' - ' + body, true);
+      showCloseNote(row, (acknowledged ? 'Acknowledge' : 'Clear') + ' failed - HTTP ' + response.status + ' - ' + body, true);
     });
   }).catch(function (error) {
-    showAckNote(row, 'Acknowledge failed - ' + String(error), true);
+    showCloseNote(row, (acknowledged ? 'Acknowledge' : 'Clear') + ' failed - ' + String(error), true);
   });
 }
 document.querySelectorAll('button[data-ack]').forEach(function (button) {
-  button.addEventListener('click', function () { closeAck(button.closest('li.item')); });
+  button.addEventListener('click', function () { closeCard(button.closest('li.item')); });
 });
 /* The corner X is one affordance whose act is the mechanism's own dominant act,
    which is why this handler dispatches rather than posting: on a message card
    it is the Dismiss the card already carries (the skip answer, open -> answered,
-   answer.kind: skip) and on an ack card it is the Acknowledge it already carries
-   (the close, open -> closed, answered_at unset). It adds no transition and no
-   field — see [[Attention Item Schema]] § Answer routing, § The corner X.
-   A permission card renders no X at all, so there is no third branch: a control
-   there would be the permission laundering the schema forbids. */
+   answer.kind: skip), on an ack card it is the Acknowledge it already carries
+   (the close, open -> closed, answered_at unset), and on a permission card it is
+   the clear (that same close — open -> closed, answered_at and decision both
+   unset). It adds no transition and no field — see [[Attention Item Schema]]
+   § Answer routing, § The corner X.
+   A permission card DOES render the X, from 2026-09-27. It is not the permission
+   laundering the schema forbids, and the earlier reading here conflated two
+   different acts: the schema forbids an arm ANSWERING a permission item —
+   causing open -> answered on the operator's behalf — while the X only CLEARS
+   the card. No answer is routed, so the asking session stays frozen exactly as
+   it was, and the gate is still answered only by the operator, in the session
+   that raised it. Clearing is not deciding.
+   There is deliberately no third branch below: a permission row carries no
+   form.answer, so it falls through to closeCard exactly as an ack row does. The
+   three mechanisms share one dispatch because they share one act. */
 document.querySelectorAll('button[data-corner-x]').forEach(function (button) {
   button.addEventListener('click', function () {
     var row = button.closest('li.item');
@@ -709,11 +727,20 @@ document.querySelectorAll('button[data-corner-x]').forEach(function (button) {
       var dismiss = form.querySelector('button[value=skip]');
       if (dismiss) { dismiss.click(); return; }
     }
-    closeAck(row);
+    closeCard(row);
   });
 });
-function showAckNote(row, message, isError) {
-  var container = row.querySelector('.actions');
+/* ⚠️ The container is OPTIONAL, and that is not defensive coding — it is the
+   defect this function shipped with until 2026-09-27. A permission row renders
+   no .actions div (only message and ack rows do), so row.querySelector returned
+   null and the next call threw a TypeError on EVERY X-click on a permission
+   card. The close itself succeeded and the row still left the page, because the
+   stream removes it rather than this handler — which is exactly why the throw
+   was invisible: the operator saw the right outcome and only the console took
+   the error. Falling back to the row keeps the note on a card that has no
+   actions row to hold it. */
+function showCloseNote(row, message, isError) {
+  var container = row.querySelector('.actions') || row;
   var previous = container.querySelector('.note');
   if (previous) { previous.remove(); }
   var note = document.createElement('span');
@@ -923,8 +950,15 @@ function showAckNote(row, message, isError) {
      it, which is why Speak is carried on the row and read as dot-Speak here. */}}
 {{define "attention-row"}}<li class="item{{if .Dimmed}} dimmed{{end}}" data-item-id="{{ .Item.ItemID }}">
 <div class="producer">{{ .Item.ProducerID }} ({{ .Item.ProducerKind }})</div>
-{{if or .Message .Ack}}<button type="button" class="corner-x" data-corner-x aria-label="Skip this item">✕</button>
-{{end}}{{if and .Message .Speak}}<button type="button" class="speak" data-speak aria-label="Read aloud" title="Read aloud"><svg class="speak-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2.75 5.25 5.5H2.75v5h2.5L9 13.25z"/><path d="M11.5 5.75a3.25 3.25 0 0 1 0 4.5"/><path d="M13.5 3.75a6 6 0 0 1 0 8.5"/></svg></button>
+{{/* The corner X renders on EVERY row, deliberately ungated, from 2026-09-27.
+     It was gated on Message-or-Ack until then, which excepted permission rows —
+     an exception the operator disowned (it had been read off a yes on a menu
+     they did not write). A permission row carries the X because clearing a card
+     is not answering a gate: the X closes it, routes no answer, and leaves the
+     asking session frozen and the gate operator-only. Gating on a mechanism
+     here would re-create the exception. See [[Attention Item Schema]] § The
+     corner X, and the dispatch comment on the data-corner-x handler below. */}}<button type="button" class="corner-x" data-corner-x aria-label="Skip this item">✕</button>
+{{if and .Message .Speak}}<button type="button" class="speak" data-speak aria-label="Read aloud" title="Read aloud"><svg class="speak-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2.75 5.25 5.5H2.75v5h2.5L9 13.25z"/><path d="M11.5 5.75a3.25 3.25 0 0 1 0 4.5"/><path d="M13.5 3.75a6 6 0 0 1 0 8.5"/></svg></button>
 {{end}}{{if .JumpURL}}<button type="button" class="jump-corner" data-jump="{{ .JumpURL }}" aria-label="Jump to session" title="Jump to session"><svg class="jump-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.75 3.25h8.5a1.5 1.5 0 0 1 1.5 1.5v6.5a1.5 1.5 0 0 1-1.5 1.5h-8.5a1.5 1.5 0 0 1-1.5-1.5v-6.5a1.5 1.5 0 0 1 1.5-1.5z"/><path d="M5.75 6.5 7.5 8.25 5.75 10"/><path d="M9 10h1.75"/></svg></button>
 {{else if .NoJump}}<button type="button" class="jump-corner" disabled aria-label="Jump to session" title="Jump to session"><svg class="jump-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.75 3.25h8.5a1.5 1.5 0 0 1 1.5 1.5v6.5a1.5 1.5 0 0 1-1.5 1.5h-8.5a1.5 1.5 0 0 1-1.5-1.5v-6.5a1.5 1.5 0 0 1 1.5-1.5z"/><path d="M5.75 6.5 7.5 8.25 5.75 10"/><path d="M9 10h1.75"/></svg></button>
 {{end}}{{if not .Message}}<div class="payload">{{ .Item.Payload }}</div>
