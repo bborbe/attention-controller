@@ -28,13 +28,17 @@ import (
 // laundering. See the attention item schema § Answer routing and silence 12.
 //
 // ⚠️ AMENDED 2026-09-27: this said "and nothing for every other class", which is
-// no longer true. A `permission` row renders two controls that are NOT answers —
-// the jump corner (navigation) and the corner X (the clear). The X closes the
-// card without answering, so it launders nothing; see [[Attention Item Schema]]
-// § The corner X. ⚠️ Three specs below used `NotTo("<button")` as a proxy for
-// "carries no control" and have been amended twice for it — once when the jump
-// corner landed, once when the X did. Assert on the ANSWER-control markers
-// (`data-ack`, `<form`, `<input`), never on `<button`.
+// no longer true. A `permission` row renders three controls that are NOT answers
+// — the jump corner (navigation), the corner X (the clear), and the read-aloud
+// control (a utility). The X closes the card without answering, so it launders
+// nothing; see [[Attention Item Schema]] § The corner X. The read-aloud control
+// records no answer either, and it renders on every row whose `Speak` is set:
+// the template gate moved from `{{if and .Message .Speak}}` to `{{if .Speak}}`,
+// so the class conjunct is gone and "a tts server is configured" is the only
+// condition left. ⚠️ Three specs below used `NotTo("<button")` as a proxy for
+// "carries no control" and have been amended for it — twice when the jump corner
+// and the X landed, once more when the read-aloud control did. Assert on the
+// ANSWER-control markers (`data-ack`, `<form`, `<input`), never on `<button`.
 var _ = Describe("Attention page board controls", func() {
 	var ctx context.Context
 	var db libkv.DB
@@ -213,11 +217,13 @@ var _ = Describe("Attention page board controls", func() {
 			Expect(block).NotTo(ContainSubstring("<form"))
 			// ⚠️ AMENDED 2026-09-27 (second time) — this asserted
 			// NotTo("<button"), a proxy for "carries no control". A permission
-			// row now renders TWO buttons: the jump corner and the corner X. The
-			// proxy is what broke, not the property, so it is replaced by the
-			// property: neither button is an ANSWER control.
+			// row now renders THREE buttons: the jump corner, the corner X, and
+			// the read-aloud control. The proxy is what broke, not the property,
+			// so it is replaced by the property: none of them is an ANSWER
+			// control.
 			Expect(block).NotTo(ContainSubstring("data-ack"))
 			Expect(block).NotTo(ContainSubstring("<input"))
+			Expect(block).NotTo(ContainSubstring(`value="skip"`))
 		})
 
 		// An unresolvable pane must render absent rather than as a stand-in: a
@@ -228,25 +234,28 @@ var _ = Describe("Attention page board controls", func() {
 			Expect(rowBlock(body, item.ItemID)).NotTo(ContainSubstring("/supervisor:jump"))
 		})
 
-		// Read-aloud is configured on this suite's page, so this is the case that
-		// matters: even with a tts server wired, a permission row renders no
-		// read-aloud control. The read-aloud button renders on `message` rows
-		// only.
-		// ⚠️ AMENDED 2026-09-27 (second time) — this also asserted
-		// NotTo("<button"), which stopped meaning "no control" once a permission
-		// row rendered any button of its own. It now renders two (the jump
-		// corner and the corner X), so the proxy is dropped and the spec keeps
-		// the assertion it is actually named for.
-		It("renders no read-aloud control even when read-aloud is enabled", func() {
+		// ⚠️ INVERTED 2026-09-27. This spec previously asserted the opposite —
+		// that a permission row carried no read-aloud control even with a tts
+		// server wired — and it was the guard holding the class exclusion in
+		// place. The operator's ruling of 2026-09-27 is that permission cards
+		// carry the read-aloud control too, so the spec now asserts the control
+		// is PRESENT and keeps a negative clause for what a permission row must
+		// still not carry: an answer control.
+		// ⚠️ The `NotTo("<button")` assertion this spec also carried is DROPPED
+		// rather than re-pointed: `data-speak` is the whole property, and the
+		// `<button` proxy stopped meaning "no control" once a permission row
+		// rendered buttons of its own — first the jump corner, then the X.
+		It("renders the read-aloud control when read-aloud is enabled", func() {
 			body, item := renderPage(permissionRequest(), pkg.Provenance{Pane: "1907"})
 			block := rowBlock(body, item.ItemID)
 
-			// `data-speak` is the whole property. The `class="speak"` assertion
-			// that briefly sat here was redundant — both attributes are on the
-			// same element, so the two could only fail together, and it added no
-			// coverage over this line. Removing the `<button` proxy is the fix;
-			// replacing it with a second marker for the same control is not.
-			Expect(block).NotTo(ContainSubstring("data-speak"))
+			Expect(block).To(ContainSubstring("data-speak"))
+			Expect(block).To(ContainSubstring(`aria-label="Read aloud"`))
+			Expect(block).To(ContainSubstring(`class="speak-icon"`))
+			// The negative half: the control is a utility, not an answer control.
+			Expect(block).NotTo(ContainSubstring("<form"))
+			Expect(block).NotTo(ContainSubstring("data-ack"))
+			Expect(block).NotTo(ContainSubstring(`value="skip"`))
 		})
 	})
 
@@ -276,12 +285,57 @@ var _ = Describe("Attention page board controls", func() {
 			Expect(rowBlock(body, message.ItemID)).To(ContainSubstring("<form"))
 			Expect(rowBlock(body, permission.ItemID)).NotTo(ContainSubstring("<form"))
 			// ⚠️ AMENDED 2026-09-27 (second time) — the `<button` proxy again.
-			// The permission row renders the jump corner and the corner X; what
-			// must not reach it is an ANSWER control.
+			// The permission row renders the jump corner, the corner X and the
+			// read-aloud control; what must not reach it is an ANSWER control.
+			Expect(rowBlock(body, permission.ItemID)).To(ContainSubstring("data-speak"))
 			Expect(rowBlock(body, permission.ItemID)).NotTo(ContainSubstring("data-ack"))
 			Expect(rowBlock(body, permission.ItemID)).NotTo(ContainSubstring("<input"))
+			Expect(rowBlock(body, permission.ItemID)).NotTo(ContainSubstring(`value="skip"`))
 		},
 	)
+
+	// ⚠️ The negative control for the gate itself, added 2026-09-27. Dropping the
+	// `Message` conjunct must not be achieved by dropping the `Speak` gate too:
+	// with no tts server configured, no row renders a speaker at all. `Speak` is
+	// set from the page-level `speakEnabled`, so the reachable instance of
+	// `Speak == false` is a whole page, never a single card — a probe that cannot
+	// produce a `Speak == false` row is measuring nothing.
+	//
+	// The positive clause is load-bearing: the absence alone is also satisfied by
+	// a page that rendered no rows at all, so each row is asserted present first.
+	It("renders no read-aloud control on any row when read-aloud is disabled", func() {
+		message, err := store.Push(ctx, messageRequest())
+		Expect(err).To(BeNil())
+		permission, err := store.Push(ctx, permissionRequest())
+		Expect(err).To(BeNil())
+		provenance.ResolveReturns(pkg.Provenances{
+			permission.ItemID: pkg.Provenance{Pane: "1907", PaneRecorded: true, Routable: true},
+		})
+
+		noSpeakHandler := handler.NewAttentionPageHandler(
+			store,
+			provenance,
+			false,
+			pkg.NewJumpTokenReader(""),
+		)
+
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		resp := httptest.NewRecorder()
+		noSpeakHandler.ServeHTTP(resp, req)
+		Expect(resp.Code).To(Equal(http.StatusOK))
+		body := resp.Body.String()
+
+		// Positive clause first: both rows rendered, so the absence below is a
+		// withheld control rather than an empty page.
+		Expect(rowBlock(body, message.ItemID)).To(ContainSubstring("data-item-id"))
+		Expect(rowBlock(body, permission.ItemID)).To(ContainSubstring("data-item-id"))
+
+		// ⚠️ Asserted per ROW, never on the whole body: `data-speak` also appears
+		// in the page's own script (`querySelectorAll('button[data-speak]')`), so a
+		// body-wide substring check fails on a correctly-disabled page.
+		Expect(rowBlock(body, message.ItemID)).NotTo(ContainSubstring("data-speak"))
+		Expect(rowBlock(body, permission.ItemID)).NotTo(ContainSubstring("data-speak"))
+	})
 
 	// The dimmed record is the answered item's card: it carries what was
 	// recorded and offers nothing to act on. The positive controls are the
