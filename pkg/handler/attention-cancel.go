@@ -15,6 +15,7 @@ import (
 
 	"github.com/bborbe/errors"
 	libhttp "github.com/bborbe/http"
+	"github.com/golang/glog"
 	"github.com/gorilla/mux"
 
 	"github.com/bborbe/attention-controller/pkg"
@@ -130,6 +131,16 @@ func handleAttentionCancel(
 			},
 		)
 	}
+	// Logged here rather than inside callCancel so the entry names the item as
+	// well as the tts message: a stop is an operator action, and this line is
+	// the only record of which reading it ended.
+	glog.V(2).Infof(
+		"cancelled reading for item %s: tts message %s, %d cancelled, %d queued",
+		itemID.String(),
+		body.MessageID,
+		len(stopped.Cancelled),
+		stopped.Queued,
+	)
 	if err := libhttp.SendJSONResponse(ctx, resp, stopped, http.StatusOK); err != nil {
 		return errors.Wrap(ctx, err, "send response failed")
 	}
