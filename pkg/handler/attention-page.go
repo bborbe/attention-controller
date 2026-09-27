@@ -1436,6 +1436,37 @@ type attentionPageData struct {
 	HideAnswered bool
 }
 
+// affordance derives the controls a card carries from the item's answer
+// mechanism. It is the one place that decision is made.
+//
+// ⚠️ It was two comparisons over the same field, and that shape read as a single
+// derivation without being one: nothing in `Message: mechanism == message, Ack:
+// mechanism == ack` states that a mechanism holds at most one affordance, so
+// the two predicates were free to disagree and a mechanism matching neither fell
+// through to whatever the template's `else` branch happened to be. That
+// fall-through was not hypothetical — it is how a report-only `ack` card once
+// rendered nothing at all, and how an `ack` card inherited a `permission` card's
+// shape by accident. A switch over the one field makes the exclusivity
+// structural: one mechanism, one arm, one answer.
+//
+// The `default` is deliberate rather than defensive. A mechanism the board has
+// not been taught renders NO control rather than inheriting one: an inherited
+// control offers the operator a move the mechanism does not support, and it does
+// so silently, where rendering nothing is visible. `permission` reaches this arm
+// today — a gate is approve-shaped and only the operator may answer it in the
+// session that raised it, so a control there would be the permission laundering
+// the schema forbids.
+func affordance(mechanism pkg.AnswerMechanism) (message bool, ack bool) {
+	switch mechanism {
+	case pkg.MessageAnswerMechanism:
+		return true, false
+	case pkg.AckAnswerMechanism:
+		return false, true
+	default:
+		return false, false
+	}
+}
+
 // newAttentionPageRow pairs an item with what could be resolved about its origin
 // and precomputes the question units its card renders.
 //
@@ -1452,13 +1483,12 @@ func newAttentionPageRow(
 	row := attentionPageRow{
 		Item:       item,
 		Provenance: provenance,
-		Message:    item.AnswerMechanism == pkg.MessageAnswerMechanism,
-		Ack:        item.AnswerMechanism == pkg.AckAnswerMechanism,
 		Jump:       jumpCommand(item, provenance),
 		JumpURL:    jumpURL(item, provenance, jumpEnabled),
 		NoJump:     noJumpReason(item, provenance, jumpEnabled),
 		Speak:      speak,
 	}
+	row.Message, row.Ack = affordance(item.AnswerMechanism)
 	if item.State == pkg.AnsweredState {
 		// The board renders the record of what was answered so the operator can
 		// see the answer standing in their name. `answered_by` is a caller

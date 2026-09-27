@@ -839,6 +839,92 @@ var _ = Describe("AttentionPageHandler", func() {
 		Expect(block).NotTo(ContainSubstring("<input"))
 	})
 
+	// The card's control set is derived from the item's answer mechanism in one
+	// place, and this table is that derivation's own coverage. It iterates the
+	// enum's collection rather than listing the members by hand, so a fourth
+	// mechanism fails here until its affordance is decided — which is the
+	// property the single switch exists for.
+	//
+	// ⚠️ `affordance` and `newAttentionPageRow` are both unexported and this file
+	// is `package handler_test`, so the (message, ack) pair cannot be read
+	// directly. Each case drives the page handler this file already builds and
+	// asserts the RENDERED MARKUP of one item's row — never the whole body,
+	// because the inline <script> carries the literal `data-ack` on every page,
+	// so a page-wide `data-ack` assertion cannot fail.
+	Describe("the affordance an item's answer mechanism carries", func() {
+		// affordances is keyed by the enum itself rather than by string, so a
+		// member spelled wrong is a compile error, and the table body can assert
+		// that every member the enum declares has an entry here.
+		affordances := map[pkg.AnswerMechanism]struct {
+			message bool
+			ack     bool
+		}{
+			pkg.MessageAnswerMechanism:    {message: true, ack: false},
+			pkg.PermissionAnswerMechanism: {message: false, ack: false},
+			pkg.AckAnswerMechanism:        {message: false, ack: true},
+		}
+
+		// affordanceRequest builds a pushable declaration for one mechanism. All
+		// three are real, pushable items — `permission` is what exercises the new
+		// default branch rather than a synthetic stand-in for it.
+		affordanceRequest := func(mechanism pkg.AnswerMechanism) pkg.PushRequest {
+			producerID := pkg.ProducerID("producer-affordance-" + mechanism.String())
+			return pkg.PushRequest{
+				ProducerID:      producerID,
+				ProducerKind:    pkg.SessionProducerKind,
+				LivenessRef:     pkg.LivenessRef("session:" + producerID.String()),
+				DedupKey:        pkg.DedupKey("affordance-" + mechanism.String()),
+				InterruptClass:  "approve",
+				Payload:         "what does this card carry?",
+				AnswerMechanism: mechanism,
+			}
+		}
+
+		// The entries are built by iterating the enum's own collection, never by
+		// listing the members here: a table that listed them by hand would keep
+		// passing when a fourth is added, which is exactly what this table must
+		// not do.
+		entries := make([]TableEntry, 0, len(pkg.AvailableAnswerMechanisms))
+		for _, mechanism := range pkg.AvailableAnswerMechanisms {
+			entries = append(entries, Entry(mechanism.String(), mechanism))
+		}
+
+		DescribeTable("renders the controls the mechanism derives",
+			func(mechanism pkg.AnswerMechanism) {
+				expected, decided := affordances[mechanism]
+				Expect(decided).To(
+					BeTrue(),
+					"no affordance decided for mechanism %q — decide it in affordance()",
+					mechanism,
+				)
+
+				item, err := store.Push(ctx, affordanceRequest(mechanism))
+				Expect(err).To(BeNil())
+
+				row := rowOf(get("GET").Body.String(), item.ItemID)
+
+				// Positive control: the row rendered at all, so the absences below
+				// cannot pass on a page that dropped it.
+				Expect(row).To(ContainSubstring(item.Payload.String()))
+
+				// A `message` row renders the answer form and no acknowledge; an
+				// `ack` row renders the acknowledge and no form; a `permission` row
+				// renders neither, which is the default branch.
+				if expected.message {
+					Expect(row).To(ContainSubstring("<form"))
+				} else {
+					Expect(row).NotTo(ContainSubstring("<form"))
+				}
+				if expected.ack {
+					Expect(row).To(ContainSubstring("data-ack"))
+				} else {
+					Expect(row).NotTo(ContainSubstring("data-ack"))
+				}
+			},
+			entries,
+		)
+	})
+
 	// The corner X. It is one affordance whose act is the mechanism's own
 	// dominant act — an alias of Dismiss on a message card, of Acknowledge on an
 	// ack card — so it adds no transition and no field. See [[Attention Item
