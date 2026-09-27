@@ -595,27 +595,40 @@ function showNote(form, message, isError) {
    form ancestor: the control sits in the card's top-right corner, outside the
    answer form, so a form-ancestor lookup here returns null and this handler
    throws before it ever fetches. The corner X reads the row the same way, for
-   the same reason. */
-document.querySelectorAll('button[data-speak]').forEach(function (button) {
-  button.addEventListener('click', function () {
-    var row = button.closest('li.item');
-    var itemID = row.getAttribute('data-item-id');
-    var noteHost = row.querySelector('form.answer') || row;
-    fetch('/api/1.0/attention/' + encodeURIComponent(itemID) + '/speak', { method: 'POST' })
-      .then(function (response) {
-        return response.text().then(function (body) {
-          showNote(
-            noteHost,
-            response.ok
-              ? 'Reading aloud (' + body + ')'
-              : 'Read aloud failed - HTTP ' + response.status + ' - ' + body,
-            !response.ok
-          );
-        });
-      }).catch(function (error) {
-        showNote(noteHost, 'Read aloud failed - ' + String(error), true);
+   the same reason.
+
+   ⚠️ Delegated on the document, NOT bound per button — for the same reason the
+   Jump control is, and the reason is a defect rather than a preference. The
+   stream replaces a row's whole outerHTML on every event (upsertRow), and a
+   listener attached to the old node dies with it. A per-button binding
+   therefore leaves every re-rendered card's read-aloud control inert while
+   still rendering it correctly: the button is there, the click does nothing,
+   no request is made, and no note appears. That is the failure this repo
+   already shipped once at v0.19.0, and the Jump control was converted to
+   delegation to fix its half of it — the read-aloud control was left behind
+   until 2026-09-27, when the permission-card ruling made the inert case
+   routine rather than occasional. */
+document.addEventListener('click', function (event) {
+  if (!event.target || !event.target.closest) { return; }
+  var button = event.target.closest('button[data-speak]');
+  if (!button) { return; }
+  var row = button.closest('li.item');
+  var itemID = row.getAttribute('data-item-id');
+  var noteHost = row.querySelector('form.answer') || row;
+  fetch('/api/1.0/attention/' + encodeURIComponent(itemID) + '/speak', { method: 'POST' })
+    .then(function (response) {
+      return response.text().then(function (body) {
+        showNote(
+          noteHost,
+          response.ok
+            ? 'Reading aloud (' + body + ')'
+            : 'Read aloud failed - HTTP ' + response.status + ' - ' + body,
+          !response.ok
+        );
       });
-  });
+    }).catch(function (error) {
+      showNote(noteHost, 'Read aloud failed - ' + String(error), true);
+    });
 });
 /* ⚠️ The Jump control is a button, not a link, and the difference is the
    operator's ask: "so we dont switch the screen". A link navigates the browser
@@ -924,7 +937,7 @@ function showAckNote(row, message, isError) {
 {{define "attention-row"}}<li class="item{{if .Dimmed}} dimmed{{end}}" data-item-id="{{ .Item.ItemID }}">
 <div class="producer">{{ .Item.ProducerID }} ({{ .Item.ProducerKind }})</div>
 {{if or .Message .Ack}}<button type="button" class="corner-x" data-corner-x aria-label="Skip this item">✕</button>
-{{end}}{{if and .Message .Speak}}<button type="button" class="speak" data-speak aria-label="Read aloud" title="Read aloud"><svg class="speak-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2.75 5.25 5.5H2.75v5h2.5L9 13.25z"/><path d="M11.5 5.75a3.25 3.25 0 0 1 0 4.5"/><path d="M13.5 3.75a6 6 0 0 1 0 8.5"/></svg></button>
+{{end}}{{if .Speak}}<button type="button" class="speak" data-speak aria-label="Read aloud" title="Read aloud"><svg class="speak-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2.75 5.25 5.5H2.75v5h2.5L9 13.25z"/><path d="M11.5 5.75a3.25 3.25 0 0 1 0 4.5"/><path d="M13.5 3.75a6 6 0 0 1 0 8.5"/></svg></button>
 {{end}}{{if .JumpURL}}<button type="button" class="jump-corner" data-jump="{{ .JumpURL }}" aria-label="Jump to session" title="Jump to session"><svg class="jump-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.75 3.25h8.5a1.5 1.5 0 0 1 1.5 1.5v6.5a1.5 1.5 0 0 1-1.5 1.5h-8.5a1.5 1.5 0 0 1-1.5-1.5v-6.5a1.5 1.5 0 0 1 1.5-1.5z"/><path d="M5.75 6.5 7.5 8.25 5.75 10"/><path d="M9 10h1.75"/></svg></button>
 {{else if .NoJump}}<button type="button" class="jump-corner" disabled aria-label="Jump to session" title="Jump to session"><svg class="jump-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.75 3.25h8.5a1.5 1.5 0 0 1 1.5 1.5v6.5a1.5 1.5 0 0 1-1.5 1.5h-8.5a1.5 1.5 0 0 1-1.5-1.5v-6.5a1.5 1.5 0 0 1 1.5-1.5z"/><path d="M5.75 6.5 7.5 8.25 5.75 10"/><path d="M9 10h1.75"/></svg></button>
 {{end}}{{if not .Message}}<div class="payload">{{ .Item.Payload }}</div>
