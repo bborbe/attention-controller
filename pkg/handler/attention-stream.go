@@ -190,8 +190,18 @@ func (a *attentionStreamHandler) push(
 // item id. It resolves provenance and the jump token exactly as the page does,
 // so a row arriving over the stream is identical to the same row on a fresh
 // load.
+//
+// ⚠️ ReadBoard, not Read — the same reader the page uses, and for the same
+// reason. Read returns open items only, so an item that was answered left this
+// map and the channel sent a removal for it: the board dropped the row at the
+// moment the dimmed record became worth reading, and the record reappeared only
+// on the next load. That contradicted § The dimmed record card, which has the
+// card appear when the item is answered and leave when it reaches closed. The
+// two readers have to agree, because the stream's whole claim is that a row it
+// sends is identical to the same row on a fresh load — with Read here and
+// ReadBoard on the page, that claim was false for every answered item.
 func (a *attentionStreamHandler) render(ctx context.Context) (map[string]string, error) {
-	items, err := a.store.Read(ctx)
+	items, err := a.store.ReadBoard(ctx)
 	if err != nil {
 		return nil, errors.Wrap(ctx, err, "read failed")
 	}

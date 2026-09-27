@@ -111,6 +111,12 @@ body {
 }
 h1 { font-size: 20px; margin: 0 0 16px; }
 ul.items { list-style: none; padding: 0; margin: 0; }
+/* The board's own view control, above the first card. It is a control on the
+   PAGE rather than on a card, which is why it appears in no row of the
+   schema's control-set table: it renders no item, writes no field and causes
+   no transition — it decides which of the rows the store already returned are
+   drawn. */
+.board-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 0 0 16px; }
 /* An answered item stays on the board as a dimmed record rather than
    disappearing: the operator asked to see what they answered, and the record is
    the only place the answer standing in their name is visible. It leaves when
@@ -297,7 +303,14 @@ li.item {
   padding: 2px 6px;
   user-select: all;
 }
-.jump-button {
+/* The filter reuses the jump button's geometry and colours rather than
+   declaring a second button style: the page has one button vocabulary, and a
+   control that looks unlike every other control invites the reading that it
+   behaves unlike them. Its pressed state takes the affirmative colours the
+   card's Submit answer uses, so "on" is legible from the page rather than
+   only from the wording — a toggle whose state lives only in its label is a
+   control the operator cannot read back. */
+.jump-button, .board-filter {
   background: var(--panel);
   color: var(--text);
   border: 1px solid var(--border);
@@ -307,7 +320,13 @@ li.item {
   font-family: inherit;
   cursor: pointer;
 }
-.jump-button:hover { border-color: var(--muted); }
+.jump-button:hover, .board-filter:hover { border-color: var(--muted); }
+.board-filter[aria-pressed="true"] {
+  background: var(--green-bg);
+  color: var(--green);
+  border-color: var(--green-bg);
+  font-weight: 500;
+}
 /* A control's outcome is shown, never swallowed into a reload — a silent catch
    reports a code fault as a connection problem. The class is "note" rather than
    "failed" because the read-aloud control reports success through it too (the
@@ -319,6 +338,15 @@ li.item {
 </head>
 <body>
 <h1>Attention</h1>
+{{/* Rendered whether or not the board has rows. A control that appears and
+     disappears as the store changes would move under the operator's cursor,
+     and an empty board is a state the board is in often. With no rows to
+     filter it is inert rather than absent.
+     The label names the set it hides rather than the set it leaves, because
+     that is the half the ruling settled: it hides the dimmed answered records
+     and keeps every permission card, which is actionable but carries no
+     answering control. "Only answerable" would read as excluding them. */}}
+<div class="board-controls"><button type="button" class="board-filter" data-board-filter aria-pressed="false">Hide answered</button></div>
 {{if .Items}}<ul class="items">
 {{range .Items}}{{template "attention-row" .}}{{end}}</ul>
 {{else}}<p class="empty">Nothing needs attention.</p>
@@ -606,8 +634,31 @@ function showAckNote(row, message, isError) {
    — with the stream blocked, a reload would make the row change anyway, and the
    control could not then tell the channel from a coincidence. */
 (function () {
-  if (typeof EventSource === 'undefined') { return; }
-  function rowFor(itemID) {
+  /* The board's own view filter. It hides the dimmed record cards — the
+     answered items the board keeps as evidence — so the page answers "what is
+     left" rather than showing records beside open prompts. Two properties are
+     load bearing and neither is cosmetic.
+
+     A filtered row is REMOVED, not hidden. A display:none rule leaves the node
+     in the document, so a selector, a script or the operator's own assistive
+     tooling still finds a card the board claims not to be showing.
+
+     And the filter runs on the stream path too, not only at first paint. The
+     channel sends a rendered row and this page swaps it in, so a filter that
+     ran once at load would leak every row that arrived afterwards — including
+     a card that becomes answered while the board is open, which is exactly
+     the row the filter exists to hide. */
+  var button = document.querySelector('button[data-board-filter]');
+  var on = false;
+  /* The rows the filter is hiding, in board order. Each entry carries the id
+     of the row that followed it, so a restore returns it to its own place
+     rather than to the foot of the board. It holds rendered HTML rather than
+     a detached node: a dimmed row carries no form and no typed state, so a
+     round trip through markup loses nothing, and the markup is the server's
+     own renderer output either way. */
+  var parked = [];
+
+  function findRow(itemID) {
     /* Compared rather than selected: the id lands in a selector string
        otherwise, and a generated id is not the place to rely on. */
     var rows = document.querySelectorAll('li.item');
@@ -616,37 +667,103 @@ function showAckNote(row, message, isError) {
     }
     return null;
   }
+  /* The list, created in place of the empty-state paragraph when the board
+     rendered one. The stream needed this already; the filter needs it too,
+     because a board the filter emptied is not an empty board — its rows are
+     parked, not gone. */
+  function ensureList() {
+    var list = document.querySelector('ul.items');
+    if (list) { return list; }
+    var empty = document.querySelector('p.empty');
+    if (!empty) { return null; }
+    list = document.createElement('ul');
+    list.className = 'items';
+    empty.parentNode.replaceChild(list, empty);
+    return list;
+  }
+  function nextRowID(row) {
+    var next = row.nextElementSibling;
+    while (next && !next.classList.contains('item')) { next = next.nextElementSibling; }
+    return next ? next.getAttribute('data-item-id') : null;
+  }
+  function park(row) {
+    var id = row.getAttribute('data-item-id');
+    /* Re-parking replaces rather than appends: a row that streams an update
+       while hidden arrives here a second time, and two entries for one id
+       would restore it twice. */
+    parked = parked.filter(function (entry) { return entry.id !== id; });
+    parked.push({ id: id, html: row.outerHTML, next: nextRowID(row) });
+    row.remove();
+  }
+  function unpark() {
+    var list = ensureList();
+    if (!list) { return; }
+    /* Restored back to front, so an entry whose anchor is itself still parked
+       is placed after that anchor rather than appended past it — parking a run
+       of adjacent dimmed rows records each one's anchor as the next, and a
+       forward walk would not find any of them yet. */
+    for (var i = parked.length - 1; i >= 0; i--) {
+      var entry = parked[i];
+      var anchor = entry.next ? findRow(entry.next) : null;
+      if (anchor) { anchor.insertAdjacentHTML('beforebegin', entry.html); continue; }
+      list.insertAdjacentHTML('beforeend', entry.html);
+    }
+    parked = [];
+  }
+  function applyFilter() {
+    if (!on) { unpark(); return; }
+    var rows = document.querySelectorAll('li.item.dimmed');
+    for (var i = 0; i < rows.length; i++) { park(rows[i]); }
+  }
+  function forget(itemID) {
+    parked = parked.filter(function (entry) { return entry.id !== itemID; });
+  }
+  if (button) {
+    button.addEventListener('click', function () {
+      on = !on;
+      button.setAttribute('aria-pressed', on ? 'true' : 'false');
+      applyFilter();
+    });
+  }
   function collapseIfEmpty() {
     var list = document.querySelector('ul.items');
     if (!list || list.querySelector('li.item')) { return; }
+    /* A board the filter emptied is not an empty board: the store still holds
+       the parked records, and collapsing here would take away the list they
+       restore into. */
+    if (parked.length > 0) { return; }
     var empty = document.createElement('p');
     empty.className = 'empty';
     empty.textContent = 'Nothing needs attention.';
     list.parentNode.replaceChild(empty, list);
   }
   function upsertRow(itemID, html) {
-    var row = rowFor(itemID);
-    if (row) { row.outerHTML = html; return; }
-    var list = document.querySelector('ul.items');
-    if (!list) {
-      /* The board rendered its empty state, so the list does not exist yet.
-         The new list takes that paragraph's place rather than being appended,
-         so a row arriving into an empty board lands where a row belongs. */
-      var empty = document.querySelector('p.empty');
-      if (!empty) { return; }
-      list = document.createElement('ul');
-      list.className = 'items';
-      empty.parentNode.replaceChild(list, empty);
+    var row = findRow(itemID);
+    if (row) {
+      row.outerHTML = html;
+    } else {
+      var list = ensureList();
+      if (!list) { return; }
+      list.insertAdjacentHTML('beforeend', html);
     }
-    list.insertAdjacentHTML('beforeend', html);
+    /* Applied after the swap, so a card that becomes answered while the
+       filter is on is parked rather than left standing as an open card. */
+    applyFilter();
   }
+  /* The filter is wired above this guard rather than below it. It is plain DOM
+     work, and a browser with no EventSource still renders the board and still
+     has to be able to ask what is left. */
+  if (typeof EventSource === 'undefined') { return; }
   var source = new EventSource('/api/1.0/attention/stream');
   /* No reconnect handler: EventSource reconnects on its own, which is the
      property that lets the board survive a restart of the store. */
   source.onmessage = function (event) {
     var change = JSON.parse(event.data);
     if (change.type === 'remove') {
-      var row = rowFor(change.item_id);
+      /* Dropped from the parked set as well as from the board: a row the
+         store removed must not come back when the filter is switched off. */
+      forget(change.item_id);
+      var row = findRow(change.item_id);
       if (row) { row.remove(); }
       collapseIfEmpty();
       return;
