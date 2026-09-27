@@ -609,8 +609,14 @@ var _ = Describe("Attention page board controls", func() {
 
 			// The state must not also be carried on a second attribute: a
 			// control reporting both aria-pressed and aria-checked tells
-			// assistive tech two different things about one state.
-			Expect(body).NotTo(ContainSubstring(`aria-pressed`))
+			// assistive tech two different things about one state. Asserted
+			// against the control's whole opening tag rather than against the
+			// page, so a later board control that legitimately uses aria-pressed
+			// does not break this spec for an unrelated reason.
+			Expect(body).To(ContainSubstring(
+				`<button type="button" class="board-filter" data-board-filter ` +
+					`role="switch" aria-checked="false">`,
+			))
 		})
 
 		It("leaves an open permission card outside the filter's target set", func() {

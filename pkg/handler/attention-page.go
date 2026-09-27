@@ -352,6 +352,11 @@ li.item {
   stroke: var(--green);
 }
 .board-filter[aria-checked="true"] .switch-knob { transform: translateX(20px); }
+/* The focus ring outranks the state deliberately — the opposite precedence from
+   the hover rule above, and for the opposite reason. Hover is the pointer
+   passing over, which must not obscure what the control is set to; focus is the
+   keyboard's only affordance, and it has to be visible whatever the state is.
+   The fill still carries the state, so nothing is lost by the stroke change. */
 .board-filter:focus-visible .switch-track { stroke: var(--text); }
 /* A control's outcome is shown, never swallowed into a reload — a silent catch
    reports a code fault as a connection problem. The class is "note" rather than
