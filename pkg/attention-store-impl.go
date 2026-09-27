@@ -220,27 +220,135 @@ func (a *attentionStore) classifyForRead(
 // producer-liveness branch and the prune below it, so an item admitted past it
 // must be returned deliberately rather than falling through — which is why the
 // `answered` case returns early instead of widening the condition.
+//
+// ⚠️ It runs as three short steps, not one long transaction. It used to hold a
+// single `Update` across the whole scan *and* every per-item liveness check,
+// and bbolt permits one read-write transaction at a time — so a list read
+// blocked every other read and every Push for the length of a scan that does
+// file I/O per item. Measured 2026-09-27 against a 70-entry session registry:
+// the read path answered in 0.03 s when quiet and 10.6 s under load,
+// `attention-ask.py post` failed on every attempt because a valid write could
+// not get the lock, and the process sat at 46-82 % CPU decoding items it was
+// holding a writer lock over. The operator's direction was explicit — "don't
+// use big, long-running transactions and better to multiple small ones".
+//
+// The steps:
+//
+//  1. a short `View` that only decodes the stored items — it takes no writer
+//     lock at all, so it cannot starve a Push;
+//  2. classification, including the per-item liveness I/O, outside every
+//     transaction, so no lock is held while a file is stat'd or a registry is
+//     scanned;
+//  3. a short `Update` that removes the dead items, opened only when there is
+//     something to remove, so the common healthy read stays read-only end to
+//     end.
+//
+// ⚠️ The prune is a compare-and-delete, not a blind delete. The disposition
+// comes from a snapshot, and two independent things can change after it is
+// taken: the item's STATE (Answer and Close take no liveness gate, so an item
+// can legitimately be answered while still open) and the producer's LIVENESS
+// (which is not monotonic — a refreshed heartbeat or a resumed session flips it
+// back). `pruneDead` re-reads both against the live value inside its own
+// transaction, which is the repo's own rule: a compare-and-set belongs inside
+// the transaction, never as a separate read then write.
 func (a *attentionStore) read(ctx context.Context, includeAnswered bool) (Items, error) {
-	items := make(Items, 0)
-	dead := make([]string, 0)
-	err := a.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
-		err := a.store.Map(ctx, tx, func(ctx context.Context, key string, item Item) error {
-			disposition, err := a.classifyForRead(ctx, item, includeAnswered)
-			if err != nil {
-				return errors.Wrap(ctx, err, "classify item failed")
-			}
-			if disposition.keep {
-				items = append(items, item)
-			}
-			if disposition.remove {
-				dead = append(dead, key)
-			}
+	items, err := a.readItems(ctx)
+	if err != nil {
+		return nil, errors.Wrap(ctx, err, "read failed")
+	}
+
+	kept := make(Items, 0, len(items))
+	dead := make([]string, 0, len(items))
+	for _, stored := range items {
+		disposition, err := a.classifyForRead(ctx, stored.item, includeAnswered)
+		if err != nil {
+			return nil, errors.Wrap(ctx, err, "classify item failed")
+		}
+		if disposition.keep {
+			kept = append(kept, stored.item)
+		}
+		if disposition.remove {
+			dead = append(dead, stored.key)
+		}
+	}
+
+	if err := a.pruneDead(ctx, dead); err != nil {
+		return nil, err
+	}
+	return kept, nil
+}
+
+// storedItem is an item together with the key it is stored under, so a prune
+// removes exactly the key the scan enumerated rather than one rebuilt from the
+// item. The two agree today — every writer keys on ItemID.String() — but
+// carrying the key keeps the property verifiable instead of assumed: a rebuilt
+// key that diverged would target a nonexistent key, delete nothing, and be
+// re-attempted on every read forever with no error anywhere.
+type storedItem struct {
+	key  string
+	item Item
+}
+
+// readItems decodes every stored item inside a read-only transaction.
+//
+// It is deliberately a `View` and not an `Update`: the scan itself mutates
+// nothing, and taking a writer lock for it is what let a list read block every
+// Push behind it.
+func (a *attentionStore) readItems(ctx context.Context) ([]storedItem, error) {
+	items := make([]storedItem, 0)
+	err := a.db.View(ctx, func(ctx context.Context, tx libkv.Tx) error {
+		return a.store.Map(ctx, tx, func(ctx context.Context, key string, item Item) error {
+			items = append(items, storedItem{key: key, item: item})
 			return nil
 		})
-		if err != nil {
-			return errors.Wrap(ctx, err, "map items failed")
-		}
-		for _, key := range dead {
+	})
+	if err != nil {
+		return nil, errors.Wrap(ctx, err, "map items failed")
+	}
+	return items, nil
+}
+
+// pruneDead removes the items a read classified as dead, in one short write
+// transaction.
+//
+// It opens no transaction when there is nothing to remove, which is the common
+// case: a store whose producers are all live never takes the writer lock on a
+// read.
+//
+// ⚠️ It is a COMPARE-AND-DELETE, not a blind delete, and both re-checks below
+// are load-bearing. The disposition was computed from the snapshot `readItems`
+// took, and two independent things can change between that snapshot and this
+// transaction:
+//
+//   - the item's STATE. Answer and Close take no liveness gate — an answer may
+//     legitimately name an item whose asker is gone — so an item classified
+//     dead while open can be answered before this runs. Deleting it would
+//     rewrite history the schema says is never rewritten, which is the one
+//     thing the prune exists not to do. Measured 2026-09-27: without this
+//     check, an answer landing inside the classification window left the item
+//     gone from `History` entirely.
+//   - the producer's LIVENESS, which is NOT monotonic. A refreshed heartbeat
+//     file, a session resumed under the same id, or an unreadable registry
+//     (which reads as live) each flip a producer back — and
+//     `updateExistingIfLive` then updates that item's key in place, so a blind
+//     delete would remove an item a live producer has just refreshed.
+//
+// Both are re-read here against the live value. The liveness check does file
+// I/O, but only for the dead subset — the whole scan still runs outside every
+// transaction, which is what the split was for.
+func (a *attentionStore) pruneDead(ctx context.Context, keys []string) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	err := a.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
+		for _, key := range keys {
+			remove, err := a.stillDead(ctx, tx, key)
+			if err != nil {
+				return err
+			}
+			if !remove {
+				continue
+			}
 			if err := a.store.Remove(ctx, tx, key); err != nil {
 				return errors.Wrapf(ctx, err, "remove dead item %s failed", key)
 			}
@@ -248,9 +356,47 @@ func (a *attentionStore) read(ctx context.Context, includeAnswered bool) (Items,
 		return nil
 	})
 	if err != nil {
-		return nil, errors.Wrap(ctx, err, "read failed")
+		return errors.Wrap(ctx, err, "prune dead items failed")
 	}
-	return items, nil
+	return nil
+}
+
+// stillDead re-checks one key the read classified dead, against the value that
+// is live now rather than the snapshot the disposition came from.
+//
+// It is a method rather than an inline branch for the same reason
+// classifyForRead is one: the state check and the liveness check together
+// exceed the complexity budget the linter allows the prune loop, and the
+// not-found case is easier to read stated once here than as a nested continue.
+func (a *attentionStore) stillDead(
+	ctx context.Context,
+	tx libkv.Tx,
+	key string,
+) (bool, error) {
+	item, err := a.store.Get(ctx, tx, key)
+	if err != nil {
+		if isNotFound(err) {
+			// Another read pruned it first. Nothing left to do, and not an
+			// error: the item is gone, which is what this call wanted.
+			return false, nil
+		}
+		return false, errors.Wrapf(ctx, err, "get dead item %s failed", key)
+	}
+	// Answered or closed since the snapshot. Its history is never rewritten, so
+	// it is left exactly as it now stands — this is the check that stops the
+	// prune destroying a resolution the operator just recorded.
+	if item.State != OpenState {
+		return false, nil
+	}
+	live, err := a.isProducerLive(ctx, item)
+	if err != nil {
+		return false, errors.Wrapf(ctx, err, "recheck liveness for dead item %s failed", key)
+	}
+	// Liveness is not monotonic: a resumed session or a refreshed heartbeat
+	// makes a producer live again, and updateExistingIfLive updates that item's
+	// key in place — so a producer that was gone when the scan ran may be
+	// holding this item now.
+	return !live, nil
 }
 
 // History returns every item regardless of state.
