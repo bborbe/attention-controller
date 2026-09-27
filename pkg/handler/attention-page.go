@@ -413,6 +413,13 @@ li.item {
    keyboard's only affordance, and it has to be visible whatever the state is.
    The fill still carries the state, so nothing is lost by the stroke change. */
 .board-filter:focus-visible .switch-track { stroke: var(--text); }
+/* The board's own health, beside the filter switch: the switch says which rows
+   are drawn, this says whether the rows still track the store. Warn colour and
+   no new token — a stream that has stopped is a fault, not a state the board
+   is designed to sit in. It is hidden in the served markup and shown only by
+   the stream's own onerror, so a healthy board and a quiet board render
+   nothing: a board that is merely quiet must still look quiet. */
+.stream-stale { color: var(--warn); font-size: 13px; }
 /* A control's outcome is shown, never swallowed into a reload — a silent catch
    reports a code fault as a connection problem. The class is "note" rather than
    "failed" because the read-aloud control reports success through it too (the
@@ -441,8 +448,14 @@ li.item {
      STATE and the label carries the MEANING; neither substitutes for the
      other. role="switch" with aria-checked is the shape a two-state control
      is meant to have, and it replaces the aria-pressed this control shipped
-     with in v0.20.0. */}}
-<div class="board-controls"><button type="button" class="board-filter" data-board-filter role="switch" aria-checked="{{if .HideAnswered}}true{{else}}false{{end}}"><svg class="switch" viewBox="0 0 44 24" aria-hidden="true" focusable="false"><rect class="switch-track" x="1" y="1" width="42" height="22" rx="11"/><circle class="switch-knob" cx="12" cy="12" r="8"/></svg><span class="switch-label">Hide answered</span></button></div>
+     with in v0.20.0.
+     ⚠️ The row also carries the board's stream health: a span saying the board
+     has stopped tracking the store and is showing the last state it received.
+     It sits here rather than on a card because it describes the BOARD, not an
+     item — the same reason the switch sits here. It ships hidden and is shown
+     only by the stream's own onerror, so a healthy board, a quiet board and an
+     empty board all render exactly what they rendered before. */}}
+<div class="board-controls"><button type="button" class="board-filter" data-board-filter role="switch" aria-checked="{{if .HideAnswered}}true{{else}}false{{end}}"><svg class="switch" viewBox="0 0 44 24" aria-hidden="true" focusable="false"><rect class="switch-track" x="1" y="1" width="42" height="22" rx="11"/><circle class="switch-knob" cx="12" cy="12" r="8"/></svg><span class="switch-label">Hide answered</span></button><span class="stream-stale" data-stream-stale hidden>Not tracking the store - showing the last known state.</span></div>
 {{if .Items}}<ul class="items">
 {{range .Items}}{{template "attention-row" .}}{{end}}</ul>
 {{else}}<p class="empty">Nothing needs attention.</p>
@@ -622,6 +635,7 @@ function showNote(form, message, isError) {
   note.className = isError ? 'note failed' : 'note';
   note.textContent = message;
   form.appendChild(note);
+  rememberFailure(form, 'form', message, isError);
 }
 /* The read-aloud control is a TOGGLE: a click while its own item is playing
    stops that playback, and a click when nothing of its own is playing starts a
@@ -798,6 +812,7 @@ function showJumpNote(row, message, isError) {
   note.className = isError ? 'note failed' : 'note';
   note.textContent = message;
   container.appendChild(note);
+  rememberFailure(row, 'jump', message, isError);
 }
 /* ⚠️ The acknowledge path closes the item — open -> closed — and on a
    report-only card it is the only move that card offers. It posts the board as
@@ -894,6 +909,46 @@ function showCloseNote(row, message, isError) {
   note.className = isError ? 'note failed' : 'note';
   note.textContent = message;
   container.appendChild(note);
+  rememberFailure(row, 'close', message, isError);
+}
+/* The most recent failure shown for an item, keyed the way speaking is and
+   for the same reason: a note is a child of the row it was rendered into, so
+   upsertRow's outerHTML swap destroys it and the operator loses the line they
+   were reading mid-sentence. Held here and re-rendered after the swap, because
+   the map lives in this page: the server keeps no record of what this page was
+   shown.
+
+   ⚠️ A FAILURE only. A success note is not persisted, and each helper clears
+   the entry for its item when it renders one: a stale failure note that
+   outlives its cause is a worse defect than the one this fixes, because it
+   reports a failure that is no longer true. */
+var failures = {};
+/* rememberFailure records what a note helper just rendered. The row is read
+   from the node the note landed in rather than passed in, so the three helpers
+   share one recorder: showNote's host is a form or a row, the other two pass
+   the row itself, and closest('li.item') is the same row for all of them. */
+function rememberFailure(host, kind, message, isError) {
+  var row = host.closest('li.item');
+  if (!row) { return; }
+  var itemID = row.getAttribute('data-item-id');
+  if (!itemID) { return; }
+  if (!isError) { delete failures[itemID]; return; }
+  failures[itemID] = { kind: kind, message: message };
+}
+/* replayFailure re-renders the failure last shown for a row, through the SAME
+   helper that rendered it — so the replayed note's text, placement and class
+   are the helper's own and cannot drift from them, which a second renderer
+   here could. The kind picks the helper, and the host is resolved exactly as the
+   original call site resolved it: showNote's host is the row's answer form
+   where the row carries one and the row itself where it does not, which is the
+   same reading the read-aloud handler makes. */
+function replayFailure(row) {
+  if (!row) { return; }
+  var failure = failures[row.getAttribute('data-item-id')];
+  if (!failure) { return; }
+  if (failure.kind === 'jump') { showJumpNote(row, failure.message, true); return; }
+  if (failure.kind === 'close') { showCloseNote(row, failure.message, true); return; }
+  showNote(row.querySelector('form.answer') || row, failure.message, true);
 }
 /* The live channel. The page subscribes once and swaps rows in place as the
    store changes, so an open board tracks the store instead of freezing at load.
@@ -923,6 +978,10 @@ function showCloseNote(row, message, isError) {
      a card that becomes answered while the board is open, which is exactly
      the row the filter exists to hide. */
   var button = document.querySelector('button[data-board-filter]');
+  /* The board's stream health, the other control in this row. It ships hidden
+     and only the stream's own handlers move it, so nothing about a board whose
+     stream is healthy changes. */
+  var stale = document.querySelector('[data-stream-stale]');
   /* Mirrors boardHideParam / boardHideAnswered / boardHideNone in Go — the one
      thing in this file that exists in two languages. The server renders the
      switch's initial position from the same parameter; this reads it to apply
@@ -1046,6 +1105,20 @@ function showCloseNote(row, message, isError) {
     empty.textContent = 'Nothing needs attention.';
     list.parentNode.replaceChild(empty, list);
   }
+  /* A parked row is not in the document — it exists only as the markup the
+     filter stored — so its note cannot be replayed into a live node. The
+     markup is parsed into a detached node, replayed through the same helper a
+     visible row's note goes through, and read back, so a hidden row's failure
+     survives an update exactly as a visible one's does. */
+  function replayedHTML(html, itemID) {
+    if (!failures[itemID]) { return html; }
+    var detached = document.createElement('div');
+    detached.innerHTML = html;
+    var row = detached.firstElementChild;
+    if (!row) { return html; }
+    replayFailure(row);
+    return row.outerHTML;
+  }
   function upsertRow(itemID, html) {
     var hidden = -1;
     for (var i = 0; i < parked.length; i++) {
@@ -1060,7 +1133,7 @@ function showCloseNote(row, message, isError) {
          position — the exact failure the anchor exists to prevent. The row
          stays hidden because a parked row is answered, and an answered item
          never returns to open (§ Lifecycle), so its update is dimmed too. */
-      parked[hidden].html = html;
+      parked[hidden].html = replayedHTML(html, itemID);
       return;
     }
     var row = findRow(itemID);
@@ -1071,6 +1144,13 @@ function showCloseNote(row, message, isError) {
       if (!list) { return; }
       list.insertAdjacentHTML('beforeend', html);
     }
+    /* The row's node was just replaced, so the failure note rendered into it
+       went with it. Re-rendered from the map through the helper that rendered
+       it, for the reason the speaking repaint below is re-applied from its own
+       map: the map lives in this page, and the server keeps no record of what
+       this page was shown. A row with no note owed to it has nothing to
+       replay, and replayFailure tolerates that. */
+    replayFailure(findRow(itemID));
     /* The row's node was just replaced, so the toggle's repainted state went
        with it. Re-applied from the map rather than re-rendered by the server,
        because the map lives in this page: the server keeps no record of what
@@ -1088,9 +1168,33 @@ function showCloseNote(row, message, isError) {
      has to be able to ask what is left. */
   if (typeof EventSource === 'undefined') { return; }
   var source = new EventSource('/api/1.0/attention/stream');
+  /* The not-tracking state, shown in the board's control row. It is a state on
+     the page rather than a console line because the operator has to be able to
+     read it without opening devtools — that is the whole point: a stream that
+     has stopped for good (a 404 after a redeploy, a persistent 500) left the
+     board frozen at its load-time state with no signal at all, so a stale board
+     read as a current one. Tracking is the healthy case, so the callers read
+     as what the event means rather than as which way the attribute goes. */
+  function setTracking(tracking) {
+    if (!stale) { return; }
+    stale.hidden = tracking;
+  }
   /* No reconnect handler: EventSource reconnects on its own, which is the
-     property that lets the board survive a restart of the store. */
+     property that lets the board survive a restart of the store.
+     ⚠️ onerror renders the state and returns. It does NOT reconnect and must
+     not: it closes nothing, retries nothing and leaves reconnection to
+     EventSource exactly as the line above records. It fires on each failed
+     attempt, so a brief restart of the store shows the state only for the gap,
+     and the next message clears it. */
+  source.onerror = function () {
+    setTracking(false);
+  };
   source.onmessage = function (event) {
+    /* Cleared before the frame is read: a message arrived, so the board is
+       tracking the store again whatever that frame turns out to say — a frame
+       this page cannot parse is logged and skipped below, and skipping it is
+       not the same as the stream being down. */
+    setTracking(true);
     var change;
     /* A frame the page cannot read is logged and skipped rather than thrown.
        The rest of this handler reads change.type and change.item_id, so a throw
