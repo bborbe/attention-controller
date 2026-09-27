@@ -247,16 +247,38 @@ li.item {
 .actions .dismiss:hover { color: var(--text); border-color: var(--muted); }
 .actions .next { background: var(--green-bg); color: var(--green); border-color: var(--green-bg); font-weight: 500; }
 .actions .next:hover { border-color: var(--green); }
-.actions .speak { background: transparent; color: var(--muted); display: inline-flex; align-items: center; gap: 7px; }
-.actions .speak:hover { color: var(--text); border-color: var(--muted); }
+/* Read aloud is a utility, not a decision, so it does not sit in the actions
+   row beside the two controls that answer the card — it sits in the card's
+   top-right corner beside the X. That leaves the actions row carrying exactly
+   the two choices the card offers, which is what the row is for.
+   Its geometry mirrors the corner X deliberately rather than sharing a rule:
+   the X is pinned at right: 12px with a 28px width, so right: 48px places this
+   8px to its left, and neither control's position depends on the other's. */
+.speak {
+  position: absolute;
+  top: 10px;
+  right: 48px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.speak:hover { color: var(--text); border-color: var(--border); }
 /* The speaker glyph is inline SVG, not a font character: the page loads no web
    fonts, so a glyph taken from the system font would vary by platform and
    family. It inherits the button's own muted colour through currentColor, so it
-   adds no colour to the palette, and it is sized here rather than in width /
-   height attributes so it tracks the button's font size. The svg is
-   aria-hidden and focusable="false" so it contributes no second accessible
-   name: the control's name is its own aria-label, never the glyph. */
-.actions .speak-icon { width: 14px; height: 14px; flex: none; }
+   adds no colour to the palette. The svg is aria-hidden and focusable="false"
+   so it contributes no second accessible name — and here that matters more than
+   it did beside a text label, because the control is icon-only: its aria-label
+   is the only name it has. */
+.speak .speak-icon { width: 15px; height: 15px; flex: none; }
 /* The acknowledge control is the only action a report-only card carries, so it
    takes the affirmative colour the message card gives Submit answer: on a card
    that offers no other move, it is the forward one. */
@@ -454,16 +476,22 @@ function showNote(form, message, isError) {
 }
 /* The read-aloud control is type="button" so it never submits the answer form.
    It reports the tts message id rather than reloading, because the item is
-   still open and the id is what a caller polls for playback status. */
+   still open and the id is what a caller polls for playback status.
+   Both the item id and the note's home are found from the ROW, never from a
+   form ancestor: the control sits in the card's top-right corner, outside the
+   answer form, so a form-ancestor lookup here returns null and this handler
+   throws before it ever fetches. The corner X reads the row the same way, for
+   the same reason. */
 document.querySelectorAll('button[data-speak]').forEach(function (button) {
   button.addEventListener('click', function () {
-    var form = button.closest('form.answer');
-    var itemID = form.closest('li.item').getAttribute('data-item-id');
+    var row = button.closest('li.item');
+    var itemID = row.getAttribute('data-item-id');
+    var noteHost = row.querySelector('form.answer') || row;
     fetch('/api/1.0/attention/' + encodeURIComponent(itemID) + '/speak', { method: 'POST' })
       .then(function (response) {
         return response.text().then(function (body) {
           showNote(
-            form,
+            noteHost,
             response.ok
               ? 'Reading aloud (' + body + ')'
               : 'Read aloud failed - HTTP ' + response.status + ' - ' + body,
@@ -471,7 +499,7 @@ document.querySelectorAll('button[data-speak]').forEach(function (button) {
           );
         });
       }).catch(function (error) {
-        showNote(form, 'Read aloud failed - ' + String(error), true);
+        showNote(noteHost, 'Read aloud failed - ' + String(error), true);
       });
   });
 });
@@ -638,6 +666,7 @@ function showAckNote(row, message, isError) {
 {{define "attention-row"}}<li class="item{{if .Dimmed}} dimmed{{end}}" data-item-id="{{ .Item.ItemID }}">
 <div class="producer">{{ .Item.ProducerID }} ({{ .Item.ProducerKind }})</div>
 {{if or .Message .Ack}}<button type="button" class="corner-x" data-corner-x aria-label="Skip this item">✕</button>
+{{end}}{{if and .Message .Speak}}<button type="button" class="speak" data-speak aria-label="Read aloud" title="Read aloud"><svg class="speak-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2.75 5.25 5.5H2.75v5h2.5L9 13.25z"/><path d="M11.5 5.75a3.25 3.25 0 0 1 0 4.5"/><path d="M13.5 3.75a6 6 0 0 1 0 8.5"/></svg></button>
 {{end}}{{if not .Message}}<div class="payload">{{ .Item.Payload }}</div>
 {{end}}{{if .Item.Context}}<div class="context">{{ .Item.Context }}</div>
 {{end}}{{if .Provenance.Resolved}}<div class="provenance">{{if .Provenance.Host}}<span class="host">{{ .Provenance.Host }}</span>{{end}}{{if .Provenance.Cwd}}<span class="cwd">{{ .Provenance.Cwd }}</span>{{end}}{{if .Provenance.Tool}}<span class="tool">{{ .Provenance.Tool }}</span>{{end}}{{if .Provenance.Pane}}<span class="pane">pane {{ .Provenance.Pane }}</span>{{else if .Provenance.PaneRecorded}}<span class="unroutable">unroutable</span>{{end}}</div>
@@ -652,7 +681,7 @@ function showAckNote(row, message, isError) {
 {{end}}</div>
 {{end}}<input class="other" type="text" name="text" placeholder="Other...">
 </div>
-{{end}}<div class="actions"><button type="submit" name="kind" value="skip" class="dismiss">✕ Dismiss</button><button type="submit" name="kind" value="send" class="next">✓ Submit answer</button>{{if .Speak}}<button type="button" class="speak" data-speak aria-label="Read aloud" title="Read aloud"><svg class="speak-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2.75 5.25 5.5H2.75v5h2.5L9 13.25z"/><path d="M11.5 5.75a3.25 3.25 0 0 1 0 4.5"/><path d="M13.5 3.75a6 6 0 0 1 0 8.5"/></svg>Read aloud</button>{{end}}</div>
+{{end}}<div class="actions"><button type="submit" name="kind" value="skip" class="dismiss">✕ Dismiss</button><button type="submit" name="kind" value="send" class="next">✓ Submit answer</button></div>
 </form>
 {{end}}{{if and .Ack (not .Dimmed)}}<div class="actions"><button type="button" class="ack" data-ack>Acknowledge</button></div>
 {{end}}{{if or .Jump .JumpURL}}<div class="jump">{{if .Jump}}<span>Approve in the session that asked: <code>{{ .Jump }}</code></span>{{end}}{{if .JumpURL}}<button type="button" class="jump-button" data-jump="{{ .JumpURL }}">Jump to session</button>{{end}}</div>
