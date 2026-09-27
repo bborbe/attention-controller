@@ -387,7 +387,7 @@ li.item {
      other. role="switch" with aria-checked is the shape a two-state control
      is meant to have, and it replaces the aria-pressed this control shipped
      with in v0.20.0. */}}
-<div class="board-controls"><button type="button" class="board-filter" data-board-filter role="switch" aria-checked="false"><svg class="switch" viewBox="0 0 44 24" aria-hidden="true" focusable="false"><rect class="switch-track" x="1" y="1" width="42" height="22" rx="11"/><circle class="switch-knob" cx="12" cy="12" r="8"/></svg><span class="switch-label">Hide answered</span></button></div>
+<div class="board-controls"><button type="button" class="board-filter" data-board-filter role="switch" aria-checked="{{if .HideAnswered}}true{{else}}false{{end}}"><svg class="switch" viewBox="0 0 44 24" aria-hidden="true" focusable="false"><rect class="switch-track" x="1" y="1" width="42" height="22" rx="11"/><circle class="switch-knob" cx="12" cy="12" r="8"/></svg><span class="switch-label">Hide answered</span></button></div>
 {{if .Items}}<ul class="items">
 {{range .Items}}{{template "attention-row" .}}{{end}}</ul>
 {{else}}<p class="empty">Nothing needs attention.</p>
@@ -690,7 +690,14 @@ function showAckNote(row, message, isError) {
      a card that becomes answered while the board is open, which is exactly
      the row the filter exists to hide. */
   var button = document.querySelector('button[data-board-filter]');
-  var on = false;
+  /* Mirrors boardHideParam / boardHideAnswered in Go — the one thing in this
+     file that exists in two languages. The server renders the switch's initial
+     position from the same parameter; this reads it to apply the filter and
+     writes it back on every change, so the URL and the page cannot disagree
+     about what is being shown. */
+  var HIDE_PARAM = 'hide';
+  var HIDE_ANSWERED = 'answered';
+  var on = new URLSearchParams(window.location.search).get(HIDE_PARAM) === HIDE_ANSWERED;
   /* The rows the filter is hiding, in board order. Each entry carries the id
      of the row that followed it, so a restore returns it to its own place
      rather than to the foot of the board. It holds rendered HTML rather than
@@ -763,9 +770,27 @@ function showAckNote(row, message, isError) {
     button.addEventListener('click', function () {
       on = !on;
       button.setAttribute('aria-checked', on ? 'true' : 'false');
+      /* replaceState, not pushState. The filter is a view, and a view that
+         filled the Back stack would make Back mean "undo my filter" on some
+         presses and "leave the page" on others — and with no popstate handler
+         a pushState entry would also leave the URL and the page disagreeing
+         after a Back. This changes the URL without a navigation, which is what
+         keeps the no-reload property intact. */
+      var url = new URL(window.location.href);
+      if (on) {
+        url.searchParams.set(HIDE_PARAM, HIDE_ANSWERED);
+      } else {
+        url.searchParams.delete(HIDE_PARAM);
+      }
+      window.history.replaceState(null, '', url);
       applyFilter();
     });
   }
+  /* Applied at load as well as on click, so a URL that arrived carrying the
+     filter renders the filtered view instead of flashing the full one. The
+     script runs while the parser is still inside the body, so this lands before
+     the first paint rather than as a correction to it. */
+  if (on) { applyFilter(); }
   function collapseIfEmpty() {
     var list = document.querySelector('ul.items');
     if (!list || list.querySelector('li.item')) { return; }
@@ -1000,6 +1025,12 @@ type attentionPageData struct {
 	// tts server is configured, so the page never offers a control whose
 	// endpoint is unrouted.
 	Speak bool
+	// HideAnswered is the filter's initial position, read from the request's
+	// `hide` parameter. It renders the switch's aria-checked so the served
+	// markup agrees with the URL; the script applies the same reading to the
+	// rows. It is a rendering input, never a store input — the page still
+	// renders every row it was given.
+	HideAnswered bool
 }
 
 // newAttentionPageRow pairs an item with what could be resolved about its origin
@@ -1233,6 +1264,31 @@ func noJumpReason(item pkg.Item, provenance pkg.Provenance, jumpEnabled bool) st
 	}
 }
 
+// boardHideParam is the query parameter carrying the board's view state, and
+// boardHideAnswered is the one value it recognises. Together they make the view
+// addressable — `?hide=answered` survives a reload, a bookmark and a shared
+// link instead of resetting — which is what the operator asked for: *"The hide
+// button at the top should be a URL parameter, so a reload of the page keeps
+// the preview setting."*
+//
+// ⚠️ The value names the SET that is hidden rather than being a boolean, so the
+// parameter can describe a different view later without a second parameter
+// name, and so the URL reads as an instruction rather than as a flag whose
+// meaning depends on knowing what it refers to.
+//
+// ⚠️ Both are mirrored as HIDE_PARAM and HIDE_ANSWERED in the page's script,
+// because the server renders the switch's initial position while the script
+// applies the filter and writes the parameter back. That mirror is the only
+// thing in this file that exists in two languages, so a spec asserts the script
+// carries the same two literals: drift there would leave the server rendering
+// from one parameter while the script writes another, and the
+// reload-reproduces-the-view property would stop working with every other test
+// still green.
+const (
+	boardHideParam    = "hide"
+	boardHideAnswered = "answered"
+)
+
 // NewAttentionPageHandler creates the read-only HTML page a human opens to see
 // what currently needs attention.
 //
@@ -1318,7 +1374,19 @@ func NewAttentionPageHandler(
 				// response would commit a 200 and a partial document before the
 				// error handler had a chance to report anything.
 				var body bytes.Buffer
-				if err := page.Execute(&body, attentionPageData{Items: rows, Speak: speakEnabled}); err != nil {
+				// Read once per render so the served markup agrees with the URL
+				// the operator is looking at. A no-JS client cannot filter at
+				// all, so this is not the filter — it is the switch's initial
+				// position, and the script applies the same reading.
+				hideAnswered := req.URL.Query().Get(boardHideParam) == boardHideAnswered
+				if err := page.Execute(
+					&body,
+					attentionPageData{
+						Items:        rows,
+						Speak:        speakEnabled,
+						HideAnswered: hideAnswered,
+					},
+				); err != nil {
 					return errors.Wrap(ctx, err, "render page failed")
 				}
 				resp.Header().Set(
