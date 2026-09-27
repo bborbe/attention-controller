@@ -24,6 +24,21 @@ run:
 	-datadir="data" \
 	-v=2
 
+# Drives the attention board in a real browser against a real binary.
+#
+# Deliberately NOT part of `test` or `precommit`: the package carries a
+# `//go:build e2e` tag, so `go list ./...` does not even see it and neither
+# target changes behaviour. E2E is never run automatically — it is triggered
+# here, and in the release path by the dark-factory scenario that wraps it.
+#
+# The suite builds the binary itself and runs it on a random port against a
+# temp DATADIR and a temp session registry, so it never touches the launchd
+# service on :18080.
+.PHONY: e2e
+e2e:
+	go run $(PLAYWRIGHT_GO_MODULE)/cmd/playwright@$(PLAYWRIGHT_GO_VERSION) install chromium
+	go test -mod=mod -tags e2e -count=1 -timeout 15m ./e2e/
+
 deps:
 	go install github.com/bborbe/teamvault-utils/cmd/teamvault-config-parser@latest
 	go install github.com/bborbe/teamvault-utils/cmd/teamvault-file@latest
