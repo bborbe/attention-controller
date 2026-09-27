@@ -1191,5 +1191,79 @@ var _ = Describe("AttentionStore", func() {
 			// One short prune — not a writer lock held across the whole scan.
 			Expect(counting.updates).To(Equal(1))
 		})
+
+		// ⚠️ The two specs below pin the window the split introduced. A
+		// `remove` disposition is computed from the snapshot `readItems` takes,
+		// so anything that changes between that snapshot and the prune is
+		// invisible to it unless the prune re-reads. The old single-transaction
+		// read could not reach this: `Answer` needed the same write lock and
+		// serialized behind it. Both were reproduced against the first version
+		// of this change, which deleted the item in each case.
+		It("does not prune an item answered between the scan and the prune", func() {
+			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
+			Expect(err).To(BeNil())
+
+			// Classification runs the liveness check between the scan and the
+			// prune, so it is exactly the window the race lives in. Answer the
+			// item from inside it, then report the producer gone.
+			answered := false
+			sessionLivenessChecker.IsLiveCalls(func(_ context.Context, _ string) bool {
+				if !answered {
+					answered = true
+					_, answerErr := store.Answer(
+						ctx,
+						item.ItemID,
+						"telegram",
+						"",
+						"",
+						nil,
+						nil,
+						nil,
+					)
+					Expect(answerErr).To(BeNil())
+				}
+				return false
+			})
+
+			items, err := countingStore.Read(ctx)
+			Expect(err).To(BeNil())
+			Expect(items).To(BeEmpty())
+
+			// The answer must survive. Pruning it would rewrite the history the
+			// schema says is never rewritten — the one thing the prune exists
+			// not to do.
+			history, err := store.History(ctx)
+			Expect(err).To(BeNil())
+			Expect(history).To(HaveLen(1))
+			Expect(history[0].State).To(Equal(pkg.AnsweredState))
+		})
+
+		It(
+			"does not prune an item whose producer came back between the scan and the prune",
+			func() {
+				item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
+				Expect(err).To(BeNil())
+
+				// Dead when classified, live again by the time the prune re-checks
+				// — what a resumed session, a refreshed heartbeat, or a registry
+				// that briefly read as unreadable all look like. Liveness is not
+				// monotonic, so the prune cannot inherit it from the snapshot.
+				calls := 0
+				sessionLivenessChecker.IsLiveCalls(func(_ context.Context, _ string) bool {
+					calls++
+					return calls > 1
+				})
+
+				items, err := countingStore.Read(ctx)
+				Expect(err).To(BeNil())
+				Expect(items).To(BeEmpty())
+
+				history, err := store.History(ctx)
+				Expect(err).To(BeNil())
+				Expect(history).To(HaveLen(1))
+				Expect(history[0].ItemID).To(Equal(item.ItemID))
+				Expect(history[0].State).To(Equal(pkg.OpenState))
+			},
+		)
 	})
 })
