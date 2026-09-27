@@ -738,6 +738,22 @@ function showAckNote(row, message, isError) {
     list.parentNode.replaceChild(empty, list);
   }
   function upsertRow(itemID, html) {
+    var hidden = -1;
+    for (var i = 0; i < parked.length; i++) {
+      if (parked[i].id === itemID) { hidden = i; }
+    }
+    if (hidden >= 0) {
+      /* The row is hidden by the filter, so it is not in the document and
+         findRow cannot see it. Updating the parked entry in place keeps the
+         place it restores to: appending the row to the list and letting
+         applyFilter re-park it would read a fresh anchor at the foot of the
+         board, which is null, and the record would come back in the wrong
+         position — the exact failure the anchor exists to prevent. The row
+         stays hidden because a parked row is answered, and an answered item
+         never returns to open (§ Lifecycle), so its update is dimmed too. */
+      parked[hidden].html = html;
+      return;
+    }
     var row = findRow(itemID);
     if (row) {
       row.outerHTML = html;
