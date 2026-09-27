@@ -887,14 +887,19 @@ function showCloseNote(row, message, isError) {
      a card that becomes answered while the board is open, which is exactly
      the row the filter exists to hide. */
   var button = document.querySelector('button[data-board-filter]');
-  /* Mirrors boardHideParam / boardHideAnswered in Go — the one thing in this
-     file that exists in two languages. The server renders the switch's initial
-     position from the same parameter; this reads it to apply the filter and
-     writes it back on every change, so the URL and the page cannot disagree
-     about what is being shown. */
+  /* Mirrors boardHideParam / boardHideAnswered / boardHideNone in Go — the one
+     thing in this file that exists in two languages. The server renders the
+     switch's initial position from the same parameter; this reads it to apply
+     the filter and writes it back on every change, so the URL and the page
+     cannot disagree about what is being shown. */
   var HIDE_PARAM = 'hide';
   var HIDE_ANSWERED = 'answered';
-  var on = new URLSearchParams(window.location.search).get(HIDE_PARAM) === HIDE_ANSWERED;
+  var HIDE_NONE = 'none';
+  /* The default is ON: only an explicit hide=none turns the filter off, and
+     absence (or any unrecognised value) leaves it on. Read as "not none"
+     rather than "is answered" so an unrecognised value falls back to the
+     default instead of silently disabling the filter. */
+  var on = new URLSearchParams(window.location.search).get(HIDE_PARAM) !== HIDE_NONE;
   /* The rows the filter is hiding, in board order. Each entry carries the id
      of the row that followed it, so a restore returns it to its own place
      rather than to the foot of the board. It holds rendered HTML rather than
@@ -974,10 +979,15 @@ function showCloseNote(row, message, isError) {
          after a Back. This changes the URL without a navigation, which is what
          keeps the no-reload property intact. */
       var url = new URL(window.location.href);
+      /* The URL carries the parameter only when the view departs from the
+         default, which is now the filtered view: turning the filter off writes
+         the off-spelling, and turning it back on returns the URL to the
+         parameter-free default. A deleted parameter can no longer mean "off",
+         so absence and HIDE_NONE must not be confused. */
       if (on) {
-        url.searchParams.set(HIDE_PARAM, HIDE_ANSWERED);
-      } else {
         url.searchParams.delete(HIDE_PARAM);
+      } else {
+        url.searchParams.set(HIDE_PARAM, HIDE_NONE);
       }
       window.history.replaceState(null, '', url);
       applyFilter();
@@ -1268,6 +1278,10 @@ type attentionPageData struct {
 	// markup agrees with the URL; the script applies the same reading to the
 	// rows. It is a rendering input, never a store input — the page still
 	// renders every row it was given.
+	//
+	// The default is true: only an explicit `?hide=none` renders it false, so a
+	// fresh load of the board shows what is left rather than mixing the dimmed
+	// answered records in with the cards that still need the operator.
 	HideAnswered bool
 }
 
@@ -1503,28 +1517,40 @@ func noJumpReason(item pkg.Item, provenance pkg.Provenance, jumpEnabled bool) st
 }
 
 // boardHideParam is the query parameter carrying the board's view state, and
-// boardHideAnswered is the one value it recognises. Together they make the view
-// addressable — `?hide=answered` survives a reload, a bookmark and a shared
-// link instead of resetting — which is what the operator asked for: *"The hide
-// button at the top should be a URL parameter, so a reload of the page keeps
-// the preview setting."*
+// boardHideAnswered / boardHideNone are the two values it recognises. Together
+// they make the view addressable — `?hide=none` survives a reload, a bookmark
+// and a shared link instead of resetting — which is what the operator asked
+// for: *"The hide button at the top should be a URL parameter, so a reload of
+// the page keeps the preview setting."*
 //
 // ⚠️ The value names the SET that is hidden rather than being a boolean, so the
 // parameter can describe a different view later without a second parameter
 // name, and so the URL reads as an instruction rather than as a flag whose
-// meaning depends on knowing what it refers to.
+// meaning depends on knowing what it refers to. `answered` hides the dimmed
+// answered records; `none` hides nothing.
 //
-// ⚠️ Both are mirrored as HIDE_PARAM and HIDE_ANSWERED in the page's script,
-// because the server renders the switch's initial position while the script
-// applies the filter and writes the parameter back. That mirror is the only
-// thing in this file that exists in two languages, so a spec asserts the script
-// carries the same two literals: drift there would leave the server rendering
-// from one parameter while the script writes another, and the
+// ⚠️ **The default is ON, and absence is how it is spelled.** From 2026-09-27
+// the operator asked for the reverse of the position this parameter was built
+// with — *"can we make hide answers the default — so open
+// http://127.0.0.1:18080/ ... show no answer?"* — so a request carrying no
+// `hide` value renders the filtered view, and `none` is the value that turns it
+// back off. That is why the test is `!= boardHideNone` rather than
+// `== boardHideAnswered`: an unrecognised value falls back to the default
+// instead of silently disabling the filter, and "off" needs a spelling the
+// script can write back, which a deleted parameter can no longer be.
+//
+// ⚠️ All three are mirrored as HIDE_PARAM, HIDE_ANSWERED and HIDE_NONE in the
+// page's script, because the server renders the switch's initial position while
+// the script applies the filter and writes the parameter back. That mirror is
+// the only thing in this file that exists in two languages, so a spec asserts
+// the script carries the same literals: drift there would leave the server
+// rendering from one parameter while the script writes another, and the
 // reload-reproduces-the-view property would stop working with every other test
 // still green.
 const (
 	boardHideParam    = "hide"
 	boardHideAnswered = "answered"
+	boardHideNone     = "none"
 )
 
 // NewAttentionPageHandler creates the read-only HTML page a human opens to see
@@ -1616,7 +1642,11 @@ func NewAttentionPageHandler(
 				// the operator is looking at. A no-JS client cannot filter at
 				// all, so this is not the filter — it is the switch's initial
 				// position, and the script applies the same reading.
-				hideAnswered := req.URL.Query().Get(boardHideParam) == boardHideAnswered
+				//
+				// The default is ON: only an explicit `?hide=none` turns the
+				// filter off, and absence (or any unrecognised value) leaves it
+				// on.
+				hideAnswered := req.URL.Query().Get(boardHideParam) != boardHideNone
 				if err := page.Execute(
 					&body,
 					attentionPageData{
