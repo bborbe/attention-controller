@@ -896,4 +896,18 @@ var _ = Describe("AttentionPageHandler", func() {
 			Expect(rowOf(body, ack.ItemID)).To(ContainSubstring("data-corner-x"))
 		})
 	})
+
+	// The Jump control is bound by delegation, not per button, and the
+	// difference is a defect rather than a preference: a listener attached to a
+	// button dies with the node, and upsertRow replaces a row's whole outerHTML
+	// on every stream event. A per-button binding therefore leaves every
+	// re-rendered card's control inert while still rendering it correctly.
+	// ⚠️ Assert the delegation, not the control's presence: "the button
+	// renders" is exactly the check that kept passing while the control was
+	// dead, which is how this shipped unnoticed.
+	It("delegates the jump handler instead of binding each button once at load", func() {
+		body := get("GET").Body.String()
+		Expect(body).To(ContainSubstring("closest('button[data-jump]')"))
+		Expect(body).NotTo(ContainSubstring("querySelectorAll('button[data-jump]').forEach"))
+	})
 })

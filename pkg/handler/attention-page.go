@@ -577,19 +577,33 @@ document.querySelectorAll('button[data-speak]').forEach(function (button) {
    to the fleet-jump server, taking the board out of view. This calls the
    board's own endpoint, which performs the jump server-side and answers 204 —
    so a click switches WezTerm and leaves this page exactly where it was. */
-document.querySelectorAll('button[data-jump]').forEach(function (button) {
-  button.addEventListener('click', function () {
-    var row = button.closest('li.item');
-    fetch(button.getAttribute('data-jump'), { method: 'GET' })
-      .then(function (response) {
-        if (response.ok) { showJumpNote(row, 'Jumped.', false); return; }
-        return response.text().then(function (body) {
-          showJumpNote(row, 'Jump failed - HTTP ' + response.status + ' - ' + body, true);
-        });
-      }).catch(function (error) {
-        showJumpNote(row, 'Jump failed - ' + String(error), true);
+/* ⚠️ Delegated on the document, NOT bound per button — and the difference is a
+   defect, not a preference. The stream below replaces a row's whole outerHTML
+   on every event (upsertRow), and a listener attached to the old node dies
+   with it. A per-button binding therefore leaves every re-rendered card's
+   control inert while still rendering it correctly — the button is there, the
+   click does nothing, no request is made, and no note appears. That is the
+   same failure this repo already shipped once: v0.19.0's answer handler looked
+   up a node that was not there, threw, and fired no request at all while the
+   control still looked right.
+   The document rather than ul.items because ensureList() creates that
+   container lazily — a listener bound to it at load would miss the first row,
+   and binding it inside ensureList would rebind on every empty->non-empty
+   transition. The document covers both cases once. */
+document.addEventListener('click', function (event) {
+  if (!event.target || !event.target.closest) { return; }
+  var button = event.target.closest('button[data-jump]');
+  if (!button) { return; }
+  var row = button.closest('li.item');
+  fetch(button.getAttribute('data-jump'), { method: 'GET' })
+    .then(function (response) {
+      if (response.ok) { showJumpNote(row, 'Jumped.', false); return; }
+      return response.text().then(function (body) {
+        showJumpNote(row, 'Jump failed - HTTP ' + response.status + ' - ' + body, true);
       });
-  });
+    }).catch(function (error) {
+      showJumpNote(row, 'Jump failed - ' + String(error), true);
+    });
 });
 function showJumpNote(row, message, isError) {
   var container = row.querySelector('.jump');
