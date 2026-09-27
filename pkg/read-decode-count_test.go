@@ -285,6 +285,45 @@ var _ = Describe("Read decode cost", func() {
 			"the read returned the open items, so it must have decoded at least that many")
 	})
 
+	// The index must shrink when an item leaves the live set, and NOTHING ELSE
+	// catches it if it does not.
+	//
+	// ⚠️ This is the one failure mode the index introduces, and it is invisible
+	// to every behavioural spec in the suite. A closed item left in the index is
+	// still filtered out by `classifyForRead` — which returns neither keep nor
+	// remove for any state that is not `OpenState` — so the read returns exactly
+	// the right rows and every existing assertion passes. The damage is that the
+	// index grows without bound and every read keeps decoding items that can
+	// never be returned, which is the defect this task exists to remove,
+	// restored slowly. Only a decode COUNT can see it.
+	//
+	// ⚠️ RED if `putItem` stops dropping the index entry on a non-live state.
+	It("drops an item from the index when it closes", func() {
+		const seeded = 20
+		seedOpen(seeded)
+		warmLiveIndex()
+
+		// Read the counter directly rather than through decodeCountOf, which
+		// asserts the 50-item open set the SC1 specs seed.
+		counter.values = 0
+		items, err := store.Read(ctx)
+		Expect(err).To(BeNil())
+		Expect(items).To(HaveLen(seeded))
+		openDecodes := counter.values
+		for _, item := range items {
+			_, err := store.Close(ctx, item.ItemID, "", nil)
+			Expect(err).To(BeNil())
+		}
+
+		counter.values = 0
+		remaining, err := store.Read(ctx)
+		Expect(err).To(BeNil())
+		Expect(remaining).To(BeEmpty())
+
+		Expect(counter.values).To(BeNumerically("<", openDecodes),
+			"closed items are still in the live index — the read keeps decoding them")
+	})
+
 	// SC1, and SC6's A/B in one spec. ⚠️ RED on the pre-fix revision: the read
 	// decodes the whole bucket, so the two counts differ by roughly the closed
 	// delta. GREEN once the cost stops tracking store size.
