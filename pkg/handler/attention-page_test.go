@@ -970,4 +970,44 @@ var _ = Describe("AttentionPageHandler", func() {
 		Expect(body).To(ContainSubstring("closest('button[data-jump]')"))
 		Expect(body).NotTo(ContainSubstring("querySelectorAll('button[data-jump]').forEach"))
 	})
+
+	// The console trail. A failed action renders a transient note beside its
+	// control and nothing else, so once the note scrolls out of view or the
+	// stream replaces the row there is no evidence left that the action failed.
+	// These specs assert the markers a devtools session greps for, in the served
+	// source — which is the boundary this change crosses. They do NOT verify
+	// browser behaviour: the script is inline and has no unit harness, and the
+	// operator's own click-through is the half they cannot supply.
+	It("logs every fetch failure to the console, and only the failures", func() {
+		body := get("GET").Body.String()
+
+		// A floor rather than an equality, and deliberately so: the two global
+		// handlers and the stream's parse guard log as well, so the true total is
+		// higher than the nine action lines this change adds.
+		Expect(strings.Count(body, "console.error")).To(BeNumerically(">=", 9))
+
+		// The throws nothing catches today. Both are registered at the top level
+		// of the script rather than inside a handler that may never run.
+		Expect(body).To(ContainSubstring("window.onerror"))
+		Expect(body).To(ContainSubstring("unhandledrejection"))
+
+		// Each action carries its own line, asserted one by one rather than as a
+		// single count, so a line that exists but sits on the wrong action is
+		// caught instead of satisfied by its neighbour's.
+		Expect(body).To(ContainSubstring("attention board: answer failed - HTTP "))
+		Expect(body).To(ContainSubstring("attention board: read aloud failed - HTTP "))
+		Expect(body).To(ContainSubstring("attention board: jump failed - HTTP "))
+		Expect(body).To(ContainSubstring("attention board: close failed - HTTP "))
+
+		// The prefix is reserved for those nine action lines — the global handlers
+		// and the parse guard log without it — which is what makes this count
+		// unambiguous where a bare console.error count is not.
+		Expect(strings.Count(body, "attention board: ")).To(Equal(9))
+
+		// The answer path renders TWO failure branches and each logs, so a branch
+		// that was logged and a branch that was forgotten are distinguishable
+		// rather than both satisfying a bare count. The trailing "HTTP " is
+		// load-bearing: it excludes the catch line, which carries no status.
+		Expect(strings.Count(body, "attention board: answer failed - HTTP ")).To(Equal(2))
+	})
 })
