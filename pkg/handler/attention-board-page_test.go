@@ -577,7 +577,9 @@ var _ = Describe("Attention page board controls", func() {
 			provenance.ResolveReturns(pkg.Provenances{item.ItemID: pkg.Provenance{}})
 
 			body := render()
-			Expect(body).To(ContainSubstring(`data-board-filter aria-pressed="false"`))
+			Expect(
+				body,
+			).To(ContainSubstring(`data-board-filter role="switch" aria-checked="false"`))
 
 			// The positive control for the default position: the record the
 			// filter would hide is on the page to be hidden. A build that
@@ -585,6 +587,36 @@ var _ = Describe("Attention page board controls", func() {
 			// here — and the dimmed record is the detector this topic built, so
 			// losing it silently is the failure this pins.
 			Expect(dimmedRow(body, item.ItemID)).To(BeTrue())
+		})
+
+		It("renders the filter as a labelled switch rather than a bare icon", func() {
+			item, err := store.Push(ctx, messageRequest())
+			Expect(err).To(BeNil())
+			provenance.ResolveReturns(pkg.Provenances{item.ItemID: pkg.Provenance{}})
+
+			// The switch carries the STATE and the visible label carries the
+			// MEANING. v0.18.0 rejected an icon-only read-aloud control because
+			// it would have moved the control's meaning into an aria-label only
+			// assistive tech sees, and this board's governing complaint was
+			// cards whose controls were not discoverable at all — so the label
+			// is pinned here rather than left to taste.
+			body := render()
+			Expect(body).To(ContainSubstring(`role="switch"`))
+			Expect(body).To(ContainSubstring(`aria-checked="false"`))
+			Expect(body).To(ContainSubstring(`class="switch-track"`))
+			Expect(body).To(ContainSubstring(`class="switch-knob"`))
+			Expect(body).To(ContainSubstring(`<span class="switch-label">Hide answered</span>`))
+
+			// The state must not also be carried on a second attribute: a
+			// control reporting both aria-pressed and aria-checked tells
+			// assistive tech two different things about one state. Asserted
+			// against the control's whole opening tag rather than against the
+			// page, so a later board control that legitimately uses aria-pressed
+			// does not break this spec for an unrelated reason.
+			Expect(body).To(ContainSubstring(
+				`<button type="button" class="board-filter" data-board-filter ` +
+					`role="switch" aria-checked="false">`,
+			))
 		})
 
 		It("leaves an open permission card outside the filter's target set", func() {
