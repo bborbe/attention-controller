@@ -419,6 +419,159 @@ var _ = Describe("Attention page board controls", func() {
 			},
 		)
 
+		// ⚠️ Added 2026-09-27 with the dimmed-record read-aloud fix. The dimmed
+		// record card is a record, not a prompt, so it carries no control that
+		// offers an answer — the read-aloud control included, because it asks the
+		// tts server to read the QUESTION aloud, which is the act of a prompt.
+		//
+		// ⚠️ Both halves sit in ONE render, deliberately. The negative alone is
+		// also satisfied by a page that rendered nothing, and a fix that removed
+		// the control from EVERY row would satisfy the negative while breaking the
+		// three legitimate carriers — so all three are asserted PRESENT in the
+		// same document that asserts the dimmed cards are bare.
+		//
+		// ⚠️ Every assertion is scoped to the row's own block via rowBlock, never
+		// the whole body: `data-speak` also appears in the page's own script
+		// (`querySelectorAll('button[data-speak]')`), so a body-wide substring
+		// check finds a copy whether the card renders the control or not.
+		It(
+			"withholds read-aloud from every dimmed card and keeps it on every open row, in one render",
+			func() {
+				// Two local builders: the outer permissionRequest() carries a fixed
+				// dedup key, and the open permission row must coexist with the
+				// dimmed one rather than dedup into it.
+				permissionItem := func(
+					dedupKey pkg.DedupKey,
+					payload pkg.Payload,
+				) pkg.PushRequest {
+					producerID := pkg.ProducerID("producer-" + dedupKey.String())
+					return pkg.PushRequest{
+						ProducerID:      producerID,
+						ProducerKind:    pkg.SessionProducerKind,
+						LivenessRef:     pkg.LivenessRef("session:" + producerID.String()),
+						DedupKey:        dedupKey,
+						InterruptClass:  "approve",
+						Payload:         payload,
+						AnswerMechanism: pkg.PermissionAnswerMechanism,
+					}
+				}
+				ackItem := func(dedupKey pkg.DedupKey, payload pkg.Payload) pkg.PushRequest {
+					producerID := pkg.ProducerID("producer-" + dedupKey.String())
+					return pkg.PushRequest{
+						ProducerID:      producerID,
+						ProducerKind:    pkg.SessionProducerKind,
+						LivenessRef:     pkg.LivenessRef("session:" + producerID.String()),
+						DedupKey:        dedupKey,
+						InterruptClass:  "approve",
+						Payload:         payload,
+						AnswerMechanism: pkg.AckAnswerMechanism,
+					}
+				}
+
+				dimmedMessage, err := store.Push(
+					ctx,
+					messageItem("speak-dimmed-msg", "Which surface?"),
+				)
+				Expect(err).To(BeNil())
+				answer := pkg.Answer{Kind: pkg.TextAnswerKind, Value: "the board"}
+				_, err = store.Answer(
+					ctx,
+					dimmedMessage.ItemID,
+					"attention-board",
+					"",
+					"",
+					&answer,
+					nil,
+					nil,
+				)
+				Expect(err).To(BeNil())
+
+				dimmedPermission, err := store.Push(
+					ctx,
+					permissionItem("speak-dimmed-gate", "Deploy to prod?"),
+				)
+				Expect(err).To(BeNil())
+				_, err = store.Answer(
+					ctx,
+					dimmedPermission.ItemID,
+					"operator",
+					"",
+					pkg.AllowDecision,
+					nil,
+					nil,
+					nil,
+				)
+				Expect(err).To(BeNil())
+
+				openMessage, err := store.Push(ctx, messageItem("speak-open-msg", "Still open?"))
+				Expect(err).To(BeNil())
+				openAck, err := store.Push(
+					ctx,
+					ackItem("speak-open-ack", "the nightly sweep failed"),
+				)
+				Expect(err).To(BeNil())
+				openPermission, err := store.Push(
+					ctx,
+					permissionItem("speak-open-gate", "Deploy to staging?"),
+				)
+				Expect(err).To(BeNil())
+
+				body := render()
+
+				// ⚠️ Positive clause first, on all five: every row is present and
+				// carries its own body, so the withheld control below is a withheld
+				// control and not a missing row.
+				Expect(dimmedRow(body, dimmedMessage.ItemID)).To(BeTrue())
+				Expect(rowBlock(body, dimmedMessage.ItemID)).To(ContainSubstring("record-answer"))
+				Expect(dimmedRow(body, dimmedPermission.ItemID)).To(BeTrue())
+				Expect(
+					rowBlock(body, dimmedPermission.ItemID),
+				).To(ContainSubstring("decision: allow"))
+				Expect(dimmedRow(body, openMessage.ItemID)).To(BeFalse())
+				Expect(dimmedRow(body, openAck.ItemID)).To(BeFalse())
+				Expect(dimmedRow(body, openPermission.ItemID)).To(BeFalse())
+
+				// SC1 + SC3 — no read-aloud control on either dimmed card. An `ack`
+				// item never reaches `answered`, so no third dimmed case exists to
+				// probe.
+				Expect(rowBlock(body, dimmedMessage.ItemID)).NotTo(ContainSubstring("data-speak"))
+				Expect(
+					rowBlock(body, dimmedPermission.ItemID),
+				).NotTo(ContainSubstring("data-speak"))
+
+				// SC2 — the three legitimate carriers keep it, in this same load.
+				Expect(rowBlock(body, openMessage.ItemID)).To(ContainSubstring("data-speak"))
+				Expect(rowBlock(body, openAck.ItemID)).To(ContainSubstring("data-speak"))
+				Expect(rowBlock(body, openPermission.ItemID)).To(ContainSubstring("data-speak"))
+				Expect(
+					rowBlock(body, openMessage.ItemID),
+				).To(ContainSubstring(`aria-label="Read aloud"`))
+			},
+		)
+
+		// SC4 — the fix must not smuggle some OTHER control onto the dimmed card
+		// in the speaker's place. The schema's own list at line 234 names the form,
+		// the option row, `Other…`, Dismiss, Next and the acknowledge control; the
+		// form / Acknowledge / Dismiss / Next half is already asserted by the spec
+		// above, so this adds the two it does not cover, plus the speaker.
+		It("renders no option row and no Other field on the dimmed card", func() {
+			item, err := store.Push(ctx, messageItem("dimmed-bare-1", "Which surface?"))
+			Expect(err).To(BeNil())
+			answer := pkg.Answer{Kind: pkg.TextAnswerKind, Value: "the board"}
+			_, err = store.Answer(ctx, item.ItemID, "attention-board", "", "", &answer, nil, nil)
+			Expect(err).To(BeNil())
+
+			block := rowBlock(render(), item.ItemID)
+
+			// Positive clause: the record body rendered, so the absences below are
+			// a bare record rather than an empty row.
+			Expect(block).To(ContainSubstring("record-question"))
+			Expect(block).To(ContainSubstring("record-answer"))
+			Expect(block).NotTo(ContainSubstring(`class="option"`))
+			Expect(block).NotTo(ContainSubstring(`class="other"`))
+			Expect(block).NotTo(ContainSubstring("data-speak"))
+		})
+
 		// Positive control: an open row on the same page must stay a prompt. A page
 		// that dimmed every row would pass the negative assertions above and is
 		// caught here.
