@@ -957,38 +957,35 @@ var _ = Describe("Attention page board controls", func() {
 			Expect(dimmedRow(body, item.ItemID)).To(BeTrue())
 		})
 
-		It(
-			"leaves the switch on for an absent or unrecognised value, and off only for the off-spelling",
-			func() {
-				item, err := store.Push(ctx, messageRequest())
-				Expect(err).To(BeNil())
-				provenance.ResolveReturns(pkg.Provenances{item.ItemID: pkg.Provenance{}})
+		It("leaves the switch on for anything but the off-spelling", func() {
+			item, err := store.Push(ctx, messageRequest())
+			Expect(err).To(BeNil())
+			provenance.ResolveReturns(pkg.Provenances{item.ItemID: pkg.Provenance{}})
 
-				// ⚠️ Reversed 2026-09-27 along with the default. The value still names
-				// the SET that is hidden and `none` names the empty set — so absence
-				// and anything unrecognised fall back to the DEFAULT, which is now the
-				// filtered view, rather than guessing at an intent the URL did not
-				// state. Only the explicit off-spelling turns the filter off.
-				//
-				// ⚠️ The control is asserted as the FULL `data-board-filter role=...`
-				// sequence, never as a bare `aria-checked="true"`. The page's own
-				// stylesheet carries `.board-filter[aria-checked="true"]` selectors, so
-				// a bare substring matches the CSS and passes whatever the switch
-				// renders — a check that cannot fail. This was found by the
-				// falsification step: with the handler reverted to the old default
-				// these lines stayed green while the two specs using the full sequence
-				// went red. The predecessor's bare `aria-checked="false"` assertions
-				// discriminated only by luck — no CSS selector uses `false`.
-				Expect(renderAt("/")).To(ContainSubstring(filterSwitchOn))
-				Expect(renderAt("/?hide=")).To(ContainSubstring(filterSwitchOn))
-				Expect(renderAt("/?hide=closed")).To(ContainSubstring(filterSwitchOn))
+			// ⚠️ Reversed 2026-09-27 along with the default. The value still names
+			// the SET that is hidden and `none` names the empty set — so absence
+			// and anything unrecognised fall back to the DEFAULT, which is now the
+			// filtered view, rather than guessing at an intent the URL did not
+			// state. Only the explicit off-spelling turns the filter off.
+			//
+			// ⚠️ The control is asserted as the FULL `data-board-filter role=...`
+			// sequence, never as a bare `aria-checked="true"`. The page's own
+			// stylesheet carries `.board-filter[aria-checked="true"]` selectors, so
+			// a bare substring matches the CSS and passes whatever the switch
+			// renders — a check that cannot fail. This was found by the
+			// falsification step: with the handler reverted to the old default
+			// these lines stayed green while the two specs using the full sequence
+			// went red. The predecessor's bare `aria-checked="false"` assertions
+			// discriminated only by luck — no CSS selector uses `false`.
+			Expect(renderAt("/")).To(ContainSubstring(filterSwitchOn))
+			Expect(renderAt("/?hide=")).To(ContainSubstring(filterSwitchOn))
+			Expect(renderAt("/?hide=closed")).To(ContainSubstring(filterSwitchOn))
 
-				// The off-spelling is the whole of the difference. Without this line a
-				// build that ignored the parameter entirely would pass every
-				// assertion above — the positive control for the reversal.
-				Expect(renderAt("/?hide=none")).To(ContainSubstring(filterSwitchOff))
-			},
-		)
+			// The off-spelling is the whole of the difference. Without this line a
+			// build that ignored the parameter entirely would pass every
+			// assertion above — the positive control for the reversal.
+			Expect(renderAt("/?hide=none")).To(ContainSubstring(filterSwitchOff))
+		})
 
 		It("reads the filter alongside other parameters rather than instead of them", func() {
 			item, err := store.Push(ctx, messageRequest())
