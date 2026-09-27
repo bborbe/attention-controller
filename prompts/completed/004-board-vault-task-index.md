@@ -1,7 +1,12 @@
 ---
-status: approved
+status: completed
+summary: Added a vault task index (pkg.TaskIndex) built once from <vault>/25 Tasks/ and joined to items by session id, surfacing TaskName/TaskPath on Provenance via a new optional -vault-dir flag, with fail-soft reads and no rendering change.
+execution_id: attention-controller-answer-control-exec-004-board-vault-task-index
+dark-factory-version: v0.196.0
 created: "2026-09-27T22:34:47Z"
 queued: "2026-09-27T22:34:47Z"
+started: "2026-09-27T22:38:43Z"
+completed: "2026-09-27T22:49:26Z"
 ---
 
 # Resolve each attention item's task from the vault

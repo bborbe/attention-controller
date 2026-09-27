@@ -75,7 +75,15 @@ var _ = Describe("ProvenanceResolver", func() {
 		sessionsDir = GinkgoT().TempDir()
 		paneLister = &mocks.PaneLister{}
 		paneLister.ListReturns(map[int]pkg.Pane{}, nil)
-		resolver = pkg.NewProvenanceResolver(stateDir, sessionsDir, paneLister)
+		// An empty vault: the specs below are about the event log, the registry
+		// and the pane listing, so no task resolves and TaskName/TaskPath stay
+		// empty. The vault itself is covered by the TaskIndex specs.
+		resolver = pkg.NewProvenanceResolver(
+			stateDir,
+			sessionsDir,
+			paneLister,
+			pkg.NewTaskIndex(ctx, GinkgoT().TempDir()),
+		)
 	})
 
 	It("joins on the item's dedup key, so one producer's items do not share provenance", func() {
@@ -339,6 +347,7 @@ var _ = Describe("ProvenanceResolver", func() {
 			filepath.Join(stateDir, "does-not-exist"),
 			filepath.Join(sessionsDir, "does-not-exist"),
 			paneLister,
+			pkg.NewTaskIndex(ctx, GinkgoT().TempDir()),
 		)
 
 		resolved := unavailable.Resolve(ctx, pkg.Items{item("item-7", "producer-e", "key-e")})
@@ -357,4 +366,205 @@ var _ = Describe("ProvenanceResolver", func() {
 
 		Expect(paneLister.ListCallCount()).To(Equal(1))
 	})
+
+	// withVault is the BeforeEach resolver plus a task index over vault. The
+	// vault is per-spec rather than shared, so each case's fixture is the only
+	// thing its index can see.
+	withVault := func(vault string) pkg.ProvenanceResolver {
+		return pkg.NewProvenanceResolver(
+			stateDir,
+			sessionsDir,
+			paneLister,
+			pkg.NewTaskIndex(ctx, vault),
+		)
+	}
+
+	It("resolves the vault task the item's session is anchored to", func() {
+		vault := GinkgoT().TempDir()
+		writeVaultTask(vault, "Fix the board.md",
+			"---\nclaude_session_id: session-task\nstatus: active\n---\n\nbody\n")
+		writeEvents(
+			"producer-task",
+			eventLine("key-task", "session-task", "burn", "/w/task", "", ""),
+		)
+
+		provenance := withVault(vault).Resolve(ctx, pkg.Items{
+			sessionItem("item-task", "producer-task", "key-task", "session-task"),
+		})[pkg.ItemID("item-task")]
+
+		Expect(provenance.TaskName).To(Equal("Fix the board"))
+		Expect(provenance.TaskPath).To(Equal("25 Tasks/Fix the board.md"))
+		// The event-log branch still resolves everything it did before.
+		Expect(provenance.Host).To(Equal("burn"))
+	})
+
+	It("resolves no task when no task file records the session", func() {
+		vault := GinkgoT().TempDir()
+		writeVaultTask(vault, "Someone Else's Task.md",
+			"---\nclaude_session_id: some-other-session\n---\n")
+		writeEvents("producer-none", eventLine("key-none", "session-none", "burn", "/w/n", "", ""))
+
+		provenance := withVault(vault).Resolve(ctx, pkg.Items{
+			sessionItem("item-none", "producer-none", "key-none", "session-none"),
+		})[pkg.ItemID("item-none")]
+
+		Expect(provenance.TaskName).To(BeEmpty())
+		Expect(provenance.TaskPath).To(BeEmpty())
+		Expect(provenance.Host).To(Equal("burn"))
+	})
+
+	It("resolves the task for an item whose producer wrote no event log", func() {
+		// ⚠️ The branch this test exists for. The producer wrote no event log at
+		// all, and resolveByName reports ok=false — the session is in neither
+		// the registry nor the pane listing — so the loop would otherwise store
+		// no Provenance for this item at all and the task would be lost. The
+		// task lookup must not depend on the pane branches.
+		vault := GinkgoT().TempDir()
+		writeVaultTask(vault, "No Log Task.md",
+			"---\nclaude_session_id: session-nolog\n---\n")
+
+		provenance := withVault(vault).Resolve(ctx, pkg.Items{
+			sessionItem("item-nolog", "producer-nolog", "key-nolog", "session-nolog"),
+		})[pkg.ItemID("item-nolog")]
+
+		// No pane is claimed, and nothing else resolved either.
+		Expect(provenance.PaneRecorded).To(BeFalse())
+		Expect(provenance.Pane).To(BeEmpty())
+		Expect(provenance.Resolved()).To(BeFalse())
+		// The task resolves anyway — it is an independent source.
+		Expect(provenance.TaskName).To(Equal("No Log Task"))
+		Expect(provenance.TaskPath).To(Equal("25 Tasks/No Log Task.md"))
+	})
+
+	It("resolves no task when no index was configured", func() {
+		// The standalone host: no vault, so no index. Everything else still
+		// resolves exactly as it did before the index existed.
+		writeEvents("producer-nil", eventLine("key-nil", "session-nil", "burn", "/w/nil", "", ""))
+		nilIndex := pkg.NewProvenanceResolver(stateDir, sessionsDir, paneLister, nil)
+
+		provenance := nilIndex.Resolve(ctx, pkg.Items{
+			sessionItem("item-nil", "producer-nil", "key-nil", "session-nil"),
+		})[pkg.ItemID("item-nil")]
+
+		Expect(provenance.TaskName).To(BeEmpty())
+		Expect(provenance.TaskPath).To(BeEmpty())
+		Expect(provenance.Host).To(Equal("burn"))
+	})
+
+	It("resolves no task for an item that names no session", func() {
+		// ProducerID is the bare `session:` marker with no id after it — the
+		// one shape sessionIDFromItem reduces to "". The item names no session,
+		// so there is nothing to look up and no task is guessed.
+		vault := GinkgoT().TempDir()
+		writeVaultTask(vault, "Orphan Task.md", "---\nclaude_session_id: session-orphan\n---\n")
+
+		provenance := withVault(vault).Resolve(ctx, pkg.Items{pkg.Item{
+			ItemID:     pkg.ItemID("item-orphan"),
+			ProducerID: pkg.ProducerID("session:"),
+			DedupKey:   pkg.DedupKey("key-orphan"),
+		}})[pkg.ItemID("item-orphan")]
+
+		Expect(provenance.TaskName).To(BeEmpty())
+		Expect(provenance.TaskPath).To(BeEmpty())
+	})
+})
+
+// writeVaultTask writes one task file under <vault>/25 Tasks/, the directory the
+// index reads. Written as raw text rather than through a parser, so the fixture
+// is the *file shape* the vault actually holds.
+func writeVaultTask(vault, name, content string) {
+	dir := filepath.Join(vault, "25 Tasks")
+	Expect(os.MkdirAll(dir, 0o750)).To(BeNil())
+	Expect(os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600)).To(BeNil())
+}
+
+var _ = Describe("TaskIndex", func() {
+	var ctx context.Context
+
+	BeforeEach(func() {
+		ctx = context.Background()
+	})
+
+	// Each entry builds its own vault and returns the directory the index is
+	// built from, so the "does not exist" case can point the index at a path
+	// nothing ever created.
+	DescribeTable("resolves the task recorded for a session",
+		func(build func(root string) string, sessionID, wantName, wantPath string, wantOK bool) {
+			vault := build(GinkgoT().TempDir())
+
+			task, ok := pkg.NewTaskIndex(ctx, vault).Lookup(sessionID)
+
+			Expect(ok).To(Equal(wantOK))
+			Expect(task.Name).To(Equal(wantName))
+			Expect(task.Path).To(Equal(wantPath))
+		},
+		Entry("a file with a valid claude_session_id",
+			func(root string) string {
+				writeVaultTask(root, "Fix the board.md",
+					"---\nclaude_session_id: session-a\nstatus: active\n---\nbody\n")
+				return root
+			},
+			"session-a", "Fix the board", "25 Tasks/Fix the board.md", true),
+		Entry("a file with no claude_session_id",
+			func(root string) string {
+				writeVaultTask(root, "No Session.md", "---\ntitle: No Session\n---\n")
+				return root
+			},
+			"session-a", "", "", false),
+		Entry("a file with an empty claude_session_id",
+			func(root string) string {
+				writeVaultTask(root, "Empty.md", "---\nclaude_session_id:\n---\n")
+				return root
+			},
+			"", "", "", false),
+		Entry("a file whose claude_session_id is only whitespace",
+			func(root string) string {
+				writeVaultTask(root, "Blank.md", "---\nclaude_session_id:    \n---\n")
+				return root
+			},
+			"", "", "", false),
+		Entry("a file with no frontmatter block",
+			func(root string) string {
+				writeVaultTask(root, "Plain.md", "# Plain\n\nclaude_session_id: session-a\n")
+				return root
+			},
+			"session-a", "", "", false),
+		Entry("a file whose frontmatter block is never closed",
+			func(root string) string {
+				writeVaultTask(root, "Unclosed.md", "---\nclaude_session_id: session-a\n")
+				return root
+			},
+			"session-a", "", "", false),
+		Entry("a non-markdown file",
+			func(root string) string {
+				writeVaultTask(root, "Notes.txt", "---\nclaude_session_id: session-a\n---\n")
+				return root
+			},
+			"session-a", "", "", false),
+		Entry("two files sharing one id, one still in flight",
+			func(root string) string {
+				// The in-flight file sorts *first*, so a tie-break that simply
+				// took the last file read would pick the completed one.
+				writeVaultTask(root, "Newer Task.md",
+					"---\nclaude_session_id: session-b\nstatus: active\n---\n")
+				writeVaultTask(root, "Older Task.md",
+					"---\nclaude_session_id: session-b\nstatus: completed\n---\n")
+				return root
+			},
+			"session-b", "Newer Task", "25 Tasks/Newer Task.md", true),
+		Entry("two files sharing one id, both terminal",
+			func(root string) string {
+				writeVaultTask(root, "Alpha Task.md",
+					"---\nclaude_session_id: session-c\nstatus: completed\n---\n")
+				writeVaultTask(root, "Beta Task.md",
+					"---\nclaude_session_id: session-c\nstatus: aborted\n---\n")
+				return root
+			},
+			"session-c", "Beta Task", "25 Tasks/Beta Task.md", true),
+		Entry("a vault directory that does not exist",
+			func(root string) string {
+				return filepath.Join(root, "does-not-exist")
+			},
+			"session-a", "", "", false),
+	)
 })

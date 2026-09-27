@@ -43,6 +43,16 @@ type Provenance struct {
 	// Routable is whether the recorded pane is proven to be this producer's.
 	// False with PaneRecorded true is the case the page marks `unroutable`.
 	Routable bool
+	// TaskName is the title of the vault task this item's session is anchored
+	// to, from the task file that records the session. Empty when nothing
+	// resolved.
+	TaskName string
+	// TaskPath is the task file's path relative to the vault root, e.g.
+	// `25 Tasks/Fix the board.md`. ⚠️ A link needs the vault's own name as well
+	// as this path, and the **renderer** derives that name from the configured
+	// vault directory rather than reading it here — there is no third field
+	// carrying it.
+	TaskPath string
 }
 
 // Resolved reports whether anything about this item's origin could be told.
@@ -69,16 +79,25 @@ type ProvenanceResolver interface {
 }
 
 // NewProvenanceResolver creates a resolver reading the event logs under
-// stateDir, the session registry under sessionsDir, and panes from the lister.
+// stateDir, the session registry under sessionsDir, panes from the lister, and
+// the vault tasks from the index.
+//
+// ⚠️ The index is built by the caller, once, and handed in — it is never built
+// here and never inside Resolve. The live vault holds over 8,000 task files, so
+// building it per page load would re-read every task file on every board
+// refresh, on a page the SSE stream serves continuously. A nil index is legal
+// and resolves no task, which is what a host with no configured vault gets.
 func NewProvenanceResolver(
 	stateDir string,
 	sessionsDir string,
 	panes PaneLister,
+	tasks TaskIndex,
 ) ProvenanceResolver {
 	return &provenanceResolver{
 		stateDir:    stateDir,
 		sessionsDir: sessionsDir,
 		panes:       panes,
+		tasks:       tasks,
 	}
 }
 
@@ -86,6 +105,7 @@ type provenanceResolver struct {
 	stateDir    string
 	sessionsDir string
 	panes       PaneLister
+	tasks       TaskIndex
 }
 
 // eventRecord is one line of a producer's event log, reduced to the fields the
@@ -181,11 +201,45 @@ func (r *provenanceResolver) Resolve(ctx context.Context, items Items) Provenanc
 			if fallback, ok := r.resolveByName(item, names, panes, panesAvailable); ok {
 				resolved[item.ItemID] = fallback
 			}
-			continue
+		} else {
+			resolved[item.ItemID] = r.build(record, names, panes, panesAvailable)
 		}
-		resolved[item.ItemID] = r.build(record, names, panes, panesAvailable)
+		// ⚠️ The task lookup is independent of the pane lookup, and runs after
+		// either branch. resolveByName reports ok=false whenever the pane
+		// listing is unreadable, the session is absent from the registry, or no
+		// pane matches — and on that path the loop stores no Provenance at all,
+		// so a task resolved there would be lost even though the session has
+		// one. Setting both fields here, on the item's entry, creates that entry
+		// when neither branch claimed anything.
+		//
+		// The session id comes from sessionIDFromItem, the one helper that
+		// understands every liveness shape the store writes; a second extractor
+		// would be a second place to get that wrong.
+		if task, ok := r.lookupTask(item); ok {
+			provenance := resolved[item.ItemID]
+			provenance.TaskName = task.Name
+			provenance.TaskPath = task.Path
+			resolved[item.ItemID] = provenance
+		}
 	}
 	return resolved
+}
+
+// lookupTask resolves the vault task this item's session is anchored to.
+//
+// It reports ok=false when there is no index, when the item names no session,
+// or when the index holds no task for that session — the last of which is the
+// honest answer for a session whose task file does not exist or whose vault was
+// never configured. No task is ever guessed from a neighbouring session.
+func (r *provenanceResolver) lookupTask(item Item) (Task, bool) {
+	if r.tasks == nil {
+		return Task{}, false
+	}
+	sessionID := sessionIDFromItem(item)
+	if sessionID == "" {
+		return Task{}, false
+	}
+	return r.tasks.Lookup(sessionID)
 }
 
 // LivenessRef markers, and the session id each carries.
@@ -499,4 +553,217 @@ func (r *provenanceResolver) sessionNames(ctx context.Context) map[string]string
 		}
 	}
 	return names
+}
+
+// Vault layout: every task file lives under this directory and records its
+// session and its status under these frontmatter keys.
+const (
+	// taskDirName is the vault directory holding the task files.
+	taskDirName = "25 Tasks"
+	// taskSessionKey is the frontmatter key recording the session a task
+	// belongs to. It is the join key, and it is already written by the vault —
+	// no new stored field is needed on the item.
+	taskSessionKey = "claude_session_id"
+	// taskStatusKey is the frontmatter key carrying the task's status. Read
+	// only to break a tie between task files sharing one session id.
+	taskStatusKey = "status"
+)
+
+//counterfeiter:generate -o ../mocks/task-index.go --fake-name TaskIndex . TaskIndex
+
+// TaskIndex resolves the vault task a session is anchored to.
+//
+// The vault is the only source that knows *what* a session is working on: the
+// event log and the session registry both describe where a session runs, and
+// neither names the task behind it.
+//
+// ⚠️ It is an index rather than a lookup because the join is the expensive
+// half. The vault holds over 8,000 task files and each candidate must be read
+// to see which session it records, so the whole vault is read once at
+// construction and every page load is a map hit.
+type TaskIndex interface {
+	// Lookup returns the task recorded for sessionID. ok is false when the
+	// session anchors no task: an unnamed or unknown session, a vault that was
+	// not configured, or one that could not be read.
+	Lookup(sessionID string) (Task, bool)
+}
+
+// Task is the vault task a session is anchored to.
+type Task struct {
+	// Name is the task's title, which is its filename without the `.md`
+	// suffix.
+	Name string
+	// Path is the task file's path relative to the vault root, e.g.
+	// `25 Tasks/Fix the board.md`.
+	Path string
+}
+
+// NewTaskIndex builds the session -> task index from vaultDir's task files.
+//
+// It fails soft in every direction: an empty vaultDir, a vault that does not
+// exist, an unreadable `25 Tasks/` and an unreadable file each yield no entry
+// for the affected tasks and never an error. An empty vaultDir is the ordinary
+// case for a host with no vault configured, not a fault.
+func NewTaskIndex(ctx context.Context, vaultDir string) TaskIndex {
+	index := &taskIndex{bySession: map[string]taskEntry{}}
+	if vaultDir == "" {
+		return index
+	}
+	tasksDir := filepath.Join(vaultDir, taskDirName)
+	// os.ReadDir returns entries sorted by filename, and the tie-break below
+	// depends on it: candidates are added in ascending path order, so the later
+	// candidate is the lexicographically greater path.
+	entries, err := os.ReadDir(tasksDir)
+	if err != nil {
+		glog.V(2).Infof("read vault tasks dir %s failed: %v", tasksDir, err)
+		return index
+	}
+	// Opened as an os.Root so every read is confined beneath the tasks
+	// directory: the file names come from the directory listing, and scoping the
+	// handle makes that confinement structural rather than an assumption about
+	// the names. Same pattern as the event-log read in readEvents.
+	root, err := os.OpenRoot(tasksDir)
+	if err != nil {
+		glog.V(2).Infof("open vault tasks dir %s failed: %v", tasksDir, err)
+		return index
+	}
+	defer root.Close()
+	for _, entry := range entries {
+		select {
+		case <-ctx.Done():
+			glog.V(3).Infof("task index build cancelled")
+			return index
+		default:
+		}
+		index.addFile(root, entry)
+	}
+	return index
+}
+
+type taskIndex struct {
+	bySession map[string]taskEntry
+}
+
+// taskEntry is one indexed task file: the task itself plus the only other
+// frontmatter field read, kept solely to break a tie between files sharing a
+// session id.
+type taskEntry struct {
+	task     Task
+	terminal bool
+}
+
+// Lookup returns the task recorded for sessionID.
+//
+// An unknown session is an ordinary miss, and an empty sessionID is a miss
+// too: addFile never indexes a file under "", so there is nothing for it to
+// match.
+func (t *taskIndex) Lookup(sessionID string) (Task, bool) {
+	if t == nil {
+		return Task{}, false
+	}
+	entry, ok := t.bySession[sessionID]
+	if !ok {
+		return Task{}, false
+	}
+	return entry.task, true
+}
+
+// addFile reads one directory entry and indexes it when it is a task file that
+// records a session.
+func (t *taskIndex) addFile(root *os.Root, entry os.DirEntry) {
+	if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+		return
+	}
+	content, err := root.ReadFile(entry.Name())
+	if err != nil {
+		glog.V(3).Infof("read vault task %s failed: %v", entry.Name(), err)
+		return
+	}
+	sessionID := frontmatterValue(content, taskSessionKey)
+	if sessionID == "" {
+		// No frontmatter, no key, or an empty value after trimming whitespace:
+		// the file contributes no entry rather than an entry under "".
+		return
+	}
+	t.add(sessionID, taskEntry{
+		task: Task{
+			Name: strings.TrimSuffix(entry.Name(), ".md"),
+			Path: filepath.Join(taskDirName, entry.Name()),
+		},
+		terminal: isTerminalTaskStatus(frontmatterValue(content, taskStatusKey)),
+	})
+}
+
+// add records one candidate for a session, breaking ties deterministically.
+//
+// ⚠️ Several files may carry the same claude_session_id — measured in the live
+// vault, 33 session ids map to between 2 and 6 task files. The tie-break is:
+// prefer the file whose `status` is neither `completed` nor `aborted`, because
+// that is the task the session is still anchored to; if every candidate is
+// terminal, the lexicographically last path wins. Candidates arrive in
+// ascending path order (os.ReadDir sorts), so "the later candidate" is "the
+// lexicographically greater path".
+func (t *taskIndex) add(sessionID string, candidate taskEntry) {
+	existing, seen := t.bySession[sessionID]
+	if seen && !existing.terminal && candidate.terminal {
+		// The indexed task is in flight and the candidate is not: keep the one
+		// the session is still working on.
+		return
+	}
+	t.bySession[sessionID] = candidate
+}
+
+// isTerminalTaskStatus reports whether a task's `status` means it is no longer
+// in flight. Only the two statuses the tie-break names are terminal; anything
+// else — including an absent or unrecognised status — reads as in flight, so a
+// vault that spells its statuses differently degrades to the path tie-break
+// rather than to no answer at all.
+func isTerminalTaskStatus(status string) bool {
+	switch status {
+	case "completed", "aborted":
+		return true
+	default:
+		return false
+	}
+}
+
+// frontmatterValue returns the value of the scalar `key` in content's YAML
+// frontmatter block, or "" when there is no block, the block is never closed,
+// or the key is absent.
+//
+// ⚠️ Parsed by hand on purpose. The block is a flat list of `key: value` lines
+// and this reads exactly one scalar key; go.mod carries a YAML parser only as
+// an **indirect** dependency and no Go file imports one, so using it would
+// promote a YAML library to a direct dependency to read a single scalar.
+func frontmatterValue(content []byte, key string) string {
+	for _, line := range frontmatterLines(content) {
+		name, value, ok := strings.Cut(line, ":")
+		if !ok || strings.TrimSpace(name) != key {
+			continue
+		}
+		return strings.TrimSpace(value)
+	}
+	return ""
+}
+
+// frontmatterLines returns the lines between the first two lines that are
+// exactly `---`, or nil when there is no such pair.
+func frontmatterLines(content []byte) []string {
+	lines := strings.Split(strings.ReplaceAll(string(content), "\r\n", "\n"), "\n")
+	start := -1
+	for i, line := range lines {
+		if line == "---" {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		return nil
+	}
+	for i := start + 1; i < len(lines); i++ {
+		if lines[i] == "---" {
+			return lines[start+1 : i]
+		}
+	}
+	return nil
 }

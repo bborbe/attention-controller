@@ -41,17 +41,23 @@ type application struct {
 	// reporting rather than failing startup. This repo has no deployed stage
 	// yet, so nothing here depends on the flag; a future deploy supplies
 	// SENTRY_DSN from its own secret.
-	SentryDSN         string `required:"false" arg:"sentry-dsn"          env:"SENTRY_DSN"          usage:"SentryDSN (empty disables error reporting)"                                                         display:"length"`
+	SentryDSN         string `required:"false" arg:"sentry-dsn"          env:"SENTRY_DSN"          usage:"SentryDSN (empty disables error reporting)"                                                                         display:"length"`
 	SentryProxy       string `required:"false" arg:"sentry-proxy"        env:"SENTRY_PROXY"        usage:"Sentry Proxy"`
 	Listen            string `required:"true"  arg:"listen"              env:"LISTEN"              usage:"address to listen to"`
 	DataDir           string `required:"true"  arg:"datadir"             env:"DATADIR"             usage:"data directory"`
-	HeartbeatWindow   string `required:"false" arg:"heartbeat-window"    env:"HEARTBEAT_WINDOW"    usage:"how stale a heartbeat:<path> mtime may be before the producer counts as finished"                                    default:"15m"`
+	HeartbeatWindow   string `required:"false" arg:"heartbeat-window"    env:"HEARTBEAT_WINDOW"    usage:"how stale a heartbeat:<path> mtime may be before the producer counts as finished"                                                    default:"15m"`
 	SessionsDir       string `required:"false" arg:"sessions-dir"        env:"SESSIONS_DIR"        usage:"directory holding the session registry used to resolve session:<id> liveness"`
 	AttentionStateDir string `required:"false" arg:"attention-state-dir" env:"ATTENTION_STATE_DIR" usage:"directory holding the producers' event logs the page resolves item provenance from"`
+	// VaultDir is the directory holding the vault whose task files record the
+	// session each task belongs to. ⚠️ Deliberately without a `default:`, unlike
+	// SessionsDir and AttentionStateDir: an unset vault is a legitimate state,
+	// and defaulting it would point the board at a guessed path instead of
+	// simply rendering no task names.
+	VaultDir string `required:"false" arg:"vault-dir"           env:"VAULT_DIR"           usage:"directory holding the vault whose task files record the session each task belongs to (empty renders no task names)"`
 	// JumpURL is the fleet-jump server's origin. The board's Jump button
 	// redirects here with the pane and the shared token appended server-side,
 	// so the token never reaches the browser.
-	JumpURL string `required:"false" arg:"jump-url"            env:"JUMP_URL"            usage:"base URL of the fleet-jump server the board's Jump button redirects to"                                              default:"http://127.0.0.1:1337"`
+	JumpURL string `required:"false" arg:"jump-url"            env:"JUMP_URL"            usage:"base URL of the fleet-jump server the board's Jump button redirects to"                                                              default:"http://127.0.0.1:1337"`
 	// JumpTokenPath is the file holding the fleet-jump server's shared token.
 	// Empty resolves to ~/.claude/secrets/jump-token, the same path
 	// claude-supervisor's jump-link.py reads, so the two surfaces cannot drift
@@ -63,14 +69,14 @@ type application struct {
 	// rule, and the tag costs nothing but a less useful startup line. Both the
 	// local review funnel and the bot flagged the omission, and a tag that is
 	// correct for a credential-adjacent field is the cheaper default.
-	JumpTokenPath string `required:"false" arg:"jump-token-path"     env:"JUMP_TOKEN_PATH"     usage:"file holding the fleet-jump server's shared token (empty resolves to ~/.claude/secrets/jump-token)" display:"length"`
+	JumpTokenPath string `required:"false" arg:"jump-token-path"     env:"JUMP_TOKEN_PATH"     usage:"file holding the fleet-jump server's shared token (empty resolves to ~/.claude/secrets/jump-token)"                 display:"length"`
 	// TTSURL is the tts server's base URL. Optional: with no value the
 	// read-aloud route is not registered and the page renders no read-aloud
 	// control, so a host without a tts server serves the same page minus one
 	// control rather than one that always fails.
-	TTSURL          string            `required:"false" arg:"tts-url"             env:"TTS_URL"             usage:"base URL of the tts server the board's read-aloud control forwards to (empty disables it)"                           default:"http://127.0.0.1:12000"`
-	BuildGitVersion string            `required:"false" arg:"build-git-version"   env:"BUILD_GIT_VERSION"   usage:"Build Git version"                                                                                                   default:"dev"`
-	BuildGitCommit  string            `required:"false" arg:"build-git-commit"    env:"BUILD_GIT_COMMIT"    usage:"Build Git commit hash"                                                                                               default:"none"`
+	TTSURL          string            `required:"false" arg:"tts-url"             env:"TTS_URL"             usage:"base URL of the tts server the board's read-aloud control forwards to (empty disables it)"                                           default:"http://127.0.0.1:12000"`
+	BuildGitVersion string            `required:"false" arg:"build-git-version"   env:"BUILD_GIT_VERSION"   usage:"Build Git version"                                                                                                                   default:"dev"`
+	BuildGitCommit  string            `required:"false" arg:"build-git-commit"    env:"BUILD_GIT_COMMIT"    usage:"Build Git commit hash"                                                                                                               default:"none"`
 	BuildDate       *libtime.DateTime `required:"false" arg:"build-date"          env:"BUILD_DATE"          usage:"Build timestamp (RFC3339)"`
 }
 
@@ -145,13 +151,16 @@ func defaultSessionsDir(ctx context.Context) (string, error) {
 // createProvenanceResolver builds the resolver the page joins item provenance
 // from.
 //
-// ⚠️ Both directories are optional and an unresolved one is not fatal. A store
-// running for k8s agents, cron jobs or dark-factory runs has neither a Claude
-// Code state directory nor WezTerm, and it must still serve every item: the
-// resolver reads nothing, every row renders with no provenance line, and the
-// page is exactly what it was before this change. That degradation is the
+// ⚠️ All three directories are optional and an unresolved one is not fatal. A
+// store running for k8s agents, cron jobs or dark-factory runs has neither a
+// Claude Code state directory nor WezTerm, and it must still serve every item:
+// the resolver reads nothing, every row renders with no provenance line, and
+// the page is exactly what it was before this change. That degradation is the
 // honest scoping of the page's standalone claim — it still works without Claude
 // Code, but it works with provenance absent rather than without looking.
+//
+// The vault is the same story: no vault configured means no task name resolved,
+// not a startup failure.
 func (a *application) createProvenanceResolver(ctx context.Context) pkg.ProvenanceResolver {
 	stateDir := a.AttentionStateDir
 	if stateDir == "" {
@@ -171,7 +180,15 @@ func (a *application) createProvenanceResolver(ctx context.Context) pkg.Provenan
 		}
 		sessionsDir = resolved
 	}
-	return pkg.NewProvenanceResolver(stateDir, sessionsDir, pkg.NewWeztermPaneLister())
+	// ⚠️ The task index is built here, once, and handed to the resolver — never
+	// built per page. The vault holds thousands of task files, and the page is
+	// served continuously by the SSE stream.
+	return pkg.NewProvenanceResolver(
+		stateDir,
+		sessionsDir,
+		pkg.NewWeztermPaneLister(),
+		pkg.NewTaskIndex(ctx, a.VaultDir),
+	)
 }
 
 // defaultAttentionStateDir resolves ~/.claude/state/attention, the directory
