@@ -202,27 +202,41 @@ var _ = Describe("Attention jump handover", func() {
 			Expect(resp.Body.String()).NotTo(ContainSubstring(`href="/jump/`))
 		})
 
-		// An unresolvable pane must render absent rather than as a stand-in: a
-		// button pointing at a jump that will 404 is a value presented as working
-		// that is not. See the attention item schema § silence 7.
-		It("renders no Jump button and no placeholder when the pane does not resolve", func() {
-			item := pushItem(nonMessageRequest())
-			provenance.ResolveReturns(pkg.Provenances{})
+		// An unresolvable pane must not render a control that promises a jump it
+		// cannot deliver: a button pointing at a jump that will 404 is a value
+		// presented as working that is not. See the attention item schema
+		// § silence 7.
+		// ⚠️ AMENDED 2026-09-27 — the control now RENDERS here, disabled, because
+		// the operator asked for it in the same place on every card. What this
+		// spec guards is unchanged and is asserted below: no *working* jump, no
+		// copyable command, and no placeholder standing in for the missing pane.
+		It(
+			"renders no working Jump control and no placeholder when the pane does not resolve",
+			func() {
+				item := pushItem(nonMessageRequest())
+				provenance.ResolveReturns(pkg.Provenances{})
 
-			block := renderRow(item.ItemID)
+				block := renderRow(item.ItemID)
 
-			Expect(block).NotTo(ContainSubstring("jump-button"))
-			Expect(block).NotTo(ContainSubstring(`data-jump="/jump/`))
-			Expect(block).NotTo(ContainSubstring("/supervisor:jump"))
-			Expect(block).NotTo(ContainSubstring(`class="jump"`))
-			Expect(block).NotTo(ContainSubstring("Jump to session"))
-			// No stand-in text either. A placeholder would be an unresolvable value
-			// presented as resolved, which is the one failure this task exists to
-			// avoid.
-			for _, placeholder := range []string{"unknown", "n/a", "N/A", "—", "??"} {
-				Expect(block).NotTo(ContainSubstring(placeholder))
-			}
-		})
+				Expect(block).NotTo(ContainSubstring("jump-button"))
+				Expect(block).NotTo(ContainSubstring(`data-jump="/jump/`))
+				Expect(block).NotTo(ContainSubstring("/supervisor:jump"))
+				Expect(block).NotTo(ContainSubstring(`class="jump"`))
+				// The control is present and unavailable, and "unavailable" is the
+				// whole of the claim: a disabled button cannot dispatch, and it
+				// carries no data-jump for the document-delegated handler to match
+				// even if it somehow did.
+				Expect(block).To(ContainSubstring(`class="jump-corner"`))
+				Expect(block).To(ContainSubstring(`disabled`))
+				Expect(block).NotTo(ContainSubstring(`data-jump=`))
+				// No stand-in text either. A placeholder would be an unresolvable value
+				// presented as resolved, which is the one failure this task exists to
+				// avoid.
+				for _, placeholder := range []string{"unknown", "n/a", "N/A", "—", "??"} {
+					Expect(block).NotTo(ContainSubstring(placeholder))
+				}
+			},
+		)
 
 		// The button is for every class, the command only for the classes the board
 		// must not answer. On a `message` row the "Approve in the session that

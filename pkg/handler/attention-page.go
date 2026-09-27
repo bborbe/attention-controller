@@ -926,7 +926,7 @@ function showAckNote(row, message, isError) {
 {{if or .Message .Ack}}<button type="button" class="corner-x" data-corner-x aria-label="Skip this item">✕</button>
 {{end}}{{if and .Message .Speak}}<button type="button" class="speak" data-speak aria-label="Read aloud" title="Read aloud"><svg class="speak-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2.75 5.25 5.5H2.75v5h2.5L9 13.25z"/><path d="M11.5 5.75a3.25 3.25 0 0 1 0 4.5"/><path d="M13.5 3.75a6 6 0 0 1 0 8.5"/></svg></button>
 {{end}}{{if .JumpURL}}<button type="button" class="jump-corner" data-jump="{{ .JumpURL }}" aria-label="Jump to session" title="Jump to session"><svg class="jump-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.75 3.25h8.5a1.5 1.5 0 0 1 1.5 1.5v6.5a1.5 1.5 0 0 1-1.5 1.5h-8.5a1.5 1.5 0 0 1-1.5-1.5v-6.5a1.5 1.5 0 0 1 1.5-1.5z"/><path d="M5.75 6.5 7.5 8.25 5.75 10"/><path d="M9 10h1.75"/></svg></button>
-{{else if and .NoJump (not .Permission)}}<button type="button" class="jump-corner" disabled aria-label="Jump to session" title="Jump to session"><svg class="jump-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.75 3.25h8.5a1.5 1.5 0 0 1 1.5 1.5v6.5a1.5 1.5 0 0 1-1.5 1.5h-8.5a1.5 1.5 0 0 1-1.5-1.5v-6.5a1.5 1.5 0 0 1 1.5-1.5z"/><path d="M5.75 6.5 7.5 8.25 5.75 10"/><path d="M9 10h1.75"/></svg></button>
+{{else if .NoJump}}<button type="button" class="jump-corner" disabled aria-label="Jump to session" title="Jump to session"><svg class="jump-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.75 3.25h8.5a1.5 1.5 0 0 1 1.5 1.5v6.5a1.5 1.5 0 0 1-1.5 1.5h-8.5a1.5 1.5 0 0 1-1.5-1.5v-6.5a1.5 1.5 0 0 1 1.5-1.5z"/><path d="M5.75 6.5 7.5 8.25 5.75 10"/><path d="M9 10h1.75"/></svg></button>
 {{end}}{{if not .Message}}<div class="payload">{{ .Item.Payload }}</div>
 {{end}}{{if .Item.Context}}<div class="context">{{ .Item.Context }}</div>
 {{end}}{{if .Provenance.Resolved}}<div class="provenance">{{if .Provenance.Host}}<span class="host">{{ .Provenance.Host }}</span>{{end}}{{if .Provenance.Cwd}}<span class="cwd">{{ .Provenance.Cwd }}</span>{{end}}{{if .Provenance.Tool}}<span class="tool">{{ .Provenance.Tool }}</span>{{end}}{{if .Provenance.Pane}}<span class="pane">pane {{ .Provenance.Pane }}</span>{{else if .Provenance.PaneRecorded}}<span class="unroutable">unroutable</span>{{end}}</div>
@@ -1013,19 +1013,14 @@ type attentionPageRow struct {
 	// schema forbids. The two classes rendering identically was the accident;
 	// they are separated by this field rather than by a shared absence.
 	Ack bool
-	// Permission reports whether this row is a `permission` item — the class
-	// that renders jump-link-only with zero controls. It is carried explicitly
-	// rather than inferred from `not .Message and not .Ack`, so a fourth
-	// mechanism added later cannot silently inherit the permission row's rule.
-	//
-	// ⚠️ The jump corner reads it, and the reason is a rule rather than a
-	// preference: a permission row with **no resolved pane renders no control at
-	// all**. The jump button is that row's one control and it appears only when
-	// there is a target — so the disabled corner SC7 adds on every other
-	// no-target row must not render here. [[A Permission Card Carries a Jump
-	// Button and No Answer Control]] owns changing that rule, and it is a
-	// separate task, which is why this field exists rather than the change.
-	Permission bool
+	// ⚠️ There was a `Permission bool` here for exactly one release, read by the
+	// jump corner to except permission rows from the disabled control. It was
+	// removed 2026-09-27 on the operator's own read of the live board: with the
+	// exception in place, **2 of 77 open cards rendered no jump control at all**,
+	// and the operator's ask is that the control be in the same place on every
+	// card. The exception was mine to propose and theirs to overrule; the field
+	// went with it rather than being left as a dead gate. See
+	// [[Attention Item Schema]] silence 20.
 	// Questions are the question units this row's card renders: the item's own
 	// when it carries several, otherwise a single unit built from the item's own
 	// Payload, Options and AnswerCardinality. Empty when the row renders no card,
@@ -1125,7 +1120,6 @@ func newAttentionPageRow(
 		Provenance: provenance,
 		Message:    item.AnswerMechanism == pkg.MessageAnswerMechanism,
 		Ack:        item.AnswerMechanism == pkg.AckAnswerMechanism,
-		Permission: item.AnswerMechanism == pkg.PermissionAnswerMechanism,
 		Jump:       jumpCommand(item, provenance),
 		JumpURL:    jumpURL(item, provenance, jumpEnabled),
 		NoJump:     noJumpReason(item, provenance, jumpEnabled),

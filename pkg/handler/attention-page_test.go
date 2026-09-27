@@ -244,7 +244,11 @@ var _ = Describe("AttentionPageHandler", func() {
 		// page where the wrong item carried the controls.
 		Expect(rowOf(body, message.ItemID)).To(ContainSubstring("<form"))
 		Expect(rowOf(body, permission.ItemID)).NotTo(ContainSubstring("<form"))
-		Expect(rowOf(body, permission.ItemID)).NotTo(ContainSubstring("<button"))
+		// ⚠️ AMENDED 2026-09-27: a permission row's one button is the jump
+		// corner, disabled when it has no target. No ANSWER control — which is
+		// the property this spec exists for.
+		Expect(rowOf(body, permission.ItemID)).NotTo(ContainSubstring("<input"))
+		Expect(rowOf(body, permission.ItemID)).To(ContainSubstring(`class="jump-corner"`))
 
 		// HEAD is routed to this handler too; it is read-only and a link checker
 		// or browser may issue it, so it is asserted rather than merely declared.
@@ -723,8 +727,10 @@ var _ = Describe("AttentionPageHandler", func() {
 			// page-wide.
 			permissionBlock := rowOf(body, permission.ItemID)
 			Expect(permissionBlock).NotTo(ContainSubstring("<form"))
-			Expect(permissionBlock).NotTo(ContainSubstring("<button"))
+			// ⚠️ AMENDED 2026-09-27: the jump corner is not an answer control and
+			// now renders here too. See the board-page spec for the reasoning.
 			Expect(permissionBlock).NotTo(ContainSubstring("<input"))
+			Expect(permissionBlock).To(ContainSubstring(`class="jump-corner"`))
 		})
 
 		// The answer arm's terminal-state branch. The failure it exists for is an
@@ -817,7 +823,10 @@ var _ = Describe("AttentionPageHandler", func() {
 		// included, which is why the ack branch must not reach it.
 		Expect(block).NotTo(ContainSubstring("data-ack"))
 		Expect(block).NotTo(ContainSubstring("<form"))
-		Expect(block).NotTo(ContainSubstring("<button"))
+		// ⚠️ AMENDED 2026-09-27: the jump corner renders on a permission row too.
+		// The ack branch must still not reach it, which is what the line above
+		// asserts and is the property this spec is for.
+		Expect(block).To(ContainSubstring(`class="jump-corner"`))
 		Expect(block).NotTo(ContainSubstring("<input"))
 	})
 
@@ -884,11 +893,13 @@ var _ = Describe("AttentionPageHandler", func() {
 
 			block := rowOf(get("GET").Body.String(), permission.ItemID)
 
-			// A permission card stays jump-link-only with zero answer controls.
+			// A permission card stays jump-link-only with zero ANSWER controls.
 			// The X is an answer control on every mechanism that renders it, so
-			// it is excluded here with the rest.
+			// it is excluded here with the rest. ⚠️ AMENDED 2026-09-27: the jump
+			// corner is navigation rather than an answer, so it now renders here
+			// — disabled when the row has no target.
 			Expect(block).NotTo(ContainSubstring("data-corner-x"))
-			Expect(block).NotTo(ContainSubstring("<button"))
+			Expect(block).To(ContainSubstring(`class="jump-corner"`))
 		})
 
 		// The positive control read from the other end: a regression that
