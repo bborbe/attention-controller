@@ -85,7 +85,6 @@ var _ = Describe("Attention page board controls", func() {
 			store,
 			provenance,
 			true,
-			pkg.NewJumpTokenReader(""),
 		)
 	})
 
@@ -331,7 +330,6 @@ var _ = Describe("Attention page board controls", func() {
 			store,
 			provenance,
 			false,
-			pkg.NewJumpTokenReader(""),
 		)
 
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
