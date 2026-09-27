@@ -39,6 +39,22 @@ const (
 	topicManagerSessionID = "00000000-0000-4000-8000-000000000005"
 )
 
+// countingDB counts the write transactions opened against a real libkv.DB, so a
+// spec can assert the read path's transaction shape rather than its timing. The
+// embedded DB supplies every other method.
+type countingDB struct {
+	libkv.DB
+	updates int
+}
+
+func (c *countingDB) Update(
+	ctx context.Context,
+	fn func(ctx context.Context, tx libkv.Tx) error,
+) error {
+	c.updates++
+	return c.DB.Update(ctx, fn)
+}
+
 var _ = Describe("AttentionStore", func() {
 	var ctx context.Context
 	var db libkv.DB
@@ -1118,5 +1134,136 @@ var _ = Describe("AttentionStore", func() {
 			Expect(read.State).To(Equal(pkg.OpenState))
 			Expect(read.CreatedAt.Equal(item.CreatedAt)).To(BeTrue())
 		})
+	})
+
+	// ⚠️ These specs pin the read path's transaction SHAPE, which is a
+	// correctness property and not an optimisation: bbolt permits one read-write
+	// transaction at a time, so a read that opens one blocks every Push behind
+	// it for as long as it runs.
+	//
+	// Measured 2026-09-27 against the deployed store, before the split: the read
+	// path answered in 0.03 s when quiet and 10.6 s under load, and
+	// `attention-ask.py post` failed on every attempt because a valid write
+	// could not get the lock a list read was holding across a scan that did file
+	// I/O per item.
+	//
+	// countingDB counts the transactions the store opens while delegating to a
+	// real boltkv, so the assertion is on what the code did, not on how long it
+	// took.
+	Describe("read path transactions", func() {
+		var counting *countingDB
+		var countingStore pkg.AttentionStore
+
+		BeforeEach(func() {
+			counting = &countingDB{DB: db}
+			countingStore = pkg.NewAttentionStore(
+				counting,
+				pkg.NewItemIDGenerator(),
+				sessionLivenessChecker,
+				libtime.NewCurrentDateTime(),
+				libtime.Duration(15*60*1e9),
+			)
+		})
+
+		It("opens no write transaction when every producer is live", func() {
+			_, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
+			Expect(err).To(BeNil())
+
+			counting.updates = 0
+			items, err := countingStore.Read(ctx)
+			Expect(err).To(BeNil())
+			Expect(items).To(HaveLen(1))
+			// The point of the fix: a read with nothing to prune is read-only
+			// end to end, so it cannot starve a Push.
+			Expect(counting.updates).To(Equal(0))
+		})
+
+		It("opens exactly one write transaction when it prunes a dead asker", func() {
+			_, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
+			Expect(err).To(BeNil())
+
+			sessionLivenessChecker.IsLiveReturns(false)
+
+			counting.updates = 0
+			items, err := countingStore.Read(ctx)
+			Expect(err).To(BeNil())
+			Expect(items).To(BeEmpty())
+			// One short prune — not a writer lock held across the whole scan.
+			Expect(counting.updates).To(Equal(1))
+		})
+
+		// ⚠️ The two specs below pin the window the split introduced. A
+		// `remove` disposition is computed from the snapshot `readItems` takes,
+		// so anything that changes between that snapshot and the prune is
+		// invisible to it unless the prune re-reads. The old single-transaction
+		// read could not reach this: `Answer` needed the same write lock and
+		// serialized behind it. Both were reproduced against the first version
+		// of this change, which deleted the item in each case.
+		It("does not prune an item answered between the scan and the prune", func() {
+			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
+			Expect(err).To(BeNil())
+
+			// Classification runs the liveness check between the scan and the
+			// prune, so it is exactly the window the race lives in. Answer the
+			// item from inside it, then report the producer gone.
+			answered := false
+			sessionLivenessChecker.IsLiveCalls(func(_ context.Context, _ string) bool {
+				if !answered {
+					answered = true
+					_, answerErr := store.Answer(
+						ctx,
+						item.ItemID,
+						"telegram",
+						"",
+						"",
+						nil,
+						nil,
+						nil,
+					)
+					Expect(answerErr).To(BeNil())
+				}
+				return false
+			})
+
+			items, err := countingStore.Read(ctx)
+			Expect(err).To(BeNil())
+			Expect(items).To(BeEmpty())
+
+			// The answer must survive. Pruning it would rewrite the history the
+			// schema says is never rewritten — the one thing the prune exists
+			// not to do.
+			history, err := store.History(ctx)
+			Expect(err).To(BeNil())
+			Expect(history).To(HaveLen(1))
+			Expect(history[0].State).To(Equal(pkg.AnsweredState))
+		})
+
+		It(
+			"does not prune an item whose producer came back between the scan and the prune",
+			func() {
+				item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
+				Expect(err).To(BeNil())
+
+				// Dead when classified, live again by the time the prune re-checks
+				// — what a resumed session, a refreshed heartbeat, or a registry
+				// that briefly read as unreadable all look like. Liveness is not
+				// monotonic, so the prune cannot inherit it from the snapshot.
+				calls := 0
+				sessionLivenessChecker.IsLiveCalls(func(_ context.Context, _ string) bool {
+					calls++
+					return calls > 1
+				})
+
+				items, err := countingStore.Read(ctx)
+				Expect(err).To(BeNil())
+				Expect(items).To(BeEmpty())
+
+				history, err := store.History(ctx)
+				Expect(err).To(BeNil())
+				Expect(history).To(HaveLen(1))
+				Expect(history[0].ItemID).To(Equal(item.ItemID))
+				Expect(history[0].State).To(Equal(pkg.OpenState))
+			},
+		)
 	})
 })
