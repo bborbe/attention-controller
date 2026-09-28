@@ -295,6 +295,53 @@ func push(payload, dedupKey string) string {
 	return decoded.ItemID
 }
 
+// pushQuestions pushes a two-question card, so the row renders a tab strip. The
+// tab case needs one: a single-question item renders no tabs and cannot fail the
+// way that case asserts.
+//
+// It is a second pusher rather than a parameter on push because every other case
+// pushes a single-question card, and an option argument would put a branch in
+// the path all of them take to serve one of them.
+func pushQuestions(payload, dedupKey string) string {
+	request := pkg.PushRequest{
+		ProducerID:      pkg.ProducerID(e2eProducerID),
+		ProducerKind:    pkg.SessionProducerKind,
+		LivenessRef:     pkg.LivenessRef("session:" + e2eSessionID),
+		DedupKey:        pkg.DedupKey(dedupKey),
+		InterruptClass:  pkg.InterruptClass("pick"),
+		Payload:         pkg.Payload(payload),
+		AnswerMechanism: pkg.MessageAnswerMechanism,
+		Questions: pkg.Questions{
+			{
+				Tab:         "Alpha",
+				Payload:     pkg.Payload("e2e: the first question"),
+				Cardinality: pkg.SingleAnswerCardinality,
+				Options:     pkg.AnswerOptions{{Label: "a1"}, {Label: "a2"}},
+			},
+			{
+				Tab:         "Beta",
+				Payload:     pkg.Payload("e2e: the second question"),
+				Cardinality: pkg.SingleAnswerCardinality,
+				Options:     pkg.AnswerOptions{{Label: "b1"}, {Label: "b2"}},
+			},
+		},
+	}
+	raw, err := json.Marshal(request)
+	Expect(err).NotTo(HaveOccurred())
+	resp, err := http.Post(baseURL+"api/1.0/attention", "application/json", bytes.NewReader(raw))
+	Expect(err).NotTo(HaveOccurred())
+	defer resp.Body.Close()
+	content, _ := io.ReadAll(resp.Body)
+	Expect(resp.StatusCode).To(BeNumerically("<", 300), "push failed: %s", string(content))
+
+	var decoded struct {
+		ItemID string `json:"item_id"`
+	}
+	Expect(json.Unmarshal(content, &decoded)).To(Succeed())
+	Expect(decoded.ItemID).NotTo(BeEmpty(), "push returned no item_id: %s", string(content))
+	return decoded.ItemID
+}
+
 // answer answers a card through the API, so the board learns about it over the
 // SSE stream rather than from its own form handler.
 func answer(itemID string) {
@@ -375,6 +422,28 @@ func failSpeak(page playwright.Page) {
 // action itself rather than the suite calling the endpoint directly.
 func clickSpeak(page playwright.Page, itemID string) {
 	Expect(page.Locator(rowSelector(itemID) + " " + speakSelector).Click()).To(Succeed())
+}
+
+// activeTab returns the question whose panel the board is currently showing.
+//
+// It reads the visible panel rather than the strip's own active class on
+// purpose: the click handler sets the class and the panels in one pass, so a
+// strip whose listener died with its node still carries "active" on the tab that
+// was active when the node was replaced. Asserting on the class would therefore
+// pass on exactly the wedged card this case exists to catch.
+func activeTab(page playwright.Page, itemID string) string {
+	value, err := page.Locator(rowSelector(itemID) + " .panel:not([hidden])").First().
+		GetAttribute("data-question")
+	Expect(err).NotTo(HaveOccurred())
+	return value
+}
+
+// clickTab presses one tab on an item's card, so the page performs the switch
+// rather than the suite setting the panel's hidden attribute directly.
+func clickTab(page playwright.Page, itemID, tab string) {
+	Expect(
+		page.Locator(fmt.Sprintf("%s button[data-tab=%q]", rowSelector(itemID), tab)).Click(),
+	).To(Succeed())
 }
 
 // --- cases -----------------------------------------------------------------
@@ -632,6 +701,60 @@ var _ = Describe("the attention board", func() {
 		Consistently(func() int { return noteCount(page, itemID, failedNoteSelector) }).
 			WithTimeout(2 * time.Second).Should(Equal(1))
 	})
+
+	It(
+		"keeps a control working when a stream event replaces its row, so a re-rendered card still answers",
+		func() {
+			// A row swap is what destroys a per-node listener, and this case
+			// covers the two binding styles a message card renders: the tab
+			// strip and the answer form the Dismiss button submits. Both were
+			// bound per node at page load and both went inert on a row the
+			// stream had re-rendered — measured 2026-09-28, with a reload the
+			// only way back. The read-aloud and Jump controls were converted to
+			// delegation for this same defect; the assertion here is what was
+			// missing when the other two rotted.
+			itemID := pushQuestions(
+				"e2e: the control that must survive a swap",
+				"e2e-control-survives",
+			)
+
+			page := newPage("")
+			defer func() { _ = page.Close() }()
+
+			Eventually(func() int { return rowCount(page, itemID) }).Should(Equal(1))
+
+			// Before the swap the strip answers, so a failure below is about the
+			// swap and not about a strip that never worked.
+			Expect(activeTab(page, itemID)).To(Equal("Alpha"))
+			clickTab(page, itemID, "Beta")
+			Expect(activeTab(page, itemID)).To(Equal("Beta"))
+
+			// Re-push the same producer and dedup key: the store updates the
+			// item in place, the stream sees the row's rendered HTML change and
+			// sends an upsert, and the page swaps the node. The payload differs
+			// because a byte-identical re-push renders identically and the
+			// stream sends nothing — the swap would not happen.
+			repushedID := pushQuestions(
+				"e2e: the control that must survive a swap, re-rendered",
+				"e2e-control-survives",
+			)
+			Expect(repushedID).To(Equal(itemID), "the re-push must update in place, not add a row")
+
+			// The swap really happened, and the tab the strip was on is not the
+			// tab this case is about to ask for.
+			Expect(activeTab(page, itemID)).To(Equal("Alpha"))
+
+			// The control still works on the node the stream put there.
+			clickTab(page, itemID, "Beta")
+			Expect(activeTab(page, itemID)).To(Equal("Beta"))
+
+			// And the second binding style on the same row still works: Dismiss
+			// is a submit, so this is the form handler rather than the strip.
+			Expect(page.Locator(rowSelector(itemID) + " button[value=skip]").Click()).To(Succeed())
+			Eventually(func() int { return rowCount(page, itemID) }).
+				WithTimeout(5 * time.Second).Should(Equal(0))
+		},
+	)
 
 	It("clears the note when the retry succeeds, so no stale failure outlives its cause", func() {
 		itemID := push("e2e: the note that must clear", "e2e-note-clears")
