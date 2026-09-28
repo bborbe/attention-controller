@@ -176,7 +176,10 @@ func startBinary(port int) error {
 		"-sessions-dir", sessionsDir,
 		"-tts-url", tts.server.URL,
 		"-attention-state-dir", filepath.Join(tmpRoot, "state"),
-		"-jump-url", "",
+		// Empty disables the legacy pane-addressed jump listener. It is passed
+		// explicitly because its default is a real address (127.0.0.1:1337),
+		// which the suite must not bind.
+		"-jump-listen", "",
 		"-v", "2",
 	)
 	proc.Stdout, proc.Stderr = os.Stderr, os.Stderr
