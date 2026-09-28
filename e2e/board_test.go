@@ -429,6 +429,33 @@ var _ = Describe("the attention board", func() {
 		Eventually(func() int { return rowCount(page, answeredID) }).Should(Equal(1))
 	})
 
+	// ⚠️ The operator's report, end to end in a real browser: answer one card and
+	// the producer's next push of the SAME dedup_key writes a new row, which used
+	// to render as a fresh prompt — one ask, two answers.
+	//
+	// The precondition assertion is load-bearing and is NOT decoration: the store's
+	// suppression is open-scoped, so a second row is what the store is supposed to
+	// write here. If it ever stops writing one, this case must fail loudly rather
+	// than pass because there is no twin left to suppress — the rule that owns that
+	// behaviour is Attention Item Schema's and is a separate change.
+	It("does not offer a re-pushed ask as a prompt when its sibling is answered", func() {
+		answeredID := push("e2e: the re-pushed ask", "e2e-repush")
+		answer(answeredID)
+
+		repushedID := push("e2e: the re-pushed ask", "e2e-repush")
+		Expect(repushedID).NotTo(Equal(answeredID))
+
+		// ?hide=none so the answered record is not parked by the filter — the
+		// assertion below is then about the row being withheld, not about a filter
+		// removing it. The leading positive is what keeps the absence meaningful:
+		// without it, a board that rendered nothing at all would also pass.
+		page := newPage("?hide=none")
+		defer func() { _ = page.Close() }()
+
+		Eventually(func() int { return rowCount(page, answeredID) }).Should(Equal(1))
+		Consistently(func() int { return rowCount(page, repushedID) }).Should(Equal(0))
+	})
+
 	It("removes a row from the DOM when the item is answered over the SSE stream", func() {
 		itemID := push("e2e: the streamed answer", "e2e-sse")
 

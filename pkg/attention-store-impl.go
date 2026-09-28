@@ -298,10 +298,70 @@ func (a *attentionStore) read(ctx context.Context, includeAnswered bool) (Items,
 		}
 	}
 
+	if includeAnswered {
+		// The board is the surface that pays for a re-raised ask, so the board's
+		// own read is where the repeat is refused. Guarded on includeAnswered
+		// because the rule is about what the BOARD renders: Read never keeps an
+		// answered item, so it has no sibling to match against and a consumer
+		// acting on the store must keep seeing exactly what it saw before.
+		kept = suppressAnsweredTwins(kept)
+	}
+
 	if err := a.pruneDead(ctx, dead); err != nil {
 		return nil, err
 	}
 	return kept, nil
+}
+
+// suppressAnsweredTwins drops an open item whose ask has already been answered.
+//
+// ⚠️ The store's duplicate suppression is OPEN-SCOPED: updateExistingIfLive
+// collapses a dedup_key only while the matching item is still open, so once an
+// ask is answered the producer's next push of the SAME key finds nothing to
+// collapse against and writes a new row. That row then rendered as a fresh
+// prompt and the operator had to answer the same question again — reported
+// 2026-09-28 and measured the same day: 710 (producer_id, dedup_key) groups
+// held more than one row, 26 of them with two or more answered rows, and one
+// ask was answered three times (21:59→22:06, 23:10→05:13, 05:50→05:53).
+//
+// The board is the surface that charges that cost, so the board's own read is
+// where it is refused.
+//
+// ⚠️ The row is DROPPED, not dimmed. The answered sibling is kept by this same
+// read and already renders as the dimmed record of the answer, so a second
+// record of one ask would state it twice.
+//
+// ⚠️ This is deliberately NOT a change to the store's suppression rule. That
+// rule is the schema's, owned by [[Attention Item Schema]], and the store still
+// writes the second row — only ReadBoard's view is narrowed, and only for the
+// board. Read, and every consumer acting on the store, is untouched.
+//
+// ⚠️ Answered siblings only, never closed ones. § Answer routing rules that a
+// close is a clear and not an answer, so a cleared ask has NOT been answered
+// and re-raising it is legitimate. The distinction is load-bearing rather than
+// cosmetic: the measured population is dominated by closed pairs (665) over
+// answered ones (26), and suppressing on a close would silently drop re-raises
+// the operator never answered.
+func suppressAnsweredTwins(items Items) Items {
+	answered := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		if item.State == AnsweredState {
+			answered[item.ProducerID.String()+"\x00"+item.DedupKey.String()] = struct{}{}
+		}
+	}
+	if len(answered) == 0 {
+		return items
+	}
+	kept := make(Items, 0, len(items))
+	for _, item := range items {
+		if item.State == OpenState {
+			if _, ok := answered[item.ProducerID.String()+"\x00"+item.DedupKey.String()]; ok {
+				continue
+			}
+		}
+		kept = append(kept, item)
+	}
+	return kept
 }
 
 // storedItem is an item together with the key it is stored under, so a prune
