@@ -496,50 +496,57 @@ window.addEventListener('unhandledrejection', function (event) {
 });
 /* Tabs switch which question panel is visible. Nothing reloads and no panel is
    re-rendered: every panel ships in the document and only its visibility
-   changes, so a half-typed Other field survives a look at the other question. */
-document.querySelectorAll('.tabs').forEach(function (tabs) {
-  var row = tabs.closest('li.item');
-  tabs.querySelectorAll('button[data-tab]').forEach(function (tab) {
-    tab.addEventListener('click', function () {
-      tabs.querySelectorAll('button[data-tab]').forEach(function (other) {
-        other.classList.toggle('active', other === tab);
-      });
-      row.querySelectorAll('.panel').forEach(function (panel) {
-        panel.hidden = panel.getAttribute('data-question') !== tab.getAttribute('data-tab');
-      });
-    });
+   changes, so a half-typed Other field survives a look at the other question.
+   ⚠️ Delegated on the document, not bound per button — the defect and the fix
+   are the read-aloud control's below; this strip was left on the old binding and
+   kept rendering while doing nothing after one row re-render. */
+document.addEventListener('click', function (event) {
+  if (!event.target || !event.target.closest) { return; }
+  var tab = event.target.closest('button[data-tab]');
+  if (!tab) { return; }
+  var tabs = tab.closest('.tabs');
+  var row = tabs && tabs.closest('li.item');
+  if (!row) { return; }
+  tabs.querySelectorAll('button[data-tab]').forEach(function (other) {
+    other.classList.toggle('active', other === tab);
+  });
+  row.querySelectorAll('.panel').forEach(function (panel) {
+    panel.hidden = panel.getAttribute('data-question') !== tab.getAttribute('data-tab');
   });
 });
 /* Answer controls exist for message items only, and the form is intercepted so
    a failed answer is shown rather than swallowed into a reload: a bare catch
-   that reloads anyway reports a code fault as a connection problem. */
-document.querySelectorAll('form.answer').forEach(function (form) {
-  form.addEventListener('submit', function (event) {
-    event.preventDefault();
-    var button = event.submitter;
-    var kind = button ? button.value : 'send';
-    var multi = form.getAttribute('data-multi') === 'true';
-    /* automation carries the page's own navigator.webdriver reading, which only
-       this script can read. It is the one answered-client member the body may
-       carry and explicitly the weaker one; user_agent and remote_addr are read
-       by the store from the request and a body cannot set either. It is omitted
-       rather than sent as false when the browser does not report it. */
-    var request = { answered_by: 'attention-board', automation: navigator.webdriver };
-    if (kind === 'skip') {
-      /* Dismiss declines the whole card, so a multi-question item records a
-         declined answer on every tab rather than on none. */
-      if (multi) { request.answers = skipAll(form); } else { request.answer = { kind: 'skip' }; }
-      sendAnswer(form, request);
-      return;
-    }
-    var entries = collectAnswers(form);
-    if (!entries.length) {
-      showNote(form, 'Pick an option or write an answer first.', true);
-      return;
-    }
-    if (multi) { request.answers = entries; } else { request.answer = singleAnswer(entries[0]); }
+   that reloads anyway reports a code fault as a connection problem.
+   ⚠️ Delegated on the document for the tab strip's reason, and measured too: on
+   a re-rendered row Dismiss left the item open while the card still drew its
+   buttons. A submit event bubbles, so the document is a valid host for it. */
+document.addEventListener('submit', function (event) {
+  var form = event.target && event.target.closest ? event.target.closest('form.answer') : null;
+  if (!form) { return; }
+  event.preventDefault();
+  var button = event.submitter;
+  var kind = button ? button.value : 'send';
+  var multi = form.getAttribute('data-multi') === 'true';
+  /* automation carries the page's own navigator.webdriver reading, which only
+     this script can read. It is the one answered-client member the body may
+     carry and explicitly the weaker one; user_agent and remote_addr are read
+     by the store from the request and a body cannot set either. It is omitted
+     rather than sent as false when the browser does not report it. */
+  var request = { answered_by: 'attention-board', automation: navigator.webdriver };
+  if (kind === 'skip') {
+    /* Dismiss declines the whole card, so a multi-question item records a
+       declined answer on every tab rather than on none. */
+    if (multi) { request.answers = skipAll(form); } else { request.answer = { kind: 'skip' }; }
     sendAnswer(form, request);
-  });
+    return;
+  }
+  var entries = collectAnswers(form);
+  if (!entries.length) {
+    showNote(form, 'Pick an option or write an answer first.', true);
+    return;
+  }
+  if (multi) { request.answers = entries; } else { request.answer = singleAnswer(entries[0]); }
+  sendAnswer(form, request);
 });
 /* singleAnswer maps one collected entry onto the item-level answer shape.
    It carries values when the question took several picks: a single-question item
@@ -867,8 +874,15 @@ function closeCard(row) {
     console.error('attention board: close failed - ' + String(error));
   });
 }
-document.querySelectorAll('button[data-ack]').forEach(function (button) {
-  button.addEventListener('click', function () { closeCard(button.closest('li.item')); });
+/* ⚠️ Delegated on the document for the tab strip's reason: a re-rendered row's
+   node takes its per-button listener with it, so Acknowledge stops acting. */
+document.addEventListener('click', function (event) {
+  if (!event.target || !event.target.closest) { return; }
+  var button = event.target.closest('button[data-ack]');
+  if (!button) { return; }
+  var row = button.closest('li.item');
+  if (!row) { return; }
+  closeCard(row);
 });
 /* The corner X is one affordance whose act is the mechanism's own dominant act,
    which is why this handler dispatches rather than posting: on a message card
@@ -887,21 +901,24 @@ document.querySelectorAll('button[data-ack]').forEach(function (button) {
    that raised it. Clearing is not deciding.
    There is deliberately no third branch below: a permission row carries no
    form.answer, so it falls through to closeCard exactly as an ack row does. The
-   three mechanisms share one dispatch because they share one act. */
-document.querySelectorAll('button[data-corner-x]').forEach(function (button) {
-  button.addEventListener('click', function () {
-    var row = button.closest('li.item');
-    var form = row.querySelector('form.answer');
-    /* A message card's X is the Dismiss submit, dispatched rather than
-       re-implemented: the form's own submit handler owns the skip payload, the
-       ITEM_CLOSED branch and the note placement, and a second copy here would
-       be a second thing to keep in step. */
-    if (form) {
-      var dismiss = form.querySelector('button[value=skip]');
-      if (dismiss) { dismiss.click(); return; }
-    }
-    closeCard(row);
-  });
+   three mechanisms share one dispatch because they share one act, and it is
+   delegated on the document for the tab strip's reason. */
+document.addEventListener('click', function (event) {
+  if (!event.target || !event.target.closest) { return; }
+  var button = event.target.closest('button[data-corner-x]');
+  if (!button) { return; }
+  var row = button.closest('li.item');
+  if (!row) { return; }
+  var form = row.querySelector('form.answer');
+  /* A message card's X is the Dismiss submit, dispatched rather than
+     re-implemented: the form's own submit handler owns the skip payload, the
+     ITEM_CLOSED branch and the note placement, and a second copy here would
+     be a second thing to keep in step. */
+  if (form) {
+    var dismiss = form.querySelector('button[value=skip]');
+    if (dismiss) { dismiss.click(); return; }
+  }
+  closeCard(row);
 });
 /* ⚠️ The container is OPTIONAL, and that is not defensive coding — it is the
    defect this function shipped with until 2026-09-27. A permission row renders
