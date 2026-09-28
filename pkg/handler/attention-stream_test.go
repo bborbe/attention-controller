@@ -75,7 +75,6 @@ var _ = Describe("AttentionStreamHandler", func() {
 			notifier,
 			&mocks.ProvenanceResolver{},
 			false,
-			nil,
 		))
 	})
 
@@ -284,7 +283,6 @@ var _ = Describe("AttentionStreamHandler under a write deadline", func() {
 			notifier,
 			&mocks.ProvenanceResolver{},
 			false,
-			nil,
 		))
 		server.Config.WriteTimeout = 1 * time.Second
 		server.Start()

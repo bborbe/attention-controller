@@ -9,8 +9,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 
 	libboltkv "github.com/bborbe/boltkv"
@@ -69,7 +67,6 @@ var _ = Describe("AttentionPageHandler", func() {
 			store,
 			provenance,
 			false,
-			pkg.NewJumpTokenReader(""),
 		)
 	})
 
@@ -420,15 +417,22 @@ var _ = Describe("AttentionPageHandler", func() {
 		Expect(row).NotTo(ContainSubstring("No pane was recorded"))
 	})
 
-	It("explains a resolved pane's absent control as a host fact, not as an absent pane", func() {
+	// ⚠️ INVERTED by the jump fold. This spec used to require that a resolved
+	// pane on a token-less host render NO control plus "Jump is unavailable on
+	// this host" — the explanation existed only for the state the token gate
+	// created. The board's jump is now in-process and reads no token, so that
+	// state is unreachable and the sentence is deleted from the renderer rather
+	// than left as a branch nothing can take. What must hold instead is the
+	// positive fact: a resolved pane renders a WORKING control even on a host
+	// whose token path is empty. The fixture handler below is built with exactly
+	// that empty path, so this spec fails the moment a token read is
+	// reintroduced as a gate.
+	It("renders a working control on a resolved pane even where the token path is empty", func() {
 		item, err := store.Push(
 			ctx,
 			pushRequest("producer-nojump-token", "gate-nojump-token", "token is gone?"),
 		)
 		Expect(err).To(BeNil())
-		// The pane resolved; the token is what could not be read, because the
-		// fixture handler is built with an empty token path. Saying "no pane"
-		// here would send the operator looking at the wrong thing.
 		provenance.ResolveReturns(pkg.Provenances{
 			item.ItemID: pkg.Provenance{
 				Host:         "burn",
@@ -441,49 +445,23 @@ var _ = Describe("AttentionPageHandler", func() {
 
 		row := rowOf(get("GET").Body.String(), item.ItemID)
 
-		Expect(row).To(ContainSubstring("Jump is unavailable on this host"))
+		Expect(row).To(ContainSubstring(`data-jump="/jump/` + item.ItemID.String() + `"`))
+		// ⚠️ No `/supervisor:jump` assertion here. This fixture is a `message`
+		// row, and a message row deliberately renders the button WITHOUT the
+		// copyable command — the board may answer it in place, so the command's
+		// "approve in the session that asked" label would be false. Asserting the
+		// command here would pin the wrong behaviour for this class.
+		Expect(row).NotTo(ContainSubstring("Jump is unavailable on this host"))
 		Expect(row).NotTo(ContainSubstring("No pane was recorded"))
 		Expect(row).NotTo(ContainSubstring("does not resolve to this session"))
 	})
 
-	It("renders a control and no explanation where the pane resolved and the token reads", func() {
-		item, err := store.Push(
-			ctx,
-			pushRequest("producer-nojump-control", "gate-nojump-control", "jump me?"),
-		)
-		Expect(err).To(BeNil())
-		provenance.ResolveReturns(pkg.Provenances{
-			item.ItemID: pkg.Provenance{
-				Host:         "burn",
-				Cwd:          "/tmp",
-				Pane:         "1140",
-				PaneRecorded: true,
-				Routable:     true,
-			},
-		})
-
-		tokenPath := filepath.Join(GinkgoT().TempDir(), "jump-token")
-		Expect(os.WriteFile(tokenPath, []byte("sentinel\n"), 0o600)).To(BeNil())
-		// The same store, the same row and the same provenance, on a host whose
-		// token reads. This is the positive control for every spec above: the
-		// explanation renders only where the control does not, so no criterion
-		// here can pass by rendering the explanation unconditionally.
-		jumpHandler := handler.NewAttentionPageHandler(
-			store,
-			provenance,
-			false,
-			pkg.NewJumpTokenReader(tokenPath),
-		)
-		resp := httptest.NewRecorder()
-		jumpHandler.ServeHTTP(resp, httptest.NewRequest("GET", "/", nil))
-
-		row := rowOf(resp.Body.String(), item.ItemID)
-
-		Expect(row).To(ContainSubstring(`class="jump-corner"`))
-		Expect(row).To(ContainSubstring(`data-jump=`))
-		Expect(row).NotTo(ContainSubstring(`disabled`))
-		Expect(row).NotTo(ContainSubstring(`class="no-jump"`))
-	})
+	// ⚠️ DELETED, not amended, and the deletion is deliberate: this spec's whole
+	// purpose was to be the positive control for the token-gate spec above — the
+	// same row on a host whose token READS. With the gate gone there is only one
+	// case left, so the spec above IS the positive control and this one asserted
+	// the same thing twice. A duplicated control is worse than none: it reads as
+	// independent evidence when it is the same fixture twice.
 
 	It(
 		"derives the explanation per load, so a changed reason changes the text with no store write",
