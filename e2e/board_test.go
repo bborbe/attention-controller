@@ -43,6 +43,31 @@ const (
 	speakSelector = "button[data-speak]"
 	// rowSelectorFmt addresses one board row by the item id the store assigned.
 	rowSelectorFmt = `li.item[data-item-id=%q]`
+	// staleSelector addresses the board's not-tracking state: the span the
+	// stream's own onerror unhides. It ships hidden in every response, so a
+	// healthy board and a dead one serve the same markup — only the browser's
+	// rendered state tells them apart, which is why the case below reads it
+	// with IsVisible rather than out of the served source.
+	staleSelector = "[data-stream-stale]"
+	// streamPattern is the board's live channel, as a route glob. Aborting it
+	// is how a case makes the stream fail on purpose; removing the route is how
+	// it lets the stream recover.
+	streamPattern = "**/api/1.0/attention/stream"
+	// speakPattern is one item's read-aloud endpoint, as a route glob.
+	// Fulfilling it with an error is how the note cases produce a failure the
+	// page has to render, and removing the route is how one of them lets the
+	// retry succeed.
+	//
+	// Read-aloud is the action both note cases fail on purpose, and the choice
+	// is load-bearing rather than arbitrary: it writes no item state, so a
+	// successful retry produces no stream event and therefore no row swap. An
+	// answer would, and the swap it causes races the fetch that reports the
+	// outcome — which is the very race the second case asserts against, so it
+	// must not be the case's own setup.
+	speakPattern = "**/api/1.0/attention/*/speak"
+	// failedNoteSelector is the class the page gives a note reporting a
+	// failure, whichever of its helpers rendered it.
+	failedNoteSelector = ".note.failed"
 )
 
 var (
@@ -151,7 +176,10 @@ func startBinary(port int) error {
 		"-sessions-dir", sessionsDir,
 		"-tts-url", tts.server.URL,
 		"-attention-state-dir", filepath.Join(tmpRoot, "state"),
-		"-jump-url", "",
+		// Empty disables the legacy pane-addressed jump listener. It is passed
+		// explicitly because its default is a real address (127.0.0.1:1337),
+		// which the suite must not bind.
+		"-jump-listen", "",
 		"-v", "2",
 	)
 	proc.Stdout, proc.Stderr = os.Stderr, os.Stderr
@@ -296,6 +324,59 @@ func newPage(path string) playwright.Page {
 	return page
 }
 
+// rowSelector addresses one item's row, the form the existing cases build
+// inline.
+func rowSelector(itemID string) string {
+	return fmt.Sprintf(rowSelectorFmt, itemID)
+}
+
+// staleVisible reports whether the board's not-tracking state is rendered.
+//
+// The span carries the hidden attribute in every response, so this is false on
+// a board whose stream is healthy and true only once the stream's own onerror
+// has shown it. It is a rendering fact read from the live DOM — the served
+// markup is identical either way and cannot answer it.
+func staleVisible(page playwright.Page) bool {
+	visible, err := page.Locator(staleSelector).IsVisible()
+	Expect(err).NotTo(HaveOccurred())
+	return visible
+}
+
+// noteCount returns how many notes matching selector the board renders inside
+// one item's row. Zero means the note is absent, one means it is rendered.
+func noteCount(page playwright.Page, itemID, selector string) int {
+	count, err := page.Locator(rowSelector(itemID) + " " + selector).Count()
+	Expect(err).NotTo(HaveOccurred())
+	return count
+}
+
+// failSpeak routes one item's read-aloud endpoint to a 500 for as long as the
+// route stays registered, so a click that would otherwise succeed fails inside
+// the browser and the page has to render its failure note.
+//
+// It is the precondition of the two note cases, never their assertion: both
+// assert on what the DOM shows afterwards, and the second removes the route so
+// the same action can succeed. The handler ignores Fulfill's error rather than
+// asserting on it because it runs on playwright's dispatch goroutine, where a
+// failed expectation would be reported against the wrong one — a route that
+// never fulfilled shows up as the note never appearing.
+func failSpeak(page playwright.Page) {
+	Expect(page.Route(speakPattern, func(route playwright.Route) {
+		status := http.StatusInternalServerError
+		_ = route.Fulfill(playwright.RouteFulfillOptions{
+			Status:      &status,
+			ContentType: playwright.String("application/json"),
+			Body:        `{"error":{"code":"INTERNAL","message":"e2e: speak forced to fail"}}`,
+		})
+	})).To(Succeed())
+}
+
+// clickSpeak presses one item's read-aloud control, so the page performs the
+// action itself rather than the suite calling the endpoint directly.
+func clickSpeak(page playwright.Page, itemID string) {
+	Expect(page.Locator(rowSelector(itemID) + " " + speakSelector).Click()).To(Succeed())
+}
+
 // --- cases -----------------------------------------------------------------
 
 var _ = Describe("the attention board", func() {
@@ -385,5 +466,178 @@ var _ = Describe("the attention board", func() {
 		Expect(rowSpeak.Click()).To(Succeed())
 
 		Eventually(tts.utterances).Should(ContainElement("e2e: read this aloud"))
+	})
+
+	It("logs a malformed stream frame and still applies the frame that follows it", func() {
+		// The store has no path that emits a frame the page cannot read, so the
+		// only way to drive one through the browser is to serve the channel
+		// ourselves: the route fulfills it with a truncated frame followed by a
+		// well-formed one, which is what makes both assertions below about the
+		// page's handler rather than about the store.
+		//
+		// ⚠️ LIMITATION: this is as close as the harness gets. A frame from a
+		// newer store version — the other case the handler's catch exists for —
+		// is not producible here either, for the same reason: nothing in this
+		// repo can be made to serve one.
+		const survivorID = "e2e-frame-survivor"
+		malformed := `{"type":"upsert","item_id":"e2e-truncated`
+		wellFormed, err := json.Marshal(map[string]string{
+			"type":    "upsert",
+			"item_id": survivorID,
+			"html": `<li class="item" data-item-id="` + survivorID +
+				`">read past the malformed frame</li>`,
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		var mu sync.Mutex
+		var logged []string
+		var thrown []error
+
+		page := newPage("")
+		defer func() { _ = page.Close() }()
+
+		page.OnConsole(func(message playwright.ConsoleMessage) {
+			mu.Lock()
+			defer mu.Unlock()
+			logged = append(logged, message.Text())
+		})
+		page.OnPageError(func(err error) {
+			mu.Lock()
+			defer mu.Unlock()
+			thrown = append(thrown, err)
+		})
+		// Registered before the navigation that opens the channel: newPage has
+		// already loaded once, so the reload is what puts this page's stream
+		// behind the route.
+		Expect(page.Route(streamPattern, func(route playwright.Route) {
+			_ = route.Fulfill(playwright.RouteFulfillOptions{
+				ContentType: playwright.String("text/event-stream"),
+				Body:        "data: " + malformed + "\n\ndata: " + string(wellFormed) + "\n\n",
+			})
+		})).To(Succeed())
+		_, err = page.Reload(
+			playwright.PageReloadOptions{WaitUntil: playwright.WaitUntilStateLoad},
+		)
+		Expect(err).NotTo(HaveOccurred())
+
+		// The row the second frame carried is rendered, so the handler read past
+		// the frame it could not parse instead of aborting on it.
+		Eventually(func() int { return rowCount(page, survivorID) }).
+			WithTimeout(10 * time.Second).Should(Equal(1))
+
+		mu.Lock()
+		defer mu.Unlock()
+		// And the frame it could not parse was reported rather than swallowed.
+		Expect(logged).To(ContainElement(ContainSubstring("unreadable stream frame")))
+		// Caught, not thrown: the page's own window.onerror never saw it.
+		Expect(thrown).To(BeEmpty())
+	})
+
+	It("shows the not-tracking state when the stream dies and clears it when it returns", func() {
+		page := newPage("")
+		defer func() { _ = page.Close() }()
+
+		// Abort, not an error status. EventSource re-establishes the connection
+		// after a network error but fails it for good on a non-200 response or a
+		// wrong content type — so a route fulfilling 500 would prove the first
+		// half of this case and make the second half impossible.
+		Expect(page.Route(streamPattern, func(route playwright.Route) {
+			_ = route.Abort()
+		})).To(Succeed())
+		_, err := page.Reload(
+			playwright.PageReloadOptions{WaitUntil: playwright.WaitUntilStateLoad},
+		)
+		Expect(err).NotTo(HaveOccurred())
+
+		// The board's own onerror unhides it. Read from the rendered page rather
+		// than from the served markup: the span ships hidden in every response,
+		// so the source cannot tell a dead stream from a healthy one.
+		Eventually(func() bool { return staleVisible(page) }).
+			WithTimeout(10 * time.Second).Should(BeTrue())
+
+		// Letting the request through is what restores the stream. Nothing here
+		// re-opens it — EventSource reconnects on its own — and the state clears
+		// on the next frame rather than on the reconnect, so each attempt makes a
+		// real change for the channel to carry.
+		Expect(page.Unroute(streamPattern)).To(Succeed())
+
+		attempt := 0
+		Eventually(func() bool {
+			attempt++
+			push(fmt.Sprintf("e2e: recovery %d", attempt), fmt.Sprintf("e2e-recover-%d", attempt))
+			return !staleVisible(page)
+		}).WithTimeout(45 * time.Second).WithPolling(500 * time.Millisecond).Should(BeTrue())
+
+		// And it stays cleared, so the recovery is not a single repaint.
+		Consistently(func() bool { return staleVisible(page) }).
+			WithTimeout(2 * time.Second).Should(BeFalse())
+	})
+
+	It("keeps a failure note when a stream event replaces its row, so the note survives", func() {
+		itemID := push("e2e: the note that must survive", "e2e-note-survives")
+
+		// hide=none, so answering the item replaces its row in place with the
+		// dimmed record instead of removing it. A row swap is what destroys a
+		// note, and a removed row would let the assertion below pass for a
+		// reason unrelated to what it claims.
+		page := newPage("?hide=none")
+		defer func() { _ = page.Close() }()
+
+		Eventually(func() int { return rowCount(page, itemID) }).Should(Equal(1))
+
+		failSpeak(page)
+		clickSpeak(page, itemID)
+
+		Eventually(func() int { return noteCount(page, itemID, failedNoteSelector) }).
+			WithTimeout(5 * time.Second).Should(Equal(1))
+
+		// The answer goes through the API rather than through the page, so the
+		// page can only learn of it over the stream — the technique the existing
+		// stream case uses, and what makes this a test of the stream rather than
+		// of a local click handler.
+		answer(itemID)
+
+		// The row really was replaced: it is the dimmed record now.
+		Eventually(func() int { return noteCount(page, itemID, ".record") }).
+			WithTimeout(5 * time.Second).Should(Equal(1))
+
+		// And the note that swap would have destroyed is still rendered.
+		Consistently(func() int { return noteCount(page, itemID, failedNoteSelector) }).
+			WithTimeout(2 * time.Second).Should(Equal(1))
+	})
+
+	It("clears the note when the retry succeeds, so no stale failure outlives its cause", func() {
+		itemID := push("e2e: the note that must clear", "e2e-note-clears")
+
+		// hide=none for the same reason as the case above: the row has to
+		// survive the answer below, or its absence would answer this for us.
+		page := newPage("?hide=none")
+		defer func() { _ = page.Close() }()
+
+		Eventually(func() int { return rowCount(page, itemID) }).Should(Equal(1))
+
+		failSpeak(page)
+		clickSpeak(page, itemID)
+
+		Eventually(func() int { return noteCount(page, itemID, failedNoteSelector) }).
+			WithTimeout(5 * time.Second).Should(Equal(1))
+
+		// The route is removed, so the retry reaches the board and succeeds.
+		Expect(page.Unroute(speakPattern)).To(Succeed())
+		clickSpeak(page, itemID)
+
+		// The note is cleared rather than merely moved: the success replaces it
+		// in the same card.
+		Eventually(func() int { return noteCount(page, itemID, failedNoteSelector) }).
+			WithTimeout(5 * time.Second).Should(Equal(0))
+
+		// And it stays cleared across the row swap the answer below causes. A
+		// stale failure must not outlive its cause: had the page kept the
+		// failure it was shown, the swap would have re-rendered it here.
+		answer(itemID)
+		Eventually(func() int { return noteCount(page, itemID, ".record") }).
+			WithTimeout(5 * time.Second).Should(Equal(1))
+		Consistently(func() int { return noteCount(page, itemID, failedNoteSelector) }).
+			WithTimeout(2 * time.Second).Should(Equal(0))
 	})
 })
