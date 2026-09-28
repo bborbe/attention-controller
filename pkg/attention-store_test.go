@@ -1114,6 +1114,75 @@ var _ = Describe("AttentionStore", func() {
 			Expect(err).To(BeNil())
 			Expect(got.State).To(Equal(pkg.AnsweredState))
 		})
+
+		// ⚠️ The operator's report, reproduced as a spec. Answer one card and the
+		// producer's next push of the SAME dedup_key writes a new row, which
+		// rendered as a fresh prompt — so one ask cost two answers. The store's
+		// suppression is open-scoped, so that second row is correct AT THE STORE'S
+		// LAYER; the repeat is refused at the board's. Measured live 2026-09-28:
+		// 710 (producer_id, dedup_key) groups held more than one row, 26 of them
+		// with two or more answered rows, and one ask was answered three times.
+		It("omits an open re-push whose ask was already answered", func() {
+			answered, err := store.Push(ctx, pushRequest("session-a", "gate-answered"))
+			Expect(err).To(BeNil())
+			_, err = store.Answer(ctx, answered.ItemID, "attention-board", "", "", nil, nil, nil)
+			Expect(err).To(BeNil())
+
+			// The producer re-raises the same ask after the answer. The store writes
+			// a second row — that is the open-scoped suppression, and this spec does
+			// NOT ask the store to stop doing it.
+			repushed, err := store.Push(ctx, pushRequest("session-a", "gate-answered"))
+			Expect(err).To(BeNil())
+			Expect(repushed.ItemID).NotTo(Equal(answered.ItemID))
+			Expect(repushed.State).To(Equal(pkg.OpenState))
+
+			board, err := store.ReadBoard(ctx)
+			Expect(err).To(BeNil())
+
+			// The answered record stands, and the re-push does not render as a prompt.
+			Expect(itemIDs(board)).To(ContainElement(answered.ItemID))
+			Expect(itemIDs(board)).NotTo(ContainElement(repushed.ItemID))
+
+			// ⚠️ Asserted against the STORE, not only against the returned slice: the
+			// row is withheld from the board, not deleted. A fix that removed it would
+			// pass the two assertions above while quietly pre-empting the schema
+			// change that owns the suppression rule.
+			got, err := store.Get(ctx, repushed.ItemID)
+			Expect(err).To(BeNil())
+			Expect(got.State).To(Equal(pkg.OpenState))
+		})
+
+		// The first negative control: the rule is scoped to an ANSWERED sibling, so
+		// an open item with no answered twin must still render. Without this, a
+		// filter that dropped every open row would pass the spec above.
+		It("still returns an open item whose key has no answered sibling", func() {
+			other, err := store.Push(ctx, pushRequest("session-a", "gate-other"))
+			Expect(err).To(BeNil())
+
+			board, err := store.ReadBoard(ctx)
+			Expect(err).To(BeNil())
+			Expect(itemIDs(board)).To(ConsistOf(other.ItemID))
+		})
+
+		// ⚠️ The second negative control, and the one that would do real damage if
+		// it were wrong: a close is a CLEAR, not an answer (§ Answer routing), so a
+		// cleared ask has NOT been answered and its re-raise must still reach the
+		// operator. The scoping is load-bearing rather than cosmetic — the measured
+		// population is dominated by closed pairs (665) over answered ones (26), so
+		// suppressing on a close would silently drop re-raises nobody answered.
+		It("still returns an open re-push whose sibling was cleared, not answered", func() {
+			cleared, err := store.Push(ctx, pushRequest("session-a", "gate-cleared"))
+			Expect(err).To(BeNil())
+			_, err = store.Close(ctx, cleared.ItemID, "", nil)
+			Expect(err).To(BeNil())
+
+			repushed, err := store.Push(ctx, pushRequest("session-a", "gate-cleared"))
+			Expect(err).To(BeNil())
+
+			board, err := store.ReadBoard(ctx)
+			Expect(err).To(BeNil())
+			Expect(itemIDs(board)).To(ConsistOf(repushed.ItemID))
+		})
 	})
 
 	Describe("durability", func() {
