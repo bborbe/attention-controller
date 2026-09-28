@@ -61,7 +61,6 @@ func NewAttentionStreamHandler(
 	notifier pkg.AttentionChangeNotifier,
 	provenance pkg.ProvenanceResolver,
 	speakEnabled bool,
-	jumpTokens pkg.JumpTokenReader,
 	vaultDir string,
 ) http.Handler {
 	// The same template the page parses, so `attention-row` renders from one
@@ -71,7 +70,6 @@ func NewAttentionStreamHandler(
 		store:        store,
 		notifier:     notifier,
 		provenance:   provenance,
-		jumpTokens:   jumpTokens,
 		speakEnabled: speakEnabled,
 		vaultName:    vaultNameFromDir(vaultDir),
 		rows:         rows,
@@ -82,7 +80,6 @@ type attentionStreamHandler struct {
 	store        pkg.AttentionStore
 	notifier     pkg.AttentionChangeNotifier
 	provenance   pkg.ProvenanceResolver
-	jumpTokens   pkg.JumpTokenReader
 	speakEnabled bool
 	vaultName    string
 	rows         *template.Template
@@ -219,20 +216,13 @@ func (a *attentionStreamHandler) render(ctx context.Context) (map[string]string,
 		return nil, errors.Wrap(ctx, err, "read failed")
 	}
 	provenances := a.provenance.Resolve(ctx, items)
-	jumpEnabled := false
-	if a.jumpTokens != nil {
-		if _, err := a.jumpTokens.Read(ctx); err != nil {
-			glog.V(3).Infof("jump token unavailable, rendering no jump buttons: %v", err)
-		} else {
-			jumpEnabled = true
-		}
-	}
+	// ⚠️ No token is read here either: the stream's rows must render exactly as
+	// the page's do, and the page's Jump button is now gated on the pane alone.
 	rendered := make(map[string]string, len(items))
 	for _, item := range items {
 		row := newAttentionPageRow(
 			item,
 			provenances[item.ItemID],
-			jumpEnabled,
 			a.speakEnabled,
 			a.vaultName,
 		)

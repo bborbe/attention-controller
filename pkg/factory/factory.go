@@ -66,8 +66,10 @@ func CreateAttentionGetHandler(store pkg.AttentionStore) http.Handler {
 // from ttsURL so the page and the route agree by construction: a control that
 // renders while its endpoint is unrouted is a value presented as working that
 // is not.
-// jumpTokens gates the Jump button on the same principle: the page renders the
-// button only while the token the redirect needs is readable.
+//
+// ⚠️ The jump token is no longer a parameter. The Jump button is gated on the
+// resolved pane alone, because the endpoint it points at performs the jump
+// in-process and reads no token — see handler.NewAttentionPageHandler.
 //
 // vaultDir is the configured vault directory, threaded to the handler so a card
 // can link to the vault task its session is anchored to. It is passed rather
@@ -78,10 +80,9 @@ func CreateAttentionPageHandler(
 	store pkg.AttentionStore,
 	provenance pkg.ProvenanceResolver,
 	speakEnabled bool,
-	jumpTokens pkg.JumpTokenReader,
 	vaultDir string,
 ) http.Handler {
-	return handler.NewAttentionPageHandler(store, provenance, speakEnabled, jumpTokens, vaultDir)
+	return handler.NewAttentionPageHandler(store, provenance, speakEnabled, vaultDir)
 }
 
 // CreateAttentionStreamHandler creates the board's live channel: the
@@ -94,14 +95,13 @@ func CreateAttentionPageHandler(
 // provenance resolver is: `pkg/factory` is pure plumbing, and a notifier built
 // here would be a second instance nothing writes to.
 //
-// speakEnabled and jumpTokens are threaded through so a row arriving over the
-// stream renders exactly as the same row does on a fresh page load. A row that
-// dropped either would be a control that disappears when the board updates
-// itself.
+// speakEnabled is threaded through so a row arriving over the stream renders
+// exactly as the same row does on a fresh page load. A row that dropped it
+// would be a control that disappears when the board updates itself.
 //
-// vaultDir is threaded through on the same principle, and it is the third value
-// that must match the page's: a row whose task link were built from a different
-// vault name — or from none at all — would be the same card rendering
+// vaultDir is threaded through on the same principle, and it is the second
+// value that must match the page's: a row whose task link were built from a
+// different vault name — or from none at all — would be the same card rendering
 // differently depending on whether it arrived by load or by stream, which is
 // exactly the drift this handler exists to prevent.
 func CreateAttentionStreamHandler(
@@ -109,7 +109,6 @@ func CreateAttentionStreamHandler(
 	notifier pkg.AttentionChangeNotifier,
 	provenance pkg.ProvenanceResolver,
 	speakEnabled bool,
-	jumpTokens pkg.JumpTokenReader,
 	vaultDir string,
 ) http.Handler {
 	return handler.NewAttentionStreamHandler(
@@ -117,7 +116,6 @@ func CreateAttentionStreamHandler(
 		notifier,
 		provenance,
 		speakEnabled,
-		jumpTokens,
 		vaultDir,
 	)
 }
@@ -125,17 +123,43 @@ func CreateAttentionStreamHandler(
 // CreateAttentionJumpHandler creates the endpoint the board's Jump button calls
 // to hand an item back to the session that raised it.
 //
-// jumpBaseURL is the fleet-jump server's origin and jumpCaller is what performs
-// the jump against it; the handler adds the pane and the token, so the token
-// never appears in a rendered page or in a response.
+// The activator performs the jump in-process, so no token and no fleet-jump
+// origin are threaded through here: the board's path owns the whole jump, which
+// is the point of the fold.
 func CreateAttentionJumpHandler(
 	store pkg.AttentionStore,
 	provenance pkg.ProvenanceResolver,
-	jumpTokens pkg.JumpTokenReader,
-	jumpCaller pkg.JumpCaller,
-	jumpBaseURL string,
+	activator pkg.PaneActivator,
 ) http.Handler {
-	return handler.NewAttentionJumpHandler(store, provenance, jumpTokens, jumpCaller, jumpBaseURL)
+	return handler.NewAttentionJumpHandler(store, provenance, activator)
+}
+
+// CreateLegacyJumpHandler creates the pane-addressed jump route the manager
+// layer's links target: `GET /jump?pane=<N>&t=<token>`.
+//
+// ⚠️ It is the compatibility surface the fold keeps rather than moves.
+// `claude-supervisor/scripts/jump-link.py` emits pane-addressed links into nine
+// manager-layer surfaces, so retiring the route would break every manager's
+// jump link; serving it from this process instead leaves those consumers
+// untouched and makes one process answer for both the card and its jump
+// control. The token stays required here because a pane-addressed GET is
+// reachable by any page the operator visits, and this is the surface with no
+// item id to fall back on.
+func CreateLegacyJumpHandler(
+	jumpTokens pkg.JumpTokenReader,
+	activator pkg.PaneActivator,
+) http.Handler {
+	return handler.NewLegacyJumpHandler(jumpTokens, activator)
+}
+
+// CreateLegacyHealthHandler creates the liveness probe for the legacy
+// pane-addressed jump listener.
+//
+// It is separate from CreateHealthzHandler because the two answer different
+// contracts on different ports: this one reproduces the Python jump server's
+// plain-text `ok`, while `/healthz` is the board's JSON liveness response.
+func CreateLegacyHealthHandler() http.Handler {
+	return handler.NewLegacyHealthHandler()
 }
 
 // CreateAttentionSpeakHandler creates the handler that reads an item aloud

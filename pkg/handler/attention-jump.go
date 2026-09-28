@@ -19,28 +19,33 @@ import (
 // NewAttentionJumpHandler creates the endpoint the board's Jump button calls to
 // hand an item back to the session that raised it.
 //
-// ⚠️ It performs the jump **server-side** and answers 204 with no body, rather
-// than redirecting the browser at the fleet-jump server. Two reasons, and the
-// second is the one the operator asked for:
+// ⚠️ It performs the jump **in-process** and answers 204 with no body. The
+// capability is the injected PaneActivator, so the board owns the whole path:
+// it used to reach a Python fleet-jump server on another port, which owned
+// neither the process nor its failure modes. A card and its jump control are
+// now served by one process.
 //
-//   - The token never reaches the browser. The fleet-jump server authenticates
-//     with a shared token in a query parameter, so a redirect would put it in
-//     the Location header of every click; here it stays on the server.
-//   - A redirect navigates the browser away from the board. The operator's ask
-//     was explicitly "so we dont switch the screen" — a click must switch
-//     WezTerm and leave the board exactly where it was.
+// ⚠️ **The handler no longer reads the jump token, and that is the fold's most
+// easily-missed consequence.** The token existed to authenticate a call to the
+// fleet-jump server; with the jump in-process there is no such call, so reading
+// it here would be a credential read that gates nothing. The token survives on
+// the legacy pane-addressed route (see NewLegacyJumpHandler), which is the one
+// surface that still needs it. ⚠️ This is why the board no longer reports 503
+// on an unreadable token file: the button no longer depends on one.
 //
 // The pane is re-resolved here rather than carried in the request, because a
 // pane id is recycled across tab moves and WezTerm restarts: a request holding
 // one would keep pointing at a pane that has since become another session's,
 // which is a wrong answer wearing the appearance of a resolved one. An item
 // whose pane does not resolve jumps nowhere and says so.
+//
+// The 204 is what keeps the browser on the board: it is not a navigation, so
+// the page's fetch() resolves in place and the operator's screen stays put.
+// That was the operator's own ask — "so we dont switch the screen".
 func NewAttentionJumpHandler(
 	store pkg.AttentionStore,
 	provenance pkg.ProvenanceResolver,
-	jumpTokens pkg.JumpTokenReader,
-	jumpCaller pkg.JumpCaller,
-	jumpBaseURL string,
+	activator pkg.PaneActivator,
 ) http.Handler {
 	return libhttp.NewJSONErrorHandler(
 		libhttp.WithErrorFunc(
@@ -68,26 +73,13 @@ func NewAttentionJumpHandler(
 						http.StatusNotFound,
 					)
 				}
-				token, err := jumpTokens.Read(ctx)
-				if err != nil {
-					// The failure is logged; the token value never is, and this
-					// branch is the one that would leak it if anything did.
-					glog.V(2).Infof("jump token unavailable, refusing jump: %v", err)
-					return libhttp.WrapWithCode(
-						errors.New(ctx, "jump token unavailable"),
-						libhttp.ErrorCodeInternal,
-						http.StatusServiceUnavailable,
-					)
-				}
 				// ⚠️ The jump is performed here rather than handed to the browser
-				// as a redirect. A redirect would publish the token in the
-				// Location header and navigate the board out of view — the exact
-				// behaviour the operator asked to remove. The response carries no
-				// body, so there is nowhere for the token to land either.
-				if err := jumpCaller.Jump(ctx, jumpBaseURL, pane, token); err != nil {
-					// The error is logged without the target, which carries the
-					// token; the caller gets the failure, never the URL.
-					glog.V(2).Infof("jump failed: %v", err)
+				// as a redirect. A redirect would navigate the board out of view —
+				// the exact behaviour the operator asked to remove. The response
+				// carries no body, so there is nowhere for anything to land either.
+				if err := activator.Activate(ctx, pane); err != nil {
+					// The error is logged; the caller gets the failure.
+					glog.V(2).Infof("jump pane %s failed: %v", pane, err)
 					return libhttp.WrapWithCode(
 						errors.Wrap(ctx, err, "jump failed"),
 						libhttp.ErrorCodeInternal,
@@ -101,16 +93,18 @@ func NewAttentionJumpHandler(
 	)
 }
 
-// requireSameOrigin rejects a cross-site request to the redirect.
+// requireSameOrigin rejects a cross-site request to the jump route.
 //
-// ⚠️ The token's whole purpose is to defeat the cross-origin case where a
-// visited page fires <img src=".../jump?pane=X">. Routing the jump through this
-// origin re-opens that vector — a cross-origin <img src=".../jump/<itemID>">
-// would be followed straight through the redirect — so the route checks the
-// request itself rather than resting on item-id unguessability. An item id is
-// 128-bit crypto-random, which makes guessing impractical rather than
-// impossible, and a posture that depends on that is one refactor away from
-// being no posture at all.
+// ⚠️ The route is a GET that performs an action, so any page the operator
+// visits can carry `<img src=".../jump/<itemID>">` and move their terminal. The
+// item id is 128-bit crypto-random, which makes guessing impractical rather
+// than impossible, and a posture that depends on that is one refactor away from
+// being no posture at all. The route therefore checks the request itself.
+//
+// ⚠️ The gate matters more after the fold, not less: the token used to be a
+// second control behind this one, and the board's path no longer reads it. This
+// check is now the board route's only cross-site defence, which is why it is
+// stated here rather than left implicit.
 //
 // ⚠️ Sec-Fetch-Site is the gate, not Origin. A same-origin <a href> GET
 // navigation sends Sec-Fetch-Site: same-origin but no Origin header at all —

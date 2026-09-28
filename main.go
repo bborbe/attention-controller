@@ -41,11 +41,11 @@ type application struct {
 	// reporting rather than failing startup. This repo has no deployed stage
 	// yet, so nothing here depends on the flag; a future deploy supplies
 	// SENTRY_DSN from its own secret.
-	SentryDSN         string `required:"false" arg:"sentry-dsn"          env:"SENTRY_DSN"          usage:"SentryDSN (empty disables error reporting)"                                                                         display:"length"`
+	SentryDSN         string `required:"false" arg:"sentry-dsn"          env:"SENTRY_DSN"          usage:"SentryDSN (empty disables error reporting)"                                                                                 display:"length"`
 	SentryProxy       string `required:"false" arg:"sentry-proxy"        env:"SENTRY_PROXY"        usage:"Sentry Proxy"`
 	Listen            string `required:"true"  arg:"listen"              env:"LISTEN"              usage:"address to listen to"`
 	DataDir           string `required:"true"  arg:"datadir"             env:"DATADIR"             usage:"data directory"`
-	HeartbeatWindow   string `required:"false" arg:"heartbeat-window"    env:"HEARTBEAT_WINDOW"    usage:"how stale a heartbeat:<path> mtime may be before the producer counts as finished"                                                    default:"15m"`
+	HeartbeatWindow   string `required:"false" arg:"heartbeat-window"    env:"HEARTBEAT_WINDOW"    usage:"how stale a heartbeat:<path> mtime may be before the producer counts as finished"                                                            default:"15m"`
 	SessionsDir       string `required:"false" arg:"sessions-dir"        env:"SESSIONS_DIR"        usage:"directory holding the session registry used to resolve session:<id> liveness"`
 	AttentionStateDir string `required:"false" arg:"attention-state-dir" env:"ATTENTION_STATE_DIR" usage:"directory holding the producers' event logs the page resolves item provenance from"`
 	// VaultDir is the directory holding the vault whose task files record the
@@ -54,11 +54,22 @@ type application struct {
 	// and defaulting it would point the board at a guessed path instead of
 	// simply rendering no task names.
 	VaultDir string `required:"false" arg:"vault-dir"           env:"VAULT_DIR"           usage:"directory holding the vault whose task files record the session each task belongs to (empty renders no task names)"`
-	// JumpURL is the fleet-jump server's origin. The board's Jump button
-	// redirects here with the pane and the shared token appended server-side,
-	// so the token never reaches the browser.
-	JumpURL string `required:"false" arg:"jump-url"            env:"JUMP_URL"            usage:"base URL of the fleet-jump server the board's Jump button redirects to"                                                              default:"http://127.0.0.1:1337"`
-	// JumpTokenPath is the file holding the fleet-jump server's shared token.
+	// JumpListen is the address of the legacy pane-addressed jump listener.
+	//
+	// ⚠️ It is NOT the fleet-jump server's origin any more — that server is
+	// being retired by the fold, and this process now serves the route itself on
+	// the port its callers already use. `claude-supervisor/scripts/jump-link.py`
+	// emits `http://127.0.0.1:1337/jump?pane=<N>&t=<token>` into nine manager
+	// surfaces, so the default keeps those links working with no change on their
+	// side; that is what makes this a one-service fold rather than a cross-repo
+	// migration.
+	//
+	// ⚠️ Empty disables the legacy listener entirely. That is the switch for the
+	// day the last consumer is re-pointed, and it is a configuration change
+	// rather than a code change on purpose.
+	JumpListen string `required:"false" arg:"jump-listen"         env:"JUMP_LISTEN"         usage:"address of the legacy pane-addressed jump listener (empty disables it)"                                                                      default:"127.0.0.1:1337"`
+	// JumpTokenPath is the file holding the jump token the legacy pane-addressed
+	// route requires.
 	// Empty resolves to ~/.claude/secrets/jump-token, the same path
 	// claude-supervisor's jump-link.py reads, so the two surfaces cannot drift
 	// onto different tokens. ⚠️ A credential: never logged, never rendered.
@@ -69,14 +80,14 @@ type application struct {
 	// rule, and the tag costs nothing but a less useful startup line. Both the
 	// local review funnel and the bot flagged the omission, and a tag that is
 	// correct for a credential-adjacent field is the cheaper default.
-	JumpTokenPath string `required:"false" arg:"jump-token-path"     env:"JUMP_TOKEN_PATH"     usage:"file holding the fleet-jump server's shared token (empty resolves to ~/.claude/secrets/jump-token)"                 display:"length"`
+	JumpTokenPath string `required:"false" arg:"jump-token-path"     env:"JUMP_TOKEN_PATH"     usage:"file holding the jump token the legacy pane-addressed jump route requires (empty resolves to ~/.claude/secrets/jump-token)" display:"length"`
 	// TTSURL is the tts server's base URL. Optional: with no value the
 	// read-aloud route is not registered and the page renders no read-aloud
 	// control, so a host without a tts server serves the same page minus one
 	// control rather than one that always fails.
-	TTSURL          string            `required:"false" arg:"tts-url"             env:"TTS_URL"             usage:"base URL of the tts server the board's read-aloud control forwards to (empty disables it)"                                           default:"http://127.0.0.1:12000"`
-	BuildGitVersion string            `required:"false" arg:"build-git-version"   env:"BUILD_GIT_VERSION"   usage:"Build Git version"                                                                                                                   default:"dev"`
-	BuildGitCommit  string            `required:"false" arg:"build-git-commit"    env:"BUILD_GIT_COMMIT"    usage:"Build Git commit hash"                                                                                                               default:"none"`
+	TTSURL          string            `required:"false" arg:"tts-url"             env:"TTS_URL"             usage:"base URL of the tts server the board's read-aloud control forwards to (empty disables it)"                                                   default:"http://127.0.0.1:12000"`
+	BuildGitVersion string            `required:"false" arg:"build-git-version"   env:"BUILD_GIT_VERSION"   usage:"Build Git version"                                                                                                                           default:"dev"`
+	BuildGitCommit  string            `required:"false" arg:"build-git-commit"    env:"BUILD_GIT_COMMIT"    usage:"Build Git commit hash"                                                                                                                       default:"none"`
 	BuildDate       *libtime.DateTime `required:"false" arg:"build-date"          env:"BUILD_DATE"          usage:"Build timestamp (RFC3339)"`
 }
 
@@ -161,7 +172,10 @@ func defaultSessionsDir(ctx context.Context) (string, error) {
 //
 // The vault is the same story: no vault configured means no task name resolved,
 // not a startup failure.
-func (a *application) createProvenanceResolver(ctx context.Context) pkg.ProvenanceResolver {
+func (a *application) createProvenanceResolver(
+	ctx context.Context,
+	panes pkg.PaneLister,
+) pkg.ProvenanceResolver {
 	stateDir := a.AttentionStateDir
 	if stateDir == "" {
 		resolved, err := defaultAttentionStateDir(ctx)
@@ -186,7 +200,7 @@ func (a *application) createProvenanceResolver(ctx context.Context) pkg.Provenan
 	return pkg.NewProvenanceResolver(
 		stateDir,
 		sessionsDir,
-		pkg.NewWeztermPaneLister(),
+		panes,
 		pkg.NewTaskIndex(ctx, a.VaultDir),
 	)
 }
@@ -231,14 +245,15 @@ func (a *application) createJumpTokenReader(ctx context.Context) pkg.JumpTokenRe
 	return pkg.NewJumpTokenReader(path)
 }
 
-// createJumpCaller builds the HTTP caller the board's Jump button goes through.
+// createPaneActivator builds the capability both jump routes go through.
 //
-// The timeout is deliberate: the button reports success only on a 204, so a
-// jump that hangs must not hold the request open — the operator would otherwise
-// be left with a control that appears to have done nothing, which is the same
-// silent failure as a button that never worked.
-func (a *application) createJumpCaller() pkg.JumpCaller {
-	return pkg.NewJumpCaller(&http.Client{Timeout: 5 * time.Second})
+// ⚠️ The lister is passed in rather than built here, because the same listing
+// already serves the provenance resolver: two listers would be two subprocess
+// paths whose failure semantics could drift, and the activator's whole
+// correctness rests on resolving a pane against the LIVE list before touching
+// the terminal.
+func (a *application) createPaneActivator(panes pkg.PaneLister) pkg.PaneActivator {
+	return pkg.NewWeztermPaneActivator(panes)
 }
 
 func (a *application) createHTTPServer(
@@ -254,28 +269,25 @@ func (a *application) createHTTPServer(
 		// Hoisted rather than inlined into the handler call below, matching how
 		// the store is built once in Run and passed down. Two constructors
 		// nested at a call site read as wiring that happened by accident.
-		provenance := a.createProvenanceResolver(ctx)
+		//
+		// ⚠️ One pane lister, two consumers. The provenance resolver reads it to
+		// decide whether a row has a jump target, and the activator reads it to
+		// refuse a stale pane id before touching the terminal. Two listers would
+		// be two subprocess paths whose failure semantics could drift — and the
+		// activator's correctness rests on resolving against the LIVE list.
+		panes := pkg.NewWeztermPaneLister()
+		provenance := a.createProvenanceResolver(ctx, panes)
 		jumpTokens := a.createJumpTokenReader(ctx)
-		jumpCaller := a.createJumpCaller()
+		activator := a.createPaneActivator(panes)
 
 		router := mux.NewRouter()
-		router.Path("/healthz").Handler(factory.CreateHealthzHandler())
-		router.Path("/readiness").Handler(libhttp.NewPrintHandler("OK"))
-		router.Path("/metrics").Handler(promhttp.Handler())
-		router.Path("/resetdb").Handler(libkv.NewResetHandler(db, cancel))
-		router.Path("/resetbucket/{BucketName}").Handler(libkv.NewResetBucketHandler(db, cancel))
-		router.Path("/setloglevel/{level}").
-			Handler(log.NewSetLoglevelHandler(ctx, log.NewLogLevelSetter(2, 5*time.Minute)))
-		router.Path("/gc").Handler(libhttp.NewGarbageCollectorHandler())
-		router.Path("/testloglevel").Handler(factory.CreateTestLoglevelHandler())
-		router.Path("/sentryalert").Handler(factory.CreateSentryAlertHandler(sentryClient))
-		// The Jump button's target: a path on this board, so the fleet-jump
-		// token is appended server-side instead of published in the page.
-		// Registered ahead of the page's own route, and GET/HEAD only, because
-		// a redirect is a navigation rather than a business call.
+		registerAdminRoutes(ctx, router, db, cancel, sentryClient)
+		// The Jump button's target: a path on this board, answered in-process.
+		// Registered ahead of the page's own route, and GET/HEAD only, because a
+		// navigation rather than a business call.
 		router.Path("/jump/{itemID}").
 			Methods(http.MethodGet, http.MethodHead).
-			Handler(factory.CreateAttentionJumpHandler(store, provenance, jumpTokens, jumpCaller, a.JumpURL))
+			Handler(factory.CreateAttentionJumpHandler(store, provenance, activator))
 		// The attention page sits at / rather than under /api/1.0/ because it
 		// renders HTML for a human rather than JSON for an API client — it is
 		// the store's operator-facing surface, not a business endpoint. It is
@@ -284,7 +296,7 @@ func (a *application) createHTTPServer(
 		router.Path("/").
 			Methods(http.MethodGet, http.MethodHead).
 			Handler(factory.CreateAttentionPageHandler(
-				store, provenance, a.TTSURL != "", jumpTokens, a.VaultDir))
+				store, provenance, a.TTSURL != "", a.VaultDir))
 
 		// The board's live channel. It is registered here, ahead of the
 		// `/api/1.0/attention/{itemID}` route below, because gorilla mux matches
@@ -293,7 +305,12 @@ func (a *application) createHTTPServer(
 		router.Path("/api/1.0/attention/stream").
 			Methods(http.MethodGet).
 			Handler(factory.CreateAttentionStreamHandler(
-				store, notifier, provenance, a.TTSURL != "", jumpTokens, a.VaultDir))
+				store,
+				notifier,
+				provenance,
+				a.TTSURL != "",
+				a.VaultDir,
+			))
 
 		// Business routes live under /api/1.0/, never in the admin block above.
 		// The push entry point takes a producer's declaration; nothing scrapes
@@ -344,10 +361,84 @@ func (a *application) createHTTPServer(
 			Methods(http.MethodGet).
 			Handler(factory.CreateAttentionGetHandler(store))
 
+		// ⚠️ Two listeners, one process — this is the fold's whole claim, and it
+		// is why SC1's evidence is `lsof` naming ONE pid on both ports. Both run
+		// under one context, so a failure in either takes the process down and
+		// launchd restarts both: a half-up state — board serving, jumps dead — is
+		// exactly the two-lifecycle problem the fold exists to remove.
+		runner := run.NewConcurrentRunner(2)
+		defer runner.Close()
+
 		glog.V(2).Infof("starting http server listen on %s", a.Listen)
-		return libhttp.NewServer(
-			a.Listen,
-			router,
-		).Run(ctx)
+		runner.Add(ctx, libhttp.NewServer(a.Listen, router).Run)
+		if err := a.addLegacyJumpListener(ctx, runner, jumpTokens, activator); err != nil {
+			return err
+		}
+
+		return runner.Run(ctx)
 	}
+}
+
+// registerAdminRoutes wires the board router's admin and diagnostics endpoints.
+//
+// ⚠️ Extracted from createHTTPServer for length alone — nothing here is new, and
+// the grouping is the repo's own: `/healthz`, `/readiness`, `/metrics`, the
+// store's reset routes, the log-level switch, `/gc` and the two probe handlers
+// are operational surfaces rather than business ones. Keeping them out of the
+// business-route block below is what makes the two kinds of route tellable
+// apart at a glance, and it is why `/api/1.0/...` starts where it does.
+func registerAdminRoutes(
+	ctx context.Context,
+	router *mux.Router,
+	db libkv.DB,
+	cancel context.CancelFunc,
+	sentryClient libsentry.Client,
+) {
+	router.Path("/healthz").Handler(factory.CreateHealthzHandler())
+	router.Path("/readiness").Handler(libhttp.NewPrintHandler("OK"))
+	router.Path("/metrics").Handler(promhttp.Handler())
+	router.Path("/resetdb").Handler(libkv.NewResetHandler(db, cancel))
+	router.Path("/resetbucket/{BucketName}").Handler(libkv.NewResetBucketHandler(db, cancel))
+	router.Path("/setloglevel/{level}").
+		Handler(log.NewSetLoglevelHandler(ctx, log.NewLogLevelSetter(2, 5*time.Minute)))
+	router.Path("/gc").Handler(libhttp.NewGarbageCollectorHandler())
+	router.Path("/testloglevel").Handler(factory.CreateTestLoglevelHandler())
+	router.Path("/sentryalert").Handler(factory.CreateSentryAlertHandler(sentryClient))
+}
+
+// addLegacyJumpListener registers the pane-addressed jump server, when one is
+// configured.
+//
+// It is its own method rather than a block inside createHTTPServer because that
+// function is already at the linter's length bound, and because the listener is
+// a distinct concern: the board's router and this one share a process, an
+// activator and a context, and nothing else.
+//
+// ⚠️ An empty address disables the listener, and that is a supported
+// configuration rather than a degenerate one — it is the switch for the day the
+// last `jump-link.py` consumer is re-pointed. It is logged rather than silent,
+// so a jump link that stops working is traceable to the setting that disabled
+// it instead of to a bug.
+func (a *application) addLegacyJumpListener(
+	ctx context.Context,
+	runner run.ConcurrentRunner,
+	jumpTokens pkg.JumpTokenReader,
+	activator pkg.PaneActivator,
+) error {
+	if a.JumpListen == "" {
+		glog.Warningf("legacy jump listener disabled (jump-listen is empty)")
+		return nil
+	}
+	// A separate router, not the board's: a pane-addressed GET that any visited
+	// page can fire has no business sharing an origin with the board's own API.
+	// `/health` is carried over because the Python server it replaces answered
+	// it, and a listener with no liveness probe is one that cannot be observed.
+	legacyRouter := mux.NewRouter()
+	legacyRouter.Path("/health").Handler(factory.CreateLegacyHealthHandler())
+	legacyRouter.Path("/jump").
+		Methods(http.MethodGet, http.MethodHead).
+		Handler(factory.CreateLegacyJumpHandler(jumpTokens, activator))
+	glog.V(2).Infof("starting legacy jump server listen on %s", a.JumpListen)
+	runner.Add(ctx, libhttp.NewServer(a.JumpListen, legacyRouter).Run)
+	return nil
 }

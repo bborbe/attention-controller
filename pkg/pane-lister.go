@@ -13,8 +13,8 @@ import (
 	"github.com/golang/glog"
 )
 
-// Pane is one WezTerm pane, reduced to the two fields the ownership check
-// needs. The listing carries seventeen fields; nothing else here is read.
+// Pane is one WezTerm pane, reduced to the fields this package actually reads.
+// The listing carries seventeen fields; nothing else here is read.
 type Pane struct {
 	// PaneID is WezTerm's pane number. It is an integer in the listing, and it
 	// is a lease rather than an identifier — WezTerm renumbers and reuses it
@@ -25,6 +25,12 @@ type Pane struct {
 	// (`✳ ◐ ◑ ◒ ◓ ⠿ …`). It is compared against a session's name after that
 	// glyph is stripped from both sides.
 	Title string `json:"title"`
+	// TTYName is the pane's tty device, e.g. `/dev/ttys004`. ⚠️ It is read for
+	// one reason: the OSC 1337 escape that activates a pane across OS windows
+	// must be written to the pane's OWN tty, so the PaneActivator cannot work
+	// without it. It is a device path, not a credential and not a title — never
+	// render it on a card.
+	TTYName string `json:"tty_name"`
 }
 
 //counterfeiter:generate -o ../mocks/pane-lister.go --fake-name PaneLister . PaneLister

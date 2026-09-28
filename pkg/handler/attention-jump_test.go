@@ -27,12 +27,6 @@ import (
 	"github.com/bborbe/attention-controller/pkg/handler"
 )
 
-// jumpBaseURL stands in for the fleet-jump server's origin. It is a distinct
-// host on purpose: the jump is issued server-side against the configured
-// origin, not against the request's own Host, so a test that used the request
-// host would pass on an implementation that echoed the request back.
-const jumpBaseURL = "http://fleet-jump.test:1337"
-
 // jumpTokenSentinel is the token written to the temp file. It is deliberately
 // distinctive so a "the page must not contain the token" assertion cannot pass
 // because the token happens to look like something else on the page.
@@ -55,7 +49,7 @@ var _ = Describe("Attention jump handover", func() {
 	var db libkv.DB
 	var store pkg.AttentionStore
 	var provenance *mocks.ProvenanceResolver
-	var jumpCaller *mocks.JumpCaller
+	var activator *mocks.PaneActivator
 	var tokenDir string
 	var tokenPath string
 
@@ -80,7 +74,7 @@ var _ = Describe("Attention jump handover", func() {
 		)
 
 		provenance = &mocks.ProvenanceResolver{}
-		jumpCaller = &mocks.JumpCaller{}
+		activator = &mocks.PaneActivator{}
 
 		// A real readable token file, so the readable-token cases exercise the
 		// same read path production does. The sentinel is what the leak
@@ -163,7 +157,6 @@ var _ = Describe("Attention jump handover", func() {
 				store,
 				provenance,
 				false,
-				pkg.NewJumpTokenReader(tokenPath),
 				"",
 			)
 		})
@@ -197,7 +190,7 @@ var _ = Describe("Attention jump handover", func() {
 			Expect(block).To(ContainSubstring(`class="jump-corner"`))
 			Expect(block).To(ContainSubstring(`<button type="button"`))
 			Expect(block).To(ContainSubstring(`data-jump="/jump/` + item.ItemID.String() + `"`))
-			Expect(block).NotTo(ContainSubstring(jumpBaseURL))
+			Expect(block).NotTo(ContainSubstring("/jump?pane="))
 			// No anchor to the jump route anywhere on the page: an href would
 			// navigate the board away on a click.
 			Expect(resp.Body.String()).NotTo(ContainSubstring(`href="/jump/`))
@@ -268,26 +261,19 @@ var _ = Describe("Attention jump handover", func() {
 			Expect(block).To(ContainSubstring("Approve in the session that asked"))
 		})
 
-		// The button degrades alone. A host with no readable token still gets the
-		// copyable command exactly as it rendered before this change — gating the
-		// whole handover div on the button would silently drop the command too.
-		It("renders no button but keeps the command when the token is unreadable", func() {
-			pageHandler = handler.NewAttentionPageHandler(
-				store,
-				provenance,
-				false,
-				pkg.NewJumpTokenReader(""),
-				"",
-			)
+		// ⚠️ INVERTED by the jump fold, and the inversion is the assertion.
+		// This spec used to require that an unreadable token suppressed the
+		// button. It now requires the opposite: the endpoint the button points
+		// at performs the jump in-process and reads no token, so a button
+		// withheld over a token would be a working control hidden by a
+		// credential it no longer touches.
+		It("renders the button on a pane-resolving row regardless of token readability", func() {
 			item := pushItem(nonMessageRequest())
 			resolvedPane(item.ItemID, "1907")
 
-			resp := renderPage()
-			Expect(resp.Code).To(Equal(http.StatusOK))
-			block := rowBlock(resp.Body.String(), item.ItemID)
+			block := renderRow(item.ItemID)
 
-			Expect(block).NotTo(ContainSubstring("jump-button"))
-			Expect(block).NotTo(ContainSubstring(`data-jump="/jump/`))
+			Expect(block).To(ContainSubstring(`data-jump="/jump/` + item.ItemID.String() + `"`))
 			Expect(block).To(ContainSubstring("/supervisor:jump 1907"))
 		})
 
@@ -315,9 +301,7 @@ var _ = Describe("Attention jump handover", func() {
 			jumpHandler = handler.NewAttentionJumpHandler(
 				store,
 				provenance,
-				pkg.NewJumpTokenReader(tokenPath),
-				jumpCaller,
-				jumpBaseURL,
+				activator,
 			)
 		})
 
@@ -355,26 +339,26 @@ var _ = Describe("Attention jump handover", func() {
 			},
 		)
 
-		// The pane is re-resolved here rather than carried in the request, and the
-		// token is read from the file, so the caller's arguments are the only
-		// place either value appears.
-		It("calls the jump caller once with the base URL, the resolved pane and the token", func() {
+		// The pane is re-resolved here rather than carried in the request, so the
+		// activator's argument is the only place it appears.
+		It("activates the resolved pane once, in-process", func() {
 			item := pushItem(nonMessageRequest())
 			resolvedPane(item.ItemID, "1907")
 
 			resp := jump(item.ItemID, "same-origin")
 
 			Expect(resp.Code).To(Equal(http.StatusNoContent))
-			Expect(jumpCaller.JumpCallCount()).To(Equal(1))
-			_, baseURL, pane, token := jumpCaller.JumpArgsForCall(0)
-			Expect(baseURL).To(Equal(jumpBaseURL))
+			Expect(activator.ActivateCallCount()).To(Equal(1))
+			_, pane := activator.ActivateArgsForCall(0)
 			Expect(pane).To(Equal("1907"))
-			Expect(token).To(Equal(jumpTokenSentinel))
 		})
 
-		// Trivially true for a 204, and asserted anyway: a body is the only place
-		// the token could land in the response, so the assertion is what would
-		// catch a future implementation that wrote one.
+		// ⚠️ The handler no longer reads a token, so this is now purely a
+		// regression guard: it fires only if a future implementation starts
+		// reading the credential again AND writing it into a response. Kept
+		// rather than deleted, because the cost of the assertion is one line and
+		// the cost of the leak it guards is the operator's "credentials never
+		// leak" rule.
 		It("never writes the token into the response body", func() {
 			item := pushItem(nonMessageRequest())
 			resolvedPane(item.ItemID, "1907")
@@ -385,11 +369,12 @@ var _ = Describe("Attention jump handover", func() {
 			Expect(resp.Body.String()).NotTo(ContainSubstring(jumpTokenSentinel))
 		})
 
-		// The token's whole purpose is to defeat the cross-origin case where a
-		// visited page fires <img src=".../jump/<itemID>">. Routing the jump through
-		// this origin re-opens that vector, so the route checks the request itself
-		// rather than resting on item-id unguessability.
-		It("refuses a cross-site request with 403 and does not call the jump caller", func() {
+		// ⚠️ This check is now the board route's ONLY cross-site defence: the
+		// token used to sit behind it and the handler no longer reads one. Any
+		// page the operator visits can fire <img src=".../jump/<itemID>">, so the
+		// route checks the request itself rather than resting on item-id
+		// unguessability.
+		It("refuses a cross-site request with 403 and does not activate", func() {
 			item := pushItem(nonMessageRequest())
 			resolvedPane(item.ItemID, "1907")
 
@@ -397,10 +382,10 @@ var _ = Describe("Attention jump handover", func() {
 
 			Expect(resp.Code).To(Equal(http.StatusForbidden))
 			Expect(resp.Header().Get("Location")).To(BeEmpty())
-			Expect(jumpCaller.JumpCallCount()).To(Equal(0))
+			Expect(activator.ActivateCallCount()).To(Equal(0))
 		})
 
-		It("refuses a same-site request with 403 and does not call the jump caller", func() {
+		It("refuses a same-site request with 403 and does not activate", func() {
 			item := pushItem(nonMessageRequest())
 			resolvedPane(item.ItemID, "1907")
 
@@ -408,7 +393,7 @@ var _ = Describe("Attention jump handover", func() {
 
 			Expect(resp.Code).To(Equal(http.StatusForbidden))
 			Expect(resp.Header().Get("Location")).To(BeEmpty())
-			Expect(jumpCaller.JumpCallCount()).To(Equal(0))
+			Expect(activator.ActivateCallCount()).To(Equal(0))
 		})
 
 		// `same-origin` is the button click itself; `none` is a direct address-bar
@@ -423,13 +408,13 @@ var _ = Describe("Attention jump handover", func() {
 				resp := jump(item.ItemID, secFetchSite)
 
 				Expect(resp.Code).To(Equal(http.StatusNoContent))
-				Expect(jumpCaller.JumpCallCount()).To(Equal(1))
+				Expect(activator.ActivateCallCount()).To(Equal(1))
 			},
 			Entry("same-origin", "same-origin"),
 			Entry("none", "none"),
 		)
 
-		It("returns 404 and does not call the jump caller when the pane does not resolve", func() {
+		It("returns 404 and does not activate when the pane does not resolve", func() {
 			item := pushItem(nonMessageRequest())
 			provenance.ResolveReturns(pkg.Provenances{})
 
@@ -437,7 +422,7 @@ var _ = Describe("Attention jump handover", func() {
 
 			Expect(resp.Code).To(Equal(http.StatusNotFound))
 			Expect(resp.Header().Get("Location")).To(BeEmpty())
-			Expect(jumpCaller.JumpCallCount()).To(Equal(0))
+			Expect(activator.ActivateCallCount()).To(Equal(0))
 			// Decoded rather than substring-matched, so a body that merely resembles
 			// the standard error shape does not pass.
 			var errorResponse libhttp.ErrorResponse
@@ -445,31 +430,26 @@ var _ = Describe("Attention jump handover", func() {
 			Expect(errorResponse.Error.Message).To(ContainSubstring("no resolvable pane"))
 		})
 
-		It("returns 503 and does not call the jump caller when the token is unreadable", func() {
-			jumpHandler = handler.NewAttentionJumpHandler(
-				store,
-				provenance,
-				pkg.NewJumpTokenReader(""),
-				jumpCaller,
-				jumpBaseURL,
-			)
+		// ⚠️ REPLACED by the fold, and the replacement is the point of it. This
+		// spec used to require a 503 when the token was unreadable. The handler
+		// no longer reads a token at all — the jump is in-process — so the
+		// assertion is now that no token reader exists to fail. A handler
+		// constructed without one is the sharpest form of that: if any code path
+		// still read a token, this request could not be built.
+		It("performs the jump with no token reader in the handler at all", func() {
 			item := pushItem(nonMessageRequest())
 			resolvedPane(item.ItemID, "1907")
 
 			resp := jump(item.ItemID, "same-origin")
 
-			Expect(resp.Code).To(Equal(http.StatusServiceUnavailable))
-			Expect(resp.Header().Get("Location")).To(BeEmpty())
-			Expect(jumpCaller.JumpCallCount()).To(Equal(0))
-			var errorResponse libhttp.ErrorResponse
-			Expect(json.NewDecoder(resp.Body).Decode(&errorResponse)).To(BeNil())
-			Expect(errorResponse.Error.Message).To(ContainSubstring("jump token unavailable"))
+			Expect(resp.Code).To(Equal(http.StatusNoContent))
+			Expect(activator.ActivateCallCount()).To(Equal(1))
 		})
 
 		// A failed jump is reported, never swallowed into a 204. The body carries
-		// the failure, never the target URL — the URL carries the token.
-		It("returns 502 when the jump caller fails", func() {
-			jumpCaller.JumpReturns(errors.New(ctx, "jump server refused the request"))
+		// the failure.
+		It("returns 502 when the activator fails", func() {
+			activator.ActivateReturns(errors.New(ctx, "pane is not a live pane"))
 			item := pushItem(nonMessageRequest())
 			resolvedPane(item.ItemID, "1907")
 
