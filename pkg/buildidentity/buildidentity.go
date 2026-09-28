@@ -65,6 +65,11 @@ func (i Identity) Known() bool {
 }
 
 // Read returns the identity this binary carries in its own build info.
+//
+// ⚠️ Deliberately not named New*: it derives a value from the running process
+// rather than constructing one from injected dependencies, and a New prefix
+// would promise an argument list it does not take. The constructors this
+// repo's naming convention is about live in pkg/factory.
 func Read() Identity {
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
@@ -81,6 +86,9 @@ func Read() Identity {
 // whatever the test binary happened to be built from — a value the spec does
 // not control and which changes with the toolchain's stamping behaviour, so it
 // would pass or fail for reasons unrelated to this function.
+//
+// ⚠️ Not named New* for the reason given on Read: it is a derivation, not a
+// constructor.
 func FromSettings(settings []debug.BuildSetting) Identity {
 	var revision, commitTime string
 	var modified bool
