@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 
 	libboltkv "github.com/bborbe/boltkv"
@@ -30,6 +31,10 @@ var _ = Describe("AttentionPageHandler", func() {
 	var sessionLivenessChecker *mocks.SessionLivenessChecker
 	var provenance *mocks.ProvenanceResolver
 	var httpHandler http.Handler
+	// vaultDir ends in a known name so the task link's expected href can be a
+	// hand-written literal. The directory itself need not exist: the handler only
+	// reads its base name, and the provenance is mocked.
+	var vaultDir string
 
 	BeforeEach(func() {
 		ctx = context.Background()
@@ -63,10 +68,12 @@ var _ = Describe("AttentionPageHandler", func() {
 		// An empty token path never resolves, so the page renders no Jump
 		// button — the fail-soft path, which is what a host with no fleet-jump
 		// server looks like. The button's own cases live in attention-jump_test.
+		vaultDir = filepath.Join(GinkgoT().TempDir(), "Personal")
 		httpHandler = handler.NewAttentionPageHandler(
 			store,
 			provenance,
 			false,
+			vaultDir,
 		)
 	})
 
@@ -347,6 +354,119 @@ var _ = Describe("AttentionPageHandler", func() {
 			Expect(body).To(ContainSubstring(item.Payload.String()))
 		}
 		Expect(body).NotTo(ContainSubstring(`class="provenance"`))
+	})
+
+	// The vault task link: the one fact the card had always lacked. Host, cwd,
+	// tool and pane all say *where* a session ran and none says *what* it was
+	// working on, so judging a card meant leaving the board and opening the
+	// session it named. These specs drive the page handler and assert on the
+	// RENDERED ROW, scoped with rowOf, because a page-wide check cannot fail —
+	// other rows legitimately carry a link.
+	Describe("the vault task link", func() {
+		// taskAnchor is the served markup the link is asserted against, written
+		// as html/template actually emits it. ⚠️ A hand-written literal, never one
+		// built with the same helper the code uses: a shared helper would agree
+		// with itself whatever it produced, so neither the `%20`/`%2F` escaping
+		// nor the dropped `.md` would be asserted at all. The `&amp;` is the
+		// template's own HTML-escaping of the `&` in the attribute, which is why
+		// the assertion is a raw-string match over the served HTML.
+		taskAnchor := `<span class="task"><a href="obsidian://open?vault=Personal&amp;file=25%20Tasks%2FFix%20the%20board">Fix the board</a></span>`
+
+		It("draws the resolved task as an anchor to the vault's own URL", func() {
+			item, err := store.Push(
+				ctx,
+				pushRequest("producer-task", "gate-task", "which task is this?"),
+			)
+			Expect(err).To(BeNil())
+			provenance.ResolveReturns(pkg.Provenances{
+				item.ItemID: pkg.Provenance{
+					Host:     "burn",
+					TaskName: "Fix the board",
+					TaskPath: "25 Tasks/Fix the board.md",
+				},
+			})
+
+			row := rowOf(get("GET").Body.String(), item.ItemID)
+
+			Expect(row).To(ContainSubstring(taskAnchor))
+			// It leads the line: the task is the first span in the provenance div,
+			// which is what the wrapper span's adjacency to the host span buys.
+			Expect(row).To(ContainSubstring(`<div class="provenance"><span class="task">`))
+		})
+
+		It("renders no anchor for an item whose session anchors no task", func() {
+			item, err := store.Push(
+				ctx,
+				pushRequest("producer-notask", "gate-notask", "no task here"),
+			)
+			Expect(err).To(BeNil())
+			// ⚠️ Another resolved value is required rather than incidental: with
+			// nothing but the absent task, the provenance div never renders at all
+			// and the absence assertions below would pass vacuously.
+			provenance.ResolveReturns(pkg.Provenances{
+				item.ItemID: pkg.Provenance{Host: "burn", Cwd: "/tmp"},
+			})
+
+			row := rowOf(get("GET").Body.String(), item.ItemID)
+
+			// Positive control: the line rendered, so the absences below are a
+			// withheld link rather than an absent line.
+			Expect(row).To(ContainSubstring(`class="provenance"`))
+			Expect(row).To(ContainSubstring(`<span class="host">burn</span>`))
+			Expect(row).NotTo(ContainSubstring(`class="task"`))
+			Expect(row).NotTo(ContainSubstring("<a href="))
+		})
+
+		It("renders the provenance line for a task-only provenance", func() {
+			item, err := store.Push(
+				ctx,
+				pushRequest("producer-taskonly", "gate-taskonly", "task and nothing else"),
+			)
+			Expect(err).To(BeNil())
+			// Nothing but the task: no event-log line resolved a host or cwd and no
+			// pane validated. This is the shape the `Resolved` conjunct exists for —
+			// without it the line never renders, so the name is resolved correctly,
+			// drawn correctly, and never appears.
+			provenance.ResolveReturns(pkg.Provenances{
+				item.ItemID: pkg.Provenance{
+					TaskName: "Fix the board",
+					TaskPath: "25 Tasks/Fix the board.md",
+				},
+			})
+
+			row := rowOf(get("GET").Body.String(), item.ItemID)
+
+			Expect(row).To(ContainSubstring(`class="provenance"`))
+			Expect(row).To(ContainSubstring(taskAnchor))
+		})
+
+		// ⚠️ The `&` case, and it is the one that distinguishes the escaper the
+		// helper uses from url.PathEscape. PathEscape leaves `&` alone — it is
+		// legal inside a path segment — so a task named `R&D notes` would emit
+		// `…&file=25%20Tasks%2FR&D%20notes`, which Obsidian reads as a `file` of
+		// `25 Tasks/R` plus a stray `D notes` parameter: the link resolves, and
+		// resolves to the wrong file. Every other assertion in this block passes
+		// under either escaper, so without this case the regression is invisible.
+		It("escapes a task name the query grammar would otherwise split on", func() {
+			item, err := store.Push(
+				ctx,
+				pushRequest("producer-amp", "gate-amp", "which task is this?"),
+			)
+			Expect(err).To(BeNil())
+			provenance.ResolveReturns(pkg.Provenances{
+				item.ItemID: pkg.Provenance{
+					Host:     "burn",
+					TaskName: "R&D notes",
+					TaskPath: "25 Tasks/R&D notes.md",
+				},
+			})
+
+			row := rowOf(get("GET").Body.String(), item.ItemID)
+
+			Expect(row).To(ContainSubstring(
+				`<span class="task"><a href="obsidian://open?vault=Personal&amp;file=25%20Tasks%2FR%26D%20notes">R&amp;D notes</a></span>`,
+			))
+		})
 	})
 
 	It("explains a row that carries no jump control, without naming a value", func() {
@@ -815,6 +935,92 @@ var _ = Describe("AttentionPageHandler", func() {
 		// asserts and is the property this spec is for.
 		Expect(block).To(ContainSubstring(`class="jump-corner"`))
 		Expect(block).NotTo(ContainSubstring("<input"))
+	})
+
+	// The card's control set is derived from the item's answer mechanism in one
+	// place, and this table is that derivation's own coverage. It iterates the
+	// enum's collection rather than listing the members by hand, so a fourth
+	// mechanism fails here until its affordance is decided — which is the
+	// property the single switch exists for.
+	//
+	// ⚠️ `affordance` and `newAttentionPageRow` are both unexported and this file
+	// is `package handler_test`, so the (message, ack) pair cannot be read
+	// directly. Each case drives the page handler this file already builds and
+	// asserts the RENDERED MARKUP of one item's row — never the whole body,
+	// because the inline <script> carries the literal `data-ack` on every page,
+	// so a page-wide `data-ack` assertion cannot fail.
+	Describe("the affordance an item's answer mechanism carries", func() {
+		// affordances is keyed by the enum itself rather than by string, so a
+		// member spelled wrong is a compile error, and the table body can assert
+		// that every member the enum declares has an entry here.
+		affordances := map[pkg.AnswerMechanism]struct {
+			message bool
+			ack     bool
+		}{
+			pkg.MessageAnswerMechanism:    {message: true, ack: false},
+			pkg.PermissionAnswerMechanism: {message: false, ack: false},
+			pkg.AckAnswerMechanism:        {message: false, ack: true},
+		}
+
+		// affordanceRequest builds a pushable declaration for one mechanism. All
+		// three are real, pushable items — `permission` is what exercises the new
+		// default branch rather than a synthetic stand-in for it.
+		affordanceRequest := func(mechanism pkg.AnswerMechanism) pkg.PushRequest {
+			producerID := pkg.ProducerID("producer-affordance-" + mechanism.String())
+			return pkg.PushRequest{
+				ProducerID:      producerID,
+				ProducerKind:    pkg.SessionProducerKind,
+				LivenessRef:     pkg.LivenessRef("session:" + producerID.String()),
+				DedupKey:        pkg.DedupKey("affordance-" + mechanism.String()),
+				InterruptClass:  "approve",
+				Payload:         "what does this card carry?",
+				AnswerMechanism: mechanism,
+			}
+		}
+
+		// The entries are built by iterating the enum's own collection, never by
+		// listing the members here: a table that listed them by hand would keep
+		// passing when a fourth is added, which is exactly what this table must
+		// not do.
+		entries := make([]TableEntry, 0, len(pkg.AvailableAnswerMechanisms))
+		for _, mechanism := range pkg.AvailableAnswerMechanisms {
+			entries = append(entries, Entry(mechanism.String(), mechanism))
+		}
+
+		DescribeTable("renders the controls the mechanism derives",
+			func(mechanism pkg.AnswerMechanism) {
+				expected, decided := affordances[mechanism]
+				Expect(decided).To(
+					BeTrue(),
+					"no affordance decided for mechanism %q — decide it in affordance()",
+					mechanism,
+				)
+
+				item, err := store.Push(ctx, affordanceRequest(mechanism))
+				Expect(err).To(BeNil())
+
+				row := rowOf(get("GET").Body.String(), item.ItemID)
+
+				// Positive control: the row rendered at all, so the absences below
+				// cannot pass on a page that dropped it.
+				Expect(row).To(ContainSubstring(item.Payload.String()))
+
+				// A `message` row renders the answer form and no acknowledge; an
+				// `ack` row renders the acknowledge and no form; a `permission` row
+				// renders neither, which is the default branch.
+				if expected.message {
+					Expect(row).To(ContainSubstring("<form"))
+				} else {
+					Expect(row).NotTo(ContainSubstring("<form"))
+				}
+				if expected.ack {
+					Expect(row).To(ContainSubstring("data-ack"))
+				} else {
+					Expect(row).NotTo(ContainSubstring("data-ack"))
+				}
+			},
+			entries,
+		)
 	})
 
 	// The corner X. It is one affordance whose act is the mechanism's own

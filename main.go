@@ -48,6 +48,12 @@ type application struct {
 	HeartbeatWindow   string `required:"false" arg:"heartbeat-window"    env:"HEARTBEAT_WINDOW"    usage:"how stale a heartbeat:<path> mtime may be before the producer counts as finished"                                                            default:"15m"`
 	SessionsDir       string `required:"false" arg:"sessions-dir"        env:"SESSIONS_DIR"        usage:"directory holding the session registry used to resolve session:<id> liveness"`
 	AttentionStateDir string `required:"false" arg:"attention-state-dir" env:"ATTENTION_STATE_DIR" usage:"directory holding the producers' event logs the page resolves item provenance from"`
+	// VaultDir is the directory holding the vault whose task files record the
+	// session each task belongs to. ⚠️ Deliberately without a `default:`, unlike
+	// SessionsDir and AttentionStateDir: an unset vault is a legitimate state,
+	// and defaulting it would point the board at a guessed path instead of
+	// simply rendering no task names.
+	VaultDir string `required:"false" arg:"vault-dir"           env:"VAULT_DIR"           usage:"directory holding the vault whose task files record the session each task belongs to (empty renders no task names)"`
 	// JumpListen is the address of the legacy pane-addressed jump listener.
 	//
 	// ⚠️ It is NOT the fleet-jump server's origin any more — that server is
@@ -156,13 +162,16 @@ func defaultSessionsDir(ctx context.Context) (string, error) {
 // createProvenanceResolver builds the resolver the page joins item provenance
 // from.
 //
-// ⚠️ Both directories are optional and an unresolved one is not fatal. A store
-// running for k8s agents, cron jobs or dark-factory runs has neither a Claude
-// Code state directory nor WezTerm, and it must still serve every item: the
-// resolver reads nothing, every row renders with no provenance line, and the
-// page is exactly what it was before this change. That degradation is the
+// ⚠️ All three directories are optional and an unresolved one is not fatal. A
+// store running for k8s agents, cron jobs or dark-factory runs has neither a
+// Claude Code state directory nor WezTerm, and it must still serve every item:
+// the resolver reads nothing, every row renders with no provenance line, and
+// the page is exactly what it was before this change. That degradation is the
 // honest scoping of the page's standalone claim — it still works without Claude
 // Code, but it works with provenance absent rather than without looking.
+//
+// The vault is the same story: no vault configured means no task name resolved,
+// not a startup failure.
 func (a *application) createProvenanceResolver(
 	ctx context.Context,
 	panes pkg.PaneLister,
@@ -185,7 +194,15 @@ func (a *application) createProvenanceResolver(
 		}
 		sessionsDir = resolved
 	}
-	return pkg.NewProvenanceResolver(stateDir, sessionsDir, panes)
+	// ⚠️ The task index is built here, once, and handed to the resolver — never
+	// built per page. The vault holds thousands of task files, and the page is
+	// served continuously by the SSE stream.
+	return pkg.NewProvenanceResolver(
+		stateDir,
+		sessionsDir,
+		panes,
+		pkg.NewTaskIndex(ctx, a.VaultDir),
+	)
 }
 
 // defaultAttentionStateDir resolves ~/.claude/state/attention, the directory
@@ -278,7 +295,8 @@ func (a *application) createHTTPServer(
 		// .Methods, gorilla mux would route POST and DELETE to it as well.
 		router.Path("/").
 			Methods(http.MethodGet, http.MethodHead).
-			Handler(factory.CreateAttentionPageHandler(store, provenance, a.TTSURL != ""))
+			Handler(factory.CreateAttentionPageHandler(
+				store, provenance, a.TTSURL != "", a.VaultDir))
 
 		// The board's live channel. It is registered here, ahead of the
 		// `/api/1.0/attention/{itemID}` route below, because gorilla mux matches
@@ -291,6 +309,7 @@ func (a *application) createHTTPServer(
 				notifier,
 				provenance,
 				a.TTSURL != "",
+				a.VaultDir,
 			))
 
 		// Business routes live under /api/1.0/, never in the admin block above.

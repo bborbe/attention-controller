@@ -46,11 +46,22 @@ type attentionStreamEvent struct {
 // The channel is server-to-client only. Answers, escalations, closes and speak
 // keep going over their existing POST routes, so nothing is ever read from this
 // connection.
+//
+// vaultDir is the configured vault directory. The vault's own name is derived
+// from it by vaultNameFromDir — the *same* function the page handler calls, so
+// the two surfaces cannot drift: a row arriving over this channel must render
+// identically to the same row on a fresh load, and a name derived differently
+// here would put a different link on the same card depending on how it arrived.
+// ⚠️ It is derived once at construction rather than per push: this handler
+// outlives any one request, and the directory cannot change under it. An empty
+// vaultDir yields an empty name, so a host with no vault renders no task link on
+// either surface.
 func NewAttentionStreamHandler(
 	store pkg.AttentionStore,
 	notifier pkg.AttentionChangeNotifier,
 	provenance pkg.ProvenanceResolver,
 	speakEnabled bool,
+	vaultDir string,
 ) http.Handler {
 	// The same template the page parses, so `attention-row` renders from one
 	// definition rather than from a copy kept in step by hand.
@@ -60,6 +71,7 @@ func NewAttentionStreamHandler(
 		notifier:     notifier,
 		provenance:   provenance,
 		speakEnabled: speakEnabled,
+		vaultName:    vaultNameFromDir(vaultDir),
 		rows:         rows,
 	}
 }
@@ -69,6 +81,7 @@ type attentionStreamHandler struct {
 	notifier     pkg.AttentionChangeNotifier
 	provenance   pkg.ProvenanceResolver
 	speakEnabled bool
+	vaultName    string
 	rows         *template.Template
 }
 
@@ -211,6 +224,7 @@ func (a *attentionStreamHandler) render(ctx context.Context) (map[string]string,
 			item,
 			provenances[item.ItemID],
 			a.speakEnabled,
+			a.vaultName,
 		)
 		var body bytes.Buffer
 		if err := a.rows.ExecuteTemplate(&body, "attention-row", row); err != nil {

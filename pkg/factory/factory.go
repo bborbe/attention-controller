@@ -70,12 +70,19 @@ func CreateAttentionGetHandler(store pkg.AttentionStore) http.Handler {
 // ⚠️ The jump token is no longer a parameter. The Jump button is gated on the
 // resolved pane alone, because the endpoint it points at performs the jump
 // in-process and reads no token — see handler.NewAttentionPageHandler.
+//
+// vaultDir is the configured vault directory, threaded to the handler so a card
+// can link to the vault task its session is anchored to. It is passed rather
+// than read from an environment here for the same reason the provenance
+// directories are: which vault a host serves is a decision `main` owns, and an
+// empty directory renders no task link rather than failing.
 func CreateAttentionPageHandler(
 	store pkg.AttentionStore,
 	provenance pkg.ProvenanceResolver,
 	speakEnabled bool,
+	vaultDir string,
 ) http.Handler {
-	return handler.NewAttentionPageHandler(store, provenance, speakEnabled)
+	return handler.NewAttentionPageHandler(store, provenance, speakEnabled, vaultDir)
 }
 
 // CreateAttentionStreamHandler creates the board's live channel: the
@@ -91,17 +98,25 @@ func CreateAttentionPageHandler(
 // speakEnabled is threaded through so a row arriving over the stream renders
 // exactly as the same row does on a fresh page load. A row that dropped it
 // would be a control that disappears when the board updates itself.
+//
+// vaultDir is threaded through on the same principle, and it is the second
+// value that must match the page's: a row whose task link were built from a
+// different vault name — or from none at all — would be the same card rendering
+// differently depending on whether it arrived by load or by stream, which is
+// exactly the drift this handler exists to prevent.
 func CreateAttentionStreamHandler(
 	store pkg.AttentionStore,
 	notifier pkg.AttentionChangeNotifier,
 	provenance pkg.ProvenanceResolver,
 	speakEnabled bool,
+	vaultDir string,
 ) http.Handler {
 	return handler.NewAttentionStreamHandler(
 		store,
 		notifier,
 		provenance,
 		speakEnabled,
+		vaultDir,
 	)
 }
 

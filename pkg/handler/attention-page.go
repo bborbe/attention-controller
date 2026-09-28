@@ -9,6 +9,8 @@ import (
 	"context"
 	"html/template"
 	"net/http"
+	"net/url"
+	"path/filepath"
 	"strings"
 
 	"github.com/bborbe/errors"
@@ -74,6 +76,16 @@ import (
 // resolved, which [[Attention Item Schema]] § Silence 7 forbids. A row with no
 // resolvable provenance at all renders no provenance line, which is exactly
 // what this page rendered before the change.
+//
+// ⚠️ The task name leads the line, drawn as a link that opens the task in
+// Obsidian — the one fact the card had always lacked, since the host, cwd, tool
+// and pane all say *where* a session ran and none says *what* it was working on.
+// It is wrapped in its own span rather than inserted as a bare anchor, and the
+// wrapper is required rather than cosmetic: the line's separators come from a
+// rule matching only *adjacent* spans (`.provenance span + span::before`), so a
+// bare `<a>` among the spans would suppress the separator beside it and the line
+// would render as `Fix the boardburn · /w/x`. It is navigation, so it adds no
+// control and changes nothing any card offers.
 const attentionPageTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1258,7 +1270,7 @@ function replayFailure(row) {
 {{else if .NoJump}}<button type="button" class="jump-corner" disabled aria-label="Jump to session" title="Jump to session"><svg class="jump-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.75 3.25h8.5a1.5 1.5 0 0 1 1.5 1.5v6.5a1.5 1.5 0 0 1-1.5 1.5h-8.5a1.5 1.5 0 0 1-1.5-1.5v-6.5a1.5 1.5 0 0 1 1.5-1.5z"/><path d="M5.75 6.5 7.5 8.25 5.75 10"/><path d="M9 10h1.75"/></svg></button>
 {{end}}{{if not .Message}}<div class="payload">{{ .Item.Payload }}</div>
 {{end}}{{if .Item.Context}}<div class="context">{{ .Item.Context }}</div>
-{{end}}{{if .Provenance.Resolved}}<div class="provenance">{{if .Provenance.Host}}<span class="host">{{ .Provenance.Host }}</span>{{end}}{{if .Provenance.Cwd}}<span class="cwd">{{ .Provenance.Cwd }}</span>{{end}}{{if .Provenance.Tool}}<span class="tool">{{ .Provenance.Tool }}</span>{{end}}{{if .Provenance.Pane}}<span class="pane">pane {{ .Provenance.Pane }}</span>{{else if .Provenance.PaneRecorded}}<span class="unroutable">unroutable</span>{{end}}</div>
+{{end}}{{if .Provenance.Resolved}}<div class="provenance">{{if .TaskURL}}<span class="task"><a href="{{ .TaskURL }}">{{ .Provenance.TaskName }}</a></span>{{end}}{{if .Provenance.Host}}<span class="host">{{ .Provenance.Host }}</span>{{end}}{{if .Provenance.Cwd}}<span class="cwd">{{ .Provenance.Cwd }}</span>{{end}}{{if .Provenance.Tool}}<span class="tool">{{ .Provenance.Tool }}</span>{{end}}{{if .Provenance.Pane}}<span class="pane">pane {{ .Provenance.Pane }}</span>{{else if .Provenance.PaneRecorded}}<span class="unroutable">unroutable</span>{{end}}</div>
 {{end}}{{if .Dimmed}}<div class="record"><div class="record-question">{{ .Item.Payload }}</div><div class="record-answer">answered: {{ .Record }}</div></div>
 {{else if .Message}}<form class="answer" data-multi="{{ .Tabs }}">
 {{if .Tabs}}<div class="tabs">{{range .Questions}}<button type="button" class="tab{{if .Active}} active{{end}}" data-tab="{{ .Tab }}">{{ .Tab }}</button>{{end}}</div>
@@ -1412,6 +1424,20 @@ type attentionPageRow struct {
 	// data, so `$` inside it is the row and not the page, and a `$.Speak` left
 	// in place would resolve against the wrong value.
 	Speak bool
+	// TaskURL is the link that opens this item's vault task, rendered as the
+	// first element of the provenance line. Empty when no task resolved — an
+	// unresolvable value renders absent rather than as a stand-in, the same rule
+	// Jump and JumpURL follow.
+	//
+	// ⚠️ It is a template.URL rather than a string, and the type is load-bearing
+	// rather than decorative. html/template's URL filter admits only `http`,
+	// `https`, `mailto` and relative URLs, so a plain-string `href="{{ .TaskURL }}"`
+	// renders `href="#ZgotmplZ"`: the link is dead in the browser while every test
+	// that asserts on the row field still passes. `obsidian://` is exactly the
+	// scheme that filter refuses, so the conversion is what makes the href emit at
+	// all — and its cost is that the value is trusted unescaped, which is why
+	// taskURL escapes both halves before building it.
+	TaskURL template.URL
 }
 
 // attentionPageData is what the template renders: the items the store's read
@@ -1435,8 +1461,48 @@ type attentionPageData struct {
 	HideAnswered bool
 }
 
+// affordance derives the controls a card carries from the item's answer
+// mechanism. It is the one place that decision is made.
+//
+// ⚠️ It was two comparisons over the same field, and that shape read as a single
+// derivation without being one: nothing in `Message: mechanism == message, Ack:
+// mechanism == ack` states that a mechanism holds at most one affordance, so
+// the two predicates were free to disagree and a mechanism matching neither fell
+// through to whatever the template's `else` branch happened to be. That
+// fall-through was not hypothetical — it is how a report-only `ack` card once
+// rendered nothing at all, and how an `ack` card inherited a `permission` card's
+// shape by accident. A switch over the one field makes the exclusivity
+// structural: one mechanism, one arm, one answer.
+//
+// The `default` is deliberate rather than defensive. A mechanism the board has
+// not been taught renders NO control rather than inheriting one: an inherited
+// control offers the operator a move the mechanism does not support, and it does
+// so silently, where rendering nothing is visible. `permission` reaches this arm
+// today — a gate is approve-shaped and only the operator may answer it in the
+// session that raised it, so a control there would be the permission laundering
+// the schema forbids.
+func affordance(mechanism pkg.AnswerMechanism) (message bool, ack bool) {
+	switch mechanism {
+	case pkg.MessageAnswerMechanism:
+		return true, false
+	case pkg.AckAnswerMechanism:
+		return false, true
+	default:
+		return false, false
+	}
+}
+
 // newAttentionPageRow pairs an item with what could be resolved about its origin
 // and precomputes the question units its card renders.
+//
+// vaultName is the vault's own name, derived by the caller as
+// `filepath.Base(vaultDir)`. ⚠️ It is passed in rather than derived here, and
+// the reason is the stream: both callers of this function — the page handler and
+// the SSE stream — must pass the *same* name, because a row arriving over the
+// live channel must not differ from the same row on a fresh load, and that is
+// the invariant the stream handler exists to preserve. Deriving it per row would
+// also re-derive a per-page constant on every item. It is empty when no vault is
+// configured, which renders no task link at all.
 //
 // The question units are built only for a `message` item. A `permission` item
 // renders no card, so building units it would never render would be a value
@@ -1446,17 +1512,18 @@ func newAttentionPageRow(
 	item pkg.Item,
 	provenance pkg.Provenance,
 	speak bool,
+	vaultName string,
 ) attentionPageRow {
 	row := attentionPageRow{
 		Item:       item,
 		Provenance: provenance,
-		Message:    item.AnswerMechanism == pkg.MessageAnswerMechanism,
-		Ack:        item.AnswerMechanism == pkg.AckAnswerMechanism,
 		Jump:       jumpCommand(item, provenance),
 		JumpURL:    jumpURL(item, provenance),
 		NoJump:     noJumpReason(item, provenance),
 		Speak:      speak,
+		TaskURL:    taskURL(vaultName, provenance.TaskPath),
 	}
+	row.Message, row.Ack = affordance(item.AnswerMechanism)
 	if item.State == pkg.AnsweredState {
 		// The board renders the record of what was answered so the operator can
 		// see the answer standing in their name. `answered_by` is a caller
@@ -1580,6 +1647,81 @@ func cardinalityHint(cardinality pkg.AnswerCardinality, optionCount int) string 
 // group: a shared name would let a pick on one card clear another's.
 func optionName(itemID pkg.ItemID, tab string) string {
 	return "option-" + itemID.String() + "-" + tab
+}
+
+// vaultNameFromDir returns the vault's own name — the name an Obsidian URL
+// addresses — from the configured vault directory.
+//
+// It exists so the page handler and the SSE stream derive that name through one
+// function rather than two copies of the same expression: a row arriving over
+// the live channel must render identically to the same row on a fresh load, and
+// a name derived differently on either surface would put a different link on the
+// same card depending on how it arrived.
+//
+// Empty in, empty out. ⚠️ The guard is load-bearing rather than defensive:
+// filepath.Base("") is ".", so a host with no configured vault would otherwise
+// name a vault called `.` and emit `obsidian://open?vault=.` links.
+func vaultNameFromDir(vaultDir string) string {
+	if vaultDir == "" {
+		return ""
+	}
+	return filepath.Base(vaultDir)
+}
+
+// obsidianQueryValue escapes one half of an `obsidian://open` query value.
+//
+// ⚠️ It is url.QueryEscape with the `+` put back to `%20`, which is the vault's
+// own documented convention rather than a choice made here — see [[Deep Link URL
+// Schemes]] § "`+` is inert", measured against a live Obsidian on 2026-09-18:
+// Obsidian does not decode `+`, so a link carrying one opens nothing while
+// looking perfectly correct. The swap is safe because QueryEscape renders a
+// literal `+` as `%2B`, so no genuine `+` can be corrupted by it.
+//
+// ⚠️ Not url.PathEscape, the tempting choice for a value that reads as a path.
+// PathEscape leaves `&`, `=` and `+` unescaped — they are legal *inside a path
+// segment* — so a task file named `R&D notes.md` would render
+// `…&file=25%20Tasks%2FR&D%20notes`: Obsidian reads that as a `file` of
+// `25 Tasks/R` plus a stray `D notes` parameter, and the link opens the wrong
+// file. QueryEscape escapes all three (`&`→`%26`, `=`→`%3D`, `+`→`%2B`) and
+// still renders a slash as `%2F`.
+func obsidianQueryValue(value string) string {
+	return strings.ReplaceAll(url.QueryEscape(value), "+", "%20")
+}
+
+// taskURL builds the link that opens an item's vault task in Obsidian, from the
+// vault's own name and the task file's path relative to the vault root.
+//
+// The form is `obsidian://open?vault=<vault>&file=<path>`, with both values
+// escaped so a space becomes `%20` and a slash `%2F`, and a trailing `.md`
+// dropped if present. The extension is stripped idempotently — strings.TrimSuffix
+// rather than an assumed suffix — because the index's own path field is not
+// specified to carry one, and a strip that assumed it would either double-handle
+// the path or mangle a task whose name genuinely ends in those characters.
+//
+// Both halves go through obsidianQueryValue, the vault name as well as the path:
+// the name is only the configured directory's base name, and nothing guarantees
+// it is free of a space.
+//
+// Empty when either half is empty, so an item whose session anchors no task, and
+// a host with no configured vault, each render no link rather than a dangling
+// one.
+func taskURL(vaultName string, taskPath string) template.URL {
+	if vaultName == "" || taskPath == "" {
+		return ""
+	}
+	link := "obsidian://open?vault=" + obsidianQueryValue(vaultName) +
+		"&file=" + obsidianQueryValue(strings.TrimSuffix(taskPath, ".md"))
+	// #nosec G203 -- the reported risk is "use of unescaped data in an HTML
+	// template", and the conversion is the point: html/template's URL filter
+	// admits only `http`, `https`, `mailto` and relative URLs, so an
+	// `obsidian://` href is representable no other way — without this the
+	// template renders `href="#ZgotmplZ"` and the link is dead. The value is
+	// built two lines above from the operator-configured vault name (the base
+	// name of the configured vault directory) and a filesystem-derived task
+	// path, never from producer input, and both halves are escaped with
+	// obsidianQueryValue before they are concatenated. This records the
+	// provenance; it does not waive a risk.
+	return template.URL(link)
 }
 
 // jumpCommand renders the copyable half of the handover for an item the board
@@ -1734,10 +1876,20 @@ const (
 // control because of a credential the control no longer touches. The token
 // survives on the legacy pane-addressed route, which is the one surface that
 // still needs it.
+//
+// vaultDir is the configured vault directory, and the vault's own *name* is
+// derived from it as `filepath.Base(vaultDir)` — the name the Obsidian URL
+// addresses, which is the directory's base name rather than anything stored in
+// the vault. It is derived once per request rather than once per row, since
+// every row on the page shares it, and an empty vaultDir yields an empty name
+// so a host with no vault renders no task link. ⚠️ The guard on the empty
+// directory is load-bearing: filepath.Base("") is "." rather than "", so
+// without it an unconfigured vault would name a vault called `.`.
 func NewAttentionPageHandler(
 	store pkg.AttentionStore,
 	provenance pkg.ProvenanceResolver,
 	speakEnabled bool,
+	vaultDir string,
 ) http.Handler {
 	// Parsed once at construction rather than per request: the template is a
 	// compile-time constant, so a parse failure is a programming error, and
@@ -1765,6 +1917,10 @@ func NewAttentionPageHandler(
 				// ⚠️ No token is read here. The Jump button is gated on the
 				// resolved pane alone — see the constructor's comment on why the
 				// token gate was removed rather than kept.
+				//
+				// Derived once per request rather than per row: every row on the
+				// page addresses the same vault.
+				vaultName := vaultNameFromDir(vaultDir)
 				rows := make([]attentionPageRow, 0, len(items))
 				for _, item := range items {
 					rows = append(
@@ -1773,6 +1929,7 @@ func NewAttentionPageHandler(
 							item,
 							provenances[item.ItemID],
 							speakEnabled,
+							vaultName,
 						),
 					)
 				}
