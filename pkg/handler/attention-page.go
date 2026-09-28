@@ -1649,26 +1649,6 @@ func optionName(itemID pkg.ItemID, tab string) string {
 	return "option-" + itemID.String() + "-" + tab
 }
 
-// taskURL builds the link that opens an item's vault task in Obsidian, from the
-// vault's own name and the task file's path relative to the vault root.
-//
-// The form is `obsidian://open?vault=<vault>&file=<path>`, with both values
-// URL-encoded so a space becomes `%20` and a slash `%2F`, and a trailing `.md`
-// dropped if present. The extension is stripped idempotently — strings.TrimSuffix
-// rather than an assumed suffix — because the index's own path field is not
-// specified to carry one, and a strip that assumed it would either double-handle
-// the path or mangle a task whose name genuinely ends in those characters.
-//
-// ⚠️ Both halves go through url.PathEscape, never url.QueryEscape and never
-// url.Values.Encode(): those render a space as `+`, and Obsidian's open handler
-// reads the query as a path, so a `+` in a task name would open the wrong file.
-// The vault name is escaped for the same reason as the path — it is the
-// configured directory's base name, and nothing guarantees it is free of a
-// space.
-//
-// Empty when either half is empty, so an item whose session anchors no task, and
-// a host with no configured vault, each render no link rather than a dangling
-// one.
 // vaultNameFromDir returns the vault's own name — the name an Obsidian URL
 // addresses — from the configured vault directory.
 //
@@ -1688,12 +1668,49 @@ func vaultNameFromDir(vaultDir string) string {
 	return filepath.Base(vaultDir)
 }
 
+// obsidianQueryValue escapes one half of an `obsidian://open` query value.
+//
+// ⚠️ It is url.QueryEscape with the `+` put back to `%20`, which is the vault's
+// own documented convention rather than a choice made here — see [[Deep Link URL
+// Schemes]] § "`+` is inert", measured against a live Obsidian on 2026-09-18:
+// Obsidian does not decode `+`, so a link carrying one opens nothing while
+// looking perfectly correct. The swap is safe because QueryEscape renders a
+// literal `+` as `%2B`, so no genuine `+` can be corrupted by it.
+//
+// ⚠️ Not url.PathEscape, the tempting choice for a value that reads as a path.
+// PathEscape leaves `&`, `=` and `+` unescaped — they are legal *inside a path
+// segment* — so a task file named `R&D notes.md` would render
+// `…&file=25%20Tasks%2FR&D%20notes`: Obsidian reads that as a `file` of
+// `25 Tasks/R` plus a stray `D notes` parameter, and the link opens the wrong
+// file. QueryEscape escapes all three (`&`→`%26`, `=`→`%3D`, `+`→`%2B`) and
+// still renders a slash as `%2F`.
+func obsidianQueryValue(value string) string {
+	return strings.ReplaceAll(url.QueryEscape(value), "+", "%20")
+}
+
+// taskURL builds the link that opens an item's vault task in Obsidian, from the
+// vault's own name and the task file's path relative to the vault root.
+//
+// The form is `obsidian://open?vault=<vault>&file=<path>`, with both values
+// escaped so a space becomes `%20` and a slash `%2F`, and a trailing `.md`
+// dropped if present. The extension is stripped idempotently — strings.TrimSuffix
+// rather than an assumed suffix — because the index's own path field is not
+// specified to carry one, and a strip that assumed it would either double-handle
+// the path or mangle a task whose name genuinely ends in those characters.
+//
+// Both halves go through obsidianQueryValue, the vault name as well as the path:
+// the name is only the configured directory's base name, and nothing guarantees
+// it is free of a space.
+//
+// Empty when either half is empty, so an item whose session anchors no task, and
+// a host with no configured vault, each render no link rather than a dangling
+// one.
 func taskURL(vaultName string, taskPath string) template.URL {
 	if vaultName == "" || taskPath == "" {
 		return ""
 	}
-	link := "obsidian://open?vault=" + url.PathEscape(vaultName) +
-		"&file=" + url.PathEscape(strings.TrimSuffix(taskPath, ".md"))
+	link := "obsidian://open?vault=" + obsidianQueryValue(vaultName) +
+		"&file=" + obsidianQueryValue(strings.TrimSuffix(taskPath, ".md"))
 	// #nosec G203 -- the reported risk is "use of unescaped data in an HTML
 	// template", and the conversion is the point: html/template's URL filter
 	// admits only `http`, `https`, `mailto` and relative URLs, so an
@@ -1702,8 +1719,8 @@ func taskURL(vaultName string, taskPath string) template.URL {
 	// built two lines above from the operator-configured vault name (the base
 	// name of the configured vault directory) and a filesystem-derived task
 	// path, never from producer input, and both halves are escaped with
-	// url.PathEscape before they are concatenated. This records the provenance;
-	// it does not waive a risk.
+	// obsidianQueryValue before they are concatenated. This records the
+	// provenance; it does not waive a risk.
 	return template.URL(link)
 }
 

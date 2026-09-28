@@ -439,6 +439,34 @@ var _ = Describe("AttentionPageHandler", func() {
 			Expect(row).To(ContainSubstring(`class="provenance"`))
 			Expect(row).To(ContainSubstring(taskAnchor))
 		})
+
+		// ⚠️ The `&` case, and it is the one that distinguishes the escaper the
+		// helper uses from url.PathEscape. PathEscape leaves `&` alone — it is
+		// legal inside a path segment — so a task named `R&D notes` would emit
+		// `…&file=25%20Tasks%2FR&D%20notes`, which Obsidian reads as a `file` of
+		// `25 Tasks/R` plus a stray `D notes` parameter: the link resolves, and
+		// resolves to the wrong file. Every other assertion in this block passes
+		// under either escaper, so without this case the regression is invisible.
+		It("escapes a task name the query grammar would otherwise split on", func() {
+			item, err := store.Push(
+				ctx,
+				pushRequest("producer-amp", "gate-amp", "which task is this?"),
+			)
+			Expect(err).To(BeNil())
+			provenance.ResolveReturns(pkg.Provenances{
+				item.ItemID: pkg.Provenance{
+					Host:     "burn",
+					TaskName: "R&D notes",
+					TaskPath: "25 Tasks/R&D notes.md",
+				},
+			})
+
+			row := rowOf(get("GET").Body.String(), item.ItemID)
+
+			Expect(row).To(ContainSubstring(
+				`<span class="task"><a href="obsidian://open?vault=Personal&amp;file=25%20Tasks%2FR%26D%20notes">R&amp;D notes</a></span>`,
+			))
+		})
 	})
 
 	It("explains a row that carries no jump control, without naming a value", func() {
