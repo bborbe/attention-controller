@@ -158,6 +158,7 @@ var _ = Describe("Attention jump handover", func() {
 				provenance,
 				false,
 				"",
+				testBuildIdentity,
 			)
 		})
 

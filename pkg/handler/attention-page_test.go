@@ -74,6 +74,7 @@ var _ = Describe("AttentionPageHandler", func() {
 			provenance,
 			false,
 			vaultDir,
+			testBuildIdentity,
 		)
 	})
 

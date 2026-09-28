@@ -26,6 +26,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/bborbe/attention-controller/pkg"
+	"github.com/bborbe/attention-controller/pkg/buildidentity"
 	"github.com/bborbe/attention-controller/pkg/factory"
 )
 
@@ -280,6 +281,21 @@ func (a *application) createHTTPServer(
 		jumpTokens := a.createJumpTokenReader(ctx)
 		activator := a.createPaneActivator(panes)
 
+		// Read once, from the binary's own build info, and handed to the page so
+		// its footer can answer "which build am I looking at" from the surface the
+		// operator is already reading.
+		//
+		// ⚠️ Read HERE rather than inside the handler, for the same reason the
+		// store is built once in Run: it is a constant of the process, and a
+		// handler that re-read it per request would re-derive a constant while
+		// making the footer untestable.
+		//
+		// ⚠️ Deliberately NOT read from the repo. A repo read at render time
+		// answers "which commit is the checkout at" — a different question, and
+		// one that agrees with the binary right up until the two diverge, which is
+		// exactly when the footer has to be right.
+		buildIdentity := buildidentity.Read()
+
 		router := mux.NewRouter()
 		registerAdminRoutes(ctx, router, db, cancel, sentryClient)
 		// The Jump button's target: a path on this board, answered in-process.
@@ -296,7 +312,7 @@ func (a *application) createHTTPServer(
 		router.Path("/").
 			Methods(http.MethodGet, http.MethodHead).
 			Handler(factory.CreateAttentionPageHandler(
-				store, provenance, a.TTSURL != "", a.VaultDir))
+				store, provenance, a.TTSURL != "", a.VaultDir, buildIdentity))
 
 		// The board's live channel. It is registered here, ahead of the
 		// `/api/1.0/attention/{itemID}` route below, because gorilla mux matches

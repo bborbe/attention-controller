@@ -446,6 +446,27 @@ func clickTab(page playwright.Page, itemID, tab string) {
 	).To(Succeed())
 }
 
+// binaryVCSRevision reads the commit the built binary carries in its OWN build
+// info, via `go version -m` — the artifact's own stamp, never the checkout's
+// HEAD. That distinction is the whole point of the footer: a repo read answers
+// "which commit is the checkout at", which agrees with the binary only while the
+// two are in step, and is the wrong answer exactly when they diverge.
+//
+// It returns "" when the binary carries no stamp, which is a real state rather
+// than an error: a file-list build (`go build main.go`) suppresses Go's VCS
+// stamping entirely, and the caller asserts on the emptiness rather than
+// papering over it.
+func binaryVCSRevision(binaryPath string) string {
+	out, err := exec.Command("go", "version", "-m", binaryPath).Output()
+	Expect(err).NotTo(HaveOccurred(), "go version -m failed on %s", binaryPath)
+	for _, field := range strings.Fields(string(out)) {
+		if value, found := strings.CutPrefix(field, "vcs.revision="); found {
+			return value
+		}
+	}
+	return ""
+}
+
 // --- cases -----------------------------------------------------------------
 
 var _ = Describe("the attention board", func() {
@@ -496,6 +517,41 @@ var _ = Describe("the attention board", func() {
 
 		Eventually(func() int { return rowCount(page, openID) }).Should(Equal(1))
 		Eventually(func() int { return rowCount(page, answeredID) }).Should(Equal(1))
+	})
+
+	// ⚠️ The footer's identity is asserted against the BINARY'S OWN stamp, never
+	// against the checkout — which makes this case the regression guard for the
+	// deploy recipe as well. The suite builds with `go build -o out .`, the
+	// package form; a binary built as a file list (`go build main.go`) carries no
+	// vcs.revision, so the footer renders its explicit "No build identity" line
+	// and this case reddens, instead of the board shipping unable to say which
+	// build it is. The expected value is read from the artifact itself, so a page
+	// that resolved the sha from the repo at render time cannot satisfy it.
+	//
+	// The abbreviation's exact width is asserted in the handler specs; what this
+	// case adds is that the value reaching the footer is the artifact's own.
+	It("renders the running binary's own commit in the footer", func() {
+		revision := binaryVCSRevision(binPath)
+		Expect(revision).NotTo(BeEmpty(), "the suite's own build carries no VCS stamp")
+
+		page := newPage("")
+		defer func() { _ = page.Close() }()
+
+		// The footer is server-rendered with the document, so it is present once
+		// the load event has fired and needs no Eventually to wait for it.
+		text, err := page.Locator("footer.build-identity").TextContent()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Shortened the way buildidentity shortens it — only when it is longer —
+		// so a revision already shorter than the display width is compared whole
+		// rather than sliced past its end.
+		short := revision
+		if len(short) > 12 {
+			short = short[:12]
+		}
+		Expect(text).To(ContainSubstring(short))
+		Expect(text).To(ContainSubstring("committed"))
+		Expect(text).NotTo(ContainSubstring("No build identity"))
 	})
 
 	// ⚠️ The operator's report, end to end in a real browser: answer one card and
