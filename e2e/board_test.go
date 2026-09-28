@@ -703,6 +703,97 @@ var _ = Describe("the attention board", func() {
 	})
 
 	It(
+		"applies a frame atomically, so a throw inside the update never leaves a half-updated row",
+		func() {
+			// ⚠️ FAULT-INJECTION PROBE, and the justification is load bearing
+			// rather than a convenience. A probe is evidence only if the case it
+			// constructs can actually occur, and this one can: attention-page.go
+			// records a shipped instance of exactly this class — a null
+			// querySelector result threw a TypeError on every X-click of a
+			// permission card until 2026-09-27, and the file notes that throw was
+			// invisible because "the operator saw the right outcome and only the
+			// console took the error" (§ showCloseNote). The store emits no frame
+			// that throws, so a DOM call the update path itself makes is the only
+			// way to drive one through the browser.
+			//
+			// The fault is aimed at the note replay, which is the step upsertRow
+			// used to run AFTER committing the swap. That is what makes the probe
+			// discriminating: it lands inside the update on both revisions, but
+			// only the swap-then-repair order loses the note.
+			itemID := push("e2e: the row that must not half-update", "e2e-atomic-update")
+
+			page := newPage("")
+			defer func() { _ = page.Close() }()
+
+			Eventually(func() int { return rowCount(page, itemID) }).Should(Equal(1))
+
+			// A failure note is what gives the update something to lose, put there
+			// by failing the read-aloud POST — the technique the two note cases
+			// above already use. Without it replayFailure returns early and the
+			// update has no post-swap step left to throw in.
+			failSpeak(page)
+			clickSpeak(page, itemID)
+			Eventually(func() int { return noteCount(page, itemID, failedNoteSelector) }).
+				WithTimeout(5 * time.Second).Should(Equal(1))
+
+			var mu sync.Mutex
+			var logged []string
+			page.OnConsole(func(message playwright.ConsoleMessage) {
+				mu.Lock()
+				defer mu.Unlock()
+				logged = append(logged, message.Text())
+			})
+
+			// querySelector('form.answer') is the call replayFailure makes to place
+			// a note: on a DETACHED node under prepare-then-swap, and on the LIVE
+			// row under swap-then-repair. One patch therefore reaches the update
+			// from both sides. It disarms on first use, so the page is not left
+			// broken for the assertions that follow.
+			_, err := page.Evaluate(`() => {
+			const original = Element.prototype.querySelector;
+			let armed = true;
+			Element.prototype.querySelector = function (selector) {
+				if (armed && selector === 'form.answer') {
+					armed = false;
+					throw new Error('e2e: injected fault inside the row update');
+				}
+				return original.call(this, selector);
+			};
+		}`)
+			Expect(err).NotTo(HaveOccurred())
+
+			// A differing payload on the same dedup key updates the item in place,
+			// so the store's render changes, the stream sends an upsert and the page
+			// runs its update path. A byte-identical re-push renders identically and
+			// the stream sends nothing.
+			repushedID := push(
+				"e2e: the row that must not half-update, re-rendered",
+				"e2e-atomic-update",
+			)
+			Expect(repushedID).To(Equal(itemID), "the re-push must update in place, not add a row")
+
+			// The frame was handled and the failure reported rather than swallowed.
+			// This is also what proves the update path ran at all — without it the
+			// assertion below could pass on a frame that never arrived.
+			Eventually(func() []string {
+				mu.Lock()
+				defer mu.Unlock()
+				return append([]string(nil), logged...)
+			}).WithTimeout(10 * time.Second).Should(ContainElement(
+				ContainSubstring("could not apply stream frame for " + itemID),
+			))
+
+			// Atomicity. BOTH legal outcomes keep the note — untouched leaves the
+			// one already rendered, fully applied re-renders it — so only the
+			// half-applied state loses it. That is what makes the note the
+			// assertion rather than a proxy for one.
+			Consistently(func() int { return noteCount(page, itemID, failedNoteSelector) }).
+				WithTimeout(2*time.Second).Should(Equal(1),
+				"the row lost its note, so the frame was applied part-way")
+		},
+	)
+
+	It(
 		"keeps a control working when a stream event replaces its row, so a re-rendered card still answers",
 		func() {
 			// A row swap is what destroys a per-node listener, and this case
