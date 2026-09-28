@@ -128,9 +128,26 @@ There is no Kubernetes deploy. The store runs on this machine as the launchd job
 `com.bborbe.attention-controller`, serving `http://127.0.0.1:18080`:
 
 ```bash
-go build -o ~/.local/bin/attention-controller main.go
+go build -o ~/.local/bin/attention-controller .
 launchctl kickstart -k gui/$UID/com.bborbe.attention-controller
 ```
+
+⚠️ **Build the package (`.`), never the file list (`main.go`).** The two forms
+differ in one way that matters here: `go build main.go` builds a list of files
+rather than a package, and that **suppresses Go's automatic VCS stamping**. A
+binary built that way carries no `vcs.revision`, so it cannot say which source it
+came from — and the board's footer renders an explicit "no build identity" line
+instead of the version and sha. The recipe above is what keeps the stamp.
+
+Confirm the deployed artifact's own identity with:
+
+```bash
+go version -m ~/.local/bin/attention-controller | grep vcs.revision
+```
+
+That reads the running binary, not the checkout: it answers *which build is
+deployed*, which is the question the footer exists to answer. The binary's mtime
+does not — it proves a build happened, not what was built.
 
 The plist lives at `~/Library/LaunchAgents/com.bborbe.attention-controller.plist`.
 
