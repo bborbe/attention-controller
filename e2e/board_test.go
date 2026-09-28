@@ -359,6 +359,50 @@ func rowCount(page playwright.Page, itemID string) int {
 	return count
 }
 
+// openItemIDs returns the ids the store still counts as open, read through the
+// list API an arm reads rather than through the board.
+//
+// The suite starts one binary against one datadir for the whole run, so items
+// pushed by earlier specs are still in the store. A case that needs a board
+// with nothing open therefore establishes that precondition itself instead of
+// assuming a fresh store.
+func openItemIDs() []string {
+	resp, err := http.Get(baseURL + "api/1.0/attention")
+	Expect(err).NotTo(HaveOccurred())
+	defer resp.Body.Close()
+	content, _ := io.ReadAll(resp.Body)
+	Expect(resp.StatusCode).To(Equal(http.StatusOK), "list failed: %s", string(content))
+	var items []struct {
+		ItemID string `json:"item_id"`
+	}
+	Expect(json.Unmarshal(content, &items)).To(Succeed())
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item.ItemID)
+	}
+	return ids
+}
+
+// renderedCount returns how many item rows the board renders, whichever items
+// they belong to. Unlike rowCount it names no item, which is what makes it
+// usable as the positive half of an assertion about a whole board.
+func renderedCount(page playwright.Page) int {
+	count, err := page.Locator("li.item").Count()
+	Expect(err).NotTo(HaveOccurred())
+	return count
+}
+
+// emptyStateCount returns how many empty-state statements the board renders.
+// The statement is a rendering fact: the served markup carries it only when the
+// server rendered no rows at all, and the client re-creates it only from
+// collapseIfEmpty. So a count of zero on a board that also renders no rows is
+// the blank region itself.
+func emptyStateCount(page playwright.Page) int {
+	count, err := page.Locator("p.empty").Count()
+	Expect(err).NotTo(HaveOccurred())
+	return count
+}
+
 // newPage opens a fresh page on the board. A page per spec keeps the parked-set
 // and filter state from leaking between cases.
 func newPage(path string) playwright.Page {
@@ -485,6 +529,34 @@ var _ = Describe("the attention board", func() {
 		Eventually(func() int { return rowCount(page, openID) }).Should(Equal(1))
 		Consistently(func() int { return rowCount(page, answeredID) }).Should(Equal(0))
 	})
+
+	// ⚠️ The operator's report stated as the invariant it actually is: "if
+	// everything is done ... we should show a something". A board that renders
+	// neither a card nor the empty-state statement is the failure — the region
+	// below the control row goes blank and certifies nothing.
+	//
+	// The store is shared across the suite, so the case makes its own
+	// precondition: it answers every item the board still counts as open. What
+	// is left are rows that exist only as dimmed records, which the default view
+	// parks — the state the operator's board was in when they reported it.
+	It(
+		"says nothing needs the operator rather than rendering a blank region when every item is answered",
+		func() {
+			for _, itemID := range openItemIDs() {
+				answer(itemID)
+			}
+			Eventually(openItemIDs).Should(BeEmpty())
+
+			page := newPage("")
+			defer func() { _ = page.Close() }()
+
+			// The assertion is a positive one — the page renders *something* — so
+			// a board that rendered nothing at all cannot satisfy it. The empty
+			// statement is what the default view owes once every record is parked.
+			Eventually(func() int { return renderedCount(page) + emptyStateCount(page) }).
+				WithTimeout(5 * time.Second).Should(BeNumerically(">", 0))
+		},
+	)
 
 	It("renders the answered card too when the view is hide=none", func() {
 		openID := push("e2e: the open card", "e2e-none-open")
