@@ -740,9 +740,13 @@ var _ = Describe("the attention board", func() {
 			)
 			Expect(repushedID).To(Equal(itemID), "the re-push must update in place, not add a row")
 
-			// The swap really happened, and the tab the strip was on is not the
-			// tab this case is about to ask for.
-			Expect(activeTab(page, itemID)).To(Equal("Alpha"))
+			// The swap really happened: the stream puts a freshly rendered row in
+			// place, which resets the strip to the server's own active question.
+			// Waiting for that is what makes the clicks below about the swapped
+			// node rather than about the pre-swap one — asserting straight after
+			// the push reads the old node, because the frame has not landed yet.
+			Eventually(func() string { return activeTab(page, itemID) }).
+				WithTimeout(10 * time.Second).Should(Equal("Alpha"))
 
 			// The control still works on the node the stream put there.
 			clickTab(page, itemID, "Beta")
