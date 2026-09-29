@@ -1,8 +1,9 @@
 ---
-status: prompted
+status: verifying
 approved: "2026-09-29T19:19:21Z"
 generating: "2026-09-29T19:20:19Z"
 prompted: "2026-09-29T19:37:57Z"
+verifying: "2026-09-29T19:57:53Z"
 branch: dark-factory/board-card-goal-topic-links
 ---
 
