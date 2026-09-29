@@ -1,8 +1,13 @@
 ---
-status: approved
+status: completed
 spec: [001-board-card-goal-topic-links]
+summary: Added pkg/handler/attention-goal-topic-page_test.go, an end-to-end served-page spec over a fixture vault read by the real task index, resolver and page handler, asserting the goal and topic spans, their hand-written hrefs, the first-of-several-goals rule, the goal-with-no-topic case, the 24 Goals existence guard, the read-once vault and the vault-less degradation, plus a CHANGELOG entry.
+execution_id: attention-controller-goal-topic-exec-008-board-card-goal-topic-page-test
+dark-factory-version: v0.196.0
 created: "2026-09-29T19:27:17Z"
 queued: "2026-09-29T19:46:38Z"
+started: "2026-09-29T19:54:13Z"
+completed: "2026-09-29T19:57:52Z"
 branch: dark-factory/board-card-goal-topic-links
 ---
 
