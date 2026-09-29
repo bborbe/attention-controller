@@ -53,6 +53,25 @@ type Provenance struct {
 	// vault directory rather than reading it here — there is no third field
 	// carrying it.
 	TaskPath string
+	// GoalName is the title of the goal the task names first in its `goals:`
+	// list. Empty when nothing resolved.
+	//
+	// ⚠️ It **derives from the task**: a goal is only ever reached through the
+	// task file that names it, so this can resolve nowhere TaskName did not,
+	// which is why Resolved needs no conjunct for it.
+	GoalName string
+	// GoalPath is the goal file's path relative to the vault root, e.g.
+	// `24 Goals/Fix the board.md`. Empty when nothing resolved.
+	GoalPath string
+	// TopicName is the title of the topic page that lists this goal under its
+	// `## Goals` heading. Empty when nothing resolved.
+	//
+	// ⚠️ It **derives from the goal**, and so from the task: a topic is reached
+	// only by joining the resolved goal title against the topic pages.
+	TopicName string
+	// TopicPath is the topic file's path relative to the vault root, e.g.
+	// `23 Topics/Attention Board Polish.md`. Empty when nothing resolved.
+	TopicPath string
 }
 
 // Resolved reports whether anything about this item's origin could be told.
@@ -225,10 +244,19 @@ func (r *provenanceResolver) Resolve(ctx context.Context, items Items) Provenanc
 		// The session id comes from sessionIDFromItem, the one helper that
 		// understands every liveness shape the store writes; a second extractor
 		// would be a second place to get that wrong.
+		//
+		// ⚠️ The goal and the topic ride with the task and inherit its
+		// independence from the pane branches: the index carries all four
+		// fields on one lookup, so this block is the only place any of them is
+		// set and a second lookup is never needed.
 		if task, ok := r.lookupTask(item); ok {
 			provenance := resolved[item.ItemID]
 			provenance.TaskName = task.Name
 			provenance.TaskPath = task.Path
+			provenance.GoalName = task.GoalName
+			provenance.GoalPath = task.GoalPath
+			provenance.TopicName = task.TopicName
+			provenance.TopicPath = task.TopicPath
 			resolved[item.ItemID] = provenance
 		}
 	}
@@ -577,6 +605,16 @@ const (
 	// taskStatusKey is the frontmatter key carrying the task's status. Read
 	// only to break a tie between task files sharing one session id.
 	taskStatusKey = "status"
+	// goalDirName is the vault directory holding the goal files.
+	goalDirName = "24 Goals"
+	// topicDirName is the vault directory holding the topic pages.
+	topicDirName = "23 Topics"
+	// taskGoalsKey is the frontmatter key carrying a task's goals, as quoted
+	// Obsidian wikilinks. See frontmatterList and wikilinkTitle for the
+	// encoding actually read.
+	taskGoalsKey = "goals"
+	// topicGoalsHeading is the heading whose section lists a topic's goals.
+	topicGoalsHeading = "## Goals"
 )
 
 //counterfeiter:generate -o ../mocks/task-index.go --fake-name TaskIndex . TaskIndex
@@ -598,7 +636,7 @@ type TaskIndex interface {
 	Lookup(sessionID string) (Task, bool)
 }
 
-// Task is the vault task a session is anchored to.
+// Task is the vault task a session is anchored to, plus the rung above it.
 type Task struct {
 	// Name is the task's title, which is its filename without the `.md`
 	// suffix.
@@ -606,19 +644,43 @@ type Task struct {
 	// Path is the task file's path relative to the vault root, e.g.
 	// `25 Tasks/Fix the board.md`.
 	Path string
+	// GoalName is the title of the goal the task names first in its `goals:`
+	// list. Empty when the task names no goal, when no entry is a valid
+	// wikilink, or when no file of that title exists under `24 Goals/`.
+	GoalName string
+	// GoalPath is the goal file's path relative to the vault root, e.g.
+	// `24 Goals/Fix the board.md`. Empty exactly when GoalName is.
+	GoalPath string
+	// TopicName is the title of the topic page that lists this goal under its
+	// `## Goals` heading. Empty when no topic lists it.
+	TopicName string
+	// TopicPath is the topic file's path relative to the vault root, e.g.
+	// `23 Topics/Attention Board Polish.md`. Empty exactly when TopicName is.
+	TopicPath string
 }
 
 // NewTaskIndex builds the session -> task index from vaultDir's task files.
 //
 // It fails soft in every direction: an empty vaultDir, a vault that does not
-// exist, an unreadable `25 Tasks/` and an unreadable file each yield no entry
-// for the affected tasks and never an error. An empty vaultDir is the ordinary
-// case for a host with no vault configured, not a fault.
+// exist, an unreadable `25 Tasks/`, an unreadable `24 Goals/`, an unreadable
+// `23 Topics/` and an unreadable file each yield no entry for the affected
+// tasks and never an error. An empty vaultDir is the ordinary case for a host
+// with no vault configured, not a fault.
+//
+// The goal rung is built before the task walk, because each indexed task
+// carries the goal it names and the topic that lists it: both maps must exist
+// before the first task file is read.
 func NewTaskIndex(ctx context.Context, vaultDir string) TaskIndex {
-	index := &taskIndex{bySession: map[string]taskEntry{}}
+	index := &taskIndex{
+		bySession:  map[string]taskEntry{},
+		goals:      map[string]struct{}{},
+		goalTopics: map[string]goalTopic{},
+	}
 	if vaultDir == "" {
 		return index
 	}
+	index.goals = readGoalTitles(vaultDir)
+	index.goalTopics = readGoalTopics(ctx, vaultDir, index.goals)
 	tasksDir := filepath.Join(vaultDir, taskDirName)
 	// os.ReadDir returns entries sorted by filename, and the tie-break below
 	// depends on it: candidates are added in ascending path order, so the later
@@ -652,6 +714,14 @@ func NewTaskIndex(ctx context.Context, vaultDir string) TaskIndex {
 
 type taskIndex struct {
 	bySession map[string]taskEntry
+	// goals is the set of titles the vault holds as goal files under
+	// `24 Goals/`. It is the existence guard a task's `goals:` entry must pass
+	// before it resolves: the title comes from frontmatter, so it is never
+	// trusted as a path. A nil or empty set resolves no goal.
+	goals map[string]struct{}
+	// goalTopics maps a goal title to the topic page that lists it under its
+	// `## Goals` heading. A nil or empty map resolves no topic.
+	goalTopics map[string]goalTopic
 }
 
 // taskEntry is one indexed task file: the task itself plus the only other
@@ -695,11 +765,23 @@ func (t *taskIndex) addFile(root *os.Root, entry os.DirEntry) {
 		// the file contributes no entry rather than an entry under "".
 		return
 	}
+	task := Task{
+		Name: strings.TrimSuffix(entry.Name(), ".md"),
+		Path: filepath.Join(taskDirName, entry.Name()),
+	}
+	// The goal and the topic ride with the task: both derive from this file's
+	// `goals:` list, so they are resolved here, once, rather than at page load.
+	goalName, goalPath := firstGoal(content, t.goals)
+	task.GoalName = goalName
+	task.GoalPath = goalPath
+	if goalName != "" {
+		if topic, ok := t.goalTopics[goalName]; ok {
+			task.TopicName = topic.name
+			task.TopicPath = topic.path
+		}
+	}
 	t.add(sessionID, taskEntry{
-		task: Task{
-			Name: strings.TrimSuffix(entry.Name(), ".md"),
-			Path: filepath.Join(taskDirName, entry.Name()),
-		},
+		task:     task,
 		terminal: isTerminalTaskStatus(frontmatterValue(content, taskStatusKey)),
 	})
 }
@@ -776,4 +858,252 @@ func frontmatterLines(content []byte) []string {
 		}
 	}
 	return nil
+}
+
+// frontmatterList returns the entries of the list `key` in content's YAML
+// frontmatter block, or nil when there is no block, the key is absent, or the
+// key line carries the inline empty form `[]`.
+//
+// The entries are the lines that follow the key line while their trimmed form
+// starts with `-`; the first line that does not ends the list, so the next
+// frontmatter key terminates it. Parsed by hand for the same reason
+// frontmatterValue is: the block is a flat list of lines, and go.mod carries a
+// YAML parser only as an indirect dependency.
+//
+// ⚠️ The block comes from frontmatterLines, which excludes the closing `---`
+// delimiter. That matters here and not for frontmatterValue: the delimiter line
+// starts with `-`, so a reader that re-split the content itself would collect it
+// as an entry.
+func frontmatterList(content []byte, key string) []string {
+	var entries []string
+	inList := false
+	for _, line := range frontmatterLines(content) {
+		if !inList {
+			name, value, ok := strings.Cut(line, ":")
+			if !ok || strings.TrimSpace(name) != key {
+				continue
+			}
+			if strings.TrimSpace(value) == "[]" {
+				return nil
+			}
+			inList = true
+			continue
+		}
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "-") {
+			break
+		}
+		entries = append(entries, trimmed)
+	}
+	return entries
+}
+
+// wikilinkTitle returns the title one `goals:` list item names.
+//
+// It strips the list marker, the surrounding quotes, the `[[ ]]` brackets and
+// any `|alias`, then trims. ok is false when the entry carries no `[[ ]]` at
+// all — a bare title is **not** a valid entry — and false when the title is
+// empty after trimming. A quote is only stripped when both ends carry the same
+// one, so a title that legitimately ends in an apostrophe is left alone.
+func wikilinkTitle(raw string) (string, bool) {
+	entry := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(raw), "-"))
+	if len(entry) >= 2 {
+		first, last := entry[0], entry[len(entry)-1]
+		if (first == '"' || first == '\'') && first == last {
+			entry = strings.TrimSpace(entry[1 : len(entry)-1])
+		}
+	}
+	open := strings.Index(entry, "[[")
+	if open < 0 {
+		return "", false
+	}
+	rest := entry[open+2:]
+	end := strings.Index(rest, "]]")
+	if end < 0 {
+		return "", false
+	}
+	inner := rest[:end]
+	if alias := strings.Index(inner, "|"); alias >= 0 {
+		inner = inner[:alias]
+	}
+	title := strings.TrimSpace(inner)
+	if title == "" {
+		return "", false
+	}
+	return title, true
+}
+
+// firstGoal returns the first goal the task's `goals:` list names, as
+// `(title, path)`, or two empty strings when the task names no goal.
+//
+// ⚠️ The encoding, measured live over 1,619 goal-carrying tasks: every entry is
+// a **quoted Obsidian wikilink** — `- "[[Goal Title]]"` — with single-quoted
+// (`- '[[Goal Title]]'`) and 4-space-indented variants also occurring, and the
+// empty form is inline (`goals: []`). Quotes, `[[ ]]` brackets and any
+// `|alias` are stripped before the path is built. A bare title is not a valid
+// entry and yields nothing rather than being accepted as a title.
+//
+// ⚠️ A task carrying several goals names the **first** only; the rest are
+// unrendered, deliberately.
+//
+// ⚠️ The map is the existence guard, and it is the only thing that lets a
+// title become a path: the title comes from frontmatter, so a path built from
+// it unguarded would be a vault-derived string reaching the filesystem. The
+// first entry that is a valid wikilink *and* names a known goal wins.
+func firstGoal(content []byte, goals map[string]struct{}) (string, string) {
+	for _, entry := range frontmatterList(content, taskGoalsKey) {
+		title, ok := wikilinkTitle(entry)
+		if !ok {
+			continue
+		}
+		if _, exists := goals[title]; !exists {
+			continue
+		}
+		return title, filepath.Join(goalDirName, title+".md")
+	}
+	return "", ""
+}
+
+// goalTopic is the topic page a goal is listed by: its title and its path
+// relative to the vault root, e.g. `23 Topics/Attention Board Polish.md`.
+type goalTopic struct {
+	name string
+	path string
+}
+
+// readGoalTitles returns the titles the vault holds as goals: one per `*.md`
+// entry under `<vault>/24 Goals/`, keyed by the filename without its `.md`
+// suffix.
+//
+// A missing or unreadable directory yields an empty set, logged at V(2) —
+// fail-soft, because a vault with no goal directory is a legal state and must
+// resolve no goal rather than fail the page. Only os.ReadDir is needed: this
+// reads no file by name.
+func readGoalTitles(vaultDir string) map[string]struct{} {
+	titles := map[string]struct{}{}
+	goalsDir := filepath.Join(vaultDir, goalDirName)
+	entries, err := os.ReadDir(goalsDir)
+	if err != nil {
+		glog.V(2).Infof("read vault goals dir %s failed: %v", goalsDir, err)
+		return titles
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+			continue
+		}
+		titles[strings.TrimSuffix(entry.Name(), ".md")] = struct{}{}
+	}
+	return titles
+}
+
+// readGoalTopics maps a goal title to the topic page that lists it, built from
+// every `*.md` under `<vault>/23 Topics/`.
+//
+// ⚠️ The topic encoding, measured over all 12 topic pages in the live vault:
+// each uses exactly the heading `## Goals`, with entries as **bare wikilinks**
+// (`- [[Title]]`). The section runs from the line after that heading to the
+// next line whose trimmed form starts with `#`, or to the end of the file; only
+// lines inside it whose trimmed form starts with `-` contribute an entry. A
+// page with no `## Goals` heading, or with a `### Goals` subheading instead,
+// resolves no topic.
+//
+// ⚠️ A `## Goals` section **mixes goals and tasks** — `23 Topics/Attention
+// Board Polish.md` lists 8 entries, all tasks and zero goals, and four titles
+// exist as both a goal file and a task file. A title is therefore kept only
+// when it is in `goals`, the set read from `24 Goals/`; the section is never
+// trusted to contain only goals.
+//
+// ⚠️ No tie-break for a goal listed by several topics: the first topic found
+// wins, and with os.ReadDir's sorted order that is the lexicographically first
+// topic path. A title's topic is recorded only when it has none yet.
+//
+// It fails soft: an unreadable directory or file yields no topic for the
+// affected goals, logged at V(2)/V(3), never an error. Each file is read
+// through an os.Root handle opened once, so a name taken from the directory
+// listing can never walk out of the directory.
+func readGoalTopics(
+	ctx context.Context,
+	vaultDir string,
+	goals map[string]struct{},
+) map[string]goalTopic {
+	topics := map[string]goalTopic{}
+	if len(goals) == 0 {
+		return topics
+	}
+	topicsDir := filepath.Join(vaultDir, topicDirName)
+	entries, err := os.ReadDir(topicsDir)
+	if err != nil {
+		glog.V(2).Infof("read vault topics dir %s failed: %v", topicsDir, err)
+		return topics
+	}
+	root, err := os.OpenRoot(topicsDir)
+	if err != nil {
+		glog.V(2).Infof("open vault topics dir %s failed: %v", topicsDir, err)
+		return topics
+	}
+	defer root.Close()
+	for _, entry := range entries {
+		select {
+		case <-ctx.Done():
+			glog.V(3).Infof("goal topic index build cancelled")
+			return topics
+		default:
+		}
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+			continue
+		}
+		content, err := root.ReadFile(entry.Name())
+		if err != nil {
+			glog.V(3).Infof("read vault topic %s failed: %v", entry.Name(), err)
+			continue
+		}
+		for _, title := range goalSectionTitles(content) {
+			if _, isGoal := goals[title]; !isGoal {
+				continue
+			}
+			if _, seen := topics[title]; seen {
+				continue
+			}
+			topics[title] = goalTopic{
+				name: strings.TrimSuffix(entry.Name(), ".md"),
+				path: filepath.Join(topicDirName, entry.Name()),
+			}
+		}
+	}
+	return topics
+}
+
+// goalSectionTitles returns the titles listed under the `## Goals` heading of a
+// topic page, as bare wikilinks (`- [[Title]]`).
+//
+// The section runs from the line after that heading to the next line whose
+// trimmed form starts with `#`, or to the end of the file; only lines inside it
+// whose trimmed form starts with `-` contribute an entry. A page with no
+// `## Goals` heading, or with a `### Goals` subheading instead, contributes
+// nothing — the subheading ends the scan before any entry is read.
+func goalSectionTitles(content []byte) []string {
+	var titles []string
+	inSection := false
+	lines := strings.Split(strings.ReplaceAll(string(content), "\r\n", "\n"), "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !inSection {
+			if trimmed == topicGoalsHeading {
+				inSection = true
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "#") {
+			break
+		}
+		if !strings.HasPrefix(trimmed, "-") {
+			continue
+		}
+		title, ok := wikilinkTitle(trimmed)
+		if !ok {
+			continue
+		}
+		titles = append(titles, title)
+	}
+	return titles
 }

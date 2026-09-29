@@ -474,15 +474,108 @@ var _ = Describe("ProvenanceResolver", func() {
 		Expect(provenance.TaskName).To(BeEmpty())
 		Expect(provenance.TaskPath).To(BeEmpty())
 	})
+
+	It("resolves the goal and the topic a task's goals list names", func() {
+		vault := GinkgoT().TempDir()
+		writeVaultTask(
+			vault,
+			"Fix the board.md",
+			"---\nclaude_session_id: session-goal\ngoals:\n  - \"[[Fix the Board]]\"\n---\n\nbody\n",
+		)
+		writeVaultFile(vault, "24 Goals", "Fix the Board.md", "---\ntitle: Fix the Board\n---\n")
+		writeVaultFile(vault, "23 Topics", "Attention Board Polish.md",
+			"---\ntitle: Attention Board Polish\n---\n\n## Goals\n\n- [[Fix the Board]]\n")
+		writeEvents(
+			"producer-goal",
+			eventLine("key-goal", "session-goal", "burn", "/w/goal", "", ""),
+		)
+
+		provenance := withVault(vault).Resolve(ctx, pkg.Items{
+			sessionItem("item-goal", "producer-goal", "key-goal", "session-goal"),
+		})[pkg.ItemID("item-goal")]
+
+		Expect(provenance.GoalName).To(Equal("Fix the Board"))
+		Expect(provenance.GoalPath).To(Equal("24 Goals/Fix the Board.md"))
+		Expect(provenance.TopicName).To(Equal("Attention Board Polish"))
+		Expect(provenance.TopicPath).To(Equal("23 Topics/Attention Board Polish.md"))
+		// The goal and the topic derive from the task, and a resolved task always
+		// carries a non-empty name, so the gate is already true wherever a goal
+		// exists — which is why Resolved needs no conjunct for either.
+		Expect(provenance.TaskName).NotTo(BeEmpty())
+		Expect(provenance.Resolved()).To(BeTrue())
+	})
+
+	It("resolves a goal no topic lists, and no topic", func() {
+		// The dominant live case: 1,148 of 1,619 goal-carrying tasks resolve a
+		// goal span with no topic span.
+		vault := GinkgoT().TempDir()
+		writeVaultTask(vault, "Lonely Goal Task.md",
+			"---\nclaude_session_id: session-lonely\ngoals:\n  - \"[[Lonely Goal]]\"\n---\n")
+		writeVaultFile(vault, "24 Goals", "Lonely Goal.md", "---\ntitle: Lonely Goal\n---\n")
+
+		provenance := withVault(vault).Resolve(ctx, pkg.Items{
+			sessionItem("item-lonely", "producer-lonely", "key-lonely", "session-lonely"),
+		})[pkg.ItemID("item-lonely")]
+
+		Expect(provenance.GoalName).To(Equal("Lonely Goal"))
+		Expect(provenance.GoalPath).To(Equal("24 Goals/Lonely Goal.md"))
+		Expect(provenance.TopicName).To(BeEmpty())
+		Expect(provenance.TopicPath).To(BeEmpty())
+	})
+
+	It("resolves no goal and no topic for a task carrying goals: []", func() {
+		vault := GinkgoT().TempDir()
+		writeVaultTask(vault, "Empty Goals Task.md",
+			"---\nclaude_session_id: session-empty\ngoals: []\n---\n")
+		writeVaultFile(vault, "24 Goals", "Some Goal.md", "---\ntitle: Some Goal\n---\n")
+
+		provenance := withVault(vault).Resolve(ctx, pkg.Items{
+			sessionItem("item-empty", "producer-empty", "key-empty", "session-empty"),
+		})[pkg.ItemID("item-empty")]
+
+		// The task itself still resolves — the three spans are not one unit.
+		Expect(provenance.TaskName).To(Equal("Empty Goals Task"))
+		Expect(provenance.TaskPath).To(Equal("25 Tasks/Empty Goals Task.md"))
+		Expect(provenance.GoalName).To(BeEmpty())
+		Expect(provenance.GoalPath).To(BeEmpty())
+		Expect(provenance.TopicName).To(BeEmpty())
+		Expect(provenance.TopicPath).To(BeEmpty())
+	})
+
+	It("resolves no goal and no topic when no vault was configured", func() {
+		writeEvents(
+			"producer-novault",
+			eventLine("key-novault", "session-novault", "burn", "/w/nv", "", ""),
+		)
+		nilIndex := pkg.NewProvenanceResolver(stateDir, sessionsDir, paneLister, nil)
+
+		provenance := nilIndex.Resolve(ctx, pkg.Items{
+			sessionItem("item-novault", "producer-novault", "key-novault", "session-novault"),
+		})[pkg.ItemID("item-novault")]
+
+		Expect(provenance.GoalName).To(BeEmpty())
+		Expect(provenance.GoalPath).To(BeEmpty())
+		Expect(provenance.TopicName).To(BeEmpty())
+		Expect(provenance.TopicPath).To(BeEmpty())
+		// Everything else resolves exactly as it did before the goal rung existed.
+		Expect(provenance.Host).To(Equal("burn"))
+	})
 })
 
+// writeVaultFile writes one file under <vault>/<dir>/. Written as raw text
+// rather than through a parser, so the fixture is the *file shape* the vault
+// actually holds and a rename in the reader cannot make a fixture agree with
+// itself.
+func writeVaultFile(vault, dir, name, content string) {
+	path := filepath.Join(vault, dir)
+	Expect(os.MkdirAll(path, 0o750)).To(BeNil())
+	Expect(os.WriteFile(filepath.Join(path, name), []byte(content), 0o600)).To(BeNil())
+}
+
 // writeVaultTask writes one task file under <vault>/25 Tasks/, the directory the
-// index reads. Written as raw text rather than through a parser, so the fixture
-// is the *file shape* the vault actually holds.
+// index reads.
 func writeVaultTask(vault, name, content string) {
-	dir := filepath.Join(vault, "25 Tasks")
-	Expect(os.MkdirAll(dir, 0o750)).To(BeNil())
-	Expect(os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600)).To(BeNil())
+	writeVaultFile(vault, "25 Tasks", name, content)
 }
 
 var _ = Describe("TaskIndex", func() {
@@ -574,6 +667,271 @@ var _ = Describe("TaskIndex", func() {
 			},
 			"session-a", "", "", false),
 	)
+
+	// The goal rung, driven through the same exported constructor. The fixtures
+	// write the *file shape* the vault actually holds — raw frontmatter text,
+	// never a value marshalled from a struct — so a rename in the reader cannot
+	// make a fixture agree with itself.
+	DescribeTable(
+		"resolves the goal and the topic a task's goals name",
+		func(build func(root string) string, sessionID, wantGoalName, wantGoalPath, wantTopicName, wantTopicPath string) {
+			vault := build(GinkgoT().TempDir())
+
+			task, _ := pkg.NewTaskIndex(ctx, vault).Lookup(sessionID)
+
+			Expect(task.GoalName).To(Equal(wantGoalName))
+			Expect(task.GoalPath).To(Equal(wantGoalPath))
+			Expect(task.TopicName).To(Equal(wantTopicName))
+			Expect(task.TopicPath).To(Equal(wantTopicPath))
+		},
+		Entry("a task whose goals list names a goal a topic lists",
+			func(root string) string {
+				writeVaultTask(
+					root,
+					"Fix the board.md",
+					"---\nclaude_session_id: session-a\ngoals:\n  - \"[[Fix the Board]]\"\n---\nbody\n",
+				)
+				writeVaultFile(root, "24 Goals", "Fix the Board.md",
+					"---\ntitle: Fix the Board\n---\n")
+				writeVaultFile(root, "23 Topics", "Attention Board Polish.md",
+					"---\ntitle: Attention Board Polish\n---\n\n## Goals\n\n- [[Fix the Board]]\n")
+				return root
+			},
+			"session-a",
+			"Fix the Board", "24 Goals/Fix the Board.md",
+			"Attention Board Polish", "23 Topics/Attention Board Polish.md"),
+		Entry("a task whose goals is the inline empty form",
+			func(root string) string {
+				writeVaultTask(root, "Empty Goals.md",
+					"---\nclaude_session_id: session-a\ngoals: []\n---\n")
+				writeVaultFile(root, "24 Goals", "Fix the Board.md",
+					"---\ntitle: Fix the Board\n---\n")
+				return root
+			},
+			"session-a", "", "", "", ""),
+		Entry("a task whose goals list names two entries",
+			func(root string) string {
+				// The first is the one rendered; the second must appear in no
+				// field, so its goal file and its topic both exist and are both
+				// reachable only if the wrong entry won.
+				writeVaultTask(
+					root,
+					"Two Goals.md",
+					"---\nclaude_session_id: session-a\ngoals:\n  - \"[[First Goal]]\"\n  - \"[[Second Goal]]\"\n---\n",
+				)
+				writeVaultFile(root, "24 Goals", "First Goal.md", "---\ntitle: First Goal\n---\n")
+				writeVaultFile(root, "24 Goals", "Second Goal.md", "---\ntitle: Second Goal\n---\n")
+				writeVaultFile(root, "23 Topics", "First Topic.md",
+					"---\ntitle: First Topic\n---\n\n## Goals\n\n- [[First Goal]]\n")
+				writeVaultFile(root, "23 Topics", "Second Topic.md",
+					"---\ntitle: Second Topic\n---\n\n## Goals\n\n- [[Second Goal]]\n")
+				return root
+			},
+			"session-a",
+			"First Goal", "24 Goals/First Goal.md",
+			"First Topic", "23 Topics/First Topic.md"),
+		Entry("a task whose goals names a title with no file under 24 Goals",
+			func(root string) string {
+				writeVaultTask(root, "Missing Goal.md",
+					"---\nclaude_session_id: session-a\ngoals:\n  - \"[[Missing Goal]]\"\n---\n")
+				writeVaultFile(root, "23 Topics", "Missing Topic.md",
+					"---\ntitle: Missing Topic\n---\n\n## Goals\n\n- [[Missing Goal]]\n")
+				return root
+			},
+			"session-a", "", "", "", ""),
+		Entry("a goal file that no topic lists",
+			func(root string) string {
+				// The dominant live case: a goal resolves and no topic does.
+				writeVaultTask(root, "Lonely Goal.md",
+					"---\nclaude_session_id: session-a\ngoals:\n  - \"[[Lonely Goal]]\"\n---\n")
+				writeVaultFile(root, "24 Goals", "Lonely Goal.md",
+					"---\ntitle: Lonely Goal\n---\n")
+				return root
+			},
+			"session-a",
+			"Lonely Goal", "24 Goals/Lonely Goal.md", "", ""),
+		Entry("a goal named in a topic page's prose but not under its Goals heading",
+			func(root string) string {
+				writeVaultTask(root, "Prose Goal.md",
+					"---\nclaude_session_id: session-a\ngoals:\n  - \"[[Prose Goal]]\"\n---\n")
+				writeVaultFile(root, "24 Goals", "Prose Goal.md",
+					"---\ntitle: Prose Goal\n---\n")
+				writeVaultFile(
+					root,
+					"23 Topics",
+					"Prose Topic.md",
+					"---\ntitle: Prose Topic\n---\n\nWe should work on [[Prose Goal]] soon.\n\n## Goals\n\n- [[Some Other Goal]]\n\n## Notes\n\n- [[Prose Goal]]\n",
+				)
+				return root
+			},
+			"session-a",
+			"Prose Goal", "24 Goals/Prose Goal.md", "", ""),
+		Entry("a topic Goals section listing a title that exists only under 25 Tasks",
+			func(root string) string {
+				// ⚠️ The existence guard, and the only case that asserts it. The
+				// section mixes goals and tasks, so an implementation that trusted
+				// it would resolve a task title as a goal.
+				writeVaultTask(root, "Shared Title.md", "---\nclaude_session_id: some-other\n---\n")
+				writeVaultTask(root, "Goal Carrier.md",
+					"---\nclaude_session_id: session-a\ngoals:\n  - \"[[Shared Title]]\"\n---\n")
+				writeVaultFile(root, "23 Topics", "Mixer.md",
+					"---\ntitle: Mixer\n---\n\n## Goals\n\n- [[Shared Title]]\n")
+				return root
+			},
+			"session-a", "", "", "", ""),
+		Entry("a single-quoted goals entry",
+			func(root string) string {
+				writeVaultTask(root, "Single Quoted.md",
+					"---\nclaude_session_id: session-a\ngoals:\n  - '[[Quote Goal]]'\n---\n")
+				writeVaultFile(root, "24 Goals", "Quote Goal.md", "---\ntitle: Quote Goal\n---\n")
+				writeVaultFile(root, "23 Topics", "Quote Topic.md",
+					"---\ntitle: Quote Topic\n---\n\n## Goals\n\n- [[Quote Goal]]\n")
+				return root
+			},
+			"session-a",
+			"Quote Goal", "24 Goals/Quote Goal.md",
+			"Quote Topic", "23 Topics/Quote Topic.md"),
+		Entry("a 4-space-indented goals entry",
+			func(root string) string {
+				writeVaultTask(root, "Indented.md",
+					"---\nclaude_session_id: session-a\ngoals:\n    - \"[[Indent Goal]]\"\n---\n")
+				writeVaultFile(root, "24 Goals", "Indent Goal.md",
+					"---\ntitle: Indent Goal\n---\n")
+				writeVaultFile(root, "23 Topics", "Indent Topic.md",
+					"---\ntitle: Indent Topic\n---\n\n## Goals\n\n- [[Indent Goal]]\n")
+				return root
+			},
+			"session-a",
+			"Indent Goal", "24 Goals/Indent Goal.md",
+			"Indent Topic", "23 Topics/Indent Topic.md"),
+		Entry("a goals entry carrying an alias",
+			func(root string) string {
+				writeVaultTask(
+					root,
+					"Aliased.md",
+					"---\nclaude_session_id: session-a\ngoals:\n  - \"[[Alias Goal|display]]\"\n---\n",
+				)
+				writeVaultFile(root, "24 Goals", "Alias Goal.md", "---\ntitle: Alias Goal\n---\n")
+				writeVaultFile(root, "23 Topics", "Alias Topic.md",
+					"---\ntitle: Alias Topic\n---\n\n## Goals\n\n- [[Alias Goal]]\n")
+				return root
+			},
+			"session-a",
+			"Alias Goal", "24 Goals/Alias Goal.md",
+			"Alias Topic", "23 Topics/Alias Topic.md"),
+		Entry("a bare-title goals entry with no wikilink brackets",
+			func(root string) string {
+				writeVaultTask(root, "Bare Title.md",
+					"---\nclaude_session_id: session-a\ngoals:\n  - Bare Goal\n---\n")
+				writeVaultFile(root, "24 Goals", "Bare Goal.md", "---\ntitle: Bare Goal\n---\n")
+				return root
+			},
+			"session-a", "", "", "", ""),
+		Entry("a topic page carrying no Goals heading",
+			func(root string) string {
+				writeVaultTask(root, "No Heading.md",
+					"---\nclaude_session_id: session-a\ngoals:\n  - \"[[Heading Goal]]\"\n---\n")
+				writeVaultFile(root, "24 Goals", "Heading Goal.md",
+					"---\ntitle: Heading Goal\n---\n")
+				writeVaultFile(root, "23 Topics", "No Heading Topic.md",
+					"---\ntitle: No Heading Topic\n---\n\n- [[Heading Goal]]\n")
+				return root
+			},
+			"session-a",
+			"Heading Goal", "24 Goals/Heading Goal.md", "", ""),
+		Entry("a topic page carrying a Goals subheading instead",
+			func(root string) string {
+				writeVaultTask(root, "Subheading.md",
+					"---\nclaude_session_id: session-a\ngoals:\n  - \"[[Subheading Goal]]\"\n---\n")
+				writeVaultFile(root, "24 Goals", "Subheading Goal.md",
+					"---\ntitle: Subheading Goal\n---\n")
+				writeVaultFile(root, "23 Topics", "Subheading Topic.md",
+					"---\ntitle: Subheading Topic\n---\n\n### Goals\n\n- [[Subheading Goal]]\n")
+				return root
+			},
+			"session-a",
+			"Subheading Goal", "24 Goals/Subheading Goal.md", "", ""),
+		Entry("two topic pages listing one goal, with a subdirectory and a non-markdown file",
+			func(root string) string {
+				// The first topic found wins — with os.ReadDir's sorted order that
+				// is the lexicographically first topic path. The subdirectory and
+				// the `.txt` file must be skipped rather than read.
+				writeVaultTask(root, "Shared Goal.md",
+					"---\nclaude_session_id: session-a\ngoals:\n  - \"[[Shared Goal]]\"\n---\n")
+				writeVaultFile(root, "24 Goals", "Shared Goal.md",
+					"---\ntitle: Shared Goal\n---\n")
+				writeVaultFile(root, "23 Topics", "B Topic.md",
+					"---\ntitle: B Topic\n---\n\n## Goals\n\n- [[Shared Goal]]\n")
+				writeVaultFile(root, "23 Topics", "A Topic.md",
+					"---\ntitle: A Topic\n---\n\n## Goals\n\n- [[Shared Goal]]\n")
+				writeVaultFile(root, "23 Topics", "notes.txt", "not markdown\n")
+				writeVaultFile(
+					root,
+					"23 Topics/Sub",
+					"nested.md",
+					"## Goals\n\n- [[Shared Goal]]\n",
+				)
+				return root
+			},
+			"session-a",
+			"Shared Goal", "24 Goals/Shared Goal.md",
+			"A Topic", "23 Topics/A Topic.md"),
+		Entry("a topic directory holding an unreadable .md entry",
+			func(root string) string {
+				writeVaultTask(root, "Broken Link.md",
+					"---\nclaude_session_id: session-a\ngoals:\n  - \"[[Broken Goal]]\"\n---\n")
+				writeVaultFile(root, "24 Goals", "Broken Goal.md",
+					"---\ntitle: Broken Goal\n---\n")
+				writeVaultFile(root, "23 Topics", "Intact Topic.md",
+					"---\ntitle: Intact Topic\n---\n\n## Goals\n\n- [[Broken Goal]]\n")
+				Expect(os.Symlink(
+					"does-not-exist.md",
+					filepath.Join(root, "23 Topics", "Dangling.md"),
+				)).To(BeNil())
+				return root
+			},
+			"session-a",
+			"Broken Goal", "24 Goals/Broken Goal.md",
+			"Intact Topic", "23 Topics/Intact Topic.md"),
+		Entry("a vault with no 24 Goals directory at all",
+			func(root string) string {
+				writeVaultTask(root, "No Goals Dir.md",
+					"---\nclaude_session_id: session-a\ngoals:\n  - \"[[Any Goal]]\"\n---\n")
+				return root
+			},
+			"session-a", "", "", "", ""),
+		Entry("a task using the singular goal key",
+			func(root string) string {
+				writeVaultTask(root, "Singular.md",
+					"---\nclaude_session_id: session-a\ngoal:\n  - \"[[Fix the Board]]\"\n---\n")
+				writeVaultFile(root, "24 Goals", "Fix the Board.md",
+					"---\ntitle: Fix the Board\n---\n")
+				writeVaultFile(root, "23 Topics", "Attention Board Polish.md",
+					"---\ntitle: Attention Board Polish\n---\n\n## Goals\n\n- [[Fix the Board]]\n")
+				return root
+			},
+			"session-a", "", "", "", ""),
+	)
+
+	It("resolves no goal and no topic when the index build is cancelled", func() {
+		vault := GinkgoT().TempDir()
+		writeVaultTask(vault, "Cancelled.md",
+			"---\nclaude_session_id: session-a\ngoals:\n  - \"[[Cancelled Goal]]\"\n---\n")
+		writeVaultFile(vault, "24 Goals", "Cancelled Goal.md",
+			"---\ntitle: Cancelled Goal\n---\n")
+		writeVaultFile(vault, "23 Topics", "Cancelled Topic.md",
+			"---\ntitle: Cancelled Topic\n---\n\n## Goals\n\n- [[Cancelled Goal]]\n")
+		cancelled, cancel := context.WithCancel(ctx)
+		cancel()
+
+		task, _ := pkg.NewTaskIndex(cancelled, vault).Lookup("session-a")
+
+		// A cancelled build holds what it read before cancellation and no more,
+		// so the goal rung — which reads before the task walk — contributes
+		// nothing rather than failing.
+		Expect(task.GoalName).To(BeEmpty())
+		Expect(task.TopicName).To(BeEmpty())
+	})
 })
 
 // Resolved is the gate the page's provenance line hangs on: the template renders
