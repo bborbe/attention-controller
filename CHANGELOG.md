@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.31.0
 
 - feat: draw the goal a card's task advances, and the topic page that lists that goal, as `obsidian://` links beside the task on the provenance line, so the operator can see which body of work a card belongs to without leaving the board. `attentionPageRow` gains `GoalURL` and `TopicURL`, both `template.URL` — the type is load-bearing rather than decorative: html/template's URL filter admits only `http`, `https`, `mailto` and relative URLs, so a plain-string `href` renders `#ZgotmplZ` and the link is dead in the browser while every test asserting on the row field still passes, and `obsidian://` is exactly the scheme that filter refuses. The template draws each link in its own `<span>`, gated on its own resolved URL rather than one condition over both, because a task carrying a goal no topic lists is the dominant live case and a single gate would drop that goal link too; an unresolved one renders absent rather than as a placeholder, the rule the rest of the line already follows. Both links are built by the same `vaultFileURL` helper the task link uses — renamed from `taskURL`, since it now serves all three spans and a second builder would be a second escaper free to disagree — and both are navigation, adding no control and changing nothing any card offers.
 
