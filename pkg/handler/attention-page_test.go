@@ -478,6 +478,158 @@ var _ = Describe("AttentionPageHandler", func() {
 		})
 	})
 
+	// The goal a card's task advances, and the topic page that lists that goal,
+	// drawn beside the task on the same provenance line. Each resolves through the
+	// provenance the resolver hands the row, and each draws independently: a goal
+	// no topic lists still renders its goal link, which is the dominant live case.
+	Describe("the goal and topic links", func() {
+		// The served markup each link is asserted against, written as html/template
+		// actually emits it. ⚠️ Hand-written literals, never ones built with the
+		// same helper the code uses: a shared helper would agree with itself
+		// whatever it produced, so neither the `%20`/`%2F` escaping nor the dropped
+		// `.md` would be asserted at all. The `&amp;` is the template's own
+		// HTML-escaping of the `&` in the attribute.
+		goalAnchor := `<span class="goal"><a href="obsidian://open?vault=Personal&amp;file=24%20Goals%2FFix%20the%20board">Fix the board</a></span>`
+		topicAnchor := `<span class="topic"><a href="obsidian://open?vault=Personal&amp;file=23%20Topics%2FAttention%20Board%20Polish">Attention Board Polish</a></span>`
+
+		It("draws task, goal and topic as three spans, in that order", func() {
+			item, err := store.Push(
+				ctx,
+				pushRequest("producer-goaltopic", "gate-goaltopic", "which goal is this?"),
+			)
+			Expect(err).To(BeNil())
+			provenance.ResolveReturns(pkg.Provenances{
+				item.ItemID: pkg.Provenance{
+					Host:      "burn",
+					TaskName:  "Fix the board",
+					TaskPath:  "25 Tasks/Fix the board.md",
+					GoalName:  "Fix the board",
+					GoalPath:  "24 Goals/Fix the board.md",
+					TopicName: "Attention Board Polish",
+					TopicPath: "23 Topics/Attention Board Polish.md",
+				},
+			})
+
+			row := rowOf(get("GET").Body.String(), item.ItemID)
+
+			Expect(row).To(ContainSubstring(goalAnchor))
+			Expect(row).To(ContainSubstring(topicAnchor))
+			// Each leads its own span: the line is task, then goal, then topic, and
+			// the wrappers are what keep the separators beside them.
+			Expect(strings.Index(row, `class="task"`)).To(BeNumerically("<",
+				strings.Index(row, `class="goal"`)))
+			Expect(strings.Index(row, `class="goal"`)).To(BeNumerically("<",
+				strings.Index(row, `class="topic"`)))
+		})
+
+		It("draws the goal and no topic when no topic lists that goal", func() {
+			item, err := store.Push(
+				ctx,
+				pushRequest("producer-goalonly", "gate-goalonly", "which goal is this?"),
+			)
+			Expect(err).To(BeNil())
+			// ⚠️ The dominant live case, and the one the independent gates exist
+			// for: a single gate over both links would drop this goal link too.
+			provenance.ResolveReturns(pkg.Provenances{
+				item.ItemID: pkg.Provenance{
+					Host:     "burn",
+					TaskName: "Fix the board",
+					TaskPath: "25 Tasks/Fix the board.md",
+					GoalName: "Fix the board",
+					GoalPath: "24 Goals/Fix the board.md",
+				},
+			})
+
+			row := rowOf(get("GET").Body.String(), item.ItemID)
+
+			// Positive control: the line rendered, so the absence below is a
+			// withheld link rather than an absent line.
+			Expect(row).To(ContainSubstring(`class="provenance"`))
+			Expect(row).To(ContainSubstring(goalAnchor))
+			Expect(row).NotTo(ContainSubstring(`class="topic"`))
+		})
+
+		It("draws no goal and no topic for a task whose goals list is empty", func() {
+			item, err := store.Push(
+				ctx,
+				pushRequest("producer-nogoal", "gate-nogoal", "no goal here"),
+			)
+			Expect(err).To(BeNil())
+			// ⚠️ Another resolved value is required rather than incidental: with
+			// nothing but the task, the provenance div could still render, but the
+			// host is what makes the positive control below about a drawn line.
+			provenance.ResolveReturns(pkg.Provenances{
+				item.ItemID: pkg.Provenance{
+					Host:     "burn",
+					TaskName: "Fix the board",
+					TaskPath: "25 Tasks/Fix the board.md",
+				},
+			})
+
+			row := rowOf(get("GET").Body.String(), item.ItemID)
+
+			// Positive control: the line rendered, so the absences below cannot
+			// pass on a row that was dropped.
+			Expect(row).To(ContainSubstring(`class="provenance"`))
+			Expect(row).To(ContainSubstring(`class="task"`))
+			Expect(row).NotTo(ContainSubstring(`class="goal"`))
+			Expect(row).NotTo(ContainSubstring(`class="topic"`))
+		})
+
+		// ⚠️ The template.URL regression guard at the template seam. A plain-string
+		// GoalURL or TopicURL satisfies every field-level assertion above while the
+		// href renders `#ZgotmplZ`, so this is the one assertion that catches it.
+		It("emits a live href rather than the URL filter's sentinel", func() {
+			item, err := store.Push(
+				ctx,
+				pushRequest("producer-live", "gate-live", "which goal is this?"),
+			)
+			Expect(err).To(BeNil())
+			provenance.ResolveReturns(pkg.Provenances{
+				item.ItemID: pkg.Provenance{
+					TaskName:  "Fix the board",
+					TaskPath:  "25 Tasks/Fix the board.md",
+					GoalName:  "Fix the board",
+					GoalPath:  "24 Goals/Fix the board.md",
+					TopicName: "Attention Board Polish",
+					TopicPath: "23 Topics/Attention Board Polish.md",
+				},
+			})
+
+			row := rowOf(get("GET").Body.String(), item.ItemID)
+
+			Expect(row).To(ContainSubstring(goalAnchor))
+			Expect(row).NotTo(ContainSubstring("#ZgotmplZ"))
+		})
+
+		// ⚠️ The `&` case for the goal, mirroring the task's `R&D notes` case: it is
+		// the one that distinguishes the escaper the helper uses from url.PathEscape,
+		// which leaves `&` alone and would split the query. Both the href and the
+		// link text are asserted, so a link that resolves to the wrong file fails.
+		It("escapes a goal name the query grammar would otherwise split on", func() {
+			item, err := store.Push(
+				ctx,
+				pushRequest("producer-goalamp", "gate-goalamp", "which goal is this?"),
+			)
+			Expect(err).To(BeNil())
+			provenance.ResolveReturns(pkg.Provenances{
+				item.ItemID: pkg.Provenance{
+					Host:     "burn",
+					TaskName: "Fix the board",
+					TaskPath: "25 Tasks/Fix the board.md",
+					GoalName: "R&D notes",
+					GoalPath: "24 Goals/R&D notes.md",
+				},
+			})
+
+			row := rowOf(get("GET").Body.String(), item.ItemID)
+
+			Expect(row).To(ContainSubstring(
+				`<span class="goal"><a href="obsidian://open?vault=Personal&amp;file=24%20Goals%2FR%26D%20notes">R&amp;D notes</a></span>`,
+			))
+		})
+	})
+
 	It("explains a row that carries no jump control, without naming a value", func() {
 		item, err := store.Push(
 			ctx,
