@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.29.0
 
 - feat: permission cards render Allow / Deny on the board, writing `decision` — reverses the no-control ruling on the operator's decision; the attention watcher delivers the verdict by pressing the prompt's own Yes / No row in the session's pane
 - test: scenario 002 — e2e cases asserting the stored answer shape for every card type answered on the rendered board (radio, multi-select, free text, multi-tab keyed by `question`, Dismiss, Allow, Deny)
