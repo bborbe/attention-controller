@@ -79,7 +79,9 @@ func newAttentionPageRow(
 		JumpURL:    jumpURL(item, provenance),
 		NoJump:     noJumpReason(item, provenance),
 		Speak:      speak,
-		TaskURL:    taskURL(vaultName, provenance.TaskPath),
+		TaskURL:    vaultFileURL(vaultName, provenance.TaskPath),
+		GoalURL:    vaultFileURL(vaultName, provenance.GoalPath),
+		TopicURL:   vaultFileURL(vaultName, provenance.TopicPath),
 	}
 	row.Message, row.Ack = affordance(item.AnswerMechanism)
 	row.Decide = item.AnswerMechanism == pkg.PermissionAnswerMechanism
@@ -247,8 +249,14 @@ func obsidianQueryValue(value string) string {
 	return strings.ReplaceAll(url.QueryEscape(value), "+", "%20")
 }
 
-// taskURL builds the link that opens an item's vault task in Obsidian, from the
-// vault's own name and the task file's path relative to the vault root.
+// vaultFileURL builds the link that opens a vault file in Obsidian, from the
+// vault's own name and the file's path relative to the vault root.
+//
+// It serves all three spans of the provenance line that link into the vault —
+// the task, the goal the task names first and the topic page that lists that
+// goal — because those are one link shape: a second builder for the goal and
+// topic spans would be a second escaper, and two escapers are free to disagree
+// about `&` or a space while both look correct.
 //
 // The form is `obsidian://open?vault=<vault>&file=<path>`, with both values
 // escaped so a space becomes `%20` and a slash `%2F`, and a trailing `.md`
@@ -264,12 +272,12 @@ func obsidianQueryValue(value string) string {
 // Empty when either half is empty, so an item whose session anchors no task, and
 // a host with no configured vault, each render no link rather than a dangling
 // one.
-func taskURL(vaultName string, taskPath string) template.URL {
-	if vaultName == "" || taskPath == "" {
+func vaultFileURL(vaultName string, path string) template.URL {
+	if vaultName == "" || path == "" {
 		return ""
 	}
 	link := "obsidian://open?vault=" + obsidianQueryValue(vaultName) +
-		"&file=" + obsidianQueryValue(strings.TrimSuffix(taskPath, ".md"))
+		"&file=" + obsidianQueryValue(strings.TrimSuffix(path, ".md"))
 	// #nosec G203 -- the reported risk is "use of unescaped data in an HTML
 	// template", and the conversion is the point: html/template's URL filter
 	// admits only `http`, `https`, `mailto` and relative URLs, so an

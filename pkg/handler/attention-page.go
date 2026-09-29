@@ -84,6 +84,17 @@ import (
 // bare `<a>` among the spans would suppress the separator beside it and the line
 // would render as `Fix the boardburn · /w/x`. It is navigation, so it adds no
 // control and changes nothing any card offers.
+//
+// ⚠️ The goal and the topic follow the task as two more spans of the same shape,
+// each gated on its own resolved link: the goal this item's task names first, and
+// the topic page that lists that goal under its `## Goals` heading. They are
+// gated independently rather than by one condition over both, because a task
+// carrying a goal no topic lists is the dominant live case — a single gate would
+// drop that goal link along with the absent topic. An unresolved one renders
+// absent rather than as a placeholder, the rule the rest of the line already
+// follows: a goal no topic lists draws its goal span and no topic span, and a
+// task naming no goal draws neither. They are navigation too, adding no control
+// and changing nothing any card offers.
 const attentionPageTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1348,7 +1359,7 @@ function replayFailure(row) {
 {{else if .NoJump}}<button type="button" class="jump-corner" disabled aria-label="Jump to session" title="Jump to session"><svg class="jump-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.75 3.25h8.5a1.5 1.5 0 0 1 1.5 1.5v6.5a1.5 1.5 0 0 1-1.5 1.5h-8.5a1.5 1.5 0 0 1-1.5-1.5v-6.5a1.5 1.5 0 0 1 1.5-1.5z"/><path d="M5.75 6.5 7.5 8.25 5.75 10"/><path d="M9 10h1.75"/></svg></button>
 {{end}}{{if not .Message}}<div class="payload">{{ .Item.Payload }}</div>
 {{end}}{{if .Item.Context}}<div class="context">{{ .Item.Context }}</div>
-{{end}}{{if .Provenance.Resolved}}<div class="provenance">{{if .TaskURL}}<span class="task"><a href="{{ .TaskURL }}">{{ .Provenance.TaskName }}</a></span>{{end}}{{if .Provenance.Host}}<span class="host">{{ .Provenance.Host }}</span>{{end}}{{if .Provenance.Cwd}}<span class="cwd">{{ .Provenance.Cwd }}</span>{{end}}{{if .Provenance.Tool}}<span class="tool">{{ .Provenance.Tool }}</span>{{end}}{{if .Provenance.Pane}}<span class="pane">pane {{ .Provenance.Pane }}</span>{{else if .Provenance.PaneRecorded}}<span class="unroutable">unroutable</span>{{end}}</div>
+{{end}}{{if .Provenance.Resolved}}<div class="provenance">{{if .TaskURL}}<span class="task"><a href="{{ .TaskURL }}">{{ .Provenance.TaskName }}</a></span>{{end}}{{if .GoalURL}}<span class="goal"><a href="{{ .GoalURL }}">{{ .Provenance.GoalName }}</a></span>{{end}}{{if .TopicURL}}<span class="topic"><a href="{{ .TopicURL }}">{{ .Provenance.TopicName }}</a></span>{{end}}{{if .Provenance.Host}}<span class="host">{{ .Provenance.Host }}</span>{{end}}{{if .Provenance.Cwd}}<span class="cwd">{{ .Provenance.Cwd }}</span>{{end}}{{if .Provenance.Tool}}<span class="tool">{{ .Provenance.Tool }}</span>{{end}}{{if .Provenance.Pane}}<span class="pane">pane {{ .Provenance.Pane }}</span>{{else if .Provenance.PaneRecorded}}<span class="unroutable">unroutable</span>{{end}}</div>
 {{end}}{{if .Dimmed}}<div class="record"><div class="record-question">{{ .Item.Payload }}</div><div class="record-answer">answered: {{ .Record }}</div></div>
 {{else if .Message}}<form class="answer" data-multi="{{ .Tabs }}">
 {{if .Tabs}}<div class="tabs">{{range .Questions}}<button type="button" class="tab{{if .Active}} active{{end}}" data-tab="{{ .Tab }}">{{ .Tab }}</button>{{end}}</div>
@@ -1527,8 +1538,33 @@ type attentionPageRow struct {
 	// that asserts on the row field still passes. `obsidian://` is exactly the
 	// scheme that filter refuses, so the conversion is what makes the href emit at
 	// all — and its cost is that the value is trusted unescaped, which is why
-	// taskURL escapes both halves before building it.
+	// vaultFileURL escapes both halves before building it.
 	TaskURL template.URL
+	// GoalURL is the link that opens the goal this item's task names first in its
+	// `goals:` list, drawn beside the task span. Empty when no goal resolved — an
+	// unresolvable value renders absent rather than as a stand-in, the same rule
+	// TaskURL follows.
+	//
+	// ⚠️ It is a template.URL rather than a string for the same load-bearing
+	// reason TaskURL is: html/template's URL filter admits only `http`, `https`,
+	// `mailto` and relative URLs, so a plain-string `href="{{ .GoalURL }}"` renders
+	// `href="#ZgotmplZ"` — the link dead in the browser while every test that
+	// asserts on the row field still passes. `obsidian://` is exactly the scheme
+	// that filter refuses, so the conversion is what makes the href emit at all.
+	GoalURL template.URL
+	// TopicURL is the link that opens the topic page that lists this item's goal
+	// under its `## Goals` heading, drawn beside the goal span. Empty when no topic
+	// lists that goal, which is the common case — an unresolvable value renders
+	// absent rather than as a stand-in, the same rule TaskURL follows.
+	//
+	// ⚠️ It is a template.URL rather than a string for the same load-bearing
+	// reason TaskURL is: html/template's URL filter admits only `http`, `https`,
+	// `mailto` and relative URLs, so a plain-string `href="{{ .TopicURL }}"`
+	// renders `href="#ZgotmplZ"` — the link dead in the browser while every test
+	// that asserts on the row field still passes. `obsidian://` is exactly the
+	// scheme that filter refuses, so the conversion is what makes the href emit at
+	// all.
+	TopicURL template.URL
 }
 
 // attentionPageData is what the template renders: the items the store's read

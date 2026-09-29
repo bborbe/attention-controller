@@ -1,8 +1,13 @@
 ---
-status: approved
+status: completed
 spec: [001-board-card-goal-topic-links]
+summary: Drew the resolved goal and topic as independently-gated obsidian:// links on the attention card's provenance line, renaming taskURL to vaultFileURL and adding GoalURL/TopicURL as template.URL row fields.
+execution_id: attention-controller-goal-topic-exec-007-board-card-goal-topic-links
+dark-factory-version: v0.196.0
 created: "2026-09-29T19:27:17Z"
 queued: "2026-09-29T19:46:38Z"
+started: "2026-09-29T19:51:30Z"
+completed: "2026-09-29T19:54:11Z"
 branch: dark-factory/board-card-goal-topic-links
 ---
 
