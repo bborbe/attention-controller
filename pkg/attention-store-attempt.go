@@ -107,9 +107,21 @@ func (a *attentionStore) Delivery(
 				report.Status = FailedStatus
 			}
 		case isNotFound(err):
-			// No record. Which absence this is depends on whether a record
-			// could have existed at all — the epoch, not the state.
-			if item.CreatedAt.Time().Before(DeliveryTrailEpoch) {
+			// No record. Which absence this is turns on whether a record could
+			// have existed at all — and that is a question about when the item's
+			// answer was ROUTED, not when the item was created.
+			//
+			// ⚠️ The attempting arm is not the answering arm, so an attempt can
+			// only happen strictly AFTER an answer. An item created before the
+			// epoch and answered after it was inside the trail's window: reading it
+			// `pre_trail_unknown` would hide a real, actionable `never_attempted`,
+			// which is the failure this record exists to remove. An unanswered item
+			// has no answer time, so it falls back to CreatedAt.
+			since := item.CreatedAt.Time()
+			if item.AnsweredAt != nil {
+				since = item.AnsweredAt.Time()
+			}
+			if since.Before(DeliveryTrailEpoch) {
 				report.Status = PreTrailUnknownStatus
 			} else {
 				report.Status = NeverAttemptedStatus

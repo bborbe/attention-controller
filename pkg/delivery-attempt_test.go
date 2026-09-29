@@ -9,6 +9,7 @@ import (
 	stdtime "time"
 
 	libboltkv "github.com/bborbe/boltkv"
+	"github.com/bborbe/errors"
 	libkv "github.com/bborbe/kv"
 	libtime "github.com/bborbe/time"
 	. "github.com/onsi/ginkgo/v2"
@@ -27,12 +28,16 @@ var _ = Describe("Delivery trail", func() {
 	var ctx context.Context
 	var db libkv.DB
 
-	// storeAt builds a store whose clock is FIXED, so an item's CreatedAt lands
-	// deliberately on one side of DeliveryTrailEpoch. A store reading the wall
-	// clock could not exercise the epoch boundary at all: every item it created
-	// would sit after the epoch, and the pre-trail case would be untestable
-	// rather than merely untested.
+	// now is the store's clock. It is MOVABLE so an item's CreatedAt and its
+	// AnsweredAt can be placed on opposite sides of DeliveryTrailEpoch — the
+	// derivation keys on the ANSWER time, and a store whose clock never moved
+	// could not produce that case at all. A wall-clock store is worse still: every
+	// item it created would sit after the epoch, so the pre-trail case would be
+	// untestable rather than merely untested.
+	var now stdtime.Time
+	setClock := func(when stdtime.Time) { now = when }
 	storeAt := func(when stdtime.Time) pkg.AttentionStore {
+		setClock(when)
 		sessionLivenessChecker := &mocks.SessionLivenessChecker{}
 		sessionLivenessChecker.IsLiveReturns(true)
 		return pkg.NewAttentionStore(
@@ -40,7 +45,7 @@ var _ = Describe("Delivery trail", func() {
 			pkg.NewItemIDGenerator(),
 			sessionLivenessChecker,
 			libtime.CurrentDateTimeGetterFunc(func() libtime.DateTime {
-				return libtime.DateTime(when)
+				return libtime.DateTime(now)
 			}),
 			libtime.Duration(15*60*1e9),
 		)
@@ -159,8 +164,12 @@ var _ = Describe("Delivery trail", func() {
 		_, err := store.RecordAttempt(
 			ctx, pkg.ItemID("no-such-item"), "supervisor:attention-next", pkg.DeliveredOutcome,
 		)
-		Expect(err).NotTo(BeNil())
-		Expect(err.Error()).To(ContainSubstring("not found"))
+		// Asserted on the SENTINEL, not on the message. A substring match is
+		// satisfied by libkv's own text ("bucket not found"), so it passes even
+		// when the sentinel is dropped — and the sentinel is the only thing the
+		// handler maps to 404. A spec that cannot fail on that regression pins
+		// nothing.
+		Expect(errors.Is(err, pkg.ErrItemNotFound)).To(BeTrue())
 	})
 
 	It("refuses an outcome that is neither delivered nor failed", func() {
@@ -181,7 +190,25 @@ var _ = Describe("Delivery trail", func() {
 		store := storeAt(pkg.DeliveryTrailEpoch.Add(stdtime.Hour))
 
 		_, err := store.Delivery(ctx, pkg.ItemID("no-such-item"))
-		Expect(err).NotTo(BeNil())
-		Expect(err.Error()).To(ContainSubstring("not found"))
+		// The sentinel, for the same reason as the write-side spec above.
+		Expect(errors.Is(err, pkg.ErrItemNotFound)).To(BeTrue())
+	})
+
+	// ⚠️ The derivation keys on when the answer was ROUTED, not when the item was
+	// created. An attempt can only happen strictly after an answer, so this item —
+	// created before the epoch, answered after it — was inside the trail's window.
+	// Reading it `pre_trail_unknown` would hide a real, actionable
+	// `never_attempted`, which is the failure this record exists to remove.
+	It("reads never_attempted for an item created before the epoch but answered after it", func() {
+		store := storeAt(pkg.DeliveryTrailEpoch.Add(-stdtime.Hour))
+		item := push(store, "gate-1")
+		setClock(pkg.DeliveryTrailEpoch.Add(stdtime.Hour))
+		_, err := store.Answer(ctx, item.ItemID, "arm", "sess-1", "", nil, nil, nil)
+		Expect(err).To(BeNil())
+
+		report, err := store.Delivery(ctx, item.ItemID)
+		Expect(err).To(BeNil())
+		Expect(report.Status).To(Equal(pkg.NeverAttemptedStatus))
+		Expect(report.Status).NotTo(Equal(pkg.PreTrailUnknownStatus))
 	})
 })

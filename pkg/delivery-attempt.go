@@ -94,7 +94,15 @@ const (
 // ⚠️ It is deliberately a fixed instant rather than "now" or a store-start
 // time — a value that moved would reclassify history on every restart, and an
 // item's fate is not a function of when the store was last bounced.
-var DeliveryTrailEpoch = time.Date(2026, 9, 29, 0, 0, 0, 0, time.UTC)
+//
+// ⚠️ **It is the ship INSTANT, not the ship date, and the difference is not
+// cosmetic.** The first cut used midnight on the ship date — ~19h44m too early.
+// Every item answered between midnight and the moment the endpoint actually went
+// live would then read `never_attempted`, *"no arm ever picked its answer up"*,
+// for a window in which the attempt route did not exist. That is the conflation
+// this record exists to prevent, running in the opposite direction, and it is
+// silent: the wrong answer is a plausible one.
+var DeliveryTrailEpoch = time.Date(2026, 9, 29, 19, 44, 38, 0, time.UTC)
 
 // DeliveryAttempt is the record an attempting arm writes: which arm tried, and
 // what it observed.
