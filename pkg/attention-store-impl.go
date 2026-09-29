@@ -28,8 +28,11 @@ func NewAttentionStore(
 	heartbeatWindow libtime.Duration,
 ) AttentionStore {
 	return &attentionStore{
-		store:                  libkv.NewStoreTx[string, Item](AttentionStoreBucketName),
-		liveIndex:              libkv.NewStoreTx[string, Item](attentionLiveIndexBucketName),
+		store:     libkv.NewStoreTx[string, Item](AttentionStoreBucketName),
+		liveIndex: libkv.NewStoreTx[string, Item](attentionLiveIndexBucketName),
+		attempts: libkv.NewStoreTx[string, DeliveryAttempt](
+			deliveryAttemptBucketName,
+		),
 		db:                     db,
 		itemIDGenerator:        itemIDGenerator,
 		sessionLivenessChecker: sessionLivenessChecker,
@@ -65,6 +68,7 @@ const liveIndexMarkerKey = "!"
 type attentionStore struct {
 	store                  libkv.StoreTx[string, Item]
 	liveIndex              libkv.StoreTx[string, Item]
+	attempts               libkv.StoreTx[string, DeliveryAttempt]
 	db                     libkv.DB
 	itemIDGenerator        ItemIDGenerator
 	sessionLivenessChecker SessionLivenessChecker
@@ -455,7 +459,33 @@ func (a *attentionStore) removeItem(ctx context.Context, tx libkv.Tx, key string
 	if err := a.store.Remove(ctx, tx, key); err != nil {
 		return errors.Wrapf(ctx, err, "remove item %s failed", key)
 	}
-	return a.removeIndexEntry(ctx, tx, key)
+	if err := a.removeIndexEntry(ctx, tx, key); err != nil {
+		return err
+	}
+	// The attempt record goes with its item. The read surface joins the record to
+	// the item's own timestamps, so a record whose item is gone can never be read
+	// back — the state RecordAttempt refuses to create on the write side. The
+	// lifecycle has to hold the same line, or that refusal is only half a
+	// guarantee and an unreadable record can still be left behind by a prune.
+	return a.removeAttemptEntry(ctx, tx, key)
+}
+
+// removeAttemptEntry drops one delivery-attempt record, treating "not there" as
+// success so callers stay idempotent. It checks first for the same reason
+// removeIndexEntry does: `kv`'s Remove would otherwise create the attempts
+// bucket to delete nothing from it.
+func (a *attentionStore) removeAttemptEntry(ctx context.Context, tx libkv.Tx, key string) error {
+	exists, err := a.attempts.Exists(ctx, tx, key)
+	if err != nil {
+		return errors.Wrapf(ctx, err, "check delivery attempt %s failed", key)
+	}
+	if !exists {
+		return nil
+	}
+	if err := a.attempts.Remove(ctx, tx, key); err != nil {
+		return errors.Wrapf(ctx, err, "remove delivery attempt %s failed", key)
+	}
+	return nil
 }
 
 // removeIndexEntry drops one live-index entry, treating "not there" as success

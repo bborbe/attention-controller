@@ -55,6 +55,19 @@ func CreateAttentionGetHandler(store pkg.AttentionStore) http.Handler {
 	return handler.NewAttentionGetHandler(store)
 }
 
+// CreateAttentionAttemptGetHandler creates the handler that answers "did this
+// item's answer reach the session?" in one query, returning the derived
+// delivery status rather than the raw record.
+func CreateAttentionAttemptGetHandler(store pkg.AttentionStore) http.Handler {
+	return handler.NewAttentionAttemptGetHandler(store)
+}
+
+// CreateAttentionAttemptRecordHandler creates the handler the attempting arm
+// calls to record which arm tried and whether it delivered.
+func CreateAttentionAttemptRecordHandler(store pkg.AttentionStore) http.Handler {
+	return handler.NewAttentionAttemptRecordHandler(store)
+}
+
 // CreateAttentionPageHandler creates the read-only HTML page an operator opens
 // to see what currently needs attention, without Claude Code, vault-cli or the
 // task system.
