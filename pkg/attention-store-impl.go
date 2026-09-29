@@ -28,8 +28,11 @@ func NewAttentionStore(
 	heartbeatWindow libtime.Duration,
 ) AttentionStore {
 	return &attentionStore{
-		store:                  libkv.NewStoreTx[string, Item](AttentionStoreBucketName),
-		liveIndex:              libkv.NewStoreTx[string, Item](attentionLiveIndexBucketName),
+		store:     libkv.NewStoreTx[string, Item](AttentionStoreBucketName),
+		liveIndex: libkv.NewStoreTx[string, Item](attentionLiveIndexBucketName),
+		attempts: libkv.NewStoreTx[string, DeliveryAttempt](
+			deliveryAttemptBucketName,
+		),
 		db:                     db,
 		itemIDGenerator:        itemIDGenerator,
 		sessionLivenessChecker: sessionLivenessChecker,
@@ -65,6 +68,7 @@ const liveIndexMarkerKey = "!"
 type attentionStore struct {
 	store                  libkv.StoreTx[string, Item]
 	liveIndex              libkv.StoreTx[string, Item]
+	attempts               libkv.StoreTx[string, DeliveryAttempt]
 	db                     libkv.DB
 	itemIDGenerator        ItemIDGenerator
 	sessionLivenessChecker SessionLivenessChecker
