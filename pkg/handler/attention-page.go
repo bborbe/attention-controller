@@ -624,6 +624,32 @@ function collectAnswers(form) {
   });
   return entries;
 }
+/* A permission card's Allow / Deny. It writes the verdict as decision, the
+   field the schema gives a permission answer; the row updates over the stream
+   like every other answer, and a failure is shown on the card rather than
+   swallowed. Delegated on the document for the tab strip's reason: a row the
+   stream re-renders keeps working. */
+document.addEventListener('click', function (event) {
+  var button = event.target && event.target.closest ? event.target.closest('button[data-decision]') : null;
+  if (!button) { return; }
+  var row = button.closest('li.item');
+  if (!row) { return; }
+  button.disabled = true;
+  fetch('/api/1.0/attention/' + encodeURIComponent(row.getAttribute('data-item-id')) + '/answer', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ answered_by: 'attention-board', automation: navigator.webdriver, decision: button.getAttribute('data-decision') })
+  }).then(function (response) {
+    if (response.ok) { return; }
+    return response.text().then(function (body) {
+      button.disabled = false;
+      showCloseNote(row, answerFailure(body), true);
+    });
+  }).catch(function (error) {
+    button.disabled = false;
+    showCloseNote(row, 'Could not reach the store: ' + error, true);
+  });
+});
 function skipAll(form) {
   var entries = [];
   form.querySelectorAll('.panel').forEach(function (panel) {
@@ -1337,6 +1363,7 @@ function replayFailure(row) {
 {{end}}<div class="actions"><button type="submit" name="kind" value="skip" class="dismiss">✕ Dismiss</button><button type="submit" name="kind" value="send" class="next">✓ Submit answer</button></div>
 </form>
 {{end}}{{if and .Ack (not .Dimmed)}}<div class="actions"><button type="button" class="ack" data-ack>Acknowledge</button></div>
+{{end}}{{if and .Decide (not .Dimmed)}}<div class="actions"><button type="button" class="dismiss" data-decision="deny">✕ Deny</button><button type="button" class="next" data-decision="allow">✓ Allow</button></div>
 {{end}}{{if or .Jump .JumpURL}}<div class="jump">{{if .Jump}}<span>Approve in the session that asked: <code>{{ .Jump }}</code></span>{{end}}</div>
 {{else if .NoJump}}<div class="jump-reason"><span class="no-jump">{{ .NoJump }}</span></div>
 {{end}}<div class="meta">{{ .Item.State }} - {{ .Item.CreatedAt }}</div>
@@ -1406,6 +1433,18 @@ type attentionPageRow struct {
 	// schema forbids. The two classes rendering identically was the accident;
 	// they are separated by this field rather than by a shared absence.
 	Ack bool
+	// Decide reports whether this row renders the Allow / Deny controls. True
+	// for `permission` items only.
+	//
+	// ⚠️ REVERSES the "no control on a permission row" ruling above, on the
+	// operator's decision 2026-09-29: the board is where the operator answers,
+	// and a permission card with no control left every tab-session prompt
+	// unanswerable from it. The click is the operator's own verdict, written as
+	// `decision`; the attention watcher delivers it by pressing that prompt's
+	// own Yes / No row in the session's pane, re-proving the pane is the
+	// session's first. A headless worker's park is settled by the supervisor's
+	// poll from the same `decision`, as before.
+	Decide bool
 	// ⚠️ There was a `Permission bool` here for exactly one release, read by the
 	// jump corner to except permission rows from the disabled control. It was
 	// removed 2026-09-27 on the operator's own read of the live board: with the

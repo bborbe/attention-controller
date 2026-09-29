@@ -222,44 +222,52 @@ var _ = Describe("AttentionPageHandler", func() {
 	// because only the operator may answer a gate, and only in the session that
 	// raised it. See the attention item schema § Answer routing, and the page
 	// handler's own doc comment for why the reversal stops there.
-	It("offers answer controls for a message item and none for a permission item", func() {
-		message, err := store.Push(
-			ctx,
-			pushRequest("producer-readonly", "gate-readonly", "read me"),
-		)
-		Expect(err).To(BeNil())
-		permission, err := store.Push(ctx, pkg.PushRequest{
-			ProducerID:      "producer-gate",
-			ProducerKind:    pkg.SessionProducerKind,
-			LivenessRef:     pkg.LivenessRef("session:producer-gate"),
-			DedupKey:        "gate-permission",
-			InterruptClass:  "approve",
-			Payload:         "deploy prod?",
-			AnswerMechanism: pkg.PermissionAnswerMechanism,
-		})
-		Expect(err).To(BeNil())
+	It(
+		"offers answer controls for a message item and only Allow/Deny for a permission item",
+		func() {
+			message, err := store.Push(
+				ctx,
+				pushRequest("producer-readonly", "gate-readonly", "read me"),
+			)
+			Expect(err).To(BeNil())
+			permission, err := store.Push(ctx, pkg.PushRequest{
+				ProducerID:      "producer-gate",
+				ProducerKind:    pkg.SessionProducerKind,
+				LivenessRef:     pkg.LivenessRef("session:producer-gate"),
+				DedupKey:        "gate-permission",
+				InterruptClass:  "approve",
+				Payload:         "deploy prod?",
+				AnswerMechanism: pkg.PermissionAnswerMechanism,
+			})
+			Expect(err).To(BeNil())
 
-		// A non-empty page first, so the absence assertions below are made against
-		// a rendered document rather than against an empty body.
-		resp := get("GET")
-		Expect(resp.Body.String()).NotTo(BeEmpty())
-		body := resp.Body.String()
+			// A non-empty page first, so the absence assertions below are made against
+			// a rendered document rather than against an empty body.
+			resp := get("GET")
+			Expect(resp.Body.String()).NotTo(BeEmpty())
+			body := resp.Body.String()
 
-		// Scoped per row rather than page-wide: a page-wide grep would pass on a
-		// page where the wrong item carried the controls.
-		Expect(rowOf(body, message.ItemID)).To(ContainSubstring("<form"))
-		Expect(rowOf(body, permission.ItemID)).NotTo(ContainSubstring("<form"))
-		// ⚠️ AMENDED 2026-09-27: a permission row renders the jump corner
-		// (disabled when it has no target) and, from this change, the corner X.
-		// Neither is an ANSWER control, which is the property this spec exists
-		// for — so the assertions below are on forms and inputs, not buttons.
-		Expect(rowOf(body, permission.ItemID)).NotTo(ContainSubstring("<input"))
-		Expect(rowOf(body, permission.ItemID)).To(ContainSubstring(`class="jump-corner"`))
+			// Scoped per row rather than page-wide: a page-wide grep would pass on a
+			// page where the wrong item carried the controls.
+			Expect(rowOf(body, message.ItemID)).To(ContainSubstring("<form"))
+			Expect(rowOf(body, permission.ItemID)).NotTo(ContainSubstring("<form"))
+			// ⚠️ AMENDED 2026-09-27: a permission row renders the jump corner
+			// (disabled when it has no target) and, from this change, the corner X.
+			// Neither is an ANSWER control, which is the property this spec exists
+			// for — so the assertions below are on forms and inputs, not buttons.
+			Expect(rowOf(body, permission.ItemID)).NotTo(ContainSubstring("<input"))
+			Expect(rowOf(body, permission.ItemID)).To(ContainSubstring(`class="jump-corner"`))
+			// ⚠️ AMENDED 2026-09-29 (operator decision): a permission row carries
+			// exactly the two verdict buttons — still no form and no free input.
+			Expect(rowOf(body, permission.ItemID)).To(ContainSubstring(`data-decision="allow"`))
+			Expect(rowOf(body, permission.ItemID)).To(ContainSubstring(`data-decision="deny"`))
+			Expect(rowOf(body, message.ItemID)).NotTo(ContainSubstring(`data-decision=`))
 
-		// HEAD is routed to this handler too; it is read-only and a link checker
-		// or browser may issue it, so it is asserted rather than merely declared.
-		Expect(get("HEAD").Code).To(Equal(http.StatusOK))
-	})
+			// HEAD is routed to this handler too; it is read-only and a link checker
+			// or browser may issue it, so it is asserted rather than merely declared.
+			Expect(get("HEAD").Code).To(Equal(http.StatusOK))
+		},
+	)
 
 	It("renders host, cwd, tool and pane as four required values on a resolving row", func() {
 		item, err := store.Push(ctx, pushRequest("producer-prov", "gate-prov", "deploy prod?"))
@@ -1119,7 +1127,12 @@ var _ = Describe("AttentionPageHandler", func() {
 			// the page via the stream rather than via that handler — the correct
 			// outcome masked a real error, which is why it is pinned twice here:
 			// once as the missing container, once as the fallback that handles it.
-			Expect(block).NotTo(ContainSubstring(`class="actions"`))
+			// ⚠️ FLIPPED 2026-09-29: a permission row now carries an .actions div
+			// holding its Allow / Deny verdict buttons (operator decision), so the
+			// container is present. The fallback stays pinned: an ack or message
+			// row the stream re-renders without controls still needs it.
+			Expect(block).To(ContainSubstring(`class="actions"`))
+			Expect(block).To(ContainSubstring(`data-decision="allow"`))
 			Expect(get("GET").Body.String()).
 				To(ContainSubstring(`row.querySelector('.actions') || row`))
 		})

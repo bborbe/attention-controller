@@ -82,6 +82,7 @@ func newAttentionPageRow(
 		TaskURL:    taskURL(vaultName, provenance.TaskPath),
 	}
 	row.Message, row.Ack = affordance(item.AnswerMechanism)
+	row.Decide = item.AnswerMechanism == pkg.PermissionAnswerMechanism
 	if item.State == pkg.AnsweredState {
 		// The board renders the record of what was answered so the operator can
 		// see the answer standing in their name. `answered_by` is a caller
