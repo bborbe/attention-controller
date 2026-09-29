@@ -679,8 +679,8 @@ func NewTaskIndex(ctx context.Context, vaultDir string) TaskIndex {
 	if vaultDir == "" {
 		return index
 	}
-	index.goals = readGoalTitles(vaultDir)
-	index.goalTopics = readGoalTopics(ctx, vaultDir, index.goals)
+	index.readGoalTitles(vaultDir)
+	index.readGoalTopics(ctx, vaultDir)
 	tasksDir := filepath.Join(vaultDir, taskDirName)
 	// os.ReadDir returns entries sorted by filename, and the tie-break below
 	// depends on it: candidates are added in ascending path order, so the later
@@ -971,33 +971,32 @@ type goalTopic struct {
 	path string
 }
 
-// readGoalTitles returns the titles the vault holds as goals: one per `*.md`
-// entry under `<vault>/24 Goals/`, keyed by the filename without its `.md`
-// suffix.
+// readGoalTitles records on the index the titles the vault holds as goals: one
+// per `*.md` entry under `<vault>/24 Goals/`, keyed by the filename without its
+// `.md` suffix.
 //
 // A missing or unreadable directory yields an empty set, logged at V(2) —
 // fail-soft, because a vault with no goal directory is a legal state and must
 // resolve no goal rather than fail the page. Only os.ReadDir is needed: this
 // reads no file by name.
-func readGoalTitles(vaultDir string) map[string]struct{} {
-	titles := map[string]struct{}{}
+func (t *taskIndex) readGoalTitles(vaultDir string) {
+	t.goals = map[string]struct{}{}
 	goalsDir := filepath.Join(vaultDir, goalDirName)
 	entries, err := os.ReadDir(goalsDir)
 	if err != nil {
 		glog.V(2).Infof("read vault goals dir %s failed: %v", goalsDir, err)
-		return titles
+		return
 	}
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
 			continue
 		}
-		titles[strings.TrimSuffix(entry.Name(), ".md")] = struct{}{}
+		t.goals[strings.TrimSuffix(entry.Name(), ".md")] = struct{}{}
 	}
-	return titles
 }
 
-// readGoalTopics maps a goal title to the topic page that lists it, built from
-// every `*.md` under `<vault>/23 Topics/`.
+// readGoalTopics records on the index, per goal title, the topic page that lists
+// it, built from every `*.md` under `<vault>/23 Topics/`.
 //
 // ⚠️ The topic encoding, measured over all 12 topic pages in the live vault:
 // each uses exactly the heading `## Goals`, with entries as **bare wikilinks**
@@ -1021,32 +1020,28 @@ func readGoalTitles(vaultDir string) map[string]struct{} {
 // affected goals, logged at V(2)/V(3), never an error. Each file is read
 // through an os.Root handle opened once, so a name taken from the directory
 // listing can never walk out of the directory.
-func readGoalTopics(
-	ctx context.Context,
-	vaultDir string,
-	goals map[string]struct{},
-) map[string]goalTopic {
-	topics := map[string]goalTopic{}
-	if len(goals) == 0 {
-		return topics
+func (t *taskIndex) readGoalTopics(ctx context.Context, vaultDir string) {
+	t.goalTopics = map[string]goalTopic{}
+	if len(t.goals) == 0 {
+		return
 	}
 	topicsDir := filepath.Join(vaultDir, topicDirName)
 	entries, err := os.ReadDir(topicsDir)
 	if err != nil {
 		glog.V(2).Infof("read vault topics dir %s failed: %v", topicsDir, err)
-		return topics
+		return
 	}
 	root, err := os.OpenRoot(topicsDir)
 	if err != nil {
 		glog.V(2).Infof("open vault topics dir %s failed: %v", topicsDir, err)
-		return topics
+		return
 	}
 	defer root.Close()
 	for _, entry := range entries {
 		select {
 		case <-ctx.Done():
 			glog.V(3).Infof("goal topic index build cancelled")
-			return topics
+			return
 		default:
 		}
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
@@ -1058,19 +1053,18 @@ func readGoalTopics(
 			continue
 		}
 		for _, title := range goalSectionTitles(content) {
-			if _, isGoal := goals[title]; !isGoal {
+			if _, isGoal := t.goals[title]; !isGoal {
 				continue
 			}
-			if _, seen := topics[title]; seen {
+			if _, seen := t.goalTopics[title]; seen {
 				continue
 			}
-			topics[title] = goalTopic{
+			t.goalTopics[title] = goalTopic{
 				name: strings.TrimSuffix(entry.Name(), ".md"),
 				path: filepath.Join(topicDirName, entry.Name()),
 			}
 		}
 	}
-	return topics
 }
 
 // goalSectionTitles returns the titles listed under the `## Goals` heading of a
