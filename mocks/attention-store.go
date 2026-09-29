@@ -45,6 +45,20 @@ type AttentionStore struct {
 		result1 *pkg.Item
 		result2 error
 	}
+	DeliveryStub        func(context.Context, pkg.ItemID) (*pkg.DeliveryReport, error)
+	deliveryMutex       sync.RWMutex
+	deliveryArgsForCall []struct {
+		arg1 context.Context
+		arg2 pkg.ItemID
+	}
+	deliveryReturns struct {
+		result1 *pkg.DeliveryReport
+		result2 error
+	}
+	deliveryReturnsOnCall map[int]struct {
+		result1 *pkg.DeliveryReport
+		result2 error
+	}
 	EscalateStub        func(context.Context, pkg.ItemID, string) (*pkg.Item, error)
 	escalateMutex       sync.RWMutex
 	escalateArgsForCall []struct {
@@ -125,6 +139,22 @@ type AttentionStore struct {
 	}
 	readBoardReturnsOnCall map[int]struct {
 		result1 pkg.Items
+		result2 error
+	}
+	RecordAttemptStub        func(context.Context, pkg.ItemID, string, pkg.DeliveryOutcome) (*pkg.DeliveryAttempt, error)
+	recordAttemptMutex       sync.RWMutex
+	recordAttemptArgsForCall []struct {
+		arg1 context.Context
+		arg2 pkg.ItemID
+		arg3 string
+		arg4 pkg.DeliveryOutcome
+	}
+	recordAttemptReturns struct {
+		result1 *pkg.DeliveryAttempt
+		result2 error
+	}
+	recordAttemptReturnsOnCall map[int]struct {
+		result1 *pkg.DeliveryAttempt
 		result2 error
 	}
 	invocations      map[string][][]interface{}
@@ -265,6 +295,71 @@ func (fake *AttentionStore) CloseReturnsOnCall(i int, result1 *pkg.Item, result2
 	}
 	fake.closeReturnsOnCall[i] = struct {
 		result1 *pkg.Item
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *AttentionStore) Delivery(arg1 context.Context, arg2 pkg.ItemID) (*pkg.DeliveryReport, error) {
+	fake.deliveryMutex.Lock()
+	ret, specificReturn := fake.deliveryReturnsOnCall[len(fake.deliveryArgsForCall)]
+	fake.deliveryArgsForCall = append(fake.deliveryArgsForCall, struct {
+		arg1 context.Context
+		arg2 pkg.ItemID
+	}{arg1, arg2})
+	stub := fake.DeliveryStub
+	fakeReturns := fake.deliveryReturns
+	fake.recordInvocation("Delivery", []interface{}{arg1, arg2})
+	fake.deliveryMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *AttentionStore) DeliveryCallCount() int {
+	fake.deliveryMutex.RLock()
+	defer fake.deliveryMutex.RUnlock()
+	return len(fake.deliveryArgsForCall)
+}
+
+func (fake *AttentionStore) DeliveryCalls(stub func(context.Context, pkg.ItemID) (*pkg.DeliveryReport, error)) {
+	fake.deliveryMutex.Lock()
+	defer fake.deliveryMutex.Unlock()
+	fake.DeliveryStub = stub
+}
+
+func (fake *AttentionStore) DeliveryArgsForCall(i int) (context.Context, pkg.ItemID) {
+	fake.deliveryMutex.RLock()
+	defer fake.deliveryMutex.RUnlock()
+	argsForCall := fake.deliveryArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2
+}
+
+func (fake *AttentionStore) DeliveryReturns(result1 *pkg.DeliveryReport, result2 error) {
+	fake.deliveryMutex.Lock()
+	defer fake.deliveryMutex.Unlock()
+	fake.DeliveryStub = nil
+	fake.deliveryReturns = struct {
+		result1 *pkg.DeliveryReport
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *AttentionStore) DeliveryReturnsOnCall(i int, result1 *pkg.DeliveryReport, result2 error) {
+	fake.deliveryMutex.Lock()
+	defer fake.deliveryMutex.Unlock()
+	fake.DeliveryStub = nil
+	if fake.deliveryReturnsOnCall == nil {
+		fake.deliveryReturnsOnCall = make(map[int]struct {
+			result1 *pkg.DeliveryReport
+			result2 error
+		})
+	}
+	fake.deliveryReturnsOnCall[i] = struct {
+		result1 *pkg.DeliveryReport
 		result2 error
 	}{result1, result2}
 }
@@ -653,6 +748,73 @@ func (fake *AttentionStore) ReadBoardReturnsOnCall(i int, result1 pkg.Items, res
 	}
 	fake.readBoardReturnsOnCall[i] = struct {
 		result1 pkg.Items
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *AttentionStore) RecordAttempt(arg1 context.Context, arg2 pkg.ItemID, arg3 string, arg4 pkg.DeliveryOutcome) (*pkg.DeliveryAttempt, error) {
+	fake.recordAttemptMutex.Lock()
+	ret, specificReturn := fake.recordAttemptReturnsOnCall[len(fake.recordAttemptArgsForCall)]
+	fake.recordAttemptArgsForCall = append(fake.recordAttemptArgsForCall, struct {
+		arg1 context.Context
+		arg2 pkg.ItemID
+		arg3 string
+		arg4 pkg.DeliveryOutcome
+	}{arg1, arg2, arg3, arg4})
+	stub := fake.RecordAttemptStub
+	fakeReturns := fake.recordAttemptReturns
+	fake.recordInvocation("RecordAttempt", []interface{}{arg1, arg2, arg3, arg4})
+	fake.recordAttemptMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2, arg3, arg4)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *AttentionStore) RecordAttemptCallCount() int {
+	fake.recordAttemptMutex.RLock()
+	defer fake.recordAttemptMutex.RUnlock()
+	return len(fake.recordAttemptArgsForCall)
+}
+
+func (fake *AttentionStore) RecordAttemptCalls(stub func(context.Context, pkg.ItemID, string, pkg.DeliveryOutcome) (*pkg.DeliveryAttempt, error)) {
+	fake.recordAttemptMutex.Lock()
+	defer fake.recordAttemptMutex.Unlock()
+	fake.RecordAttemptStub = stub
+}
+
+func (fake *AttentionStore) RecordAttemptArgsForCall(i int) (context.Context, pkg.ItemID, string, pkg.DeliveryOutcome) {
+	fake.recordAttemptMutex.RLock()
+	defer fake.recordAttemptMutex.RUnlock()
+	argsForCall := fake.recordAttemptArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3, argsForCall.arg4
+}
+
+func (fake *AttentionStore) RecordAttemptReturns(result1 *pkg.DeliveryAttempt, result2 error) {
+	fake.recordAttemptMutex.Lock()
+	defer fake.recordAttemptMutex.Unlock()
+	fake.RecordAttemptStub = nil
+	fake.recordAttemptReturns = struct {
+		result1 *pkg.DeliveryAttempt
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *AttentionStore) RecordAttemptReturnsOnCall(i int, result1 *pkg.DeliveryAttempt, result2 error) {
+	fake.recordAttemptMutex.Lock()
+	defer fake.recordAttemptMutex.Unlock()
+	fake.RecordAttemptStub = nil
+	if fake.recordAttemptReturnsOnCall == nil {
+		fake.recordAttemptReturnsOnCall = make(map[int]struct {
+			result1 *pkg.DeliveryAttempt
+			result2 error
+		})
+	}
+	fake.recordAttemptReturnsOnCall[i] = struct {
+		result1 *pkg.DeliveryAttempt
 		result2 error
 	}{result1, result2}
 }
