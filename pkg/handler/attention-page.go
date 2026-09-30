@@ -1319,10 +1319,15 @@ function replayFailure(row) {
     } catch (error) {
       /* ⚠️ No 'attention board: ' prefix: that is reserved for the nine ACTION
          lines, and a spec pins its count at nine. This is stream handling, so
-         it logs unprefixed exactly as the parse guard above it does. */
+         it logs unprefixed exactly as the parse guard above it does.
+         ⚠️ The id is read through a guard, not off 'change' directly. The parse
+         above succeeds for any JSON document, and the literal 'null' is one:
+         'change.type' then throws, this catch runs, and 'change.item_id' would
+         throw AGAIN from inside the error path — escaping source.onmessage
+         anyway, which is the exact failure this catch exists to close. */
       console.error(
         'could not apply stream frame for ' +
-          change.item_id + ' - ' + String(error),
+          (change && change.item_id) + ' - ' + String(error),
         change
       );
     }
