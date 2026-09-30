@@ -1,9 +1,10 @@
 ---
-status: verifying
+status: completed
 approved: "2026-09-30T19:46:58Z"
 generating: "2026-09-30T19:49:17Z"
 prompted: "2026-09-30T20:05:43Z"
 verifying: "2026-09-30T20:26:22Z"
+completed: "2026-09-30T21:00:55Z"
 branch: dark-factory/session-name-on-card
 ---
 
