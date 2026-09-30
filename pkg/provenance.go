@@ -18,10 +18,16 @@ import (
 
 // Provenance is where an item came from, as far as the page can prove it.
 //
-// Every field is a *claim about the event*, not about the store: the store
-// carries none of these (its fifteen-field Item has no host, cwd, tool or
+// Every field but one is a *claim about the event*, not about the store: the
+// store carries none of these (its fifteen-field Item has no host, cwd, tool or
 // pane), so they arrive from the producer's own event log and are missing for
 // any item whose producer wrote no event.
+//
+// ⚠️ The exception is SessionName, which comes from the session registry rather
+// than from the producer's event log. It is read at render time and never
+// stored on the item, so a rename shows up on the next page load; and because
+// the registry is a different source from the event log it resolves on items
+// whose producer wrote no event at all.
 //
 // ⚠️ An unresolved value is the empty string here, never a placeholder. The
 // page renders it as absent. § Silence 7's rule is that an unresolvable value
@@ -72,6 +78,13 @@ type Provenance struct {
 	// TopicPath is the topic file's path relative to the vault root, e.g.
 	// `23 Topics/Attention Board Polish.md`. Empty when nothing resolved.
 	TopicPath string
+	// SessionName is the name the session registry holds for this item's
+	// session, rendered only when the registry records that a human chose it.
+	// Empty when the registry holds no entry for the session, when the entry's
+	// source is `peer` or `derived`, when the entry carries no source at all, or
+	// when the item names no session — an unresolvable name renders absent rather
+	// than as a stand-in, the rule every other field of this struct follows.
+	SessionName string
 }
 
 // Resolved reports whether anything about this item's origin could be told.
@@ -79,21 +92,46 @@ type Provenance struct {
 // no provenance line at all — which is how an item with no provenance source
 // degrades rather than failing.
 //
-// ⚠️ TaskName is such a fact, and it is the one member of this set that comes
-// from neither the event log nor the pane listing: the vault task a session is
-// anchored to says *what* the session was working on, which is as much about
-// where the item came from as the host or the cwd is. A Provenance carrying
-// nothing but a task name is a real shape, not a hypothetical one — it is what
-// an item resolves to when its producer wrote no event log but its session's
-// task file was found — and without this conjunct that row would render no
-// provenance line at all, so the name would be resolved correctly, drawn
-// correctly, and never appear.
+// ⚠️ TaskName is such a fact, and it is one of two members of this set that
+// come from neither the event log nor the pane listing: the vault task a
+// session is anchored to says *what* the session was working on, which is as
+// much about where the item came from as the host or the cwd is. A Provenance
+// carrying nothing but a task name is a real shape, not a hypothetical one — it
+// is what an item resolves to when its producer wrote no event log but its
+// session's task file was found — and without this conjunct that row would
+// render no provenance line at all, so the name would be resolved correctly,
+// drawn correctly, and never appear.
+//
+// ⚠️ SessionName is the second such member, and it comes from the session
+// registry rather than from the vault. A session that resolves a `user` name and
+// nothing else about its origin is the same shape and the same trap: measured on
+// the live board 2026-09-30, 186 of 1,095 rows carried no provenance line at
+// all, and without this conjunct the name would be resolved correctly, drawn
+// correctly, and never appear because the line that would carry it is
+// suppressed.
 func (p Provenance) Resolved() bool {
-	return p.Host != "" || p.Cwd != "" || p.Tool != "" || p.Pane != "" || p.TaskName != ""
+	return p.Host != "" || p.Cwd != "" || p.Tool != "" || p.Pane != "" || p.TaskName != "" ||
+		p.SessionName != ""
 }
 
 // Provenances is the resolver's answer for a whole page, keyed by item id.
 type Provenances map[ItemID]Provenance
+
+// sessionNameSourceUser is the registry's marker for a name a human chose. It is
+// the only source that renders: `peer` means the name was inherited from the
+// spawning parent and `derived` means it was generated, and the spec withholds
+// both. ⚠️ The field's absence is not `user` either — a record carrying no
+// nameSource renders no name, the same as `peer`.
+const sessionNameSourceUser = "user"
+
+// sessionName is what the registry holds for one session: the name, and the
+// source that says who chose it. The two are read together because the gate on
+// the name is the source, and a second scan of the registry to read the source
+// would be a second place the two could disagree.
+type sessionName struct {
+	Name   string
+	Source string
+}
 
 //counterfeiter:generate -o ../mocks/provenance-resolver.go --fake-name ProvenanceResolver . ProvenanceResolver
 
@@ -259,6 +297,17 @@ func (r *provenanceResolver) Resolve(ctx context.Context, items Items) Provenanc
 			provenance.TopicPath = task.TopicPath
 			resolved[item.ItemID] = provenance
 		}
+		// ⚠️ The name is independent of the pane and the task, so this runs on
+		// every item, outside every branch above. The read-modify-write is the
+		// same shape the task block uses: it takes whatever the entry already
+		// holds — possibly the zero Provenance — sets one field and stores it
+		// again, which creates the entry when neither pane branch claimed
+		// anything and preserves a pane or a task an earlier block resolved.
+		if name, ok := r.sessionNameFor(item, names); ok {
+			provenance := resolved[item.ItemID]
+			provenance.SessionName = name
+			resolved[item.ItemID] = provenance
+		}
 	}
 	return resolved
 }
@@ -278,6 +327,29 @@ func (r *provenanceResolver) lookupTask(item Item) (Task, bool) {
 		return Task{}, false
 	}
 	return r.tasks.Lookup(sessionID)
+}
+
+// sessionNameFor returns the registry name to render for this item's session,
+// and reports ok=false when there is none to render.
+//
+// It withholds a name whose source is not `user`, and a record carrying no
+// source at all, exactly as it withholds a session the registry does not hold:
+// § Silence 7's rule is that an unresolvable value must never be presented as
+// resolved, and another session's inherited or generated name is precisely that
+// failure wearing a friendlier face.
+func (r *provenanceResolver) sessionNameFor(
+	item Item,
+	names map[string]sessionName,
+) (string, bool) {
+	sessionID := sessionIDFromItem(item)
+	if sessionID == "" {
+		return "", false
+	}
+	entry, ok := names[sessionID]
+	if !ok || entry.Source != sessionNameSourceUser || entry.Name == "" {
+		return "", false
+	}
+	return entry.Name, true
 }
 
 // LivenessRef markers, and the session id each carries.
@@ -348,12 +420,12 @@ func sessionIDFromItem(item Item) string {
 // fallback exists to serve.
 //
 // ⚠️ This asserts a name-keyed join rather than an ownership proof. The
-// registry records no pane id (sessionRegistryEntry carries SessionID and Name
-// only) and the pane listing carries no session id (Pane carries PaneID and
-// Title only), so the glyph-stripped title-vs-name comparison is the only
-// session→pane join the controller can observe. Two same-named sessions with
-// two panes titled that name are therefore indistinguishable, and no available
-// field separates them.
+// registry records no pane id (sessionRegistryEntry carries SessionID, Name and
+// NameSource, and none of them is a pane) and the pane listing carries no
+// session id (Pane carries PaneID and Title only), so the glyph-stripped
+// title-vs-name comparison is the only session→pane join the controller can
+// observe. Two same-named sessions with two panes titled that name are therefore
+// indistinguishable, and no available field separates them.
 //
 // It reports ok=false — making no pane claim at all — when the session cannot
 // be named. That is deliberate and is the load-bearing safety property here:
@@ -364,7 +436,7 @@ func sessionIDFromItem(item Item) string {
 // unchanged, so the ownership gate is fed rather than bypassed.
 func (r *provenanceResolver) resolveByName(
 	item Item,
-	names map[string]string,
+	names map[string]sessionName,
 	panes map[int]Pane,
 	panesAvailable bool,
 ) (Provenance, bool) {
@@ -379,7 +451,7 @@ func (r *provenanceResolver) resolveByName(
 		// There is nothing to look up, so nothing is claimed.
 		return Provenance{}, false
 	}
-	name := names[sessionID]
+	name := names[sessionID].Name
 	if name == "" {
 		// The session is not in the registry — it exited, or this host has no
 		// registry. Either way there is no name to compare, so no pane can be
@@ -410,7 +482,7 @@ func (r *provenanceResolver) resolveByName(
 // answerable.
 func (r *provenanceResolver) build(
 	record eventRecord,
-	names map[string]string,
+	names map[string]sessionName,
 	panes map[int]Pane,
 	panesAvailable bool,
 ) Provenance {
@@ -431,7 +503,7 @@ func (r *provenanceResolver) build(
 		return provenance
 	}
 	provenance.PaneRecorded = true
-	provenance.Routable = OwnsPane(panes, paneID, names[record.SessionID])
+	provenance.Routable = OwnsPane(panes, paneID, names[record.SessionID].Name)
 	if provenance.Routable {
 		provenance.Pane = strconv.Itoa(paneID)
 	}
@@ -542,7 +614,14 @@ func (r *provenanceResolver) readEvents(
 	return events
 }
 
-// sessionNames reads the session registry as `session id -> the name it holds now`.
+// sessionNames reads the session registry as `session id -> the name it holds
+// now and the source that says who chose it`.
+//
+// The two are returned together rather than in two passes because the gate on
+// the name is the source: a second scan of the registry to read the source
+// would be a second place the two could disagree. The pane-ownership readers use
+// `Name` only — the source gates what is *rendered*, never whether a session
+// owns its pane.
 //
 // The registry is the only source that survives a rename: it rewrites `name`
 // when a session is renamed, while an event record holds only the name as of
@@ -556,8 +635,8 @@ func (r *provenanceResolver) readEvents(
 // "no session owns any pane" would mark every row unroutable the moment the
 // store ran somewhere the registry is absent, and the store's own liveness
 // checker takes the same position for the same reason.
-func (r *provenanceResolver) sessionNames(ctx context.Context) map[string]string {
-	names := map[string]string{}
+func (r *provenanceResolver) sessionNames(ctx context.Context) map[string]sessionName {
+	names := map[string]sessionName{}
 	if r.sessionsDir == "" {
 		return names
 	}
@@ -587,7 +666,10 @@ func (r *provenanceResolver) sessionNames(ctx context.Context) map[string]string
 			continue
 		}
 		if record.SessionID != "" {
-			names[record.SessionID] = record.Name
+			names[record.SessionID] = sessionName{
+				Name:   record.Name,
+				Source: record.NameSource,
+			}
 		}
 	}
 	return names

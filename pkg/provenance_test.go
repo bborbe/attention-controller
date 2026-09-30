@@ -49,6 +49,20 @@ var _ = Describe("ProvenanceResolver", func() {
 		)).To(BeNil())
 	}
 
+	// writeSessionWithSource is writeSession plus the registry's `nameSource`
+	// key. Written as raw JSON text for the same reason writeSession is: the
+	// fixture must be the file shape the registry actually holds, so a field
+	// rename in the resolver's own struct cannot make the test agree with
+	// itself. writeSession is deliberately left sourceless — its records are the
+	// fixture for the "absence is not user" case.
+	writeSessionWithSource := func(pid, sessionID, name, nameSource string) {
+		Expect(os.WriteFile(
+			filepath.Join(sessionsDir, pid+".json"),
+			[]byte(`{"sessionId":"`+sessionID+`","name":"`+name+`","nameSource":"`+nameSource+`"}`),
+			0o600,
+		)).To(BeNil())
+	}
+
 	item := func(itemID, producerID, dedupKey string) pkg.Item {
 		return pkg.Item{
 			ItemID:     pkg.ItemID(itemID),
@@ -560,6 +574,147 @@ var _ = Describe("ProvenanceResolver", func() {
 		// Everything else resolves exactly as it did before the goal rung existed.
 		Expect(provenance.Host).To(Equal("burn"))
 	})
+
+	It("renders the session name the registry records with source user", func() {
+		writeSessionWithSource("1", "session-name-user", "Board Polish Session", "user")
+
+		provenance := resolver.Resolve(ctx, pkg.Items{
+			sessionItem("item-name-user", "producer-name-user", "key-name-user", "session-name-user"),
+		})[pkg.ItemID("item-name-user")]
+
+		Expect(provenance.SessionName).To(Equal("Board Polish Session"))
+	})
+
+	It("withholds the session name the registry records with source derived", func() {
+		writeSessionWithSource("1", "session-name-derived", "Generated Name", "derived")
+
+		provenance := resolver.Resolve(ctx, pkg.Items{
+			sessionItem(
+				"item-name-derived",
+				"producer-name-derived",
+				"key-name-derived",
+				"session-name-derived",
+			),
+		})[pkg.ItemID("item-name-derived")]
+
+		Expect(provenance.SessionName).To(BeEmpty())
+	})
+
+	It("withholds the session name the registry records with source peer", func() {
+		// `peer` means the name was inherited from the spawning parent, so it
+		// belongs to another session and rendering it would attribute this card
+		// to a name the operator never chose.
+		writeSessionWithSource("1", "session-name-peer", "Inherited Name", "peer")
+
+		provenance := resolver.Resolve(ctx, pkg.Items{
+			sessionItem("item-name-peer", "producer-name-peer", "key-name-peer", "session-name-peer"),
+		})[pkg.ItemID("item-name-peer")]
+
+		Expect(provenance.SessionName).To(BeEmpty())
+	})
+
+	It("withholds the session name of a record carrying no nameSource at all", func() {
+		// ⚠️ The absence of the field is not `user`. A record written by
+		// writeSession has no `nameSource` key, which is the shape every record
+		// predating the field has — reading that absence as permission would
+		// render a name whose provenance is simply unknown.
+		writeSession("1", "session-name-absent", "Sourceless Name")
+
+		provenance := resolver.Resolve(ctx, pkg.Items{
+			sessionItem(
+				"item-name-absent",
+				"producer-name-absent",
+				"key-name-absent",
+				"session-name-absent",
+			),
+		})[pkg.ItemID("item-name-absent")]
+
+		Expect(provenance.SessionName).To(BeEmpty())
+	})
+
+	It("withholds the session name of a session the registry does not hold", func() {
+		provenance := resolver.Resolve(ctx, pkg.Items{
+			sessionItem(
+				"item-name-unknown",
+				"producer-name-unknown",
+				"key-name-unknown",
+				"session-name-unknown",
+			),
+		})[pkg.ItemID("item-name-unknown")]
+
+		Expect(provenance.SessionName).To(BeEmpty())
+	})
+
+	It("withholds the session name for an item that names no session", func() {
+		// ProducerID is the bare `session:` marker with no id after it — the one
+		// shape sessionIDFromItem reduces to "". There is no session to look up,
+		// so the registry is not consulted and no name is guessed.
+		writeSessionWithSource("1", "session-name-other", "Some Other Session", "user")
+
+		provenance := resolver.Resolve(ctx, pkg.Items{pkg.Item{
+			ItemID:     pkg.ItemID("item-name-nosession"),
+			ProducerID: pkg.ProducerID("session:"),
+			DedupKey:   pkg.DedupKey("key-name-nosession"),
+		}})[pkg.ItemID("item-name-nosession")]
+
+		Expect(provenance.SessionName).To(BeEmpty())
+	})
+
+	It("withholds every session name when the registry directory does not exist", func() {
+		unavailable := pkg.NewProvenanceResolver(
+			stateDir,
+			filepath.Join(sessionsDir, "does-not-exist"),
+			paneLister,
+			pkg.NewTaskIndex(ctx, GinkgoT().TempDir()),
+		)
+
+		resolved := unavailable.Resolve(ctx, pkg.Items{
+			sessionItem(
+				"item-name-nodir",
+				"producer-name-nodir",
+				"key-name-nodir",
+				"session-name-nodir",
+			),
+		})
+
+		// An unreadable registry degrades to no name, never to an error: the page
+		// still returns 200 with the row it would have rendered anyway.
+		Expect(resolved[pkg.ItemID("item-name-nodir")].SessionName).To(BeEmpty())
+	})
+
+	It("skips a malformed registry record and still resolves the others", func() {
+		Expect(os.WriteFile(
+			filepath.Join(sessionsDir, "broken.json"),
+			[]byte("this is not json"),
+			0o600,
+		)).To(BeNil())
+		writeSessionWithSource("2", "session-name-intact", "Intact Name", "user")
+
+		provenance := resolver.Resolve(ctx, pkg.Items{
+			sessionItem(
+				"item-name-intact",
+				"producer-name-intact",
+				"key-name-intact",
+				"session-name-intact",
+			),
+		})[pkg.ItemID("item-name-intact")]
+
+		Expect(provenance.SessionName).To(Equal("Intact Name"))
+	})
+
+	It("lets the lexically-last record win when two share a session id", func() {
+		// os.ReadDir returns entries sorted by filename and the map write is
+		// unconditional, so `b.json` is read after `a.json` and its name is the
+		// one left in the map.
+		writeSessionWithSource("a", "session-name-dup", "First Name", "user")
+		writeSessionWithSource("b", "session-name-dup", "Second Name", "user")
+
+		provenance := resolver.Resolve(ctx, pkg.Items{
+			sessionItem("item-name-dup", "producer-name-dup", "key-name-dup", "session-name-dup"),
+		})[pkg.ItemID("item-name-dup")]
+
+		Expect(provenance.SessionName).To(Equal("Second Name"))
+	})
 })
 
 // writeVaultFile writes one file under <vault>/<dir>/. Written as raw text
@@ -945,6 +1100,16 @@ var _ = Describe("Provenance.Resolved", func() {
 		// at all, so the name is resolved correctly, drawn correctly, and never
 		// appears.
 		Expect((pkg.Provenance{TaskName: "Fix the board"}).Resolved()).To(BeTrue())
+	})
+
+	It("is true for a provenance carrying only a session name", func() {
+		// The second member of the set that comes from outside the event log,
+		// and the same trap as the task name: a session resolving a `user` name
+		// and nothing else about its origin is what 186 of the live board's
+		// 1,095 rows looked like on 2026-09-30 — and without this conjunct the
+		// name is resolved correctly, drawn correctly, and never appears because
+		// the line that would carry it is suppressed.
+		Expect((pkg.Provenance{SessionName: "Board Polish Session"}).Resolved()).To(BeTrue())
 	})
 
 	It("is false for the zero value", func() {
