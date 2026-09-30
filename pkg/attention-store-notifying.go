@@ -123,3 +123,30 @@ func (n *notifyingAttentionStore) Close(
 	n.notifier.Notify()
 	return item, nil
 }
+
+// RecordAttempt delegates and signals on success. It is a write, so it wakes
+// subscribers exactly as every other write here does — a board rendering a
+// delivery outcome should not have to wait for the next unrelated change to
+// see it.
+func (n *notifyingAttentionStore) RecordAttempt(
+	ctx context.Context,
+	itemID ItemID,
+	carrier string,
+	outcome DeliveryOutcome,
+) (*DeliveryAttempt, error) {
+	attempt, err := n.store.RecordAttempt(ctx, itemID, carrier, outcome)
+	if err != nil {
+		return nil, err
+	}
+	n.notifier.Notify()
+	return attempt, nil
+}
+
+// Delivery delegates and never signals: it is a read, and the record it reads
+// was written by an arm outside this store's write path.
+func (n *notifyingAttentionStore) Delivery(
+	ctx context.Context,
+	itemID ItemID,
+) (*DeliveryReport, error) {
+	return n.store.Delivery(ctx, itemID)
+}

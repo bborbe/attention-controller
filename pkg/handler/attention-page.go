@@ -9,14 +9,12 @@ import (
 	"context"
 	"html/template"
 	"net/http"
-	"net/url"
-	"path/filepath"
-	"strings"
 
 	"github.com/bborbe/errors"
 	libhttp "github.com/bborbe/http"
 
 	"github.com/bborbe/attention-controller/pkg"
+	"github.com/bborbe/attention-controller/pkg/buildidentity"
 )
 
 // attentionPageTemplate is the whole page: one document, inline styles, no
@@ -86,6 +84,17 @@ import (
 // bare `<a>` among the spans would suppress the separator beside it and the line
 // would render as `Fix the boardburn · /w/x`. It is navigation, so it adds no
 // control and changes nothing any card offers.
+//
+// ⚠️ The goal and the topic follow the task as two more spans of the same shape,
+// each gated on its own resolved link: the goal this item's task names first, and
+// the topic page that lists that goal under its `## Goals` heading. They are
+// gated independently rather than by one condition over both, because a task
+// carrying a goal no topic lists is the dominant live case — a single gate would
+// drop that goal link along with the absent topic. An unresolved one renders
+// absent rather than as a placeholder, the rule the rest of the line already
+// follows: a goal no topic lists draws its goal span and no topic span, and a
+// task naming no goal draws neither. They are navigation too, adding no control
+// and changing nothing any card offers.
 const attentionPageTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -438,6 +447,25 @@ li.item {
    an error. */
 .note { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
 .note.failed { color: var(--warn); }
+/* The board's own provenance. It is deliberately not a card and carries no
+   control: it describes the BUILD, not an item, so it sits below the list and
+   outside the row template the stream swaps. The separator rule is what makes
+   it read as a footer rather than as one more thing the store returned.
+   ⚠️ The monospace is on the values, not the line: a sha and a timestamp are
+   read character by character when they are read at all, while the labels
+   around them are prose. */
+.build-identity { color: var(--muted); font-size: 12px; margin: 24px 0 0; padding-top: 12px; border-top: 1px solid var(--border); }
+.build-identity .bi-value { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text); }
+/* An identity the binary does not carry is a fault in the deploy, not a normal
+   state, so it is warned rather than muted, the same treatment the board gives
+   a stream that has stopped tracking the store.
+   ⚠️ The class is "bi-absent", not "bi-unknown", and that is load-bearing rather
+   than a preference. The page carries a standing guard that no provenance field
+   renders an invented placeholder, and it asserts the document contains the
+   literal string "unknown" nowhere. A class name is part of the document, so
+   naming this one "unknown" reddens a guard about provenance from a footer that
+   has nothing to do with it — which is exactly what it did, once. */
+.build-identity .bi-absent { color: var(--warn); }
 </style>
 </head>
 <body>
@@ -471,6 +499,24 @@ li.item {
 {{range .Items}}{{template "attention-row" .}}{{end}}</ul>
 {{else}}<p class="empty">Nothing needs attention.</p>
 {{end}}
+{{/* The board's own provenance: the answer to "which build am I looking at",
+     on the surface a human is already reading. It exists because that question
+     was answered twice in one turn from the file's mtime and the two readings
+     disagreed — a filesystem fact standing in for an artifact identity, which
+     is the wrong answer to it whenever the checkout and the binary have
+     diverged.
+     ⚠️ Every value is the BINARY's own VCS stamp, read at startup. A value read
+     from the repo at render time would answer "which commit is the checkout
+     at" — a different question, and one that agrees with this footer right up
+     until the day the two disagree, which is the day the answer matters.
+     ⚠️ The absent state renders EXPLICITLY, never as a placeholder. A build
+     carrying no stamp must say so: a dev default, an empty span and a
+     plausible-looking sha are all answers a reader would take at face value.
+     The three fields are
+     labelled rather than bare so that version and commit reading identically —
+     true of any build given no release tag — reads as the fact it is, not as a
+     rendering fault. See pkg/buildidentity. */}}
+<footer class="build-identity">{{if .BuildIdentity.Known}}version <span class="bi-value">{{.BuildIdentity.Version}}</span> · commit <span class="bi-value">{{.BuildIdentity.Commit}}</span> · committed <span class="bi-value">{{.BuildIdentity.CommitTime}}</span>{{else}}<span class="bi-absent">No build identity: this binary carries no VCS stamp, so it cannot say which source it was built from.</span>{{end}}</footer>
 <script>
 /* A throw outside the four handled paths — a listener that dereferences a node
    the stream replaced, a promise chain someone adds later without a catch —
@@ -589,6 +635,32 @@ function collectAnswers(form) {
   });
   return entries;
 }
+/* A permission card's Allow / Deny. It writes the verdict as decision, the
+   field the schema gives a permission answer; the row updates over the stream
+   like every other answer, and a failure is shown on the card rather than
+   swallowed. Delegated on the document for the tab strip's reason: a row the
+   stream re-renders keeps working. */
+document.addEventListener('click', function (event) {
+  var button = event.target && event.target.closest ? event.target.closest('button[data-decision]') : null;
+  if (!button) { return; }
+  var row = button.closest('li.item');
+  if (!row) { return; }
+  button.disabled = true;
+  fetch('/api/1.0/attention/' + encodeURIComponent(row.getAttribute('data-item-id')) + '/answer', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ answered_by: 'attention-board', automation: navigator.webdriver, decision: button.getAttribute('data-decision') })
+  }).then(function (response) {
+    if (response.ok) { return; }
+    return response.text().then(function (body) {
+      button.disabled = false;
+      showCloseNote(row, answerFailure(body), true);
+    });
+  }).catch(function (error) {
+    button.disabled = false;
+    showCloseNote(row, 'Could not reach the store: ' + error, true);
+  });
+});
 function skipAll(form) {
   var entries = [];
   form.querySelectorAll('.panel').forEach(function (panel) {
@@ -1296,7 +1368,7 @@ function replayFailure(row) {
 {{else if .NoJump}}<button type="button" class="jump-corner" disabled aria-label="Jump to session" title="Jump to session"><svg class="jump-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.75 3.25h8.5a1.5 1.5 0 0 1 1.5 1.5v6.5a1.5 1.5 0 0 1-1.5 1.5h-8.5a1.5 1.5 0 0 1-1.5-1.5v-6.5a1.5 1.5 0 0 1 1.5-1.5z"/><path d="M5.75 6.5 7.5 8.25 5.75 10"/><path d="M9 10h1.75"/></svg></button>
 {{end}}{{if not .Message}}<div class="payload">{{ .Item.Payload }}</div>
 {{end}}{{if .Item.Context}}<div class="context">{{ .Item.Context }}</div>
-{{end}}{{if .Provenance.Resolved}}<div class="provenance">{{if .TaskURL}}<span class="task"><a href="{{ .TaskURL }}">{{ .Provenance.TaskName }}</a></span>{{end}}{{if .Provenance.Host}}<span class="host">{{ .Provenance.Host }}</span>{{end}}{{if .Provenance.Cwd}}<span class="cwd">{{ .Provenance.Cwd }}</span>{{end}}{{if .Provenance.Tool}}<span class="tool">{{ .Provenance.Tool }}</span>{{end}}{{if .Provenance.Pane}}<span class="pane">pane {{ .Provenance.Pane }}</span>{{else if .Provenance.PaneRecorded}}<span class="unroutable">unroutable</span>{{end}}</div>
+{{end}}{{if .Provenance.Resolved}}<div class="provenance">{{if .TaskURL}}<span class="task"><a href="{{ .TaskURL }}">{{ .Provenance.TaskName }}</a></span>{{end}}{{if .GoalURL}}<span class="goal"><a href="{{ .GoalURL }}">{{ .Provenance.GoalName }}</a></span>{{end}}{{if .TopicURL}}<span class="topic"><a href="{{ .TopicURL }}">{{ .Provenance.TopicName }}</a></span>{{end}}{{if .Provenance.Host}}<span class="host">{{ .Provenance.Host }}</span>{{end}}{{if .Provenance.Cwd}}<span class="cwd">{{ .Provenance.Cwd }}</span>{{end}}{{if .Provenance.Tool}}<span class="tool">{{ .Provenance.Tool }}</span>{{end}}{{if .Provenance.Pane}}<span class="pane">pane {{ .Provenance.Pane }}</span>{{else if .Provenance.PaneRecorded}}<span class="unroutable">unroutable</span>{{end}}</div>
 {{end}}{{if .Dimmed}}<div class="record"><div class="record-question">{{ .Item.Payload }}</div><div class="record-answer">answered: {{ .Record }}</div></div>
 {{else if .Message}}<form class="answer" data-multi="{{ .Tabs }}">
 {{if .Tabs}}<div class="tabs">{{range .Questions}}<button type="button" class="tab{{if .Active}} active{{end}}" data-tab="{{ .Tab }}">{{ .Tab }}</button>{{end}}</div>
@@ -1311,6 +1383,7 @@ function replayFailure(row) {
 {{end}}<div class="actions"><button type="submit" name="kind" value="skip" class="dismiss">✕ Dismiss</button><button type="submit" name="kind" value="send" class="next">✓ Submit answer</button></div>
 </form>
 {{end}}{{if and .Ack (not .Dimmed)}}<div class="actions"><button type="button" class="ack" data-ack>Acknowledge</button></div>
+{{end}}{{if and .Decide (not .Dimmed)}}<div class="actions"><button type="button" class="dismiss" data-decision="deny">✕ Deny</button><button type="button" class="next" data-decision="allow">✓ Allow</button></div>
 {{end}}{{if or .Jump .JumpURL}}<div class="jump">{{if .Jump}}<span>Approve in the session that asked: <code>{{ .Jump }}</code></span>{{end}}</div>
 {{else if .NoJump}}<div class="jump-reason"><span class="no-jump">{{ .NoJump }}</span></div>
 {{end}}<div class="meta">{{ .Item.State }} - {{ .Item.CreatedAt }}</div>
@@ -1380,6 +1453,18 @@ type attentionPageRow struct {
 	// schema forbids. The two classes rendering identically was the accident;
 	// they are separated by this field rather than by a shared absence.
 	Ack bool
+	// Decide reports whether this row renders the Allow / Deny controls. True
+	// for `permission` items only.
+	//
+	// ⚠️ REVERSES the "no control on a permission row" ruling above, on the
+	// operator's decision 2026-09-29: the board is where the operator answers,
+	// and a permission card with no control left every tab-session prompt
+	// unanswerable from it. The click is the operator's own verdict, written as
+	// `decision`; the attention watcher delivers it by pressing that prompt's
+	// own Yes / No row in the session's pane, re-proving the pane is the
+	// session's first. A headless worker's park is settled by the supervisor's
+	// poll from the same `decision`, as before.
+	Decide bool
 	// ⚠️ There was a `Permission bool` here for exactly one release, read by the
 	// jump corner to except permission rows from the disabled control. It was
 	// removed 2026-09-27 on the operator's own read of the live board: with the
@@ -1462,8 +1547,33 @@ type attentionPageRow struct {
 	// that asserts on the row field still passes. `obsidian://` is exactly the
 	// scheme that filter refuses, so the conversion is what makes the href emit at
 	// all — and its cost is that the value is trusted unescaped, which is why
-	// taskURL escapes both halves before building it.
+	// vaultFileURL escapes both halves before building it.
 	TaskURL template.URL
+	// GoalURL is the link that opens the goal this item's task names first in its
+	// `goals:` list, drawn beside the task span. Empty when no goal resolved — an
+	// unresolvable value renders absent rather than as a stand-in, the same rule
+	// TaskURL follows.
+	//
+	// ⚠️ It is a template.URL rather than a string for the same load-bearing
+	// reason TaskURL is: html/template's URL filter admits only `http`, `https`,
+	// `mailto` and relative URLs, so a plain-string `href="{{ .GoalURL }}"` renders
+	// `href="#ZgotmplZ"` — the link dead in the browser while every test that
+	// asserts on the row field still passes. `obsidian://` is exactly the scheme
+	// that filter refuses, so the conversion is what makes the href emit at all.
+	GoalURL template.URL
+	// TopicURL is the link that opens the topic page that lists this item's goal
+	// under its `## Goals` heading, drawn beside the goal span. Empty when no topic
+	// lists that goal, which is the common case — an unresolvable value renders
+	// absent rather than as a stand-in, the same rule TaskURL follows.
+	//
+	// ⚠️ It is a template.URL rather than a string for the same load-bearing
+	// reason TaskURL is: html/template's URL filter admits only `http`, `https`,
+	// `mailto` and relative URLs, so a plain-string `href="{{ .TopicURL }}"`
+	// renders `href="#ZgotmplZ"` — the link dead in the browser while every test
+	// that asserts on the row field still passes. `obsidian://` is exactly the
+	// scheme that filter refuses, so the conversion is what makes the href emit at
+	// all.
+	TopicURL template.URL
 }
 
 // attentionPageData is what the template renders: the items the store's read
@@ -1485,353 +1595,16 @@ type attentionPageData struct {
 	// fresh load of the board shows what is left rather than mixing the dimmed
 	// answered records in with the cards that still need the operator.
 	HideAnswered bool
-}
-
-// affordance derives the controls a card carries from the item's answer
-// mechanism. It is the one place that decision is made.
-//
-// ⚠️ It was two comparisons over the same field, and that shape read as a single
-// derivation without being one: nothing in `Message: mechanism == message, Ack:
-// mechanism == ack` states that a mechanism holds at most one affordance, so
-// the two predicates were free to disagree and a mechanism matching neither fell
-// through to whatever the template's `else` branch happened to be. That
-// fall-through was not hypothetical — it is how a report-only `ack` card once
-// rendered nothing at all, and how an `ack` card inherited a `permission` card's
-// shape by accident. A switch over the one field makes the exclusivity
-// structural: one mechanism, one arm, one answer.
-//
-// The `default` is deliberate rather than defensive. A mechanism the board has
-// not been taught renders NO control rather than inheriting one: an inherited
-// control offers the operator a move the mechanism does not support, and it does
-// so silently, where rendering nothing is visible. `permission` reaches this arm
-// today — a gate is approve-shaped and only the operator may answer it in the
-// session that raised it, so a control there would be the permission laundering
-// the schema forbids.
-func affordance(mechanism pkg.AnswerMechanism) (message bool, ack bool) {
-	switch mechanism {
-	case pkg.MessageAnswerMechanism:
-		return true, false
-	case pkg.AckAnswerMechanism:
-		return false, true
-	default:
-		return false, false
-	}
-}
-
-// newAttentionPageRow pairs an item with what could be resolved about its origin
-// and precomputes the question units its card renders.
-//
-// vaultName is the vault's own name, derived by the caller as
-// `filepath.Base(vaultDir)`. ⚠️ It is passed in rather than derived here, and
-// the reason is the stream: both callers of this function — the page handler and
-// the SSE stream — must pass the *same* name, because a row arriving over the
-// live channel must not differ from the same row on a fresh load, and that is
-// the invariant the stream handler exists to preserve. Deriving it per row would
-// also re-derive a per-page constant on every item. It is empty when no vault is
-// configured, which renders no task link at all.
-//
-// The question units are built only for a `message` item. A `permission` item
-// renders no card, so building units it would never render would be a value
-// carried for nothing — and, worse, one a later change could render by
-// accident.
-func newAttentionPageRow(
-	item pkg.Item,
-	provenance pkg.Provenance,
-	speak bool,
-	vaultName string,
-) attentionPageRow {
-	row := attentionPageRow{
-		Item:       item,
-		Provenance: provenance,
-		Jump:       jumpCommand(item, provenance),
-		JumpURL:    jumpURL(item, provenance),
-		NoJump:     noJumpReason(item, provenance),
-		Speak:      speak,
-		TaskURL:    taskURL(vaultName, provenance.TaskPath),
-	}
-	row.Message, row.Ack = affordance(item.AnswerMechanism)
-	if item.State == pkg.AnsweredState {
-		// The board renders the record of what was answered so the operator can
-		// see the answer standing in their name. `answered_by` is a caller
-		// declaration, so a card that vanished on answering would destroy that
-		// evidence at exactly the moment it could be noticed.
-		row.Dimmed = true
-		row.Record = recordAnswer(item)
-	}
-	if row.Message {
-		row.Questions = pageQuestions(item)
-		row.Tabs = len(item.Questions) > 0
-	}
-	return row
-}
-
-// recordAnswer renders the answer the store recorded, as the dimmed card shows
-// it. It reads the field the schema names for each mechanism rather than
-// guessing at one: `decision` carries a `permission` item's verdict, `answers`
-// carries a multi-question item's entry per tab, and `answer` carries a
-// single-question `message` item's content. ⚠️ A `permission` item never
-// carries `answer`, so a renderer reading that field for every mechanism would
-// show every permission record blank.
-func recordAnswer(item pkg.Item) string {
-	switch {
-	case item.AnswerMechanism == pkg.PermissionAnswerMechanism:
-		if item.Decision == "" {
-			return "no decision recorded"
-		}
-		return "decision: " + string(item.Decision)
-	case len(item.Answers) > 0:
-		parts := make([]string, 0, len(item.Answers))
-		for _, answer := range item.Answers {
-			parts = append(parts, answer.Question+": "+answerText(answer.Answer))
-		}
-		return strings.Join(parts, " · ")
-	case item.Answer != nil:
-		return answerText(*item.Answer)
-	default:
-		// An item answered before `answer` existed carries none — the schema
-		// adds no write-time rejection, so it reads as an item with no recorded
-		// content rather than as an error.
-		return "no answer recorded"
-	}
-}
-
-// answerText renders one answer's content from its kind. `skip` is the case
-// that needs saying out loud: it carries neither value nor values, so a card
-// rendering the empty string would be indistinguishable from one whose answer
-// failed to load.
-func answerText(answer pkg.Answer) string {
-	switch answer.Kind {
-	case pkg.SkipAnswerKind:
-		return "skipped"
-	case pkg.OptionAnswerKind, pkg.TextAnswerKind:
-		if len(answer.Values) > 0 {
-			return strings.Join(answer.Values, ", ")
-		}
-		return answer.Value
-	default:
-		return "no answer recorded"
-	}
-}
-
-// pageQuestions builds the question units a row's card renders. An item carrying
-// `questions` renders one unit per question in the declared order; a
-// single-question item renders exactly one, built from the item's own Payload,
-// Options and AnswerCardinality — which is what makes the template's panel loop
-// the only rendering path rather than one of two.
-//
-// The first unit is the active one, so the strip and the panels agree on which
-// question is open before any click.
-func pageQuestions(item pkg.Item) []attentionPageQuestion {
-	if len(item.Questions) == 0 {
-		return []attentionPageQuestion{
-			{
-				Payload: item.Payload,
-				Hint:    cardinalityHint(item.AnswerCardinality, len(item.Options)),
-				Multi:   item.AnswerCardinality == pkg.MultipleAnswerCardinality,
-				Active:  true,
-				Name:    optionName(item.ItemID, ""),
-				Options: item.Options,
-			},
-		}
-	}
-	questions := make([]attentionPageQuestion, 0, len(item.Questions))
-	for index, question := range item.Questions {
-		questions = append(questions, attentionPageQuestion{
-			Tab:     question.Tab,
-			Payload: question.Payload,
-			Hint:    cardinalityHint(question.Cardinality, len(question.Options)),
-			Multi:   question.Cardinality == pkg.MultipleAnswerCardinality,
-			Active:  index == 0,
-			Name:    optionName(item.ItemID, question.Tab),
-			Options: question.Options,
-		})
-	}
-	return questions
-}
-
-// cardinalityHint renders the parenthetical that rides the question line, in the
-// producer's own wording rather than as a machine value.
-//
-// An absent cardinality reads as single, exactly as the schema says it does, so
-// a pre-change item renders the single-pick hint rather than none — the control
-// it gets is a radio button, and a hint agreeing with the control is what makes
-// the card self-explaining. A question offering no options renders no hint at
-// all: a statement about picks would describe a choice the question does not
-// offer.
-func cardinalityHint(cardinality pkg.AnswerCardinality, optionCount int) string {
-	if optionCount == 0 {
-		return ""
-	}
-	if cardinality == pkg.MultipleAnswerCardinality {
-		return "pick any number"
-	}
-	return "pick one"
-}
-
-// optionName is the input group name for one question's controls. It carries the
-// item id as well as the tab so two cards on one page cannot share a radio
-// group: a shared name would let a pick on one card clear another's.
-func optionName(itemID pkg.ItemID, tab string) string {
-	return "option-" + itemID.String() + "-" + tab
-}
-
-// vaultNameFromDir returns the vault's own name — the name an Obsidian URL
-// addresses — from the configured vault directory.
-//
-// It exists so the page handler and the SSE stream derive that name through one
-// function rather than two copies of the same expression: a row arriving over
-// the live channel must render identically to the same row on a fresh load, and
-// a name derived differently on either surface would put a different link on the
-// same card depending on how it arrived.
-//
-// Empty in, empty out. ⚠️ The guard is load-bearing rather than defensive:
-// filepath.Base("") is ".", so a host with no configured vault would otherwise
-// name a vault called `.` and emit `obsidian://open?vault=.` links.
-func vaultNameFromDir(vaultDir string) string {
-	if vaultDir == "" {
-		return ""
-	}
-	return filepath.Base(vaultDir)
-}
-
-// obsidianQueryValue escapes one half of an `obsidian://open` query value.
-//
-// ⚠️ It is url.QueryEscape with the `+` put back to `%20`, which is the vault's
-// own documented convention rather than a choice made here — see [[Deep Link URL
-// Schemes]] § "`+` is inert", measured against a live Obsidian on 2026-09-18:
-// Obsidian does not decode `+`, so a link carrying one opens nothing while
-// looking perfectly correct. The swap is safe because QueryEscape renders a
-// literal `+` as `%2B`, so no genuine `+` can be corrupted by it.
-//
-// ⚠️ Not url.PathEscape, the tempting choice for a value that reads as a path.
-// PathEscape leaves `&`, `=` and `+` unescaped — they are legal *inside a path
-// segment* — so a task file named `R&D notes.md` would render
-// `…&file=25%20Tasks%2FR&D%20notes`: Obsidian reads that as a `file` of
-// `25 Tasks/R` plus a stray `D notes` parameter, and the link opens the wrong
-// file. QueryEscape escapes all three (`&`→`%26`, `=`→`%3D`, `+`→`%2B`) and
-// still renders a slash as `%2F`.
-func obsidianQueryValue(value string) string {
-	return strings.ReplaceAll(url.QueryEscape(value), "+", "%20")
-}
-
-// taskURL builds the link that opens an item's vault task in Obsidian, from the
-// vault's own name and the task file's path relative to the vault root.
-//
-// The form is `obsidian://open?vault=<vault>&file=<path>`, with both values
-// escaped so a space becomes `%20` and a slash `%2F`, and a trailing `.md`
-// dropped if present. The extension is stripped idempotently — strings.TrimSuffix
-// rather than an assumed suffix — because the index's own path field is not
-// specified to carry one, and a strip that assumed it would either double-handle
-// the path or mangle a task whose name genuinely ends in those characters.
-//
-// Both halves go through obsidianQueryValue, the vault name as well as the path:
-// the name is only the configured directory's base name, and nothing guarantees
-// it is free of a space.
-//
-// Empty when either half is empty, so an item whose session anchors no task, and
-// a host with no configured vault, each render no link rather than a dangling
-// one.
-func taskURL(vaultName string, taskPath string) template.URL {
-	if vaultName == "" || taskPath == "" {
-		return ""
-	}
-	link := "obsidian://open?vault=" + obsidianQueryValue(vaultName) +
-		"&file=" + obsidianQueryValue(strings.TrimSuffix(taskPath, ".md"))
-	// #nosec G203 -- the reported risk is "use of unescaped data in an HTML
-	// template", and the conversion is the point: html/template's URL filter
-	// admits only `http`, `https`, `mailto` and relative URLs, so an
-	// `obsidian://` href is representable no other way — without this the
-	// template renders `href="#ZgotmplZ"` and the link is dead. The value is
-	// built two lines above from the operator-configured vault name (the base
-	// name of the configured vault directory) and a filesystem-derived task
-	// path, never from producer input, and both halves are escaped with
-	// obsidianQueryValue before they are concatenated. This records the
-	// provenance; it does not waive a risk.
-	return template.URL(link)
-}
-
-// jumpCommand renders the copyable half of the handover for an item the board
-// must not answer.
-//
-// ⚠️ This was the *whole* handover, and a command only, on the reasoning that a
-// browser cannot activate a WezTerm tab. That premise is false against the
-// fleet-jump server, which activates a pane from a plain HTTP GET, so the row
-// now carries jumpURL's button as well. The command stays because an operator
-// may still want to paste it — it is added to, never replaced.
-//
-// An item whose pane did not resolve yields no command, so its row renders
-// exactly as it did before: an unresolvable value renders absent rather than as
-// a stand-in, which is what the schema's silence 7 forbids.
-//
-// It is empty for a `message` item, which renders the button without the
-// command — the label above it is false for an item the board may answer in
-// place.
-func jumpCommand(item pkg.Item, provenance pkg.Provenance) string {
-	if item.AnswerMechanism == pkg.MessageAnswerMechanism {
-		return ""
-	}
-	if provenance.Pane == "" {
-		return ""
-	}
-	return "/supervisor:jump " + provenance.Pane
-}
-
-// jumpURL renders the clickable half of the handover: a path on this board, not
-// the fleet-jump server's URL.
-//
-// The fleet-jump URL carries the shared token as a query parameter, so putting
-// it in the page would publish the token in the served document on every load.
-// This path is called in the background and the board performs the jump
-// in-process, which keeps the browser on the board, since a real link would
-// navigate it away.
-//
-// Empty when no pane resolved — the same absence rule as jumpCommand, so a row
-// with no resolvable pane renders no button and no placeholder.
-//
-// ⚠️ The `enabled` parameter that used to gate this on a readable jump token is
-// gone, removed by the jump fold: the endpoint this path points at no longer
-// reads a token, so gating on one would hide a control that works. The pane is
-// now the only condition, which is also why a row's button and its explanation
-// cannot disagree about why it is missing.
-func jumpURL(item pkg.Item, provenance pkg.Provenance) string {
-	if provenance.Pane == "" {
-		return ""
-	}
-	return "/jump/" + string(item.ItemID)
-}
-
-// noJumpReason explains, in the row's own words, why it carries no jump control.
-//
-// Empty whenever the row carries one. ⚠️ It asks jumpCommand and jumpURL
-// themselves rather than restating their guards, so the explanation cannot drift
-// from the control it explains: there is one decision, read twice.
-//
-// ⚠️ Three sentences, not one per code path, and the coarseness is read rather
-// than chosen. The reasons a pane is absent subdivide by *writer* — no state dir,
-// an unopenable one, a missing producer log, a log with no line for the key — but
-// readEvents collapses every one of its own failures into the same empty map and
-// Resolve cannot tell "no entry" from "no log", so the board has no fact to
-// separate them by. A finer split would have to be invented here rather than
-// read from the resolver, and it would name host-internal paths on a card the
-// operator reads. See [[A Card With No Jump Target Explains Why Instead of
-// Rendering Nothing]] § Results.
-// ⚠️ The "jump is unavailable on this host" sentence is gone with the token
-// gate that produced it. It explained a row that HAD a resolvable pane yet
-// carried no control — the state that existed only while the button was gated
-// on a readable token. With the gate removed that state is unreachable, so the
-// sentence is deleted rather than left as a branch nothing can take. A case
-// that cannot occur is worse than a missing one: it reads as coverage.
-func noJumpReason(item pkg.Item, provenance pkg.Provenance) string {
-	if jumpCommand(item, provenance) != "" || jumpURL(item, provenance) != "" {
-		return ""
-	}
-	if provenance.PaneRecorded {
-		// A pane was recorded and does not resolve to this session: the case
-		// silence 7 marks `unroutable`. The provenance line still carries that
-		// marker; this sentence is additive rather than a replacement for it.
-		return "The pane recorded for this item does not resolve to this session."
-	}
-	return "No pane was recorded for this item, so there is no session to jump to."
+	// BuildIdentity is what the running binary can say about the source it was
+	// built from, rendered in the page's footer.
+	//
+	// It is a rendering input like Speak, and it is read from the BINARY rather
+	// than from the repo on purpose: the footer answers "which build is
+	// running", and a value read from the checkout answers a different question
+	// that agrees with this one only while the two are in step. A build that
+	// carries no identity renders an explicit line saying so — see
+	// buildidentity.Identity.Known.
+	BuildIdentity buildidentity.Identity
 }
 
 // boardHideParam is the query parameter carrying the board's view state, and
@@ -1911,11 +1684,17 @@ const (
 // so a host with no vault renders no task link. ⚠️ The guard on the empty
 // directory is load-bearing: filepath.Base("") is "." rather than "", so
 // without it an unconfigured vault would name a vault called `.`.
+// buildIdentity is the running binary's own provenance, rendered in the page's
+// footer. It is a parameter rather than a call to buildidentity.Read inside the
+// handler so the handler stays a pure renderer: the value is read once at
+// startup, from the binary, and a handler that re-read it per request would be
+// re-deriving a constant while making the page's footer untestable.
 func NewAttentionPageHandler(
 	store pkg.AttentionStore,
 	provenance pkg.ProvenanceResolver,
 	speakEnabled bool,
 	vaultDir string,
+	buildIdentity buildidentity.Identity,
 ) http.Handler {
 	// Parsed once at construction rather than per request: the template is a
 	// compile-time constant, so a parse failure is a programming error, and
@@ -1976,9 +1755,10 @@ func NewAttentionPageHandler(
 				if err := page.Execute(
 					&body,
 					attentionPageData{
-						Items:        rows,
-						Speak:        speakEnabled,
-						HideAnswered: hideAnswered,
+						Items:         rows,
+						Speak:         speakEnabled,
+						HideAnswered:  hideAnswered,
+						BuildIdentity: buildIdentity,
 					},
 				); err != nil {
 					return errors.Wrap(ctx, err, "render page failed")

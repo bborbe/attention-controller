@@ -26,6 +26,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/bborbe/attention-controller/pkg"
+	"github.com/bborbe/attention-controller/pkg/buildidentity"
 	"github.com/bborbe/attention-controller/pkg/factory"
 )
 
@@ -280,6 +281,21 @@ func (a *application) createHTTPServer(
 		jumpTokens := a.createJumpTokenReader(ctx)
 		activator := a.createPaneActivator(panes)
 
+		// Read once, from the binary's own build info, and handed to the page so
+		// its footer can answer "which build am I looking at" from the surface the
+		// operator is already reading.
+		//
+		// ⚠️ Read HERE rather than inside the handler, for the same reason the
+		// store is built once in Run: it is a constant of the process, and a
+		// handler that re-read it per request would re-derive a constant while
+		// making the footer untestable.
+		//
+		// ⚠️ Deliberately NOT read from the repo. A repo read at render time
+		// answers "which commit is the checkout at" — a different question, and
+		// one that agrees with the binary right up until the two diverge, which is
+		// exactly when the footer has to be right.
+		buildIdentity := buildidentity.Read()
+
 		router := mux.NewRouter()
 		registerAdminRoutes(ctx, router, db, cancel, sentryClient)
 		// The Jump button's target: a path on this board, answered in-process.
@@ -296,7 +312,7 @@ func (a *application) createHTTPServer(
 		router.Path("/").
 			Methods(http.MethodGet, http.MethodHead).
 			Handler(factory.CreateAttentionPageHandler(
-				store, provenance, a.TTSURL != "", a.VaultDir))
+				store, provenance, a.TTSURL != "", a.VaultDir, buildIdentity))
 
 		// The board's live channel. It is registered here, ahead of the
 		// `/api/1.0/attention/{itemID}` route below, because gorilla mux matches
@@ -313,53 +329,7 @@ func (a *application) createHTTPServer(
 			))
 
 		// Business routes live under /api/1.0/, never in the admin block above.
-		// The push entry point takes a producer's declaration; nothing scrapes
-		// a pane, a hook event or a rendered closer line.
-		router.Path("/api/1.0/attention").
-			Methods(http.MethodPost).
-			Handler(factory.CreateAttentionPushHandler(store))
-		router.Path("/api/1.0/attention").
-			Methods(http.MethodGet).
-			Handler(factory.CreateAttentionReadHandler(store))
-		// Every item regardless of state, for counting what resolved and what
-		// escalated. Registered before /{itemID} so "history" is never read as
-		// an item id.
-		router.Path("/api/1.0/attention/history").
-			Methods(http.MethodGet).
-			Handler(factory.CreateAttentionHistoryHandler(store))
-		router.Path("/api/1.0/attention/{itemID}/answer").
-			Methods(http.MethodPost).
-			Handler(factory.CreateAttentionAnswerHandler(store))
-		// Escalation is not a transition: the item stays open, and this route
-		// records which session is carrying it. First to stamp wins; the loser
-		// reads the item back rather than stamping over it.
-		router.Path("/api/1.0/attention/{itemID}/escalate").
-			Methods(http.MethodPost).
-			Handler(factory.CreateAttentionEscalateHandler(store))
-		router.Path("/api/1.0/attention/{itemID}/close").
-			Methods(http.MethodPost).
-			Handler(factory.CreateAttentionCloseHandler(store))
-		// Read-aloud is routed only when a tts server is configured, and the page
-		// renders its control on the same condition. A control that renders while
-		// its endpoint is unrouted is a value presented as working that is not.
-		if a.TTSURL != "" {
-			router.Path("/api/1.0/attention/{itemID}/speak").
-				Methods(http.MethodPost).
-				Handler(factory.CreateAttentionSpeakHandler(store, a.TTSURL))
-			// The stop half of the same control, on the same condition: a
-			// toggle whose stop endpoint is unrouted is a control that looks
-			// like it can be stopped and cannot.
-			router.Path("/api/1.0/attention/{itemID}/cancel").
-				Methods(http.MethodPost).
-				Handler(factory.CreateAttentionCancelHandler(a.TTSURL))
-		}
-		// Single-item read, distinct from the render path above: an arm reads
-		// open items, but a caller checking a transition's outcome (or the
-		// loser of an answer or escalation race reading back) needs the item
-		// whatever state it is in.
-		router.Path("/api/1.0/attention/{itemID}").
-			Methods(http.MethodGet).
-			Handler(factory.CreateAttentionGetHandler(store))
+		registerAttentionAPIRoutes(router, store, a.TTSURL)
 
 		// ⚠️ Two listeners, one process — this is the fold's whole claim, and it
 		// is why SC1's evidence is `lsof` naming ONE pid on both ports. Both run
@@ -377,6 +347,79 @@ func (a *application) createHTTPServer(
 
 		return runner.Run(ctx)
 	}
+}
+
+// registerAttentionAPIRoutes wires the JSON business endpoints under
+// /api/1.0/attention. The push entry point takes a producer's declaration;
+// nothing scrapes a pane, a hook event or a rendered closer line.
+//
+// They are registered in one place because gorilla mux matches in registration
+// order and the literal paths must precede the /{itemID} routes: registered
+// after them, `/api/1.0/attention/history` would resolve as an item whose id is
+// literally `history`. Keeping the block whole is what makes that ordering
+// visible; scattering the calls across the caller is how it gets broken
+// silently, and the failure is a 404 on a working endpoint rather than a
+// compile error.
+func registerAttentionAPIRoutes(
+	router *mux.Router,
+	store pkg.AttentionStore,
+	ttsURL string,
+) {
+	router.Path("/api/1.0/attention").
+		Methods(http.MethodPost).
+		Handler(factory.CreateAttentionPushHandler(store))
+	router.Path("/api/1.0/attention").
+		Methods(http.MethodGet).
+		Handler(factory.CreateAttentionReadHandler(store))
+	// Every item regardless of state, for counting what resolved and what
+	// escalated. Registered before /{itemID} so "history" is never read as
+	// an item id.
+	router.Path("/api/1.0/attention/history").
+		Methods(http.MethodGet).
+		Handler(factory.CreateAttentionHistoryHandler(store))
+	router.Path("/api/1.0/attention/{itemID}/answer").
+		Methods(http.MethodPost).
+		Handler(factory.CreateAttentionAnswerHandler(store))
+	// Escalation is not a transition: the item stays open, and this route
+	// records which session is carrying it. First to stamp wins; the loser
+	// reads the item back rather than stamping over it.
+	router.Path("/api/1.0/attention/{itemID}/escalate").
+		Methods(http.MethodPost).
+		Handler(factory.CreateAttentionEscalateHandler(store))
+	router.Path("/api/1.0/attention/{itemID}/close").
+		Methods(http.MethodPost).
+		Handler(factory.CreateAttentionCloseHandler(store))
+	// The delivery trail. The GET is the one query that answers "did this
+	// item's answer reach the session?"; the POST is called by the arm that
+	// ATTEMPTS delivery — never by the arm that records the answer, which
+	// resolves a target and delivers nothing.
+	router.Path("/api/1.0/attention/{itemID}/attempt").
+		Methods(http.MethodGet).
+		Handler(factory.CreateAttentionAttemptGetHandler(store))
+	router.Path("/api/1.0/attention/{itemID}/attempt").
+		Methods(http.MethodPost).
+		Handler(factory.CreateAttentionAttemptRecordHandler(store))
+	// Read-aloud is routed only when a tts server is configured, and the page
+	// renders its control on the same condition. A control that renders while
+	// its endpoint is unrouted is a value presented as working that is not.
+	if ttsURL != "" {
+		router.Path("/api/1.0/attention/{itemID}/speak").
+			Methods(http.MethodPost).
+			Handler(factory.CreateAttentionSpeakHandler(store, ttsURL))
+		// The stop half of the same control, on the same condition: a
+		// toggle whose stop endpoint is unrouted is a control that looks
+		// like it can be stopped and cannot.
+		router.Path("/api/1.0/attention/{itemID}/cancel").
+			Methods(http.MethodPost).
+			Handler(factory.CreateAttentionCancelHandler(ttsURL))
+	}
+	// Single-item read, distinct from the render path above: an arm reads
+	// open items, but a caller checking a transition's outcome (or the
+	// loser of an answer or escalation race reading back) needs the item
+	// whatever state it is in.
+	router.Path("/api/1.0/attention/{itemID}").
+		Methods(http.MethodGet).
+		Handler(factory.CreateAttentionGetHandler(store))
 }
 
 // registerAdminRoutes wires the board router's admin and diagnostics endpoints.
