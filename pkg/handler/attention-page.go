@@ -1205,21 +1205,30 @@ function replayFailure(row) {
     empty.textContent = 'Nothing needs attention.';
     list.parentNode.replaceChild(empty, list);
   }
-  /* A parked row is not in the document — it exists only as the markup the
-     filter stored — so its note cannot be replayed into a live node. The
-     markup is parsed into a detached node, replayed through the same helper a
-     visible row's note goes through, and read back, so a hidden row's failure
-     survives an update exactly as a visible one's does. */
-  function replayedHTML(html, itemID) {
-    if (!failures[itemID]) { return html; }
+  /* A row's update is PREPARED on a detached node and only then committed.
+     ⚠️ Load bearing: the live path used to swap first and repair after, so a
+     throw between the two left the row swapped with its state missing — worst
+     of all the filter, which left a card that became answered standing OPEN on
+     a board whose own switch said it was hidden. Preparing first makes the swap
+     the LAST fallible step, and is also how a PARKED row's note is replayed. */
+  function preparedHTML(html, itemID) {
+    if (!failures[itemID] && !speaking[itemID]) { return html; }
     var detached = document.createElement('div');
     detached.innerHTML = html;
     var row = detached.firstElementChild;
     if (!row) { return html; }
-    replayFailure(row);
+    if (failures[itemID]) { replayFailure(row); }
+    if (speaking[itemID]) { speakButtonState(speakButtonIn(row), true); }
     return row.outerHTML;
   }
+  /* The read-aloud control within a row not yet in the document — speakControl
+     searches the document, which an uncommitted node is not part of. */
+  function speakButtonIn(row) {
+    return row ? row.querySelector('button[data-speak]') : null;
+  }
   function upsertRow(itemID, html) {
+    /* Prepared first: a throw in here leaves the board untouched. */
+    var prepared = preparedHTML(html, itemID);
     var hidden = -1;
     for (var i = 0; i < parked.length; i++) {
       if (parked[i].id === itemID) { hidden = i; }
@@ -1233,34 +1242,19 @@ function replayFailure(row) {
          position — the exact failure the anchor exists to prevent. The row
          stays hidden because a parked row is answered, and an answered item
          never returns to open (§ Lifecycle), so its update is dimmed too. */
-      parked[hidden].html = replayedHTML(html, itemID);
+      parked[hidden].html = prepared;
       return;
     }
     var row = findRow(itemID);
     if (row) {
-      row.outerHTML = html;
+      row.outerHTML = prepared;
     } else {
       var list = ensureList();
       if (!list) { return; }
-      list.insertAdjacentHTML('beforeend', html);
+      list.insertAdjacentHTML('beforeend', prepared);
     }
-    /* The row's node was just replaced, so the failure note rendered into it
-       went with it. Re-rendered from the map through the helper that rendered
-       it, for the reason the speaking repaint below is re-applied from its own
-       map: the map lives in this page, and the server keeps no record of what
-       this page was shown. A row with no note owed to it has nothing to
-       replay, and replayFailure tolerates that. */
-    replayFailure(findRow(itemID));
-    /* The row's node was just replaced, so the toggle's repainted state went
-       with it. Re-applied from the map rather than re-rendered by the server,
-       because the map lives in this page: the server keeps no record of what
-       this page is playing. A row with no control — a dimmed record card —
-       has nothing to mark, and speakButtonState tolerates that. */
-    if (speaking[itemID]) {
-      speakButtonState(speakControl(itemID), true);
-    }
-    /* Applied after the swap, so a card that becomes answered while the
-       filter is on is parked rather than left standing as an open card. */
+    /* The row is complete as committed, so nothing is re-applied to it here.
+       The filter still runs after: it is a board-level view over every row. */
     applyFilter();
   }
   /* The filter is wired above this guard rather than below it. It is plain DOM
@@ -1307,16 +1301,36 @@ function replayFailure(row) {
       console.error('unreadable stream frame: ' + String(error), event.data);
       return;
     }
-    if (change.type === 'remove') {
-      /* Dropped from the parked set as well as from the board: a row the
-         store removed must not come back when the filter is switched off. */
-      forget(change.item_id);
-      var row = findRow(change.item_id);
-      if (row) { row.remove(); }
-      collapseIfEmpty();
-      return;
+    /* ⚠️ The whole application is guarded, not only the parse above it: a throw
+       in the swap, the note replay, the repaint, the filter or the remove path
+       used to escape as an uncaught error. It carries the item id, because a
+       row that failed to update renders like a row that needed none. */
+    try {
+      if (change.type === 'remove') {
+        /* Dropped from the parked set as well as from the board: a row the
+           store removed must not come back when the filter is switched off. */
+        forget(change.item_id);
+        var row = findRow(change.item_id);
+        if (row) { row.remove(); }
+        collapseIfEmpty();
+        return;
+      }
+      upsertRow(change.item_id, change.html);
+    } catch (error) {
+      /* ⚠️ No 'attention board: ' prefix: that is reserved for the nine ACTION
+         lines, and a spec pins its count at nine. This is stream handling, so
+         it logs unprefixed exactly as the parse guard above it does.
+         ⚠️ The id is read through a guard, not off 'change' directly. The parse
+         above succeeds for any JSON document, and the literal 'null' is one:
+         'change.type' then throws, this catch runs, and 'change.item_id' would
+         throw AGAIN from inside the error path — escaping source.onmessage
+         anyway, which is the exact failure this catch exists to close. */
+      console.error(
+        'could not apply stream frame for ' +
+          (change && change.item_id) + ' - ' + String(error),
+        change
+      );
     }
-    upsertRow(change.item_id, change.html);
   };
 })();
 </script>

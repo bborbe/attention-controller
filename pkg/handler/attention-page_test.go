@@ -1416,7 +1416,10 @@ var _ = Describe("AttentionPageHandler", func() {
 	// replaces a row's whole node on every event — so the note the operator was
 	// reading was destroyed mid-sentence. The most recent failure per item is
 	// kept in a map keyed on the item id, mirroring the speaking map, and
-	// re-rendered after the swap on both the visible and the parked path.
+	// rendered into the row BEFORE it is committed, on both the visible and the
+	// parked path. ⚠️ Before, not after: the swap-then-repair order left a row
+	// swapped with its note missing whenever the repair threw, which is the
+	// half-update the ordering assertion below exists to prevent returning.
 	It("re-renders a failure note after the stream replaces its row", func() {
 		body := get("GET").Body.String()
 
@@ -1437,11 +1440,24 @@ var _ = Describe("AttentionPageHandler", func() {
 		Expect(body).To(ContainSubstring("rememberFailure(row, 'jump', message, isError)"))
 		Expect(body).To(ContainSubstring("rememberFailure(row, 'close', message, isError)"))
 
-		// Re-rendered on the visible path after the node is swapped...
-		Expect(body).To(ContainSubstring("replayFailure(findRow(itemID))"))
-		// ...and on the parked path, where the row exists only as the markup
-		// the filter stored and so has to be parsed to be re-rendered into.
-		Expect(body).To(ContainSubstring("parked[hidden].html = replayedHTML(html, itemID)"))
+		// Re-rendered on BOTH paths through ONE prepare step, which renders the
+		// note into a detached node before the row is committed.
+		Expect(body).To(ContainSubstring("function preparedHTML(html, itemID)"))
+		Expect(body).To(ContainSubstring("replayFailure(row)"))
+		Expect(body).To(ContainSubstring("var prepared = preparedHTML(html, itemID)"))
+		// The parked path, where the row exists only as the markup the filter
+		// stored and so has to be parsed to be re-rendered into.
+		Expect(body).To(ContainSubstring("parked[hidden].html = prepared"))
+		// ⚠️ Asserted by POSITION, not by presence. The same two lines in the
+		// old order — swap first, then replay — compile and read perfectly well
+		// while restoring the half-update defect, so a presence check would pass
+		// on exactly the regression this spec exists to catch.
+		prepareAt := strings.Index(body, "var prepared = preparedHTML(html, itemID)")
+		swapAt := strings.Index(body, "row.outerHTML = prepared")
+		Expect(prepareAt).To(BeNumerically(">=", 0), "the prepare step is gone")
+		Expect(swapAt).To(BeNumerically(">=", 0), "the swap is gone")
+		Expect(prepareAt).To(BeNumerically("<", swapAt),
+			"the row must be prepared before it is swapped, or a throw between them half-updates it")
 
 		// Through the helper that rendered the note, never through a second
 		// renderer that could drift from the three note helpers.
