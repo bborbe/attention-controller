@@ -478,6 +478,115 @@ var _ = Describe("AttentionPageHandler", func() {
 		})
 	})
 
+	// The name the session registry resolved for the session that raised the
+	// card, drawn as its own span at the end of the provenance line. It is the
+	// template half of the feature — the resolution half lives in the resolver —
+	// so these cases feed hand-built pkg.Provenance values straight through the
+	// mock and assert the served markup. They exercise the template and nothing
+	// else, and are deliberately not acceptance criteria: every criterion that
+	// observes the served page is asserted against a real fixture registry read by
+	// the real resolver elsewhere.
+	Describe("the session name span", func() {
+		It("draws the resolved session name as its own span", func() {
+			item, err := store.Push(
+				ctx,
+				pushRequest("producer-name", "gate-name", "which session is this?"),
+			)
+			Expect(err).To(BeNil())
+			provenance.ResolveReturns(pkg.Provenances{
+				item.ItemID: pkg.Provenance{SessionName: "Board Polish Session"},
+			})
+
+			row := rowOf(get("GET").Body.String(), item.ItemID)
+
+			// Positive control: the row rendered its payload, so a row that failed
+			// to render cannot satisfy the assertions below.
+			Expect(row).To(ContainSubstring(item.Payload.String()))
+			Expect(strings.Count(row, `class="provenance"`)).To(Equal(1))
+			// The expected markup is a hand-written literal, written as
+			// html/template emits it, never one built with the same helper the code
+			// uses: a shared helper would agree with itself whatever it produced.
+			Expect(row).To(ContainSubstring(
+				`<span class="session-name">Board Polish Session</span>`,
+			))
+			Expect(strings.Count(row, `class="session-name"`)).To(Equal(1))
+		})
+
+		It("draws the session name beside the task, goal and topic spans", func() {
+			item, err := store.Push(
+				ctx,
+				pushRequest("producer-four", "gate-four", "which session is this?"),
+			)
+			Expect(err).To(BeNil())
+			provenance.ResolveReturns(pkg.Provenances{
+				item.ItemID: pkg.Provenance{
+					SessionName: "Board Polish Session",
+					TaskName:    "Fix the board",
+					TaskPath:    "25 Tasks/Fix the board.md",
+					GoalName:    "First Goal",
+					GoalPath:    "24 Goals/First Goal.md",
+					TopicName:   "Attention Board Polish",
+					TopicPath:   "23 Topics/Attention Board Polish.md",
+				},
+			})
+
+			row := rowOf(get("GET").Body.String(), item.ItemID)
+
+			// The four spans are independent and coexist: each is gated on its own
+			// resolved value, none gating another.
+			Expect(strings.Count(row, `class="task"`)).To(Equal(1))
+			Expect(strings.Count(row, `class="goal"`)).To(Equal(1))
+			Expect(strings.Count(row, `class="topic"`)).To(Equal(1))
+			Expect(strings.Count(row, `class="session-name"`)).To(Equal(1))
+			// The new span is appended last, so the task span still leads the line.
+			Expect(row).To(ContainSubstring(`<div class="provenance"><span class="task">`))
+		})
+
+		It("draws no session-name span when the name is absent", func() {
+			item, err := store.Push(
+				ctx,
+				pushRequest("producer-noname", "gate-noname", "which session is this?"),
+			)
+			Expect(err).To(BeNil())
+			// ⚠️ Another resolved value is required rather than incidental: with
+			// nothing resolved at all the provenance div never renders and the
+			// absence assertion below would pass vacuously.
+			provenance.ResolveReturns(pkg.Provenances{
+				item.ItemID: pkg.Provenance{Host: "burn", Cwd: "/tmp"},
+			})
+
+			row := rowOf(get("GET").Body.String(), item.ItemID)
+
+			Expect(strings.Count(row, `class="provenance"`)).To(Equal(1))
+			Expect(strings.Count(row, `class="host"`)).To(Equal(1))
+			Expect(strings.Count(row, `class="session-name"`)).To(Equal(0))
+			// An unresolved value renders absent, never as a stand-in presented as
+			// resolved — [[Attention Item Schema]] § Silence 7.
+			Expect(row).NotTo(ContainSubstring("unknown"))
+			Expect(row).NotTo(ContainSubstring("n/a"))
+		})
+
+		It("renders the provenance line for a name-only provenance", func() {
+			item, err := store.Push(
+				ctx,
+				pushRequest("producer-nameonly", "gate-nameonly", "name and nothing else"),
+			)
+			Expect(err).To(BeNil())
+			// Nothing but the name resolved. This is the shape the SessionName
+			// conjunct in Provenance.Resolved() exists for: without it the line
+			// never renders, so the name is resolved correctly, drawn correctly, and
+			// never appears.
+			provenance.ResolveReturns(pkg.Provenances{
+				item.ItemID: pkg.Provenance{SessionName: "Lone Name"},
+			})
+
+			row := rowOf(get("GET").Body.String(), item.ItemID)
+
+			Expect(strings.Count(row, `class="provenance"`)).To(Equal(1))
+			Expect(row).To(ContainSubstring(`<span class="session-name">Lone Name</span>`))
+		})
+	})
+
 	// The goal a card's task advances, and the topic page that lists that goal,
 	// drawn beside the task on the same provenance line. Each resolves through the
 	// provenance the resolver hands the row, and each draws independently: a goal

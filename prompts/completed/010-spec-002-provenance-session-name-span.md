@@ -1,8 +1,13 @@
 ---
-status: approved
+status: completed
 spec: [002-session-name-on-card]
+summary: Drew the resolved session name as a gated `<span class="session-name">` appended last on the card's provenance line, with a new Ginkgo Describe block covering the four span behaviours and a changelog entry under the existing Unreleased section.
+execution_id: attention-controller-session-name-exec-010-spec-002-provenance-session-name-span
+dark-factory-version: v0.196.0
 created: "2026-09-30T19:52:34Z"
 queued: "2026-09-30T20:14:47Z"
+started: "2026-09-30T20:19:26Z"
+completed: "2026-09-30T20:23:02Z"
 branch: dark-factory/session-name-on-card
 ---
 
