@@ -1,8 +1,13 @@
 ---
-status: approved
+status: completed
 spec: [002-session-name-on-card]
+summary: 'Added pkg/handler/attention-session-name-page_test.go, an end-to-end spec that serves a fixture session registry on disk through the real provenance resolver and real page handler, plus the matching test: changelog bullet.'
+execution_id: attention-controller-session-name-exec-011-spec-002-session-name-page-test
+dark-factory-version: v0.196.0
 created: "2026-09-30T19:52:34Z"
 queued: "2026-09-30T20:14:47Z"
+started: "2026-09-30T20:23:03Z"
+completed: "2026-09-30T20:26:22Z"
 branch: dark-factory/session-name-on-card
 ---
 
