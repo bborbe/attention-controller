@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.31.1
 
 - test: serve a fixture vault through the real attention page and assert the goal and topic spans, so the board's goal and topic links are exercised end to end rather than field by field. Split out of #63 to keep that PR under the review size gate; the code it covers is unchanged and already released.
 
