@@ -69,11 +69,13 @@ import (
 // injecting markup into the reader's browser.
 //
 // The provenance line renders one span per resolved value and omits the rest.
-// ⚠️ An unresolved value is *omitted*, never filled with a placeholder — a
-// stand-in like `unknown` or `n/a` would be an unresolvable value presented as
-// resolved, which [[Attention Item Schema]] § Silence 7 forbids. A row with no
-// resolvable provenance at all renders no provenance line, which is exactly
-// what this page rendered before the change.
+// The task, goal and topic names, the host, cwd, tool and pane the event log
+// recorded, and the session name the registry resolved are each drawn as their
+// own span when resolved. ⚠️ An unresolved value is *omitted*, never filled with
+// a placeholder — a stand-in like `unknown` or `n/a` would be an unresolvable
+// value presented as resolved, which [[Attention Item Schema]] § Silence 7
+// forbids. A row with no resolvable provenance at all renders no provenance
+// line, which is exactly what this page rendered before the change.
 //
 // ⚠️ The task name leads the line, drawn as a link that opens the task in
 // Obsidian — the one fact the card had always lacked, since the host, cwd, tool
@@ -83,7 +85,11 @@ import (
 // rule matching only *adjacent* spans (`.provenance span + span::before`), so a
 // bare `<a>` among the spans would suppress the separator beside it and the line
 // would render as `Fix the boardburn · /w/x`. It is navigation, so it adds no
-// control and changes nothing any card offers.
+// control and changes nothing any card offers. ⚠️ The session name closes the
+// line, drawn last as its own span, and it is the one value on the line that
+// comes from the session registry rather than from the producer's event log or
+// the vault — so a card whose session resolves a name and nothing else renders a
+// line carrying only that span.
 //
 // ⚠️ The goal and the topic follow the task as two more spans of the same shape,
 // each gated on its own resolved link: the goal this item's task names first, and
@@ -94,7 +100,9 @@ import (
 // absent rather than as a placeholder, the rule the rest of the line already
 // follows: a goal no topic lists draws its goal span and no topic span, and a
 // task naming no goal draws neither. They are navigation too, adding no control
-// and changing nothing any card offers.
+// and changing nothing any card offers. The session name is a fourth span of the
+// same shape, gated on its own resolved value and independent of the other
+// three — any of the four may render alone or in any combination.
 const attentionPageTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1373,7 +1381,7 @@ function replayFailure(row) {
 {{else if .NoJump}}<button type="button" class="jump-corner" disabled aria-label="Jump to session" title="Jump to session"><svg class="jump-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.75 3.25h8.5a1.5 1.5 0 0 1 1.5 1.5v6.5a1.5 1.5 0 0 1-1.5 1.5h-8.5a1.5 1.5 0 0 1-1.5-1.5v-6.5a1.5 1.5 0 0 1 1.5-1.5z"/><path d="M5.75 6.5 7.5 8.25 5.75 10"/><path d="M9 10h1.75"/></svg></button>
 {{end}}{{if not .Message}}<div class="payload">{{ .Item.Payload }}</div>
 {{end}}{{if .Item.Context}}<div class="context">{{ .Item.Context }}</div>
-{{end}}{{if .Provenance.Resolved}}<div class="provenance">{{if .TaskURL}}<span class="task"><a href="{{ .TaskURL }}">{{ .Provenance.TaskName }}</a></span>{{end}}{{if .GoalURL}}<span class="goal"><a href="{{ .GoalURL }}">{{ .Provenance.GoalName }}</a></span>{{end}}{{if .TopicURL}}<span class="topic"><a href="{{ .TopicURL }}">{{ .Provenance.TopicName }}</a></span>{{end}}{{if .Provenance.Host}}<span class="host">{{ .Provenance.Host }}</span>{{end}}{{if .Provenance.Cwd}}<span class="cwd">{{ .Provenance.Cwd }}</span>{{end}}{{if .Provenance.Tool}}<span class="tool">{{ .Provenance.Tool }}</span>{{end}}{{if .Provenance.Pane}}<span class="pane">pane {{ .Provenance.Pane }}</span>{{else if .Provenance.PaneRecorded}}<span class="unroutable">unroutable</span>{{end}}</div>
+{{end}}{{if .Provenance.Resolved}}<div class="provenance">{{if .TaskURL}}<span class="task"><a href="{{ .TaskURL }}">{{ .Provenance.TaskName }}</a></span>{{end}}{{if .GoalURL}}<span class="goal"><a href="{{ .GoalURL }}">{{ .Provenance.GoalName }}</a></span>{{end}}{{if .TopicURL}}<span class="topic"><a href="{{ .TopicURL }}">{{ .Provenance.TopicName }}</a></span>{{end}}{{if .Provenance.Host}}<span class="host">{{ .Provenance.Host }}</span>{{end}}{{if .Provenance.Cwd}}<span class="cwd">{{ .Provenance.Cwd }}</span>{{end}}{{if .Provenance.Tool}}<span class="tool">{{ .Provenance.Tool }}</span>{{end}}{{if .Provenance.Pane}}<span class="pane">pane {{ .Provenance.Pane }}</span>{{else if .Provenance.PaneRecorded}}<span class="unroutable">unroutable</span>{{end}}{{if .Provenance.SessionName}}<span class="session-name">{{ .Provenance.SessionName }}</span>{{end}}</div>
 {{end}}{{if .Dimmed}}<div class="record"><div class="record-question">{{ .Item.Payload }}</div><div class="record-answer">answered: {{ .Record }}</div></div>
 {{else if .Message}}<form class="answer" data-multi="{{ .Tabs }}">
 {{if .Tabs}}<div class="tabs">{{range .Questions}}<button type="button" class="tab{{if .Active}} active{{end}}" data-tab="{{ .Tab }}">{{ .Tab }}</button>{{end}}</div>
