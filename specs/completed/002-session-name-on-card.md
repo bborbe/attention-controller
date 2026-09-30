@@ -1,9 +1,10 @@
 ---
-status: verifying
+status: completed
 approved: "2026-09-30T19:46:58Z"
 generating: "2026-09-30T19:49:17Z"
 prompted: "2026-09-30T20:05:43Z"
 verifying: "2026-09-30T20:26:22Z"
+completed: "2026-09-30T21:00:55Z"
 branch: dark-factory/session-name-on-card
 ---
 
@@ -124,3 +125,17 @@ Rationale: prompt 1 owns the resolution contract and the gate, and is testable o
 ## Do-Nothing Option
 
 The operator keeps seeing a raw UUID on every card whose session resolves to no task — 713 of 1,095 rows on the live board, of which 186 show nothing but the UUID — while the registry holds a readable name for most of them. The cost is paid on every triage of every such card, and it is the cost the board exists to remove: an item is a request for resolution, and a card the operator cannot attribute is one they cannot triage. Doing nothing also leaves silence 25 unresolved in code, which is the state the rule that the schema is implemented rather than redefined exists to prevent.
+
+## Verification Result
+
+**Verified:** 2026-09-30T21:00:31Z (HEAD 18140b5c9c49)
+**Binary:** deployed `~/.local/bin/attention-controller` (`vcs.revision=18140b5c9c49ff5e6f0648cc160feca40702d4ed`, `vcs.modified=false`) — this spec targets attention-controller, not dark-factory, so Phase 0 did not apply; no scenario file exists, so the spec's own `## Verification` rungs were walked
+**Scenario:** the spec's own rungs — container-executable (`make precommit`, `make test`, the four greps), the fixture-registry served-page suite (`the session name on the served page`, 9 cases), and Post-Deploy Rung-2 against the live launchd board on :18080
+**Evidence:**
+- Phase 0.5 deploy_check printed `18140b5c9c49` == resolved deploy_target `18140b5c9c49`; the board footer and `go version -m ~/.local/bin/attention-controller` both agree on HEAD `18140b5c9c49ff5e6f0648cc160feca40702d4ed`
+- live `curl http://127.0.0.1:18080/`: 585 `class="session-name"` spans; 28 distinct names, all 28 equal a `name` held by a `nameSource: user` record in `~/.claude/sessions/*.json` read at the same moment, and 0 served names are absent from the registry
+- live row census: 1,214 rows, 980 carry `class="provenance"`, 585 carry a name, 472 carry a name with no task span, 0 carry a name outside a provenance div — the line renders to carry the name (AC4's 186-row case)
+- `make test` exit 0; `make precommit` exit 0 (tree clean afterwards); greps: `class="session-name"` in `pkg/handler/attention-page.go`, `nameSource` in `pkg/session-liveness-checker.go`, `SessionName` in `pkg/provenance.go` all ≥1
+- Ginkgo `the session name on the served page`: 9 of 9 passed, including `a user-named session renders its name` and `a derived name renders no session-name span`
+- AC5 negative half: `git diff origin/master -- pkg/attention-item.go pkg/attention-store.go pkg/handler/attention-push.go` is empty, and PR #67's changed-file list excludes all three
+**Verdict:** PASS
