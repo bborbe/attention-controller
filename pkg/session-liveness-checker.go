@@ -41,14 +41,16 @@ type sessionLivenessChecker struct {
 	sessionsDir string
 }
 
-// sessionRegistryEntry is one `<pid>.json` in the session registry. Two fields
-// are read across the store: `SessionID` by the liveness check, and `Name` by
-// the provenance resolver, which needs the name a session holds *now* to prove
-// pane ownership. One definition so the two readers cannot disagree about what
-// an entry is.
+// sessionRegistryEntry is one `<pid>.json` in the session registry. Three
+// fields are read across the store: `SessionID` by the liveness check, and
+// `SessionID`, `Name` and `NameSource` by the provenance resolver, which needs
+// the name a session holds *now* to prove pane ownership and the source that
+// says who chose that name before it renders it. One definition so the two
+// readers cannot disagree about what an entry is.
 type sessionRegistryEntry struct {
-	SessionID string `json:"sessionId"`
-	Name      string `json:"name"`
+	SessionID  string `json:"sessionId"`
+	Name       string `json:"name"`
+	NameSource string `json:"nameSource"`
 }
 
 // IsLive reports whether any registry entry carries this session id. The

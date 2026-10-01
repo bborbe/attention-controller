@@ -74,6 +74,7 @@ var _ = Describe("AttentionPageHandler", func() {
 			provenance,
 			false,
 			vaultDir,
+			testBuildIdentity,
 		)
 	})
 
@@ -221,44 +222,52 @@ var _ = Describe("AttentionPageHandler", func() {
 	// because only the operator may answer a gate, and only in the session that
 	// raised it. See the attention item schema § Answer routing, and the page
 	// handler's own doc comment for why the reversal stops there.
-	It("offers answer controls for a message item and none for a permission item", func() {
-		message, err := store.Push(
-			ctx,
-			pushRequest("producer-readonly", "gate-readonly", "read me"),
-		)
-		Expect(err).To(BeNil())
-		permission, err := store.Push(ctx, pkg.PushRequest{
-			ProducerID:      "producer-gate",
-			ProducerKind:    pkg.SessionProducerKind,
-			LivenessRef:     pkg.LivenessRef("session:producer-gate"),
-			DedupKey:        "gate-permission",
-			InterruptClass:  "approve",
-			Payload:         "deploy prod?",
-			AnswerMechanism: pkg.PermissionAnswerMechanism,
-		})
-		Expect(err).To(BeNil())
+	It(
+		"offers answer controls for a message item and only Allow/Deny for a permission item",
+		func() {
+			message, err := store.Push(
+				ctx,
+				pushRequest("producer-readonly", "gate-readonly", "read me"),
+			)
+			Expect(err).To(BeNil())
+			permission, err := store.Push(ctx, pkg.PushRequest{
+				ProducerID:      "producer-gate",
+				ProducerKind:    pkg.SessionProducerKind,
+				LivenessRef:     pkg.LivenessRef("session:producer-gate"),
+				DedupKey:        "gate-permission",
+				InterruptClass:  "approve",
+				Payload:         "deploy prod?",
+				AnswerMechanism: pkg.PermissionAnswerMechanism,
+			})
+			Expect(err).To(BeNil())
 
-		// A non-empty page first, so the absence assertions below are made against
-		// a rendered document rather than against an empty body.
-		resp := get("GET")
-		Expect(resp.Body.String()).NotTo(BeEmpty())
-		body := resp.Body.String()
+			// A non-empty page first, so the absence assertions below are made against
+			// a rendered document rather than against an empty body.
+			resp := get("GET")
+			Expect(resp.Body.String()).NotTo(BeEmpty())
+			body := resp.Body.String()
 
-		// Scoped per row rather than page-wide: a page-wide grep would pass on a
-		// page where the wrong item carried the controls.
-		Expect(rowOf(body, message.ItemID)).To(ContainSubstring("<form"))
-		Expect(rowOf(body, permission.ItemID)).NotTo(ContainSubstring("<form"))
-		// ⚠️ AMENDED 2026-09-27: a permission row renders the jump corner
-		// (disabled when it has no target) and, from this change, the corner X.
-		// Neither is an ANSWER control, which is the property this spec exists
-		// for — so the assertions below are on forms and inputs, not buttons.
-		Expect(rowOf(body, permission.ItemID)).NotTo(ContainSubstring("<input"))
-		Expect(rowOf(body, permission.ItemID)).To(ContainSubstring(`class="jump-corner"`))
+			// Scoped per row rather than page-wide: a page-wide grep would pass on a
+			// page where the wrong item carried the controls.
+			Expect(rowOf(body, message.ItemID)).To(ContainSubstring("<form"))
+			Expect(rowOf(body, permission.ItemID)).NotTo(ContainSubstring("<form"))
+			// ⚠️ AMENDED 2026-09-27: a permission row renders the jump corner
+			// (disabled when it has no target) and, from this change, the corner X.
+			// Neither is an ANSWER control, which is the property this spec exists
+			// for — so the assertions below are on forms and inputs, not buttons.
+			Expect(rowOf(body, permission.ItemID)).NotTo(ContainSubstring("<input"))
+			Expect(rowOf(body, permission.ItemID)).To(ContainSubstring(`class="jump-corner"`))
+			// ⚠️ AMENDED 2026-09-29 (operator decision): a permission row carries
+			// exactly the two verdict buttons — still no form and no free input.
+			Expect(rowOf(body, permission.ItemID)).To(ContainSubstring(`data-decision="allow"`))
+			Expect(rowOf(body, permission.ItemID)).To(ContainSubstring(`data-decision="deny"`))
+			Expect(rowOf(body, message.ItemID)).NotTo(ContainSubstring(`data-decision=`))
 
-		// HEAD is routed to this handler too; it is read-only and a link checker
-		// or browser may issue it, so it is asserted rather than merely declared.
-		Expect(get("HEAD").Code).To(Equal(http.StatusOK))
-	})
+			// HEAD is routed to this handler too; it is read-only and a link checker
+			// or browser may issue it, so it is asserted rather than merely declared.
+			Expect(get("HEAD").Code).To(Equal(http.StatusOK))
+		},
+	)
 
 	It("renders host, cwd, tool and pane as four required values on a resolving row", func() {
 		item, err := store.Push(ctx, pushRequest("producer-prov", "gate-prov", "deploy prod?"))
@@ -465,6 +474,267 @@ var _ = Describe("AttentionPageHandler", func() {
 
 			Expect(row).To(ContainSubstring(
 				`<span class="task"><a href="obsidian://open?vault=Personal&amp;file=25%20Tasks%2FR%26D%20notes">R&amp;D notes</a></span>`,
+			))
+		})
+	})
+
+	// The name the session registry resolved for the session that raised the
+	// card, drawn as its own span at the end of the provenance line. It is the
+	// template half of the feature — the resolution half lives in the resolver —
+	// so these cases feed hand-built pkg.Provenance values straight through the
+	// mock and assert the served markup. They exercise the template and nothing
+	// else, and are deliberately not acceptance criteria: every criterion that
+	// observes the served page is asserted against a real fixture registry read by
+	// the real resolver elsewhere.
+	Describe("the session name span", func() {
+		It("draws the resolved session name as its own span", func() {
+			item, err := store.Push(
+				ctx,
+				pushRequest("producer-name", "gate-name", "which session is this?"),
+			)
+			Expect(err).To(BeNil())
+			provenance.ResolveReturns(pkg.Provenances{
+				item.ItemID: pkg.Provenance{SessionName: "Board Polish Session"},
+			})
+
+			row := rowOf(get("GET").Body.String(), item.ItemID)
+
+			// Positive control: the row rendered its payload, so a row that failed
+			// to render cannot satisfy the assertions below.
+			Expect(row).To(ContainSubstring(item.Payload.String()))
+			Expect(strings.Count(row, `class="provenance"`)).To(Equal(1))
+			// The expected markup is a hand-written literal, written as
+			// html/template emits it, never one built with the same helper the code
+			// uses: a shared helper would agree with itself whatever it produced.
+			Expect(row).To(ContainSubstring(
+				`<span class="session-name">Board Polish Session</span>`,
+			))
+			Expect(strings.Count(row, `class="session-name"`)).To(Equal(1))
+		})
+
+		It("draws the session name beside the task, goal and topic spans", func() {
+			item, err := store.Push(
+				ctx,
+				pushRequest("producer-four", "gate-four", "which session is this?"),
+			)
+			Expect(err).To(BeNil())
+			provenance.ResolveReturns(pkg.Provenances{
+				item.ItemID: pkg.Provenance{
+					SessionName: "Board Polish Session",
+					TaskName:    "Fix the board",
+					TaskPath:    "25 Tasks/Fix the board.md",
+					GoalName:    "First Goal",
+					GoalPath:    "24 Goals/First Goal.md",
+					TopicName:   "Attention Board Polish",
+					TopicPath:   "23 Topics/Attention Board Polish.md",
+				},
+			})
+
+			row := rowOf(get("GET").Body.String(), item.ItemID)
+
+			// The four spans are independent and coexist: each is gated on its own
+			// resolved value, none gating another.
+			Expect(strings.Count(row, `class="task"`)).To(Equal(1))
+			Expect(strings.Count(row, `class="goal"`)).To(Equal(1))
+			Expect(strings.Count(row, `class="topic"`)).To(Equal(1))
+			Expect(strings.Count(row, `class="session-name"`)).To(Equal(1))
+			// The new span is appended last, so the task span still leads the line.
+			Expect(row).To(ContainSubstring(`<div class="provenance"><span class="task">`))
+		})
+
+		It("draws no session-name span when the name is absent", func() {
+			item, err := store.Push(
+				ctx,
+				pushRequest("producer-noname", "gate-noname", "which session is this?"),
+			)
+			Expect(err).To(BeNil())
+			// ⚠️ Another resolved value is required rather than incidental: with
+			// nothing resolved at all the provenance div never renders and the
+			// absence assertion below would pass vacuously.
+			provenance.ResolveReturns(pkg.Provenances{
+				item.ItemID: pkg.Provenance{Host: "burn", Cwd: "/tmp"},
+			})
+
+			row := rowOf(get("GET").Body.String(), item.ItemID)
+
+			Expect(strings.Count(row, `class="provenance"`)).To(Equal(1))
+			Expect(strings.Count(row, `class="host"`)).To(Equal(1))
+			Expect(strings.Count(row, `class="session-name"`)).To(Equal(0))
+			// An unresolved value renders absent, never as a stand-in presented as
+			// resolved — [[Attention Item Schema]] § Silence 7.
+			Expect(row).NotTo(ContainSubstring("unknown"))
+			Expect(row).NotTo(ContainSubstring("n/a"))
+		})
+
+		It("renders the provenance line for a name-only provenance", func() {
+			item, err := store.Push(
+				ctx,
+				pushRequest("producer-nameonly", "gate-nameonly", "name and nothing else"),
+			)
+			Expect(err).To(BeNil())
+			// Nothing but the name resolved. This is the shape the SessionName
+			// conjunct in Provenance.Resolved() exists for: without it the line
+			// never renders, so the name is resolved correctly, drawn correctly, and
+			// never appears.
+			provenance.ResolveReturns(pkg.Provenances{
+				item.ItemID: pkg.Provenance{SessionName: "Lone Name"},
+			})
+
+			row := rowOf(get("GET").Body.String(), item.ItemID)
+
+			Expect(strings.Count(row, `class="provenance"`)).To(Equal(1))
+			Expect(row).To(ContainSubstring(`<span class="session-name">Lone Name</span>`))
+		})
+	})
+
+	// The goal a card's task advances, and the topic page that lists that goal,
+	// drawn beside the task on the same provenance line. Each resolves through the
+	// provenance the resolver hands the row, and each draws independently: a goal
+	// no topic lists still renders its goal link, which is the dominant live case.
+	Describe("the goal and topic links", func() {
+		// The served markup each link is asserted against, written as html/template
+		// actually emits it. ⚠️ Hand-written literals, never ones built with the
+		// same helper the code uses: a shared helper would agree with itself
+		// whatever it produced, so neither the `%20`/`%2F` escaping nor the dropped
+		// `.md` would be asserted at all. The `&amp;` is the template's own
+		// HTML-escaping of the `&` in the attribute.
+		goalAnchor := `<span class="goal"><a href="obsidian://open?vault=Personal&amp;file=24%20Goals%2FFix%20the%20board">Fix the board</a></span>`
+		topicAnchor := `<span class="topic"><a href="obsidian://open?vault=Personal&amp;file=23%20Topics%2FAttention%20Board%20Polish">Attention Board Polish</a></span>`
+
+		It("draws task, goal and topic as three spans, in that order", func() {
+			item, err := store.Push(
+				ctx,
+				pushRequest("producer-goaltopic", "gate-goaltopic", "which goal is this?"),
+			)
+			Expect(err).To(BeNil())
+			provenance.ResolveReturns(pkg.Provenances{
+				item.ItemID: pkg.Provenance{
+					Host:      "burn",
+					TaskName:  "Fix the board",
+					TaskPath:  "25 Tasks/Fix the board.md",
+					GoalName:  "Fix the board",
+					GoalPath:  "24 Goals/Fix the board.md",
+					TopicName: "Attention Board Polish",
+					TopicPath: "23 Topics/Attention Board Polish.md",
+				},
+			})
+
+			row := rowOf(get("GET").Body.String(), item.ItemID)
+
+			Expect(row).To(ContainSubstring(goalAnchor))
+			Expect(row).To(ContainSubstring(topicAnchor))
+			// Each leads its own span: the line is task, then goal, then topic, and
+			// the wrappers are what keep the separators beside them.
+			Expect(strings.Index(row, `class="task"`)).To(BeNumerically("<",
+				strings.Index(row, `class="goal"`)))
+			Expect(strings.Index(row, `class="goal"`)).To(BeNumerically("<",
+				strings.Index(row, `class="topic"`)))
+		})
+
+		It("draws the goal and no topic when no topic lists that goal", func() {
+			item, err := store.Push(
+				ctx,
+				pushRequest("producer-goalonly", "gate-goalonly", "which goal is this?"),
+			)
+			Expect(err).To(BeNil())
+			// ⚠️ The dominant live case, and the one the independent gates exist
+			// for: a single gate over both links would drop this goal link too.
+			provenance.ResolveReturns(pkg.Provenances{
+				item.ItemID: pkg.Provenance{
+					Host:     "burn",
+					TaskName: "Fix the board",
+					TaskPath: "25 Tasks/Fix the board.md",
+					GoalName: "Fix the board",
+					GoalPath: "24 Goals/Fix the board.md",
+				},
+			})
+
+			row := rowOf(get("GET").Body.String(), item.ItemID)
+
+			// Positive control: the line rendered, so the absence below is a
+			// withheld link rather than an absent line.
+			Expect(row).To(ContainSubstring(`class="provenance"`))
+			Expect(row).To(ContainSubstring(goalAnchor))
+			Expect(row).NotTo(ContainSubstring(`class="topic"`))
+		})
+
+		It("draws no goal and no topic for a task whose goals list is empty", func() {
+			item, err := store.Push(
+				ctx,
+				pushRequest("producer-nogoal", "gate-nogoal", "no goal here"),
+			)
+			Expect(err).To(BeNil())
+			// ⚠️ Another resolved value is required rather than incidental: with
+			// nothing but the task, the provenance div could still render, but the
+			// host is what makes the positive control below about a drawn line.
+			provenance.ResolveReturns(pkg.Provenances{
+				item.ItemID: pkg.Provenance{
+					Host:     "burn",
+					TaskName: "Fix the board",
+					TaskPath: "25 Tasks/Fix the board.md",
+				},
+			})
+
+			row := rowOf(get("GET").Body.String(), item.ItemID)
+
+			// Positive control: the line rendered, so the absences below cannot
+			// pass on a row that was dropped.
+			Expect(row).To(ContainSubstring(`class="provenance"`))
+			Expect(row).To(ContainSubstring(`class="task"`))
+			Expect(row).NotTo(ContainSubstring(`class="goal"`))
+			Expect(row).NotTo(ContainSubstring(`class="topic"`))
+		})
+
+		// ⚠️ The template.URL regression guard at the template seam. A plain-string
+		// GoalURL or TopicURL satisfies every field-level assertion above while the
+		// href renders `#ZgotmplZ`, so this is the one assertion that catches it.
+		It("emits a live href rather than the URL filter's sentinel", func() {
+			item, err := store.Push(
+				ctx,
+				pushRequest("producer-live", "gate-live", "which goal is this?"),
+			)
+			Expect(err).To(BeNil())
+			provenance.ResolveReturns(pkg.Provenances{
+				item.ItemID: pkg.Provenance{
+					TaskName:  "Fix the board",
+					TaskPath:  "25 Tasks/Fix the board.md",
+					GoalName:  "Fix the board",
+					GoalPath:  "24 Goals/Fix the board.md",
+					TopicName: "Attention Board Polish",
+					TopicPath: "23 Topics/Attention Board Polish.md",
+				},
+			})
+
+			row := rowOf(get("GET").Body.String(), item.ItemID)
+
+			Expect(row).To(ContainSubstring(goalAnchor))
+			Expect(row).NotTo(ContainSubstring("#ZgotmplZ"))
+		})
+
+		// ⚠️ The `&` case for the goal, mirroring the task's `R&D notes` case: it is
+		// the one that distinguishes the escaper the helper uses from url.PathEscape,
+		// which leaves `&` alone and would split the query. Both the href and the
+		// link text are asserted, so a link that resolves to the wrong file fails.
+		It("escapes a goal name the query grammar would otherwise split on", func() {
+			item, err := store.Push(
+				ctx,
+				pushRequest("producer-goalamp", "gate-goalamp", "which goal is this?"),
+			)
+			Expect(err).To(BeNil())
+			provenance.ResolveReturns(pkg.Provenances{
+				item.ItemID: pkg.Provenance{
+					Host:     "burn",
+					TaskName: "Fix the board",
+					TaskPath: "25 Tasks/Fix the board.md",
+					GoalName: "R&D notes",
+					GoalPath: "24 Goals/R&D notes.md",
+				},
+			})
+
+			row := rowOf(get("GET").Body.String(), item.ItemID)
+
+			Expect(row).To(ContainSubstring(
+				`<span class="goal"><a href="obsidian://open?vault=Personal&amp;file=24%20Goals%2FR%26D%20notes">R&amp;D notes</a></span>`,
 			))
 		})
 	})
@@ -1118,7 +1388,12 @@ var _ = Describe("AttentionPageHandler", func() {
 			// the page via the stream rather than via that handler — the correct
 			// outcome masked a real error, which is why it is pinned twice here:
 			// once as the missing container, once as the fallback that handles it.
-			Expect(block).NotTo(ContainSubstring(`class="actions"`))
+			// ⚠️ FLIPPED 2026-09-29: a permission row now carries an .actions div
+			// holding its Allow / Deny verdict buttons (operator decision), so the
+			// container is present. The fallback stays pinned: an ack or message
+			// row the stream re-renders without controls still needs it.
+			Expect(block).To(ContainSubstring(`class="actions"`))
+			Expect(block).To(ContainSubstring(`data-decision="allow"`))
 			Expect(get("GET").Body.String()).
 				To(ContainSubstring(`row.querySelector('.actions') || row`))
 		})
@@ -1250,7 +1525,10 @@ var _ = Describe("AttentionPageHandler", func() {
 	// replaces a row's whole node on every event — so the note the operator was
 	// reading was destroyed mid-sentence. The most recent failure per item is
 	// kept in a map keyed on the item id, mirroring the speaking map, and
-	// re-rendered after the swap on both the visible and the parked path.
+	// rendered into the row BEFORE it is committed, on both the visible and the
+	// parked path. ⚠️ Before, not after: the swap-then-repair order left a row
+	// swapped with its note missing whenever the repair threw, which is the
+	// half-update the ordering assertion below exists to prevent returning.
 	It("re-renders a failure note after the stream replaces its row", func() {
 		body := get("GET").Body.String()
 
@@ -1271,11 +1549,24 @@ var _ = Describe("AttentionPageHandler", func() {
 		Expect(body).To(ContainSubstring("rememberFailure(row, 'jump', message, isError)"))
 		Expect(body).To(ContainSubstring("rememberFailure(row, 'close', message, isError)"))
 
-		// Re-rendered on the visible path after the node is swapped...
-		Expect(body).To(ContainSubstring("replayFailure(findRow(itemID))"))
-		// ...and on the parked path, where the row exists only as the markup
-		// the filter stored and so has to be parsed to be re-rendered into.
-		Expect(body).To(ContainSubstring("parked[hidden].html = replayedHTML(html, itemID)"))
+		// Re-rendered on BOTH paths through ONE prepare step, which renders the
+		// note into a detached node before the row is committed.
+		Expect(body).To(ContainSubstring("function preparedHTML(html, itemID)"))
+		Expect(body).To(ContainSubstring("replayFailure(row)"))
+		Expect(body).To(ContainSubstring("var prepared = preparedHTML(html, itemID)"))
+		// The parked path, where the row exists only as the markup the filter
+		// stored and so has to be parsed to be re-rendered into.
+		Expect(body).To(ContainSubstring("parked[hidden].html = prepared"))
+		// ⚠️ Asserted by POSITION, not by presence. The same two lines in the
+		// old order — swap first, then replay — compile and read perfectly well
+		// while restoring the half-update defect, so a presence check would pass
+		// on exactly the regression this spec exists to catch.
+		prepareAt := strings.Index(body, "var prepared = preparedHTML(html, itemID)")
+		swapAt := strings.Index(body, "row.outerHTML = prepared")
+		Expect(prepareAt).To(BeNumerically(">=", 0), "the prepare step is gone")
+		Expect(swapAt).To(BeNumerically(">=", 0), "the swap is gone")
+		Expect(prepareAt).To(BeNumerically("<", swapAt),
+			"the row must be prepared before it is swapped, or a throw between them half-updates it")
 
 		// Through the helper that rendered the note, never through a second
 		// renderer that could drift from the three note helpers.

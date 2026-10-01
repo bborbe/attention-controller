@@ -18,10 +18,16 @@ import (
 
 // Provenance is where an item came from, as far as the page can prove it.
 //
-// Every field is a *claim about the event*, not about the store: the store
-// carries none of these (its fifteen-field Item has no host, cwd, tool or
+// Every field but one is a *claim about the event*, not about the store: the
+// store carries none of these (its fifteen-field Item has no host, cwd, tool or
 // pane), so they arrive from the producer's own event log and are missing for
 // any item whose producer wrote no event.
+//
+// ⚠️ The exception is SessionName, which comes from the session registry rather
+// than from the producer's event log. It is read at render time and never
+// stored on the item, so a rename shows up on the next page load; and because
+// the registry is a different source from the event log it resolves on items
+// whose producer wrote no event at all.
 //
 // ⚠️ An unresolved value is the empty string here, never a placeholder. The
 // page renders it as absent. § Silence 7's rule is that an unresolvable value
@@ -53,6 +59,32 @@ type Provenance struct {
 	// vault directory rather than reading it here — there is no third field
 	// carrying it.
 	TaskPath string
+	// GoalName is the title of the goal the task names first in its `goals:`
+	// list. Empty when nothing resolved.
+	//
+	// ⚠️ It **derives from the task**: a goal is only ever reached through the
+	// task file that names it, so this can resolve nowhere TaskName did not,
+	// which is why Resolved needs no conjunct for it.
+	GoalName string
+	// GoalPath is the goal file's path relative to the vault root, e.g.
+	// `24 Goals/Fix the board.md`. Empty when nothing resolved.
+	GoalPath string
+	// TopicName is the title of the topic page that lists this goal under its
+	// `## Goals` heading. Empty when nothing resolved.
+	//
+	// ⚠️ It **derives from the goal**, and so from the task: a topic is reached
+	// only by joining the resolved goal title against the topic pages.
+	TopicName string
+	// TopicPath is the topic file's path relative to the vault root, e.g.
+	// `23 Topics/Attention Board Polish.md`. Empty when nothing resolved.
+	TopicPath string
+	// SessionName is the name the session registry holds for this item's
+	// session, rendered only when the registry records that a human chose it.
+	// Empty when the registry holds no entry for the session, when the entry's
+	// source is `peer` or `derived`, when the entry carries no source at all, or
+	// when the item names no session — an unresolvable name renders absent rather
+	// than as a stand-in, the rule every other field of this struct follows.
+	SessionName string
 }
 
 // Resolved reports whether anything about this item's origin could be told.
@@ -60,21 +92,46 @@ type Provenance struct {
 // no provenance line at all — which is how an item with no provenance source
 // degrades rather than failing.
 //
-// ⚠️ TaskName is such a fact, and it is the one member of this set that comes
-// from neither the event log nor the pane listing: the vault task a session is
-// anchored to says *what* the session was working on, which is as much about
-// where the item came from as the host or the cwd is. A Provenance carrying
-// nothing but a task name is a real shape, not a hypothetical one — it is what
-// an item resolves to when its producer wrote no event log but its session's
-// task file was found — and without this conjunct that row would render no
-// provenance line at all, so the name would be resolved correctly, drawn
-// correctly, and never appear.
+// ⚠️ TaskName is such a fact, and it is one of two members of this set that
+// come from neither the event log nor the pane listing: the vault task a
+// session is anchored to says *what* the session was working on, which is as
+// much about where the item came from as the host or the cwd is. A Provenance
+// carrying nothing but a task name is a real shape, not a hypothetical one — it
+// is what an item resolves to when its producer wrote no event log but its
+// session's task file was found — and without this conjunct that row would
+// render no provenance line at all, so the name would be resolved correctly,
+// drawn correctly, and never appear.
+//
+// ⚠️ SessionName is the second such member, and it comes from the session
+// registry rather than from the vault. A session that resolves a `user` name and
+// nothing else about its origin is the same shape and the same trap: measured on
+// the live board 2026-09-30, 186 of 1,095 rows carried no provenance line at
+// all, and without this conjunct the name would be resolved correctly, drawn
+// correctly, and never appear because the line that would carry it is
+// suppressed.
 func (p Provenance) Resolved() bool {
-	return p.Host != "" || p.Cwd != "" || p.Tool != "" || p.Pane != "" || p.TaskName != ""
+	return p.Host != "" || p.Cwd != "" || p.Tool != "" || p.Pane != "" || p.TaskName != "" ||
+		p.SessionName != ""
 }
 
 // Provenances is the resolver's answer for a whole page, keyed by item id.
 type Provenances map[ItemID]Provenance
+
+// sessionNameSourceUser is the registry's marker for a name a human chose. It is
+// the only source that renders: `peer` means the name was inherited from the
+// spawning parent and `derived` means it was generated, and the spec withholds
+// both. ⚠️ The field's absence is not `user` either — a record carrying no
+// nameSource renders no name, the same as `peer`.
+const sessionNameSourceUser = "user"
+
+// sessionName is what the registry holds for one session: the name, and the
+// source that says who chose it. The two are read together because the gate on
+// the name is the source, and a second scan of the registry to read the source
+// would be a second place the two could disagree.
+type sessionName struct {
+	Name   string
+	Source string
+}
 
 //counterfeiter:generate -o ../mocks/provenance-resolver.go --fake-name ProvenanceResolver . ProvenanceResolver
 
@@ -225,10 +282,30 @@ func (r *provenanceResolver) Resolve(ctx context.Context, items Items) Provenanc
 		// The session id comes from sessionIDFromItem, the one helper that
 		// understands every liveness shape the store writes; a second extractor
 		// would be a second place to get that wrong.
+		//
+		// ⚠️ The goal and the topic ride with the task and inherit its
+		// independence from the pane branches: the index carries all four
+		// fields on one lookup, so this block is the only place any of them is
+		// set and a second lookup is never needed.
 		if task, ok := r.lookupTask(item); ok {
 			provenance := resolved[item.ItemID]
 			provenance.TaskName = task.Name
 			provenance.TaskPath = task.Path
+			provenance.GoalName = task.GoalName
+			provenance.GoalPath = task.GoalPath
+			provenance.TopicName = task.TopicName
+			provenance.TopicPath = task.TopicPath
+			resolved[item.ItemID] = provenance
+		}
+		// ⚠️ The name is independent of the pane and the task, so this runs on
+		// every item, outside every branch above. The read-modify-write is the
+		// same shape the task block uses: it takes whatever the entry already
+		// holds — possibly the zero Provenance — sets one field and stores it
+		// again, which creates the entry when neither pane branch claimed
+		// anything and preserves a pane or a task an earlier block resolved.
+		if name, ok := r.sessionNameFor(item, names); ok {
+			provenance := resolved[item.ItemID]
+			provenance.SessionName = name
 			resolved[item.ItemID] = provenance
 		}
 	}
@@ -250,6 +327,29 @@ func (r *provenanceResolver) lookupTask(item Item) (Task, bool) {
 		return Task{}, false
 	}
 	return r.tasks.Lookup(sessionID)
+}
+
+// sessionNameFor returns the registry name to render for this item's session,
+// and reports ok=false when there is none to render.
+//
+// It withholds a name whose source is not `user`, and a record carrying no
+// source at all, exactly as it withholds a session the registry does not hold:
+// § Silence 7's rule is that an unresolvable value must never be presented as
+// resolved, and another session's inherited or generated name is precisely that
+// failure wearing a friendlier face.
+func (r *provenanceResolver) sessionNameFor(
+	item Item,
+	names map[string]sessionName,
+) (string, bool) {
+	sessionID := sessionIDFromItem(item)
+	if sessionID == "" {
+		return "", false
+	}
+	entry, ok := names[sessionID]
+	if !ok || entry.Source != sessionNameSourceUser || entry.Name == "" {
+		return "", false
+	}
+	return entry.Name, true
 }
 
 // LivenessRef markers, and the session id each carries.
@@ -320,12 +420,12 @@ func sessionIDFromItem(item Item) string {
 // fallback exists to serve.
 //
 // ⚠️ This asserts a name-keyed join rather than an ownership proof. The
-// registry records no pane id (sessionRegistryEntry carries SessionID and Name
-// only) and the pane listing carries no session id (Pane carries PaneID and
-// Title only), so the glyph-stripped title-vs-name comparison is the only
-// session→pane join the controller can observe. Two same-named sessions with
-// two panes titled that name are therefore indistinguishable, and no available
-// field separates them.
+// registry records no pane id (sessionRegistryEntry carries SessionID, Name and
+// NameSource, and none of them is a pane) and the pane listing carries no
+// session id (Pane carries PaneID and Title only), so the glyph-stripped
+// title-vs-name comparison is the only session→pane join the controller can
+// observe. Two same-named sessions with two panes titled that name are therefore
+// indistinguishable, and no available field separates them.
 //
 // It reports ok=false — making no pane claim at all — when the session cannot
 // be named. That is deliberate and is the load-bearing safety property here:
@@ -336,7 +436,7 @@ func sessionIDFromItem(item Item) string {
 // unchanged, so the ownership gate is fed rather than bypassed.
 func (r *provenanceResolver) resolveByName(
 	item Item,
-	names map[string]string,
+	names map[string]sessionName,
 	panes map[int]Pane,
 	panesAvailable bool,
 ) (Provenance, bool) {
@@ -351,7 +451,7 @@ func (r *provenanceResolver) resolveByName(
 		// There is nothing to look up, so nothing is claimed.
 		return Provenance{}, false
 	}
-	name := names[sessionID]
+	name := names[sessionID].Name
 	if name == "" {
 		// The session is not in the registry — it exited, or this host has no
 		// registry. Either way there is no name to compare, so no pane can be
@@ -382,7 +482,7 @@ func (r *provenanceResolver) resolveByName(
 // answerable.
 func (r *provenanceResolver) build(
 	record eventRecord,
-	names map[string]string,
+	names map[string]sessionName,
 	panes map[int]Pane,
 	panesAvailable bool,
 ) Provenance {
@@ -403,7 +503,7 @@ func (r *provenanceResolver) build(
 		return provenance
 	}
 	provenance.PaneRecorded = true
-	provenance.Routable = OwnsPane(panes, paneID, names[record.SessionID])
+	provenance.Routable = OwnsPane(panes, paneID, names[record.SessionID].Name)
 	if provenance.Routable {
 		provenance.Pane = strconv.Itoa(paneID)
 	}
@@ -514,7 +614,14 @@ func (r *provenanceResolver) readEvents(
 	return events
 }
 
-// sessionNames reads the session registry as `session id -> the name it holds now`.
+// sessionNames reads the session registry as `session id -> the name it holds
+// now and the source that says who chose it`.
+//
+// The two are returned together rather than in two passes because the gate on
+// the name is the source: a second scan of the registry to read the source
+// would be a second place the two could disagree. The pane-ownership readers use
+// `Name` only — the source gates what is *rendered*, never whether a session
+// owns its pane.
 //
 // The registry is the only source that survives a rename: it rewrites `name`
 // when a session is renamed, while an event record holds only the name as of
@@ -528,8 +635,8 @@ func (r *provenanceResolver) readEvents(
 // "no session owns any pane" would mark every row unroutable the moment the
 // store ran somewhere the registry is absent, and the store's own liveness
 // checker takes the same position for the same reason.
-func (r *provenanceResolver) sessionNames(ctx context.Context) map[string]string {
-	names := map[string]string{}
+func (r *provenanceResolver) sessionNames(ctx context.Context) map[string]sessionName {
+	names := map[string]sessionName{}
 	if r.sessionsDir == "" {
 		return names
 	}
@@ -559,7 +666,10 @@ func (r *provenanceResolver) sessionNames(ctx context.Context) map[string]string
 			continue
 		}
 		if record.SessionID != "" {
-			names[record.SessionID] = record.Name
+			names[record.SessionID] = sessionName{
+				Name:   record.Name,
+				Source: record.NameSource,
+			}
 		}
 	}
 	return names
@@ -577,6 +687,16 @@ const (
 	// taskStatusKey is the frontmatter key carrying the task's status. Read
 	// only to break a tie between task files sharing one session id.
 	taskStatusKey = "status"
+	// goalDirName is the vault directory holding the goal files.
+	goalDirName = "24 Goals"
+	// topicDirName is the vault directory holding the topic pages.
+	topicDirName = "23 Topics"
+	// taskGoalsKey is the frontmatter key carrying a task's goals, as quoted
+	// Obsidian wikilinks. See frontmatterList and wikilinkTitle for the
+	// encoding actually read.
+	taskGoalsKey = "goals"
+	// topicGoalsHeading is the heading whose section lists a topic's goals.
+	topicGoalsHeading = "## Goals"
 )
 
 //counterfeiter:generate -o ../mocks/task-index.go --fake-name TaskIndex . TaskIndex
@@ -598,7 +718,7 @@ type TaskIndex interface {
 	Lookup(sessionID string) (Task, bool)
 }
 
-// Task is the vault task a session is anchored to.
+// Task is the vault task a session is anchored to, plus the rung above it.
 type Task struct {
 	// Name is the task's title, which is its filename without the `.md`
 	// suffix.
@@ -606,19 +726,43 @@ type Task struct {
 	// Path is the task file's path relative to the vault root, e.g.
 	// `25 Tasks/Fix the board.md`.
 	Path string
+	// GoalName is the title of the goal the task names first in its `goals:`
+	// list. Empty when the task names no goal, when no entry is a valid
+	// wikilink, or when no file of that title exists under `24 Goals/`.
+	GoalName string
+	// GoalPath is the goal file's path relative to the vault root, e.g.
+	// `24 Goals/Fix the board.md`. Empty exactly when GoalName is.
+	GoalPath string
+	// TopicName is the title of the topic page that lists this goal under its
+	// `## Goals` heading. Empty when no topic lists it.
+	TopicName string
+	// TopicPath is the topic file's path relative to the vault root, e.g.
+	// `23 Topics/Attention Board Polish.md`. Empty exactly when TopicName is.
+	TopicPath string
 }
 
 // NewTaskIndex builds the session -> task index from vaultDir's task files.
 //
 // It fails soft in every direction: an empty vaultDir, a vault that does not
-// exist, an unreadable `25 Tasks/` and an unreadable file each yield no entry
-// for the affected tasks and never an error. An empty vaultDir is the ordinary
-// case for a host with no vault configured, not a fault.
+// exist, an unreadable `25 Tasks/`, an unreadable `24 Goals/`, an unreadable
+// `23 Topics/` and an unreadable file each yield no entry for the affected
+// tasks and never an error. An empty vaultDir is the ordinary case for a host
+// with no vault configured, not a fault.
+//
+// The goal rung is built before the task walk, because each indexed task
+// carries the goal it names and the topic that lists it: both maps must exist
+// before the first task file is read.
 func NewTaskIndex(ctx context.Context, vaultDir string) TaskIndex {
-	index := &taskIndex{bySession: map[string]taskEntry{}}
+	index := &taskIndex{
+		bySession:  map[string]taskEntry{},
+		goals:      map[string]struct{}{},
+		goalTopics: map[string]goalTopic{},
+	}
 	if vaultDir == "" {
 		return index
 	}
+	index.readGoalTitles(vaultDir)
+	index.readGoalTopics(ctx, vaultDir)
 	tasksDir := filepath.Join(vaultDir, taskDirName)
 	// os.ReadDir returns entries sorted by filename, and the tie-break below
 	// depends on it: candidates are added in ascending path order, so the later
@@ -652,6 +796,14 @@ func NewTaskIndex(ctx context.Context, vaultDir string) TaskIndex {
 
 type taskIndex struct {
 	bySession map[string]taskEntry
+	// goals is the set of titles the vault holds as goal files under
+	// `24 Goals/`. It is the existence guard a task's `goals:` entry must pass
+	// before it resolves: the title comes from frontmatter, so it is never
+	// trusted as a path. A nil or empty set resolves no goal.
+	goals map[string]struct{}
+	// goalTopics maps a goal title to the topic page that lists it under its
+	// `## Goals` heading. A nil or empty map resolves no topic.
+	goalTopics map[string]goalTopic
 }
 
 // taskEntry is one indexed task file: the task itself plus the only other
@@ -695,11 +847,23 @@ func (t *taskIndex) addFile(root *os.Root, entry os.DirEntry) {
 		// the file contributes no entry rather than an entry under "".
 		return
 	}
+	task := Task{
+		Name: strings.TrimSuffix(entry.Name(), ".md"),
+		Path: filepath.Join(taskDirName, entry.Name()),
+	}
+	// The goal and the topic ride with the task: both derive from this file's
+	// `goals:` list, so they are resolved here, once, rather than at page load.
+	goalName, goalPath := firstGoal(content, t.goals)
+	task.GoalName = goalName
+	task.GoalPath = goalPath
+	if goalName != "" {
+		if topic, ok := t.goalTopics[goalName]; ok {
+			task.TopicName = topic.name
+			task.TopicPath = topic.path
+		}
+	}
 	t.add(sessionID, taskEntry{
-		task: Task{
-			Name: strings.TrimSuffix(entry.Name(), ".md"),
-			Path: filepath.Join(taskDirName, entry.Name()),
-		},
+		task:     task,
 		terminal: isTerminalTaskStatus(frontmatterValue(content, taskStatusKey)),
 	})
 }
@@ -776,4 +940,246 @@ func frontmatterLines(content []byte) []string {
 		}
 	}
 	return nil
+}
+
+// frontmatterList returns the entries of the list `key` in content's YAML
+// frontmatter block, or nil when there is no block, the key is absent, or the
+// key line carries the inline empty form `[]`.
+//
+// The entries are the lines that follow the key line while their trimmed form
+// starts with `-`; the first line that does not ends the list, so the next
+// frontmatter key terminates it. Parsed by hand for the same reason
+// frontmatterValue is: the block is a flat list of lines, and go.mod carries a
+// YAML parser only as an indirect dependency.
+//
+// ⚠️ The block comes from frontmatterLines, which excludes the closing `---`
+// delimiter. That matters here and not for frontmatterValue: the delimiter line
+// starts with `-`, so a reader that re-split the content itself would collect it
+// as an entry.
+func frontmatterList(content []byte, key string) []string {
+	var entries []string
+	inList := false
+	for _, line := range frontmatterLines(content) {
+		if !inList {
+			name, value, ok := strings.Cut(line, ":")
+			if !ok || strings.TrimSpace(name) != key {
+				continue
+			}
+			if strings.TrimSpace(value) == "[]" {
+				return nil
+			}
+			inList = true
+			continue
+		}
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "-") {
+			break
+		}
+		entries = append(entries, trimmed)
+	}
+	return entries
+}
+
+// wikilinkTitle returns the title one `goals:` list item names.
+//
+// It strips the list marker, the surrounding quotes, the `[[ ]]` brackets and
+// any `|alias`, then trims. ok is false when the entry carries no `[[ ]]` at
+// all — a bare title is **not** a valid entry — and false when the title is
+// empty after trimming. A quote is only stripped when both ends carry the same
+// one, so a title that legitimately ends in an apostrophe is left alone.
+func wikilinkTitle(raw string) (string, bool) {
+	entry := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(raw), "-"))
+	if len(entry) >= 2 {
+		first, last := entry[0], entry[len(entry)-1]
+		if (first == '"' || first == '\'') && first == last {
+			entry = strings.TrimSpace(entry[1 : len(entry)-1])
+		}
+	}
+	open := strings.Index(entry, "[[")
+	if open < 0 {
+		return "", false
+	}
+	rest := entry[open+2:]
+	end := strings.Index(rest, "]]")
+	if end < 0 {
+		return "", false
+	}
+	inner := rest[:end]
+	if alias := strings.Index(inner, "|"); alias >= 0 {
+		inner = inner[:alias]
+	}
+	title := strings.TrimSpace(inner)
+	if title == "" {
+		return "", false
+	}
+	return title, true
+}
+
+// firstGoal returns the first goal the task's `goals:` list names, as
+// `(title, path)`, or two empty strings when the task names no goal.
+//
+// ⚠️ The encoding, measured live over 1,619 goal-carrying tasks: every entry is
+// a **quoted Obsidian wikilink** — `- "[[Goal Title]]"` — with single-quoted
+// (`- '[[Goal Title]]'`) and 4-space-indented variants also occurring, and the
+// empty form is inline (`goals: []`). Quotes, `[[ ]]` brackets and any
+// `|alias` are stripped before the path is built. A bare title is not a valid
+// entry and yields nothing rather than being accepted as a title.
+//
+// ⚠️ A task carrying several goals names the **first** only; the rest are
+// unrendered, deliberately.
+//
+// ⚠️ The map is the existence guard, and it is the only thing that lets a
+// title become a path: the title comes from frontmatter, so a path built from
+// it unguarded would be a vault-derived string reaching the filesystem. The
+// first entry that is a valid wikilink *and* names a known goal wins.
+func firstGoal(content []byte, goals map[string]struct{}) (string, string) {
+	for _, entry := range frontmatterList(content, taskGoalsKey) {
+		title, ok := wikilinkTitle(entry)
+		if !ok {
+			continue
+		}
+		if _, exists := goals[title]; !exists {
+			continue
+		}
+		return title, filepath.Join(goalDirName, title+".md")
+	}
+	return "", ""
+}
+
+// goalTopic is the topic page a goal is listed by: its title and its path
+// relative to the vault root, e.g. `23 Topics/Attention Board Polish.md`.
+type goalTopic struct {
+	name string
+	path string
+}
+
+// readGoalTitles records on the index the titles the vault holds as goals: one
+// per `*.md` entry under `<vault>/24 Goals/`, keyed by the filename without its
+// `.md` suffix.
+//
+// A missing or unreadable directory yields an empty set, logged at V(2) —
+// fail-soft, because a vault with no goal directory is a legal state and must
+// resolve no goal rather than fail the page. Only os.ReadDir is needed: this
+// reads no file by name.
+func (t *taskIndex) readGoalTitles(vaultDir string) {
+	t.goals = map[string]struct{}{}
+	goalsDir := filepath.Join(vaultDir, goalDirName)
+	entries, err := os.ReadDir(goalsDir)
+	if err != nil {
+		glog.V(2).Infof("read vault goals dir %s failed: %v", goalsDir, err)
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+			continue
+		}
+		t.goals[strings.TrimSuffix(entry.Name(), ".md")] = struct{}{}
+	}
+}
+
+// readGoalTopics records on the index, per goal title, the topic page that lists
+// it, built from every `*.md` under `<vault>/23 Topics/`.
+//
+// ⚠️ The topic encoding, measured over all 12 topic pages in the live vault:
+// each uses exactly the heading `## Goals`, with entries as **bare wikilinks**
+// (`- [[Title]]`). The section runs from the line after that heading to the
+// next line whose trimmed form starts with `#`, or to the end of the file; only
+// lines inside it whose trimmed form starts with `-` contribute an entry. A
+// page with no `## Goals` heading, or with a `### Goals` subheading instead,
+// resolves no topic.
+//
+// ⚠️ A `## Goals` section **mixes goals and tasks** — `23 Topics/Attention
+// Board Polish.md` lists 8 entries, all tasks and zero goals, and four titles
+// exist as both a goal file and a task file. A title is therefore kept only
+// when it is in `goals`, the set read from `24 Goals/`; the section is never
+// trusted to contain only goals.
+//
+// ⚠️ No tie-break for a goal listed by several topics: the first topic found
+// wins, and with os.ReadDir's sorted order that is the lexicographically first
+// topic path. A title's topic is recorded only when it has none yet.
+//
+// It fails soft: an unreadable directory or file yields no topic for the
+// affected goals, logged at V(2)/V(3), never an error. Each file is read
+// through an os.Root handle opened once, so a name taken from the directory
+// listing can never walk out of the directory.
+func (t *taskIndex) readGoalTopics(ctx context.Context, vaultDir string) {
+	t.goalTopics = map[string]goalTopic{}
+	if len(t.goals) == 0 {
+		return
+	}
+	topicsDir := filepath.Join(vaultDir, topicDirName)
+	entries, err := os.ReadDir(topicsDir)
+	if err != nil {
+		glog.V(2).Infof("read vault topics dir %s failed: %v", topicsDir, err)
+		return
+	}
+	root, err := os.OpenRoot(topicsDir)
+	if err != nil {
+		glog.V(2).Infof("open vault topics dir %s failed: %v", topicsDir, err)
+		return
+	}
+	defer root.Close()
+	for _, entry := range entries {
+		select {
+		case <-ctx.Done():
+			glog.V(3).Infof("goal topic index build cancelled")
+			return
+		default:
+		}
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+			continue
+		}
+		content, err := root.ReadFile(entry.Name())
+		if err != nil {
+			glog.V(3).Infof("read vault topic %s failed: %v", entry.Name(), err)
+			continue
+		}
+		for _, title := range goalSectionTitles(content) {
+			if _, isGoal := t.goals[title]; !isGoal {
+				continue
+			}
+			if _, seen := t.goalTopics[title]; seen {
+				continue
+			}
+			t.goalTopics[title] = goalTopic{
+				name: strings.TrimSuffix(entry.Name(), ".md"),
+				path: filepath.Join(topicDirName, entry.Name()),
+			}
+		}
+	}
+}
+
+// goalSectionTitles returns the titles listed under the `## Goals` heading of a
+// topic page, as bare wikilinks (`- [[Title]]`).
+//
+// The section runs from the line after that heading to the next line whose
+// trimmed form starts with `#`, or to the end of the file; only lines inside it
+// whose trimmed form starts with `-` contribute an entry. A page with no
+// `## Goals` heading, or with a `### Goals` subheading instead, contributes
+// nothing — the subheading ends the scan before any entry is read.
+func goalSectionTitles(content []byte) []string {
+	var titles []string
+	inSection := false
+	lines := strings.Split(strings.ReplaceAll(string(content), "\r\n", "\n"), "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !inSection {
+			if trimmed == topicGoalsHeading {
+				inSection = true
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "#") {
+			break
+		}
+		if !strings.HasPrefix(trimmed, "-") {
+			continue
+		}
+		title, ok := wikilinkTitle(trimmed)
+		if !ok {
+			continue
+		}
+		titles = append(titles, title)
+	}
+	return titles
 }

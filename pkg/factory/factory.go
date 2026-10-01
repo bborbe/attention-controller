@@ -10,6 +10,7 @@ import (
 	libsentry "github.com/bborbe/sentry"
 
 	"github.com/bborbe/attention-controller/pkg"
+	"github.com/bborbe/attention-controller/pkg/buildidentity"
 	"github.com/bborbe/attention-controller/pkg/handler"
 )
 
@@ -54,6 +55,19 @@ func CreateAttentionGetHandler(store pkg.AttentionStore) http.Handler {
 	return handler.NewAttentionGetHandler(store)
 }
 
+// CreateAttentionAttemptGetHandler creates the handler that answers "did this
+// item's answer reach the session?" in one query, returning the derived
+// delivery status rather than the raw record.
+func CreateAttentionAttemptGetHandler(store pkg.AttentionStore) http.Handler {
+	return handler.NewAttentionAttemptGetHandler(store)
+}
+
+// CreateAttentionAttemptRecordHandler creates the handler the attempting arm
+// calls to record which arm tried and whether it delivered.
+func CreateAttentionAttemptRecordHandler(store pkg.AttentionStore) http.Handler {
+	return handler.NewAttentionAttemptRecordHandler(store)
+}
+
 // CreateAttentionPageHandler creates the read-only HTML page an operator opens
 // to see what currently needs attention, without Claude Code, vault-cli or the
 // task system.
@@ -76,13 +90,18 @@ func CreateAttentionGetHandler(store pkg.AttentionStore) http.Handler {
 // than read from an environment here for the same reason the provenance
 // directories are: which vault a host serves is a decision `main` owns, and an
 // empty directory renders no task link rather than failing.
+// buildIdentity is the running binary's own provenance, threaded to the page so
+// its footer can say which build is being read. It is passed rather than read
+// here for the same reason vaultDir is: it is a fact about the process, and
+// `pkg/factory` is pure plumbing that decides nothing.
 func CreateAttentionPageHandler(
 	store pkg.AttentionStore,
 	provenance pkg.ProvenanceResolver,
 	speakEnabled bool,
 	vaultDir string,
+	buildIdentity buildidentity.Identity,
 ) http.Handler {
-	return handler.NewAttentionPageHandler(store, provenance, speakEnabled, vaultDir)
+	return handler.NewAttentionPageHandler(store, provenance, speakEnabled, vaultDir, buildIdentity)
 }
 
 // CreateAttentionStreamHandler creates the board's live channel: the

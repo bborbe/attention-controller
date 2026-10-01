@@ -158,6 +158,40 @@ type AttentionStore interface {
 		answeredBy string,
 		answeredClient *AnsweredClient,
 	) (*Item, error)
+
+	// RecordAttempt stores what an attempting arm observed about one item's
+	// answer — which arm tried, and whether it delivered.
+	//
+	// ⚠️ It is called by the arm that ATTEMPTS delivery, never by the arm that
+	// records the answer. The answering script resolves a target and delivers
+	// nothing, so writing the attempt where the answer is recorded would make
+	// every answer read as attempted.
+	//
+	// The item must exist: an attempt against an unknown item is
+	// ErrItemNotFound rather than an orphan record, because the read surface
+	// joins the record to the item's CreatedAt and a record with nothing to
+	// join to could never be read back.
+	RecordAttempt(
+		ctx context.Context,
+		itemID ItemID,
+		carrier string,
+		outcome DeliveryOutcome,
+	) (*DeliveryAttempt, error)
+
+	// Delivery returns the derived delivery status for one item — the one query
+	// that answers "did my answer reach the session?".
+	//
+	// It returns the DERIVED status rather than the raw record, because
+	// `never_attempted` and `pre_trail_unknown` are stored nowhere: nobody is
+	// present to write them. They are separated by the item's own CreatedAt
+	// against DeliveryTrailEpoch, so an absent record is never the sole encoding
+	// of both.
+	//
+	// It deliberately does not key on State. Per the schema, a close is a clear
+	// rather than an answer, so a `closed` item with no `answered_at` was never
+	// delivered — and reading it as delivered would repeat the overstatement
+	// this record exists to remove.
+	Delivery(ctx context.Context, itemID ItemID) (*DeliveryReport, error)
 }
 
 // Items is a collection of Item.
