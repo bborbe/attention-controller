@@ -1,7 +1,13 @@
 ---
-status: draft
+status: completed
 spec: [003-bug-board-all-answered-renders-blank]
+summary: Added browser-suite cases pinning the all-answered board's empty statement, its absence while a card is open (including the live-stream half), and the toggle's statement round-trip; reconciled the stale spec counts and case lists in both scenario files.
+execution_id: attention-controller-confident-empty-exec-014-board-all-answered-browser-cases
+dark-factory-version: v0.196.0
 created: "2026-10-01T17:33:00Z"
+queued: "2026-10-01T18:11:31Z"
+started: "2026-10-01T18:11:33Z"
+completed: "2026-10-01T18:13:37Z"
 branch: dark-factory/bug-board-all-answered-renders-blank
 ---
 
@@ -11,11 +17,12 @@ branch: dark-factory/bug-board-all-answered-renders-blank
 - The browser suite now asserts, in the page as a browser renders it, that an all-answered board prints the "nothing needs attention" sentence and renders no card
 - A second case proves the opposite half: while an open card is rendered, that sentence does not appear
 - A third case proves the toggle round-trip: the sentence stands while every record is parked, and the record returns — with the sentence gone — when the switch is clicked
+- The absence-guard case also drives the live path, so the sentence is observed appearing on an already-open board when its last card is answered — the surface the operator actually reported, and the half a fresh-load-only fix would miss
 - The existing all-answered probe is tightened from "renders something" to "renders this sentence, exactly once, and no card"
 - The two scenario files that assert the suite's spec counts are brought back in line with the suite as it actually is
 - The suite's own preconditions are asserted rather than assumed, because the fixture store is shared across cases
 - No production code changes in this prompt — it adds browser evidence and reconciles the scenario bookkeeping
-- The falsification run against the pre-fix revision is recorded as an operator step
+- The falsification run against the pre-fix revision is recorded in the spec's operator-executable rung, not in this prompt
 </summary>
 
 <objective>
@@ -51,15 +58,19 @@ Read `/home/node/.claude/plugins/marketplaces/coding/docs/go-testing-guide.md` f
 
 3. **Add the absence-guard case.** Add a new `It` to `Describe("the attention board", …)`, named verbatim:
    `does not claim nothing needs the operator while an open card is rendered`
-   The store is shared, so the case establishes its own precondition: answer every id `openItemIDs()` returns, then `Eventually(openItemIDs).Should(BeEmpty())`; then push **one** fresh open card via `push(...)` with a new dedup key. Load the default view with `newPage("")`. Assert:
+   The store is shared, so the case establishes its own precondition: answer every id `openItemIDs()` returns, then `Eventually(openItemIDs).Should(BeEmpty())`; then push **one** fresh open card via `push("e2e: the open card", "e2e-absence-guard")`. ⚠️ The dedup key is named rather than left to choice: the store is shared across the whole run and eleven keys are already in use (`e2e-atomic-update`, `e2e-default-open`, `e2e-default-answered`, `e2e-none-open`, `e2e-none-answered`, `e2e-note-clears`, `e2e-note-survives`, `e2e-repush`, `e2e-speak`, `e2e-sse`, `e2e-switch`), and a colliding key yields a suppressed or twinned row — a failure for the wrong reason. Load the default view with `newPage("")`. Assert:
    - `Eventually(func() int { return rowCount(page, openID) }).Should(Equal(1))` — the open card is rendered;
    - `Consistently(func() int { return renderedCount(page) }).Should(Equal(1))` — exactly one item row, because every other record was answered and the default view parks answered records;
-   - `Consistently(func() int { return emptyStateCount(page) }).Should(Equal(0))` — the statement is absent.
-   ⚠️ The absence assertion is the load-bearing half: a board that prints the statement unconditionally satisfies the all-answered case and this one only if this one exists.
+   - `Consistently(func() int { return emptyStateCount(page) }).WithTimeout(5 * time.Second).Should(Equal(0))` — the statement is absent.
+   ⚠️ The absence assertion is the load-bearing half: a board that prints the statement unconditionally satisfies the all-answered case and this one only if this one exists. The explicit `WithTimeout` is deliberate here — Gomega's `Consistently` default window is 100 ms, which is too short to mean anything on a browser absence assertion.
+
+   Then close the **live** half of the same state, with the page still open: call `answer(openID)`, then assert `Eventually(func() int { return emptyStateCount(page) }).WithTimeout(5 * time.Second).Should(Equal(1))` and `Consistently(func() int { return renderedCount(page) }).WithTimeout(5 * time.Second).Should(Equal(0))`.
+
+   ⚠️ **This is the half no other case in either prompt observes, and it is why the paragraph is here.** Every other case loads a fresh page *after* the store changed, so a fix that wired only the load-time path would pass all of them while the live board — the surface the operator actually reported — stayed blank. ⚠️ **The frame is an `upsert`, not a `remove`:** the stream reads `ReadBoard` (`pkg/handler/attention-stream.go:213-214`), so an answered item stays in the rendered map with changed HTML and is sent as an upsert carrying the dimmed row. The ⚠️ at `attention-stream.go:204-212` records that this was deliberately changed from `Read`, which dropped answered items and sent a removal for them — do not reintroduce that. The client parks the dimmed row and the sibling prompt's `applyFilter()` call site renders the statement. This case is the spec's failure-modes row *"The stream removes the last open card while the page is open → The statement appears without a reload"*, where "removes" names the client-observed effect, not the wire frame.
 
 4. **Add the toggle round-trip case.** Add a new `It` to `Describe("the attention board", …)`, named verbatim:
    `replaces the empty statement with the parked record when the Hide answered switch is clicked`
-   Establish the all-answered precondition the same way as requirement 2 (answer every open id, assert `openItemIDs` is empty), then push one fresh card and `answer(itemID)` it, and assert `Eventually(openItemIDs).Should(BeEmpty())` again. Load the default view with `newPage("")`. Assert, in order:
+   Establish the all-answered precondition the same way as requirement 2 (answer every open id, assert `openItemIDs` is empty), then push one fresh card via `push("e2e: the toggle round-trip", "e2e-toggle-roundtrip")` and `answer(itemID)` it, and assert `Eventually(openItemIDs).Should(BeEmpty())` again. Load the default view with `newPage("")`. Assert, in order:
    - `Eventually(func() int { return rowCount(page, itemID) }).Should(Equal(0))` — the answered card is parked, not rendered;
    - `Eventually(func() int { return emptyStateCount(page) }).WithTimeout(5 * time.Second).Should(Equal(1))` — the statement stands in its place;
    - click the switch: `Expect(page.Locator(switchSelector).Click()).To(Succeed())`;
@@ -70,7 +81,7 @@ Read `/home/node/.claude/plugins/marketplaces/coding/docs/go-testing-guide.md` f
 
 5. **Reconcile `scenarios/001-board-browser-cases.md`.** It is stale in three ways: its description says "ten post-load JS behaviours", its `## Expected` list asserts `10 of 10 Specs`, and its case bullets enumerate only ten of the board's cases. Update it so that:
    - the description sentence says the board's **sixteen** post-load behaviours;
-   - the count bullet asserts `Suite reports \`23 of 23 Specs\` and \`ok github.com/bborbe/attention-controller/e2e\``, and notes that this is the **package total** (the board's cases plus the answer-shape cases in `e2e/answer-shapes_test.go`);
+   - the count bullet asserts `Suite reports \`23 of 23 Specs\` and \`ok github.com/bborbe/attention-controller/e2e\``, and notes that this is the **package total** (the board's cases plus the answer-shape cases in `e2e/answer-shapes_test.go`). ⚠️ **Also state how the count is read, because `make e2e` alone cannot show it:** that target runs `go test -tags e2e ./e2e/` **without `-v`**, and `go test` discards a passing package's stdout — the run prints only `ok github.com/bborbe/attention-controller/e2e`, and Ginkgo's `Ran N of N Specs` summary never appears. The bullet must name the command that does show it, `go test -mod=mod -tags e2e -count=1 -v ./e2e/` — otherwise the bullet asserts a line the operator cannot see, which is the "verification command that cannot fail" class in `50 Knowledge Base/Verification Commands That Cannot Fail.md`;
    - the `## Expected` list carries one bullet for **each** of the board's sixteen cases, named verbatim. The six the file does not currently name are:
      - `says nothing needs the operator rather than rendering a blank region when every item is answered`
      - `renders the running binary's own commit in the footer`
@@ -81,9 +92,9 @@ Read `/home/node/.claude/plugins/marketplaces/coding/docs/go-testing-guide.md` f
      For each new bullet, write the one-line observable the existing bullets use (what the case proves), in the file's existing voice. Keep the existing bullets and their ⚠️ notes.
    ⚠️ Re-count `It(` in `e2e/board_test.go` before writing "sixteen": the count is the file's actual number of cases after your two additions, not this prompt's arithmetic.
 
-6. **Reconcile `scenarios/002-board-answer-shapes.md`.** Its `## Expected` list asserts `19 of 19 Specs`. Change that bullet to assert `Suite reports \`23 of 23 Specs\``, and add the same short note that the count is the package total (the answer-shape cases plus the board's cases in `e2e/board_test.go`). Leave the answer-shape case bullets as they are — they are accurate.
+6. **Reconcile `scenarios/002-board-answer-shapes.md`.** Its `## Expected` list asserts `19 of 19 Specs`. Change that bullet to assert `Suite reports \`23 of 23 Specs\``, and add the same short note that the count is the package total (the answer-shape cases plus the board's cases in `e2e/board_test.go`). Leave the answer-shape case bullets as they are — they are accurate. ⚠️ **Carry requirement 5's observability clause here too:** `make e2e` runs `go test` without `-v` and swallows Ginkgo's summary, so name `go test -mod=mod -tags e2e -count=1 -v ./e2e/` as the command that prints the count.
 
-7. **Add the changelog entry.** In `CHANGELOG.md`, append one bullet to the existing `## Unreleased` section (do not create a second `## Unreleased`, and do not replace the `test:` bullet already there). Prefix `test:`, and name what changed: the browser suite now pins the all-answered board's statement by identity, count and text, its absence while an open card is rendered, and the toggle's statement round-trip; the suite's reported spec count is reconciled in both scenario files. Follow `/home/node/.claude/plugins/marketplaces/coding/docs/changelog-guide.md`.
+7. **Add the changelog entry.** In `CHANGELOG.md`, append one bullet to the existing `## Unreleased` section (do not create a second `## Unreleased`, and do not replace the `test:` bullet already there). Prefix `test:`, and name what changed: the browser suite now pins the all-answered board's statement by identity, count and text, its absence while an open card is rendered, the statement appearing on the live board when its last open card is answered over the stream, and the toggle's statement round-trip; the suite's reported spec count is reconciled in both scenario files. ⚠️ **Add one clause reconciling the two bullets:** the existing `test:` bullet describes the same case as a negative control in the present tense (*"the board currently renders neither a card nor the empty-state statement"*, *"expected to pass once the empty-state fix lands"*), so say that the new bullet **supersedes that probe's single `> 0` assertion** — otherwise a reader of `## Unreleased` is left reconciling two descriptions of one case. Follow `/home/node/.claude/plugins/marketplaces/coding/docs/changelog-guide.md`.
 
 8. Self-check before finishing: re-run `<verification>` and confirm every line of it passes, then walk each numbered requirement above against the change — in particular, confirm the e2e package still compiles under its build tag, both new case names are present verbatim, and both scenario files assert `23 of 23 Specs`.
 </requirements>
@@ -127,13 +138,30 @@ Confirm both scenario files assert the reconciled package total:
 Confirm the board's case count matches the scenario's claim (both must agree):
 - `grep -cE '^\s*It\(' e2e/board_test.go` — must print `16`.
 
+Confirm the description sentence was updated, not only the count bullet:
+- `grep -Fq 'sixteen post-load' scenarios/001-board-browser-cases.md` — must exit 0.
+
+⚠️ **A name registry checked only by count ships typos.** Scenario 001 now names sixteen cases verbatim, and every check above verifies only the number. Confirm each name you wrote is a real case by requiring it to appear in both files:
+
+```bash
+for name in \
+  "says nothing needs the operator rather than rendering a blank region when every item is answered" \
+  "renders the running binary's own commit in the footer" \
+  "applies a frame atomically, so a throw inside the update never leaves a half-updated row" \
+  "keeps a control working when a stream event replaces its row, so a re-rendered card still answers" \
+  "does not claim nothing needs the operator while an open card is rendered" \
+  "replaces the empty statement with the parked record when the Hide answered switch is clicked"; do
+  grep -Fq "$name" e2e/board_test.go && grep -Fq "$name" scenarios/001-board-browser-cases.md \
+    || { echo "FAIL: $name"; exit 1; }
+done
+echo "OK: all six names agree"
+```
+
 ⚠️ Do **not** use `-mod=vendor` anywhere: this repo does not commit `vendor/`, and `make precommit`'s `ensure` target removes it.
 
 ⚠️ Do **not** put a bare `git` command in this block: this worktree's `.git` is masked, so a `git` command dies with `fatal: not a git repository` — and the executor does not check verification exit codes, so the check would ship having never run.
 
 ⚠️ Do **not** put `make e2e` in this block: the Playwright e2e suite is operator-run, not container-run — the container has no browser.
 
-**Operator-only (host, after PR merge — do not run in the container):**
-- `make e2e` — the suite must be green with the two new cases and the tightened all-answered case, and must report `23 of 23 Specs`.
-- **Falsification run (the criterion that a probe cannot go red proves nothing):** check out the pre-fix revision the branch was cut from — `f6ae66a` (`release v0.32.1`) or `93b999e`, both recorded in the spec — and run `make e2e` there. It must exit non-zero with the all-answered case failing on the empty-state assertion while zero rows and zero statements render. The tightened case is falsifiable because `emptyStateCount` is `0` at that revision.
+⚠️ The browser run and the falsification run are operator-only — the container has no browser, so neither belongs in this block, and `docs/rules/prompt-writing.md` rejects an operator-only command here (or behind a labelled operator sub-block) as a Critical. They live in the spec's `## Verification` § "Operator-executable" rung (`specs/in-progress/003-bug-board-all-answered-renders-blank.md`); AC5 owns the falsification criterion. Do not run either here.
 </verification>

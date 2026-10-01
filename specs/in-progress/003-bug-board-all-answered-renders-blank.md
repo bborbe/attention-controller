@@ -1,8 +1,9 @@
 ---
-status: prompted
+status: verifying
 approved: "2026-10-01T17:26:02Z"
 generating: "2026-10-01T17:17:07Z"
 prompted: "2026-10-01T17:40:13Z"
+verifying: "2026-10-01T18:08:30Z"
 branch: dark-factory/bug-board-all-answered-renders-blank
 ---
 
@@ -124,7 +125,8 @@ It contradicts the behaviour the board already implements one branch over: the z
 
 Operator-only because the probe needs a browser and the final step replaces what a live server serves:
 
-- `make e2e` — the repo's own harness, which builds the real binary, serves a fixture store on an OS-assigned free port, and drives real Chromium. Observable: the suite is green, including the all-answered case that is red at the pre-fix revision.
+- `make e2e` — the repo's own harness, which builds the real binary, serves a fixture store on an OS-assigned free port, and drives real Chromium. Observable: the suite is green and reports `23 of 23 Specs` (the package total: 16 board cases in `e2e/board_test.go` plus 7 answer-shape cases in `e2e/answer-shapes_test.go`), including the all-answered case that is red at the pre-fix revision.
+- **Falsification run — a probe that cannot go red proves nothing.** Check out the pre-fix revision the branch was cut from — `f6ae66a` (`release v0.32.1`) or `93b999e`, both recorded in `# Results` — and run `make e2e` there. Observable: it exits non-zero, with the all-answered case failing on the empty-state assertion while zero rows and zero statements render. The tightened case is falsifiable because `emptyStateCount` is `0` at that revision. ⚠️ This step is operator-only (it needs a browser) and is recorded here rather than in any prompt's `<verification>` block, which `docs/rules/prompt-writing.md` rejects as a Critical.
 - `go build -o ~/.local/bin/attention-controller . && launchctl kickstart -k gui/$UID/com.bborbe.attention-controller` — the deploy. **Production-touching:** it restarts the live attention board and briefly drops in-flight reads for every manager's ask. ⚠️ **`make buca` is not the deploy here** — its apply target iterates `$(DIRS)`, which is empty for this repo (no `k8s/` tree), so it applies nothing while reporting success. Rollback: `cd ~/Documents/workspaces/attention-controller && git checkout master && go build -o ~/.local/bin/attention-controller . && launchctl kickstart -k gui/$UID/com.bborbe.attention-controller`.
 - `curl -s http://127.0.0.1:18080/` — observable: the served page carries the empty-state element when the store holds no open items, and carries none while an open card is rendered.
 
