@@ -84,7 +84,16 @@ func newAttentionPageRow(
 		TopicURL:   vaultFileURL(vaultName, provenance.TopicPath),
 	}
 	row.Message, row.Ack = affordance(item.AnswerMechanism)
-	row.Decide = item.AnswerMechanism == pkg.PermissionAnswerMechanism
+	// The Allow / Deny pair renders only for a headless worker's park. A tab
+	// worker's gate is answered by pressing the prompt in the session's own pane,
+	// so a board verdict there would be permission laundering — the exact failure
+	// the schema forbids — while a headless worker has no pane of its own, so the
+	// board is the one place its gate can honestly be answered. The fact is read
+	// fail-closed from the supervisor's spawn ledger: every uncertainty about a
+	// session's mode (an absent record, an unreadable directory, an unparseable
+	// file, an unrecognised mode) leaves it false and renders no control, whose
+	// worst case is a missing control rather than a control on a tab worker's gate.
+	row.Decide = item.AnswerMechanism == pkg.PermissionAnswerMechanism && provenance.Headless
 	if item.State == pkg.AnsweredState {
 		// The board renders the record of what was answered so the operator can
 		// see the answer standing in their name. `answered_by` is a caller
