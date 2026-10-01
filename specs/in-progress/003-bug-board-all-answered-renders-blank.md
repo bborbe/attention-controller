@@ -1,6 +1,8 @@
 ---
-status: approved
-approved: "2026-10-01T17:15:45Z"
+status: prompted
+approved: "2026-10-01T17:26:02Z"
+generating: "2026-10-01T17:17:07Z"
+prompted: "2026-10-01T17:40:13Z"
 branch: dark-factory/bug-board-all-answered-renders-blank
 ---
 
