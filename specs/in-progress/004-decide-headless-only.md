@@ -1,8 +1,9 @@
 ---
-status: prompted
+status: verifying
 approved: "2026-10-01T20:23:45Z"
 generating: "2026-10-01T20:24:52Z"
 prompted: "2026-10-01T20:36:28Z"
+verifying: "2026-10-01T20:49:32Z"
 branch: dark-factory/decide-headless-only
 ---
 
