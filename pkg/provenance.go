@@ -85,6 +85,21 @@ type Provenance struct {
 	// when the item names no session — an unresolvable name renders absent rather
 	// than as a stand-in, the rule every other field of this struct follows.
 	SessionName string
+	// Headless reports whether the supervisor's spawn ledger records this item's
+	// session as a headless worker — one with no pane of its own, whose park
+	// lives only in the memory of the manager session that spawned it.
+	//
+	// ⚠️ It is a control gate, not a line fact, and it is deliberately NOT a
+	// member of Resolved(). Resolved() gates whether the provenance div renders
+	// at all, and its members are the values that div draws; a boolean that
+	// draws nothing would render an empty `<div class="provenance">` on a card
+	// whose only resolved fact is headless.
+	//
+	// ⚠️ Fail-closed: an absent record, an unreadable directory, an unparseable
+	// file or an unrecognised mode all leave this false, and false renders no
+	// answering control. The opposite default would put a board control on a tab
+	// worker's gate — the permission laundering this field exists to remove.
+	Headless bool
 }
 
 // Resolved reports whether anything about this item's origin could be told.
@@ -133,6 +148,21 @@ type sessionName struct {
 	Source string
 }
 
+// headlessSessionMode is the ledger's marker for a worker with no pane of its
+// own. It is the only mode that renders an answering control; every other
+// value — `interactive` and anything the ledger adds later — reads as not
+// headless, the fail-closed direction.
+const headlessSessionMode = "headless"
+
+// spawnRecord is one `<session-id>.json` in the supervisor's spawn ledger,
+// reduced to the two fields the page reads. The ledger is written by the
+// supervisor and only read here; nothing about the headless/tab split is
+// stored on the item.
+type spawnRecord struct {
+	SessionID string `json:"session_id"`
+	Mode      string `json:"mode"`
+}
+
 //counterfeiter:generate -o ../mocks/provenance-resolver.go --fake-name ProvenanceResolver . ProvenanceResolver
 
 // ProvenanceResolver resolves where each item came from.
@@ -146,8 +176,9 @@ type ProvenanceResolver interface {
 }
 
 // NewProvenanceResolver creates a resolver reading the event logs under
-// stateDir, the session registry under sessionsDir, panes from the lister, and
-// the vault tasks from the index.
+// stateDir, the session registry under sessionsDir, the supervisor's spawn
+// ledger under spawnDir, panes from the lister, and the vault tasks from the
+// index.
 //
 // ⚠️ The index is built by the caller, once, and handed in — it is never built
 // here and never inside Resolve. The live vault holds over 8,000 task files, so
@@ -157,12 +188,14 @@ type ProvenanceResolver interface {
 func NewProvenanceResolver(
 	stateDir string,
 	sessionsDir string,
+	spawnDir string,
 	panes PaneLister,
 	tasks TaskIndex,
 ) ProvenanceResolver {
 	return &provenanceResolver{
 		stateDir:    stateDir,
 		sessionsDir: sessionsDir,
+		spawnDir:    spawnDir,
 		panes:       panes,
 		tasks:       tasks,
 	}
@@ -171,6 +204,7 @@ func NewProvenanceResolver(
 type provenanceResolver struct {
 	stateDir    string
 	sessionsDir string
+	spawnDir    string
 	panes       PaneLister
 	tasks       TaskIndex
 }
@@ -236,6 +270,7 @@ func (r *provenanceResolver) Resolve(ctx context.Context, items Items) Provenanc
 		glog.V(2).Infof("pane listing unavailable, rendering no pane: %v", panesErr)
 	}
 	names := r.sessionNames(ctx)
+	modes := r.sessionModes(ctx)
 
 	// One read of each producer's log, reused across that producer's items.
 	// A session with six open items would otherwise re-read the same file six
@@ -306,6 +341,16 @@ func (r *provenanceResolver) Resolve(ctx context.Context, items Items) Provenanc
 		if name, ok := r.sessionNameFor(item, names); ok {
 			provenance := resolved[item.ItemID]
 			provenance.SessionName = name
+			resolved[item.ItemID] = provenance
+		}
+		// ⚠️ The headless fact is independent of the pane, the task and the name, so
+		// it runs on every item, outside every branch above, with the same
+		// read-modify-write the name block uses. The ledger is read once, before the
+		// loop — never once per item — so a 1,070-record directory is one read per
+		// board refresh rather than one per card.
+		if mode := modes[sessionIDFromItem(item)]; mode == headlessSessionMode {
+			provenance := resolved[item.ItemID]
+			provenance.Headless = true
 			resolved[item.ItemID] = provenance
 		}
 	}
@@ -673,6 +718,64 @@ func (r *provenanceResolver) sessionNames(ctx context.Context) map[string]sessio
 		}
 	}
 	return names
+}
+
+// sessionModes reads the supervisor's spawn ledger as `session id -> mode`.
+//
+// ⚠️ This is the only source that separates a headless worker from a tab
+// worker: nothing on the item does. A headless worker inherits its spawner's
+// WEZTERM_PANE, so its item carries the spawner's pane id and reads as
+// routable exactly like a tab worker's.
+//
+// It fails closed in every direction: an absent or unreadable directory, a
+// missing record, an unparseable record and a mode outside the ledger's known
+// set all leave the session absent from the map, and an absent session
+// renders no control. The read is confined beneath spawnDir through an
+// os.Root handle, so a name taken from the directory listing can never walk
+// out of it; the item's session id is only ever a map key, never a path
+// segment.
+func (r *provenanceResolver) sessionModes(ctx context.Context) map[string]string {
+	modes := map[string]string{}
+	if r.spawnDir == "" {
+		return modes
+	}
+	entries, err := os.ReadDir(r.spawnDir)
+	if err != nil {
+		glog.V(2).Infof("read spawn ledger %s failed: %v", r.spawnDir, err)
+		return modes
+	}
+	root, err := os.OpenRoot(r.spawnDir)
+	if err != nil {
+		glog.V(2).Infof("open spawn ledger %s failed: %v", r.spawnDir, err)
+		return modes
+	}
+	defer root.Close()
+	for _, entry := range entries {
+		select {
+		case <-ctx.Done():
+			glog.V(3).Infof("spawn ledger scan cancelled")
+			return modes
+		default:
+		}
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		content, err := root.ReadFile(entry.Name())
+		if err != nil {
+			glog.V(3).Infof("read spawn ledger entry %s failed: %v", entry.Name(), err)
+			continue
+		}
+		var record spawnRecord
+		if err := json.Unmarshal(content, &record); err != nil {
+			glog.V(3).Infof("parse spawn ledger entry %s failed: %v", entry.Name(), err)
+			continue
+		}
+		if record.SessionID == "" {
+			continue
+		}
+		modes[record.SessionID] = record.Mode
+	}
+	return modes
 }
 
 // Vault layout: every task file lives under this directory and records its

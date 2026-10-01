@@ -49,6 +49,7 @@ type application struct {
 	HeartbeatWindow   string `required:"false" arg:"heartbeat-window"    env:"HEARTBEAT_WINDOW"    usage:"how stale a heartbeat:<path> mtime may be before the producer counts as finished"                                                            default:"15m"`
 	SessionsDir       string `required:"false" arg:"sessions-dir"        env:"SESSIONS_DIR"        usage:"directory holding the session registry used to resolve session:<id> liveness"`
 	AttentionStateDir string `required:"false" arg:"attention-state-dir" env:"ATTENTION_STATE_DIR" usage:"directory holding the producers' event logs the page resolves item provenance from"`
+	SpawnStateDir     string `required:"false" arg:"spawn-state-dir"     env:"SPAWN_STATE_DIR"     usage:"directory holding the supervisor's spawn ledger the page reads each session's headless/interactive mode from"`
 	// VaultDir is the directory holding the vault whose task files record the
 	// session each task belongs to. ⚠️ Deliberately without a `default:`, unlike
 	// SessionsDir and AttentionStateDir: an unset vault is a legitimate state,
@@ -195,15 +196,34 @@ func (a *application) createProvenanceResolver(
 		}
 		sessionsDir = resolved
 	}
+	spawnDir := a.SpawnStateDir
+	if spawnDir == "" {
+		resolved, err := defaultSpawnStateDir(ctx)
+		if err != nil {
+			glog.Warningf("resolve spawn state dir failed: %v", err)
+		}
+		spawnDir = resolved
+	}
 	// ⚠️ The task index is built here, once, and handed to the resolver — never
 	// built per page. The vault holds thousands of task files, and the page is
 	// served continuously by the SSE stream.
 	return pkg.NewProvenanceResolver(
 		stateDir,
 		sessionsDir,
+		spawnDir,
 		panes,
 		pkg.NewTaskIndex(ctx, a.VaultDir),
 	)
+}
+
+// defaultSpawnStateDir resolves ~/.local/state/claude-supervisor/sessions, the
+// directory holding the supervisor's spawn ledger.
+func defaultSpawnStateDir(ctx context.Context) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", errors.Wrap(ctx, err, "resolve home dir failed")
+	}
+	return filepath.Join(home, ".local", "state", "claude-supervisor", "sessions"), nil
 }
 
 // defaultAttentionStateDir resolves ~/.claude/state/attention, the directory
