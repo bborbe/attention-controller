@@ -568,6 +568,140 @@ var _ = Describe("Attention page board controls", func() {
 			},
 		)
 
+		// ⚠️ Added 2026-10-01 with the dimmed-record corner-X fix. The dimmed
+		// record card is a record, not a prompt, so it carries no control that
+		// offers an answer — the corner X included, because on a message card the
+		// X's act is the Dismiss / clear and without the (not .Dimmed) conjunct
+		// its fall-through closes the item and deletes the record the card exists
+		// to preserve.
+		//
+		// ⚠️ Both halves sit in ONE render, deliberately, for the read-aloud
+		// spec's reason: the negative alone is also satisfied by a fix that
+		// removed the control from EVERY row.
+		//
+		// ⚠️ Every assertion is scoped to the row's own block via rowBlock, never
+		// the whole body: `data-corner-x` also appears in the page's own inline
+		// script (the document-delegated dispatch handler), so a body-wide
+		// substring check finds a copy whether the card renders the button or not
+		// and can never fail.
+		It(
+			"withholds the corner X from every dimmed card and keeps it on every open row, in one render",
+			func() {
+				// Two local builders: the outer permissionRequest() carries a fixed
+				// dedup key, and the open permission row must coexist with the
+				// dimmed one rather than dedup into it.
+				permissionItem := func(
+					dedupKey pkg.DedupKey,
+					payload pkg.Payload,
+				) pkg.PushRequest {
+					producerID := pkg.ProducerID("producer-" + dedupKey.String())
+					return pkg.PushRequest{
+						ProducerID:      producerID,
+						ProducerKind:    pkg.SessionProducerKind,
+						LivenessRef:     pkg.LivenessRef("session:" + producerID.String()),
+						DedupKey:        dedupKey,
+						InterruptClass:  "approve",
+						Payload:         payload,
+						AnswerMechanism: pkg.PermissionAnswerMechanism,
+					}
+				}
+				ackItem := func(dedupKey pkg.DedupKey, payload pkg.Payload) pkg.PushRequest {
+					producerID := pkg.ProducerID("producer-" + dedupKey.String())
+					return pkg.PushRequest{
+						ProducerID:      producerID,
+						ProducerKind:    pkg.SessionProducerKind,
+						LivenessRef:     pkg.LivenessRef("session:" + producerID.String()),
+						DedupKey:        dedupKey,
+						InterruptClass:  "approve",
+						Payload:         payload,
+						AnswerMechanism: pkg.AckAnswerMechanism,
+					}
+				}
+
+				dimmedMessage, err := store.Push(
+					ctx,
+					messageItem("x-dimmed-msg", "Which surface?"),
+				)
+				Expect(err).To(BeNil())
+				answer := pkg.Answer{Kind: pkg.TextAnswerKind, Value: "the board"}
+				_, err = store.Answer(
+					ctx,
+					dimmedMessage.ItemID,
+					"attention-board",
+					"",
+					"",
+					&answer,
+					nil,
+					nil,
+				)
+				Expect(err).To(BeNil())
+
+				dimmedPermission, err := store.Push(
+					ctx,
+					permissionItem("x-dimmed-gate", "Deploy to prod?"),
+				)
+				Expect(err).To(BeNil())
+				_, err = store.Answer(
+					ctx,
+					dimmedPermission.ItemID,
+					"operator",
+					"",
+					pkg.AllowDecision,
+					nil,
+					nil,
+					nil,
+				)
+				Expect(err).To(BeNil())
+
+				openMessage, err := store.Push(ctx, messageItem("x-open-msg", "Still open?"))
+				Expect(err).To(BeNil())
+				openAck, err := store.Push(
+					ctx,
+					ackItem("x-open-ack", "the nightly sweep failed"),
+				)
+				Expect(err).To(BeNil())
+				openPermission, err := store.Push(
+					ctx,
+					permissionItem("x-open-gate", "Deploy to staging?"),
+				)
+				Expect(err).To(BeNil())
+
+				body := render()
+
+				// ⚠️ Positive control first, on all five: every dimmed row is
+				// present via dimmedRow and carries its own body, and every open
+				// row is proven present by its rowBlock lookup in the positive
+				// half below — which fails if the row is absent. A page that
+				// rendered no rows, or that dimmed every row, fails here rather
+				// than passing vacuously.
+				Expect(dimmedRow(body, dimmedMessage.ItemID)).To(BeTrue())
+				Expect(rowBlock(body, dimmedMessage.ItemID)).To(ContainSubstring("record-answer"))
+				Expect(dimmedRow(body, dimmedPermission.ItemID)).To(BeTrue())
+				Expect(
+					rowBlock(body, dimmedPermission.ItemID),
+				).To(ContainSubstring("decision: allow"))
+				Expect(dimmedRow(body, openMessage.ItemID)).To(BeFalse())
+				Expect(dimmedRow(body, openAck.ItemID)).To(BeFalse())
+				Expect(dimmedRow(body, openPermission.ItemID)).To(BeFalse())
+
+				// ⚠️ The dimmed-permission half is load-bearing: the live board
+				// cannot exhibit it (measured 2026-09-28 — of 252 dimmed rows
+				// served, 252 were `message` and 0 were `permission`), so this
+				// spec is that half's only proof.
+				Expect(
+					rowBlock(body, dimmedMessage.ItemID),
+				).NotTo(ContainSubstring("data-corner-x"))
+				Expect(
+					rowBlock(body, dimmedPermission.ItemID),
+				).NotTo(ContainSubstring("data-corner-x"))
+
+				// Every open row keeps the X, whatever its mechanism.
+				Expect(rowBlock(body, openMessage.ItemID)).To(ContainSubstring("data-corner-x"))
+				Expect(rowBlock(body, openAck.ItemID)).To(ContainSubstring("data-corner-x"))
+				Expect(rowBlock(body, openPermission.ItemID)).To(ContainSubstring("data-corner-x"))
+			},
+		)
+
 		// SC4 — the fix must not smuggle some OTHER control onto the dimmed card
 		// in the speaker's place. The schema's own list at line 234 names the form,
 		// the option row, `Other…`, Dismiss, Next and the acknowledge control; the
