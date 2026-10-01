@@ -1,8 +1,13 @@
 ---
-status: approved
+status: completed
 spec: [004-decide-headless-only]
+summary: 'Recorded the headless permission-gate change as a feat: bullet under the existing ## Unreleased section and confirmed make test and make precommit both exit 0'
+execution_id: attention-controller-headless-decide-exec-018-spec-004-changelog
+dark-factory-version: v0.196.0
 created: "2026-10-01T20:27:52Z"
 queued: "2026-10-01T20:36:35Z"
+started: "2026-10-01T20:46:33Z"
+completed: "2026-10-01T20:49:31Z"
 branch: dark-factory/decide-headless-only
 ---
 
