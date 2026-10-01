@@ -178,6 +178,9 @@ var _ = Describe("AttentionPageHandler", func() {
 
 		Expect(resp.Code).To(Equal(http.StatusOK))
 		Expect(strings.Count(resp.Body.String(), "data-item-id=")).To(Equal(0))
+		Expect(
+			strings.Count(resp.Body.String(), `<p class="empty">Nothing needs attention.</p>`),
+		).To(Equal(1))
 	})
 
 	It("escapes producer-supplied text instead of emitting it raw", func() {

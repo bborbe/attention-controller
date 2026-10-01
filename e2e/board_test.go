@@ -359,6 +359,50 @@ func rowCount(page playwright.Page, itemID string) int {
 	return count
 }
 
+// openItemIDs returns the ids the store still counts as open, read through the
+// list API an arm reads rather than through the board.
+//
+// The suite starts one binary against one datadir for the whole run, so items
+// pushed by earlier specs are still in the store. A case that needs a board
+// with nothing open therefore establishes that precondition itself instead of
+// assuming a fresh store.
+func openItemIDs() []string {
+	resp, err := http.Get(baseURL + "api/1.0/attention")
+	Expect(err).NotTo(HaveOccurred())
+	defer resp.Body.Close()
+	content, _ := io.ReadAll(resp.Body)
+	Expect(resp.StatusCode).To(Equal(http.StatusOK), "list failed: %s", string(content))
+	var items []struct {
+		ItemID string `json:"item_id"`
+	}
+	Expect(json.Unmarshal(content, &items)).To(Succeed())
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item.ItemID)
+	}
+	return ids
+}
+
+// renderedCount returns how many item rows the board renders, whichever items
+// they belong to. Unlike rowCount it names no item, which is what makes it
+// usable as the positive half of an assertion about a whole board.
+func renderedCount(page playwright.Page) int {
+	count, err := page.Locator("li.item").Count()
+	Expect(err).NotTo(HaveOccurred())
+	return count
+}
+
+// emptyStateCount returns how many empty-state statements the board renders.
+// The statement is a rendering fact: the served markup carries it only when the
+// server rendered no rows at all, and the client re-creates it only from
+// collapseIfEmpty. So a count of zero on a board that also renders no rows is
+// the blank region itself.
+func emptyStateCount(page playwright.Page) int {
+	count, err := page.Locator("p.empty").Count()
+	Expect(err).NotTo(HaveOccurred())
+	return count
+}
+
 // newPage opens a fresh page on the board. A page per spec keeps the parked-set
 // and filter state from leaking between cases.
 func newPage(path string) playwright.Page {
@@ -506,6 +550,130 @@ var _ = Describe("the attention board", func() {
 		Eventually(func() int { return rowCount(page, openID) }).Should(Equal(1))
 		Consistently(func() int { return rowCount(page, answeredID) }).Should(Equal(0))
 	})
+
+	// ⚠️ The operator's report stated as the invariant it actually is: "if
+	// everything is done ... we should show a something". A board that renders
+	// neither a card nor the empty-state statement is the failure — the region
+	// below the control row goes blank and certifies nothing.
+	//
+	// The store is shared across the suite, so the case makes its own
+	// precondition: it answers every item the board still counts as open. What
+	// is left are rows that exist only as dimmed records, which the default view
+	// parks — the state the operator's board was in when they reported it.
+	It(
+		"says nothing needs the operator rather than rendering a blank region when every item is answered",
+		func() {
+			for _, itemID := range openItemIDs() {
+				answer(itemID)
+			}
+			Eventually(openItemIDs).Should(BeEmpty())
+
+			page := newPage("")
+			defer func() { _ = page.Close() }()
+
+			// The empty statement is what the default view owes once every record
+			// is parked, and it is pinned by identity, count and text: exactly one
+			// `p.empty`, zero item rows, and the sentence the zero-item path
+			// renders. A board that rendered nothing at all cannot satisfy the
+			// first of these, which is what the earlier `renderedCount + empty`
+			// `> 0` probe could not tell apart from a blank region.
+			Eventually(func() int { return emptyStateCount(page) }).
+				WithTimeout(5 * time.Second).Should(Equal(1))
+			Consistently(func() int { return renderedCount(page) }).Should(Equal(0))
+
+			text, err := page.Locator("p.empty").TextContent()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(strings.TrimSpace(text)).To(Equal("Nothing needs attention."))
+		},
+	)
+
+	// ⚠️ The absence half, and the load-bearing one: a board that printed the
+	// statement unconditionally would satisfy the all-answered case above and
+	// only fail here. The store is shared, so the case makes its own
+	// precondition — answer every open id — then pushes exactly one fresh card,
+	// which the default view renders.
+	//
+	// The dedup key is named rather than left to choice: a collision with a key
+	// another case already uses yields a suppressed or twinned row, which is a
+	// failure for the wrong reason.
+	//
+	// ⚠️ The second paragraph closes the LIVE half, and it is the half no other
+	// case in this suite observes. Every other case loads a fresh page *after*
+	// the store changed, so a fix wired only into the load path would pass them
+	// all while the live board — the surface the operator actually reported —
+	// stayed blank. The frame is an upsert, not a remove: the stream reads
+	// ReadBoard (pkg/handler/attention-stream.go), so an answered item stays in
+	// the rendered map with changed HTML and is sent as an upsert carrying the
+	// dimmed row. The client parks it and renders the statement.
+	It(
+		"does not claim nothing needs the operator while an open card is rendered",
+		func() {
+			for _, itemID := range openItemIDs() {
+				answer(itemID)
+			}
+			Eventually(openItemIDs).Should(BeEmpty())
+
+			openID := push("e2e: the open card", "e2e-absence-guard")
+
+			page := newPage("")
+			defer func() { _ = page.Close() }()
+
+			// The leading positive is load-bearing: without it the absence below
+			// would also be satisfied by a card that never rendered at all.
+			Eventually(func() int { return rowCount(page, openID) }).Should(Equal(1))
+			// Exactly one row, because every other record was answered and the
+			// default view parks answered records.
+			Consistently(func() int { return renderedCount(page) }).Should(Equal(1))
+			// The statement is absent while an open card stands. The explicit
+			// WithTimeout is deliberate: Consistently's default window is 100 ms,
+			// which is too short to mean anything on a browser absence assertion.
+			Consistently(func() int { return emptyStateCount(page) }).
+				WithTimeout(5 * time.Second).Should(Equal(0))
+
+			// The live half: answering the last open card on an already-open
+			// board must render the statement without a reload.
+			answer(openID)
+			Eventually(func() int { return emptyStateCount(page) }).
+				WithTimeout(5 * time.Second).Should(Equal(1))
+			Consistently(func() int { return renderedCount(page) }).
+				WithTimeout(5 * time.Second).Should(Equal(0))
+		},
+	)
+
+	// ⚠️ The toggle round-trip, and the guard for the frozen constraint: an
+	// implementation that discharged the parked set to reach the empty state
+	// would satisfy the all-answered case and fail here, because the record
+	// could no longer be restored. The store is shared, so the case establishes
+	// its own all-answered precondition, then pushes and answers one fresh card
+	// so the toggle has exactly one parked record to restore.
+	It(
+		"replaces the empty statement with the parked record when the Hide answered switch is clicked",
+		func() {
+			for _, itemID := range openItemIDs() {
+				answer(itemID)
+			}
+			Eventually(openItemIDs).Should(BeEmpty())
+
+			itemID := push("e2e: the toggle round-trip", "e2e-toggle-roundtrip")
+			answer(itemID)
+			Eventually(openItemIDs).Should(BeEmpty())
+
+			page := newPage("")
+			defer func() { _ = page.Close() }()
+
+			// The answered card is parked, not rendered, and the statement stands
+			// in its place.
+			Eventually(func() int { return rowCount(page, itemID) }).Should(Equal(0))
+			Eventually(func() int { return emptyStateCount(page) }).
+				WithTimeout(5 * time.Second).Should(Equal(1))
+
+			Expect(page.Locator(switchSelector).Click()).To(Succeed())
+
+			// The record returns and the statement is gone.
+			Eventually(func() int { return rowCount(page, itemID) }).Should(Equal(1))
+			Eventually(func() int { return emptyStateCount(page) }).Should(Equal(0))
+		},
+	)
 
 	It("renders the answered card too when the view is hide=none", func() {
 		openID := push("e2e: the open card", "e2e-none-open")

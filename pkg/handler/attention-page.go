@@ -1170,6 +1170,7 @@ function replayFailure(row) {
     if (!on) { unpark(); return; }
     var rows = document.querySelectorAll('li.item.dimmed');
     for (var i = 0; i < rows.length; i++) { park(rows[i]); }
+    showEmptyStatement();
   }
   function forget(itemID) {
     parked = parked.filter(function (entry) { return entry.id !== itemID; });
@@ -1211,6 +1212,20 @@ function replayFailure(row) {
        the parked records, and collapsing here would take away the list they
        restore into. */
     if (parked.length > 0) { return; }
+    var empty = document.createElement('p');
+    empty.className = 'empty';
+    empty.textContent = 'Nothing needs attention.';
+    list.parentNode.replaceChild(empty, list);
+  }
+  /* Renders the board's empty-state paragraph in place of an emptied list
+     even while rows are parked. collapseIfEmpty() keeps its parked guard — a
+     board the filter emptied is not an empty board — so it cannot reach this
+     state; this function does, without touching parked: unpark() rebuilds the
+     list through ensureList(), so the toggle still restores every parked row. */
+  function showEmptyStatement() {
+    var list = document.querySelector('ul.items');
+    if (!list || list.querySelector('li.item')) { return; }
+    if (document.querySelector('p.empty')) { return; }
     var empty = document.createElement('p');
     empty.className = 'empty';
     empty.textContent = 'Nothing needs attention.';
@@ -1324,6 +1339,7 @@ function replayFailure(row) {
         var row = findRow(change.item_id);
         if (row) { row.remove(); }
         collapseIfEmpty();
+        showEmptyStatement();
         return;
       }
       upsertRow(change.item_id, change.html);
