@@ -734,6 +734,16 @@ func (r *provenanceResolver) sessionNames(ctx context.Context) map[string]sessio
 // os.Root handle, so a name taken from the directory listing can never walk
 // out of it; the item's session id is only ever a map key, never a path
 // segment.
+//
+// ⚠️ It calls `os.ReadDir` / `os.OpenRoot` / `json.Unmarshal` directly rather
+// than taking them as injected dependencies, and that is deliberate rather than
+// an oversight: this file **is** the I/O boundary. `sessionNames`, `readEvents`
+// and `readGoalTopics` beside it all read their own directory the same way, and
+// the resolver takes the whole page at once precisely so those host-wide reads
+// happen once per refresh instead of once per row. Injecting a filesystem
+// abstraction here would make this method the only one of the four that is
+// shaped differently, and would move the seam away from the place the batching
+// argument lives.
 func (r *provenanceResolver) sessionModes(ctx context.Context) map[string]string {
 	modes := map[string]string{}
 	if r.spawnDir == "" {
