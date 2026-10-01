@@ -73,6 +73,7 @@ const (
 var (
 	tmpRoot     string
 	sessionsDir string
+	spawnDir    string
 	binPath     string
 	baseURL     string
 	proc        *exec.Cmd
@@ -147,6 +148,27 @@ func writeSessionRegistry(dir string) error {
 	return os.WriteFile(filepath.Join(dir, "e2e.json"), content, 0o644)
 }
 
+// writeSpawnLedger creates a hermetic spawn ledger holding one headless
+// record for the fixture session, and returns its directory.
+//
+// It is deliberately a temp directory rather than the operator's real
+// ~/.local/state/claude-supervisor/sessions: the ledger is what decides
+// whether a permission card renders its Allow / Deny pair, and a fixture
+// session absent from the real ledger would lose the control the permission
+// answer-shape cases click. The record must be `headless` — a fixture that
+// read as a tab worker would turn scenario 002's "renders the two verdict
+// buttons" red.
+func writeSpawnLedger(dir, sessionID, mode string) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(
+		filepath.Join(dir, sessionID+".json"),
+		[]byte(`{"session_id":"`+sessionID+`","mode":"`+mode+`"}`),
+		0o644,
+	)
+}
+
 // freePort reserves a port by binding it and closing the listener. The gap
 // between close and the binary's own bind is small and the start path retries.
 func freePort() (int, error) {
@@ -167,13 +189,14 @@ func buildBinary(repoRoot, out string) error {
 	return cmd.Run()
 }
 
-// startBinary launches the real binary against the temp datadir and the
-// hermetic registry, and waits for /healthz.
+// startBinary launches the real binary against the temp datadir, the hermetic
+// registry and the hermetic spawn ledger, and waits for /healthz.
 func startBinary(port int) error {
 	proc = exec.Command(binPath,
 		"-listen", fmt.Sprintf("127.0.0.1:%d", port),
 		"-datadir", filepath.Join(tmpRoot, "data"),
 		"-sessions-dir", sessionsDir,
+		"-spawn-state-dir", spawnDir,
 		"-tts-url", tts.server.URL,
 		"-attention-state-dir", filepath.Join(tmpRoot, "state"),
 		// Empty disables the legacy pane-addressed jump listener. It is passed
@@ -211,6 +234,8 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 	sessionsDir = filepath.Join(tmpRoot, "sessions")
 	Expect(writeSessionRegistry(sessionsDir)).To(Succeed())
+	spawnDir = filepath.Join(tmpRoot, "spawn")
+	Expect(writeSpawnLedger(spawnDir, e2eSessionID, "headless")).To(Succeed())
 
 	tts = newTTSStub()
 

@@ -1,8 +1,13 @@
 ---
-status: approved
+status: completed
 spec: [004-decide-headless-only]
+summary: Extended the e2e harness's hermetic isolation to the supervisor's spawn ledger by adding a spawnDir variable, a writeSpawnLedger fixture helper seeding e2eSessionID as headless, and the -spawn-state-dir flag on the binary launch.
+execution_id: attention-controller-headless-decide-exec-017-spec-004-e2e-ledger
+dark-factory-version: v0.196.0
 created: "2026-10-01T20:27:52Z"
 queued: "2026-10-01T20:36:35Z"
+started: "2026-10-01T20:44:44Z"
+completed: "2026-10-01T20:46:31Z"
 branch: dark-factory/decide-headless-only
 ---
 
