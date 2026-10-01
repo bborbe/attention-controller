@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.32.1
 
 - fix: Withhold the corner X from the dimmed record card in `pkg/handler/attention-page.go` via a `(not .Dimmed)` conjunct on the button, the same idiom the read-aloud, acknowledge and decide controls already carry. Without the gate the X's fall-through dispatches the message card's Dismiss and closes the item, deleting the record the dimmed card exists to preserve. Every open card keeps the X whatever its mechanism — `message`, `ack` and `permission` alike — because `.Dimmed` is a state (`item.State == pkg.AnsweredState`), not a mechanism, so the gate re-creates no mechanism exception. The open row's rendered bytes are unchanged.
 
