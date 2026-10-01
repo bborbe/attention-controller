@@ -982,7 +982,10 @@ document.addEventListener('click', function (event) {
    There is deliberately no third branch below: a permission row carries no
    form.answer, so it falls through to closeCard exactly as an ack row does. The
    three mechanisms share one dispatch because they share one act, and it is
-   delegated on the document for the tab strip's reason. */
+   delegated on the document for the tab strip's reason.
+   ⚠️ A dimmed record card now carries no data-corner-x button at all, so this
+   listener never fires on one — which is why the fall-through to closeCard on a
+   dimmed row can no longer happen. */
 document.addEventListener('click', function (event) {
   if (!event.target || !event.target.closest) { return; }
   var button = event.target.closest('button[data-corner-x]');
@@ -1352,14 +1355,25 @@ function replayFailure(row) {
      it, which is why Speak is carried on the row and read as dot-Speak here. */}}
 {{define "attention-row"}}<li class="item{{if .Dimmed}} dimmed{{end}}" data-item-id="{{ .Item.ItemID }}">
 <div class="producer">{{ .Item.ProducerID }} ({{ .Item.ProducerKind }})</div>
-{{/* The corner X renders on EVERY row, deliberately ungated, from 2026-09-27.
-     It was gated on Message-or-Ack until then, which excepted permission rows —
+{{/* The corner X renders on every OPEN row, ungated by mechanism, from
+     2026-09-27 — message, ack and permission alike — and is withheld from the
+     dimmed record card by the (not .Dimmed) conjunct, added 2026-10-01. It was
+     gated on Message-or-Ack until 2026-09-27, which excepted permission rows —
      an exception the operator disowned (it had been read off a yes on a menu
-     they did not write). A permission row carries the X because clearing a card
-     is not answering a gate: the X closes it, routes no answer, and leaves the
-     asking session frozen and the gate operator-only. Gating on a mechanism
-     here would re-create the exception. See [[Attention Item Schema]] § The
-     corner X, and the dispatch comment on the data-corner-x handler below. */}}<button type="button" class="corner-x" data-corner-x aria-label="Skip this item">✕</button>
+     they did not write). ⚠️ That disowned exception was a MECHANISM gate
+     (permission), and mechanism gates are what the operator's ruling forbids: a
+     permission row carries the X because clearing a card is not answering a
+     gate — the X closes it, routes no answer, and leaves the asking session
+     frozen and the gate operator-only. ⚠️ .Dimmed is not a mechanism but a
+     STATE (item.State == pkg.AnsweredState — the dimmed record card), so
+     (not .Dimmed) does NOT re-create that exception: it withholds the X from no
+     mechanism. The schema page already draws this boundary — the dimmed record
+     card is a record, not a prompt, rendering no control that offers an answer
+     — and the X's act on a message card is a clear / dismissal, so that rule
+     reaches it. ⚠️ Without the conjunct the X's fall-through below closes the
+     item and deletes the record the dimmed card exists to preserve. See
+     [[Attention Item Schema]] § The corner X, and the dispatch comment on the
+     data-corner-x handler below. */}}{{if not .Dimmed}}<button type="button" class="corner-x" data-corner-x aria-label="Skip this item">✕</button>{{end}}
 {{/* The read-aloud control renders on every row whose Speak is set, from
      2026-09-27 — except the dimmed record card, from 2026-09-27. It was gated on
      'and .Message .Speak', which excepted permission rows on the reasoning that
