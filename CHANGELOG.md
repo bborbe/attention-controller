@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.32.2
 
 - test: add an e2e regression probe that pins the board's **all-answered** state — with every record answered and the default `hide=answered` view on, the board currently renders **neither a card nor the empty-state statement**, leaving the region below the control row blank. ⚠️ **This commit is the negative control, not the fix:** the probe **fails** against the pre-fix revision — `93b999e`, 11 passed / 1 failed — and is **re-confirmed against current master `f6ae66a`** (`v0.32.1`, 48 commits later) at **20 passed / 1 failed**, so the defect survived the drift rather than being fixed incidentally by a sibling; it is expected to pass once the empty-state fix lands, so the red→green pair is the evidence. Mechanism: the server renders `<p class="empty">` only for an **empty item list** (`pkg/handler/attention-page.go:472`), and the client's **load-time** `applyFilter()` parks every dimmed row **without ever calling `collapseIfEmpty()`** — which runs only on a stream `remove` frame — so the list empties and nothing replaces it. The case's precondition is asserted rather than assumed: it answers every item the store still counts as open, then asserts the store holds none before loading the page.
 
