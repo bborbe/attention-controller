@@ -57,6 +57,7 @@ var _ = Describe("the session name on the served page", func() {
 	// Resolve call, so a case that writes a record must not see another case's.
 	var stateDir string
 	var sessionsDir string
+	var spawnDir string
 
 	BeforeEach(func() {
 		ctx = context.Background()
@@ -94,6 +95,7 @@ var _ = Describe("the session name on the served page", func() {
 		vault = filepath.Join(GinkgoT().TempDir(), "Personal")
 		stateDir = GinkgoT().TempDir()
 		sessionsDir = GinkgoT().TempDir()
+		spawnDir = GinkgoT().TempDir()
 	})
 
 	AfterEach(func() {
@@ -207,7 +209,13 @@ var _ = Describe("the session name on the served page", func() {
 	buildPage := func() http.Handler {
 		return handler.NewAttentionPageHandler(
 			store,
-			pkg.NewProvenanceResolver(stateDir, sessionsDir, panes, pkg.NewTaskIndex(ctx, vault)),
+			pkg.NewProvenanceResolver(
+				stateDir,
+				sessionsDir,
+				spawnDir,
+				panes,
+				pkg.NewTaskIndex(ctx, vault),
+			),
 			false,
 			vault,
 			testBuildIdentity,

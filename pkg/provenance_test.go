@@ -21,6 +21,7 @@ var _ = Describe("ProvenanceResolver", func() {
 	var ctx context.Context
 	var stateDir string
 	var sessionsDir string
+	var spawnDir string
 	var paneLister *mocks.PaneLister
 	var resolver pkg.ProvenanceResolver
 
@@ -63,6 +64,18 @@ var _ = Describe("ProvenanceResolver", func() {
 		)).To(BeNil())
 	}
 
+	// writeSpawn writes one spawn-ledger record as `<spawnDir>/<sessionID>.json`.
+	// Written as raw JSON text, never marshalled from spawnRecord, so the fixture
+	// is the *file shape* the supervisor actually writes and a field rename in the
+	// resolver's own struct cannot make the fixture agree with itself.
+	writeSpawn := func(sessionID, mode string) {
+		Expect(os.WriteFile(
+			filepath.Join(spawnDir, sessionID+".json"),
+			[]byte(`{"session_id":"`+sessionID+`","mode":"`+mode+`"}`),
+			0o600,
+		)).To(BeNil())
+	}
+
 	item := func(itemID, producerID, dedupKey string) pkg.Item {
 		return pkg.Item{
 			ItemID:     pkg.ItemID(itemID),
@@ -87,6 +100,7 @@ var _ = Describe("ProvenanceResolver", func() {
 		ctx = context.Background()
 		stateDir = GinkgoT().TempDir()
 		sessionsDir = GinkgoT().TempDir()
+		spawnDir = GinkgoT().TempDir()
 		paneLister = &mocks.PaneLister{}
 		paneLister.ListReturns(map[int]pkg.Pane{}, nil)
 		// An empty vault: the specs below are about the event log, the registry
@@ -95,6 +109,7 @@ var _ = Describe("ProvenanceResolver", func() {
 		resolver = pkg.NewProvenanceResolver(
 			stateDir,
 			sessionsDir,
+			spawnDir,
 			paneLister,
 			pkg.NewTaskIndex(ctx, GinkgoT().TempDir()),
 		)
@@ -360,6 +375,7 @@ var _ = Describe("ProvenanceResolver", func() {
 		unavailable := pkg.NewProvenanceResolver(
 			filepath.Join(stateDir, "does-not-exist"),
 			filepath.Join(sessionsDir, "does-not-exist"),
+			spawnDir,
 			paneLister,
 			pkg.NewTaskIndex(ctx, GinkgoT().TempDir()),
 		)
@@ -388,6 +404,7 @@ var _ = Describe("ProvenanceResolver", func() {
 		return pkg.NewProvenanceResolver(
 			stateDir,
 			sessionsDir,
+			spawnDir,
 			paneLister,
 			pkg.NewTaskIndex(ctx, vault),
 		)
@@ -461,7 +478,7 @@ var _ = Describe("ProvenanceResolver", func() {
 		// The standalone host: no vault, so no index. Everything else still
 		// resolves exactly as it did before the index existed.
 		writeEvents("producer-nil", eventLine("key-nil", "session-nil", "burn", "/w/nil", "", ""))
-		nilIndex := pkg.NewProvenanceResolver(stateDir, sessionsDir, paneLister, nil)
+		nilIndex := pkg.NewProvenanceResolver(stateDir, sessionsDir, spawnDir, paneLister, nil)
 
 		provenance := nilIndex.Resolve(ctx, pkg.Items{
 			sessionItem("item-nil", "producer-nil", "key-nil", "session-nil"),
@@ -561,7 +578,7 @@ var _ = Describe("ProvenanceResolver", func() {
 			"producer-novault",
 			eventLine("key-novault", "session-novault", "burn", "/w/nv", "", ""),
 		)
-		nilIndex := pkg.NewProvenanceResolver(stateDir, sessionsDir, paneLister, nil)
+		nilIndex := pkg.NewProvenanceResolver(stateDir, sessionsDir, spawnDir, paneLister, nil)
 
 		provenance := nilIndex.Resolve(ctx, pkg.Items{
 			sessionItem("item-novault", "producer-novault", "key-novault", "session-novault"),
@@ -664,6 +681,7 @@ var _ = Describe("ProvenanceResolver", func() {
 		unavailable := pkg.NewProvenanceResolver(
 			stateDir,
 			filepath.Join(sessionsDir, "does-not-exist"),
+			spawnDir,
 			paneLister,
 			pkg.NewTaskIndex(ctx, GinkgoT().TempDir()),
 		)
@@ -714,6 +732,133 @@ var _ = Describe("ProvenanceResolver", func() {
 		})[pkg.ItemID("item-name-dup")]
 
 		Expect(provenance.SessionName).To(Equal("Second Name"))
+	})
+
+	It("resolves headless for a session the spawn ledger records as headless", func() {
+		// The spawn ledger is the only source that separates a headless worker
+		// from a tab worker: nothing on the item does. A headless worker inherits
+		// its spawner's WEZTERM_PANE, so its item carries the spawner's pane id.
+		writeEvents(
+			"producer-headless",
+			eventLine("key-headless", "session-headless", "burn", "/w/h", "", ""),
+		)
+		writeSpawn("session-headless", "headless")
+
+		provenance := resolver.Resolve(ctx, pkg.Items{
+			sessionItem("item-headless", "producer-headless", "key-headless", "session-headless"),
+		})[pkg.ItemID("item-headless")]
+
+		// Positive control: the item resolved its event-log provenance at all.
+		Expect(provenance.Host).To(Equal("burn"))
+		Expect(provenance.Headless).To(BeTrue())
+	})
+
+	It("resolves not headless for a session the spawn ledger records as interactive", func() {
+		writeEvents(
+			"producer-interactive",
+			eventLine("key-interactive", "session-interactive", "burn", "/w/i", "", ""),
+		)
+		writeSpawn("session-interactive", "interactive")
+
+		provenance := resolver.Resolve(ctx, pkg.Items{
+			sessionItem(
+				"item-interactive",
+				"producer-interactive",
+				"key-interactive",
+				"session-interactive",
+			),
+		})[pkg.ItemID("item-interactive")]
+
+		Expect(provenance.Host).To(Equal("burn"))
+		Expect(provenance.Headless).To(BeFalse())
+	})
+
+	It("resolves not headless when the spawn ledger holds no record for the session", func() {
+		writeEvents(
+			"producer-norecord",
+			eventLine("key-norecord", "session-norecord", "burn", "/w/nr", "", ""),
+		)
+		// A record for a *different* session: the map resolves, this item's
+		// session is absent from it, and absence is not headless.
+		writeSpawn("some-other-session", "headless")
+
+		provenance := resolver.Resolve(ctx, pkg.Items{
+			sessionItem("item-norecord", "producer-norecord", "key-norecord", "session-norecord"),
+		})[pkg.ItemID("item-norecord")]
+
+		Expect(provenance.Host).To(Equal("burn"))
+		Expect(provenance.Headless).To(BeFalse())
+	})
+
+	It("resolves not headless when the spawn ledger directory does not exist", func() {
+		writeEvents(
+			"producer-nospawn",
+			eventLine("key-nospawn", "session-nospawn", "burn", "/w/ns", "", ""),
+		)
+		unavailable := pkg.NewProvenanceResolver(
+			stateDir,
+			sessionsDir,
+			filepath.Join(spawnDir, "does-not-exist"),
+			paneLister,
+			pkg.NewTaskIndex(ctx, GinkgoT().TempDir()),
+		)
+
+		provenance := unavailable.Resolve(ctx, pkg.Items{
+			sessionItem("item-nospawn", "producer-nospawn", "key-nospawn", "session-nospawn"),
+		})[pkg.ItemID("item-nospawn")]
+
+		Expect(provenance.Host).To(Equal("burn"))
+		Expect(provenance.Headless).To(BeFalse())
+	})
+
+	It("resolves not headless when a spawn ledger record does not parse", func() {
+		writeEvents(
+			"producer-broken",
+			eventLine("key-broken", "session-broken", "burn", "/w/b", "", ""),
+		)
+		writeEvents(
+			"producer-sibling",
+			eventLine("key-sibling", "session-sibling", "burn", "/w/s", "", ""),
+		)
+		// A truncated record for the broken session; a valid headless record for
+		// its sibling, so one bad file must not blank the whole map.
+		Expect(os.WriteFile(
+			filepath.Join(spawnDir, "session-broken.json"),
+			[]byte(`{"session_id":"session-broken","mode":`),
+			0o600,
+		)).To(BeNil())
+		writeSpawn("session-sibling", "headless")
+
+		resolved := resolver.Resolve(ctx, pkg.Items{
+			sessionItem("item-broken", "producer-broken", "key-broken", "session-broken"),
+			sessionItem("item-sibling", "producer-sibling", "key-sibling", "session-sibling"),
+		})
+
+		// Positive control: the broken session's item still resolved its event.
+		Expect(resolved[pkg.ItemID("item-broken")].Host).To(Equal("burn"))
+		Expect(resolved[pkg.ItemID("item-broken")].Headless).To(BeFalse())
+		Expect(resolved[pkg.ItemID("item-sibling")].Headless).To(BeTrue())
+	})
+
+	It("resolves not headless when a record's mode is outside the known set", func() {
+		writeEvents(
+			"producer-daemon",
+			eventLine("key-daemon", "session-daemon", "burn", "/w/d", "", ""),
+		)
+		writeSpawn("session-daemon", "daemon")
+
+		provenance := resolver.Resolve(ctx, pkg.Items{
+			sessionItem("item-daemon", "producer-daemon", "key-daemon", "session-daemon"),
+		})[pkg.ItemID("item-daemon")]
+
+		Expect(provenance.Host).To(Equal("burn"))
+		Expect(provenance.Headless).To(BeFalse())
+	})
+
+	It("keeps the headless fact out of Resolved", func() {
+		// The gate the page's provenance line hangs on. A boolean draws nothing,
+		// so a headless-only card must draw no line rather than an empty one.
+		Expect((pkg.Provenance{Headless: true}).Resolved()).To(BeFalse())
 	})
 })
 

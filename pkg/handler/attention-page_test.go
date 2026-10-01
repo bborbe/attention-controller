@@ -244,6 +244,15 @@ var _ = Describe("AttentionPageHandler", func() {
 			})
 			Expect(err).To(BeNil())
 
+			// ⚠️ AMENDED 2026-10-01: the Allow / Deny pair now renders only on a
+			// HEADLESS worker's permission row, so the mock — which returns nil by
+			// default — must record this session as headless or the pair is absent
+			// and the assertions below fail. The fact comes from the supervisor's
+			// spawn ledger in production; here it is seeded directly.
+			provenance.ResolveReturns(pkg.Provenances{
+				permission.ItemID: pkg.Provenance{Headless: true},
+			})
+
 			// A non-empty page first, so the absence assertions below are made against
 			// a rendered document rather than against an empty body.
 			resp := get("GET")
@@ -1364,6 +1373,15 @@ var _ = Describe("AttentionPageHandler", func() {
 				AnswerMechanism: pkg.PermissionAnswerMechanism,
 			})
 			Expect(err).To(BeNil())
+
+			// ⚠️ AMENDED 2026-10-01: the Allow / Deny pair renders only on a
+			// HEADLESS worker's permission row, so the mock must record this session
+			// as headless or the pair — and the `.actions` container the assertions
+			// below pin — is absent. The X itself is a CLEARING control, not an
+			// answering one, and is unchanged by that gate.
+			provenance.ResolveReturns(pkg.Provenances{
+				permission.ItemID: pkg.Provenance{Headless: true},
+			})
 
 			block := rowOf(get("GET").Body.String(), permission.ItemID)
 

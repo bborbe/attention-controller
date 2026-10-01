@@ -46,6 +46,7 @@ var _ = Describe("the goal and topic spans on the served page", func() {
 	// event log and no session-registry entry is written by any case here.
 	var stateDir string
 	var sessionsDir string
+	var spawnDir string
 
 	// The served markup each link is asserted against, written as html/template
 	// actually emits it. ⚠️ Hand-written literals, never ones built with
@@ -94,6 +95,7 @@ var _ = Describe("the goal and topic spans on the served page", func() {
 		vault = filepath.Join(GinkgoT().TempDir(), "Personal")
 		stateDir = GinkgoT().TempDir()
 		sessionsDir = GinkgoT().TempDir()
+		spawnDir = GinkgoT().TempDir()
 	})
 
 	AfterEach(func() {
@@ -159,7 +161,7 @@ var _ = Describe("the goal and topic spans on the served page", func() {
 	buildPageWith := func(index pkg.TaskIndex) http.Handler {
 		return handler.NewAttentionPageHandler(
 			store,
-			pkg.NewProvenanceResolver(stateDir, sessionsDir, panes, index),
+			pkg.NewProvenanceResolver(stateDir, sessionsDir, spawnDir, panes, index),
 			false,
 			vault,
 			testBuildIdentity,
@@ -359,7 +361,13 @@ var _ = Describe("the goal and topic spans on the served page", func() {
 		// index built from none.
 		page := handler.NewAttentionPageHandler(
 			store,
-			pkg.NewProvenanceResolver(stateDir, sessionsDir, panes, pkg.NewTaskIndex(ctx, "")),
+			pkg.NewProvenanceResolver(
+				stateDir,
+				sessionsDir,
+				spawnDir,
+				panes,
+				pkg.NewTaskIndex(ctx, ""),
+			),
 			false,
 			"",
 			testBuildIdentity,
