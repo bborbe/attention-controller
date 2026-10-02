@@ -4,7 +4,7 @@ status: active
 
 # Scenario 001: the board's post-load behaviour holds in a real browser
 
-Validates that the attention board's sixteen post-load JS behaviours still work, by driving the real binary in a real browser.
+Validates that the attention board's eighteen post-load JS behaviours still work, by driving the real binary in a real browser.
 
 This is the **pre-release gate**. It is deliberately not part of `make precommit` and is never run per commit or per PR: the suite starts a browser, and the regression class it retires reaches users through a release, not through a commit.
 
@@ -21,7 +21,7 @@ The suite is not a client of the running service. It builds its own binary, runs
 
 ## Expected
 
-- [ ] Suite reports `23 of 23 Specs` and `ok github.com/bborbe/attention-controller/e2e`. ⚠️ **This is the package total** — the board's cases plus the answer-shape cases in `e2e/answer-shapes_test.go`. ⚠️ **Read it with `go test -mod=mod -tags e2e -count=1 -v ./e2e/`, not with `make e2e`:** that target runs `go test -tags e2e ./e2e/` **without `-v`**, and `go test` discards a passing package's stdout, so the run prints only `ok github.com/bborbe/attention-controller/e2e` and Ginkgo's `Ran N of N Specs` summary never appears. A count asserted against a line the operator cannot see is a verification command that cannot fail.
+- [ ] Suite reports `25 of 25 Specs` and `ok github.com/bborbe/attention-controller/e2e`. ⚠️ **This is the package total** — the board's cases plus the answer-shape cases in `e2e/answer-shapes_test.go`. ⚠️ **Read it with `go test -mod=mod -tags e2e -count=1 -v ./e2e/`, not with `make e2e`:** that target runs `go test -tags e2e ./e2e/` **without `-v`**, and `go test` discards a passing package's stdout, so the run prints only `ok github.com/bborbe/attention-controller/e2e` and Ginkgo's `Ran N of N Specs` summary never appears. A count asserted against a line the operator cannot see is a verification command that cannot fail.
 - [ ] `returns a parked answered card to the DOM when the Hide answered switch is clicked` — the click *handler* ran, not merely the server-rendered switch's presence
 - [ ] `renders the open card and not the answered one on a fresh load` — the default view filters
 - [ ] `says nothing needs the operator rather than rendering a blank region when every item is answered` — with every record answered and the default view on, the board renders exactly one `p.empty` carrying the text `Nothing needs attention.` and zero item rows, so the region below the control row is never blank
@@ -38,6 +38,8 @@ The suite is not a client of the running service. It builds its own binary, runs
 - [ ] `applies a frame atomically, so a throw inside the update never leaves a half-updated row` — a fault injected inside the row update leaves the note intact, because both legal outcomes keep it and only the half-applied state loses it
 - [ ] `keeps a control working when a stream event replaces its row, so a re-rendered card still answers` — the tab strip and the answer form both still work on the node the stream put there, read from the visible panel rather than the strip's own class
 - [ ] `clears the note when the retry succeeds, so no stale failure outlives its cause` — the note is gone after the retry, and stays gone across the row swap that follows. ⚠️ **Unlike the three cases above it, this one also passes against the pre-fix revision, and cannot do otherwise** — before the fix there is no persisted note to go stale, so the assertion holds vacuously. It guards against a *wrong fix*: one that persists the note without `delete failures[itemID]` would fail here, because the row swap after the retry replays the stale note. So the suite's negative evidence against the pre-fix revision is **three of these four**, not four — the suite as a whole still fails there (exit 1)
+- [ ] `reveals a card's metadata from the info affordance and reports its state` — a real click reveals that card's metadata without a reload, and the control reports its own state: exactly one `i` affordance at the card's top right with a visible glyph and an accessible name, the panel closed first (`aria-expanded="false"`), open after one click (`aria-expanded="true"`), the revealed text carrying the card's own producer id, and closed again after a second click
+- [ ] `keeps the info affordance working when a stream event replaces its row` — the panel is open, a real stream event replaces the row's whole markup, the row comes back closed (the panel is server-rendered `hidden` and the client keeps no open/closed state of its own), and the affordance still opens the swapped node. This is the regression guard against the rendered-and-inert control this board shipped once at v0.19.0, whose per-button listener died with the node `upsertRow` replaced
 - [ ] Port `18080` was never contacted
 
 ## Cleanup

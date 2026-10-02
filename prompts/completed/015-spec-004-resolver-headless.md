@@ -1,6 +1,6 @@
 ---
 status: completed
-spec: ["004"]
+spec: [004-decide-headless-only]
 summary: Added a fail-closed Headless provenance fact read from the supervisor's spawn ledger, plus the configurable spawn-ledger directory, through pkg.ProvenanceResolver.
 execution_id: attention-controller-headless-decide-exec-015-spec-004-resolver-headless
 dark-factory-version: v0.196.0

@@ -41,6 +41,13 @@ const (
 	switchSelector = "button[data-board-filter]"
 	// speakSelector is the read-aloud control, present only when -tts-url is set.
 	speakSelector = "button[data-speak]"
+	// infoToggleSelector is the card's info affordance — the `i` button at the
+	// card's top right that reveals the panel below.
+	infoToggleSelector = "button[data-info-toggle]"
+	// infoPanelSelector is the panel the affordance reveals. It ships hidden in
+	// the served markup, so only the browser's rendered state tells an open card
+	// from a closed one.
+	infoPanelSelector = "[data-info-panel]"
 	// rowSelectorFmt addresses one board row by the item id the store assigned.
 	rowSelectorFmt = `li.item[data-item-id=%q]`
 	// staleSelector addresses the board's not-tracking state: the span the
@@ -491,6 +498,31 @@ func failSpeak(page playwright.Page) {
 // action itself rather than the suite calling the endpoint directly.
 func clickSpeak(page playwright.Page, itemID string) {
 	Expect(page.Locator(rowSelector(itemID) + " " + speakSelector).Click()).To(Succeed())
+}
+
+// clickInfoToggle presses one item's info affordance, so the page performs the
+// reveal itself rather than the suite setting the panel's hidden attribute.
+func clickInfoToggle(page playwright.Page, itemID string) {
+	Expect(page.Locator(rowSelector(itemID) + " " + infoToggleSelector).Click()).To(Succeed())
+}
+
+// infoPanelVisible reports whether one item's info panel is rendered. The
+// panel ships hidden in every response, so this is a rendering fact read from
+// the live DOM — the served markup is identical either way and cannot answer
+// it.
+func infoPanelVisible(page playwright.Page, itemID string) bool {
+	visible, err := page.Locator(rowSelector(itemID) + " " + infoPanelSelector).IsVisible()
+	Expect(err).NotTo(HaveOccurred())
+	return visible
+}
+
+// infoExpanded reads one item's affordance state, the attribute the control
+// reports to assistive technology.
+func infoExpanded(page playwright.Page, itemID string) string {
+	value, err := page.Locator(rowSelector(itemID) + " " + infoToggleSelector).
+		GetAttribute("aria-expanded")
+	Expect(err).NotTo(HaveOccurred())
+	return value
 }
 
 // activeTab returns the question whose panel the board is currently showing.
@@ -1133,5 +1165,137 @@ var _ = Describe("the attention board", func() {
 			WithTimeout(5 * time.Second).Should(Equal(1))
 		Consistently(func() int { return noteCount(page, itemID, failedNoteSelector) }).
 			WithTimeout(2 * time.Second).Should(Equal(0))
+	})
+
+	// ⚠️ The suite's package total is asserted in BOTH scenario files, not only
+	// scenario 001: `scenarios/002-board-answer-shapes.md` carries the same hard
+	// `N of N Specs` line, and it is the package total rather than that file's
+	// own case count, so these two board cases move it too. The spec named only
+	// scenario 001, so the second edit is a finding rather than an instruction it
+	// anticipated — leaving it stale would turn the board's pre-release gate into
+	// a check that fails on a correct build.
+	//
+	// ⚠️ The card's info affordance is driven here in a real browser because the
+	// panel ships hidden in EVERY response: the served markup is identical
+	// whether a card is open or closed, so only the browser's rendered state can
+	// tell the two apart. The served-HTML criteria are a sibling prompt's.
+	It("reveals a card's metadata from the info affordance and reports its state", func() {
+		itemID := push("e2e: the card that reveals its metadata", "e2e-info-reveal")
+
+		page := newPage("")
+		defer func() { _ = page.Close() }()
+
+		// The leading positive, so every absence below is a withheld thing rather
+		// than a dropped row.
+		Eventually(func() int { return rowCount(page, itemID) }).Should(Equal(1))
+
+		// Exactly one affordance and one panel on this row. The count is scoped to
+		// the row because the fixture store is shared across the whole run and a
+		// page-wide count could be satisfied by another case's row.
+		toggleCount, err := page.Locator(rowSelector(itemID) + " " + infoToggleSelector).Count()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(toggleCount).To(Equal(1))
+		panelCount, err := page.Locator(rowSelector(itemID) + " " + infoPanelSelector).Count()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(panelCount).To(Equal(1))
+
+		// A visible glyph and an accessible name, and BOTH halves are required.
+		// v0.18.0 rejected an icon-only read-aloud control on this board because
+		// the control's meaning lived in a hover-only `title` plus an `aria-label`
+		// only assistive tech sees. The visible `i` is the meaning here; the
+		// `aria-label` is the accessible name.
+		glyph, err := page.Locator(rowSelector(itemID) + " " + infoToggleSelector).TextContent()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(strings.TrimSpace(glyph)).To(Equal("i"))
+		label, err := page.Locator(rowSelector(itemID) + " " + infoToggleSelector).
+			GetAttribute("aria-label")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(label).NotTo(BeEmpty())
+
+		// The one placement assertion: the affordance sits at the row's top right.
+		Expect(page.Locator(rowSelector(itemID)).ScrollIntoViewIfNeeded()).To(Succeed())
+		rowBox, err := page.Locator(rowSelector(itemID)).BoundingBox()
+		Expect(err).NotTo(HaveOccurred())
+		toggleBox, err := page.Locator(rowSelector(itemID) + " " + infoToggleSelector).BoundingBox()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(rowBox).NotTo(BeNil())
+		Expect(toggleBox).NotTo(BeNil())
+		Expect(toggleBox.X).To(BeNumerically(">", rowBox.X+rowBox.Width/2))
+		Expect(toggleBox.Y).To(BeNumerically("<", rowBox.Y+40))
+
+		// Closed first: the panel ships hidden and the control reports so.
+		Expect(infoPanelVisible(page, itemID)).To(BeFalse())
+		Expect(infoExpanded(page, itemID)).To(Equal("false"))
+
+		// A real click reveals it. ⚠️ No Reload is issued anywhere after this
+		// click — "without a page reload" is the criterion, so the reveal must
+		// come from the page's own handler.
+		clickInfoToggle(page, itemID)
+		Eventually(func() bool { return infoPanelVisible(page, itemID) }).
+			WithTimeout(5 * time.Second).Should(BeTrue())
+		Eventually(func() string { return infoExpanded(page, itemID) }).Should(Equal("true"))
+
+		// The revealed text is the card's own metadata. The producer line and the
+		// `state - createdAt` footer both live inside the panel, so this is the
+		// observable form of "the reveal changes the row's metadata from absent to
+		// present".
+		panelText, err := page.Locator(rowSelector(itemID) + " " + infoPanelSelector).TextContent()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(panelText).To(ContainSubstring(e2eProducerID))
+
+		// A two-way toggle, not a one-way control — the defect this half exists to
+		// catch.
+		clickInfoToggle(page, itemID)
+		Eventually(func() bool { return infoPanelVisible(page, itemID) }).Should(BeFalse())
+		Eventually(func() string { return infoExpanded(page, itemID) }).Should(Equal("false"))
+	})
+
+	It("keeps the info affordance working when a stream event replaces its row", func() {
+		itemID := push("e2e: the card that survives a swap", "e2e-info-survives")
+
+		page := newPage("")
+		defer func() { _ = page.Close() }()
+
+		Eventually(func() int { return rowCount(page, itemID) }).Should(Equal(1))
+
+		// Reveal the panel first, so the swap has an open panel to lose.
+		clickInfoToggle(page, itemID)
+		Eventually(func() bool { return infoPanelVisible(page, itemID) }).Should(BeTrue())
+
+		// Force the stream to replace the row: a differing payload on the same
+		// producer and dedup key updates the item in place, so the store's render
+		// changes and the stream sends an upsert. The payload MUST differ — a
+		// byte-identical re-push renders identically and the stream sends nothing,
+		// so no swap would happen. This is the technique the existing
+		// `keeps a control working when a stream event replaces its row` case uses.
+		repushedID := push("e2e: the card that survives a swap, re-rendered", "e2e-info-survives")
+		Expect(repushedID).To(Equal(itemID), "the re-push must update in place, not add a row")
+
+		// Wait for the swap to land before asserting on the node the stream put
+		// there: reading straight after the push reads the old node, because the
+		// frame has not arrived yet.
+		Eventually(func() string {
+			text, err := page.Locator(rowSelector(itemID)).TextContent()
+			Expect(err).NotTo(HaveOccurred())
+			return text
+		}).WithTimeout(10 * time.Second).Should(ContainSubstring("re-rendered"))
+
+		// The row came back closed. The acceptance criterion allows either outcome
+		// — "still showing its metadata, or closed with the affordance still
+		// operable" — and this design chose CLOSED, because the panel's state is
+		// the served markup's rather than a page-local map's: the panel is
+		// server-rendered `hidden` and the client keeps no open/closed state of its
+		// own, so a swapped row is closed by construction and can never be stale.
+		Eventually(func() bool { return infoPanelVisible(page, itemID) }).Should(BeFalse())
+		Expect(infoExpanded(page, itemID)).To(Equal("false"))
+
+		// ⚠️ The load-bearing half. A per-button listener dies with the node
+		// upsertRow replaces, leaving the control rendered and inert — the
+		// rendered-and-inert failure this board shipped once at v0.19.0 with the
+		// read-aloud control. The delegated listener is what keeps the swapped
+		// node's affordance operable.
+		clickInfoToggle(page, itemID)
+		Eventually(func() bool { return infoPanelVisible(page, itemID) }).Should(BeTrue())
+		Eventually(func() string { return infoExpanded(page, itemID) }).Should(Equal("true"))
 	})
 })
