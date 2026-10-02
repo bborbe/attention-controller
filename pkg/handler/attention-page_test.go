@@ -1117,23 +1117,33 @@ var _ = Describe("AttentionPageHandler", func() {
 			Expect(permissionBlock).To(ContainSubstring(`class="jump-corner"`))
 		})
 
-		// The answer arm's terminal-state branch. The failure it exists for is an
-		// item that left the queue between the render and the answer, and the
-		// operator's report was of exactly that: a raw JSON body printed into a
-		// failed note, and a card left in front of them for an item that no longer
-		// existed. The script is inline and has no unit harness, so the assertions
-		// are on what it ships — the code it recognises, the human line it writes,
-		// and the return to the queue that follows. The browser click-through in
-		// the task's Definition of Done is the half this cannot supply.
-		It("recognises a closed item and returns the operator to the queue", func() {
+		// The answer arm's stale-card branch. Two failures reach it: an item that
+		// left the queue between the render and the answer, and an item another arm
+		// answered first. The operator's own report was the second — a raw JSON body
+		// printed into a failed note, on a card left offering a control that could
+		// only fail again. The script is inline and has no unit harness, so the
+		// assertions are on what it ships — the codes it recognises, the human lines
+		// it writes, and the return to the queue that follows. The browser
+		// click-through in the task's Definition of Done is the half this cannot
+		// supply.
+		It("recognises a stale card and returns the operator to the queue", func() {
 			body := get("GET").Body.String()
 
 			// The code is read out of the store's envelope rather than matched in
 			// the raw body, so the branch fires on the classification and not on a
 			// substring some other failure's message happens to contain.
-			Expect(body).To(ContainSubstring("failure.code !== 'ITEM_CLOSED'"))
+			Expect(body).To(ContainSubstring("failure.code === 'ITEM_CLOSED'"))
 			Expect(body).To(ContainSubstring("failure.details.closed_at"))
 			Expect(body).To(ContainSubstring("left the queue before this answer arrived"))
+
+			// ⚠️ The SECOND stale code, added 2026-10-02. A second click on an
+			// already-answered card is a lost race, not a malformed request: the
+			// store answers ALREADY_ANSWERED, and the board used to print that raw
+			// body while leaving the card live — so the stale card kept offering a
+			// control that could only fail again. The click DID land, and the line
+			// says so.
+			Expect(body).To(ContainSubstring("failure.code === 'ALREADY_ANSWERED'"))
+			Expect(body).To(ContainSubstring("This item was already answered."))
 
 			// The line is shown AND the queue is returned to. A branch that
 			// reloaded without showing would swallow the outcome into a reload,
@@ -1142,6 +1152,14 @@ var _ = Describe("AttentionPageHandler", func() {
 			Expect(body).To(ContainSubstring("showNote(form, failure.message, true)"))
 			Expect(body).
 				To(ContainSubstring("window.setTimeout(function () { window.location.reload(); }, 2500)"))
+
+			// ⚠️ The NEGATIVE half, and it is what stops this branch swallowing
+			// every 4xx into a friendly line: a code the classifier does not
+			// recognise must still reach the raw-body render. Pinned beside the
+			// positive so a blanket-swallow regression fails here rather than in
+			// the operator's browser.
+			Expect(body).
+				To(ContainSubstring("showNote(form, 'Answer failed - HTTP ' + response.status + ' - ' + body, true)"))
 		})
 	})
 

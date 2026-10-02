@@ -722,15 +722,17 @@ function sendAnswer(form, request) {
     if (response.ok) { showNote(form, 'Answer sent.', false); return; }
     return response.text().then(function (body) {
       var failure = answerFailure(body);
-      if (failure.leftQueue) {
-        /* The item left the queue between this page being drawn and this answer
-           arriving — a lost race against the producer's exit, not a malformed
-           request. The line is shown AND the page returns to the queue, in that
-           order and with a beat between them. Reloading first would swallow the
-           outcome into a reload, which the rule above forbids; staying put would
-           leave a card in front of the operator for an item that no longer
-           exists, which is the defect this branch exists to fix. Both halves
-           are the point, so neither is dropped. */
+      if (failure.staleCard) {
+        /* The card went stale between this page being drawn and this answer
+           arriving — either the item left the queue, or another arm answered it
+           first. Neither is a malformed request, and in both the operator's click
+           carried an outcome the raw body buries. The line is shown AND the page
+           returns to the queue, in that order and with a beat between them.
+           Reloading first would swallow the outcome into a reload, which the rule
+           above forbids; staying put would leave a card offering a control that
+           cannot succeed — for an item that no longer exists, or one the board
+           already holds as a dimmed record. Both halves are the point, so neither
+           is dropped. */
         showNote(form, failure.message, true);
         console.error('attention board: answer failed - HTTP ' + response.status, body);
         window.setTimeout(function () { window.location.reload(); }, 2500);
@@ -744,24 +746,51 @@ function sendAnswer(form, request) {
     console.error('attention board: answer failed - ' + String(error));
   });
 }
-/* answerFailure reads the store's error envelope and reports whether the item
-   had already left the queue. Only that one code is special-cased: every other
-   failure keeps the raw body, because the body is what a reader needs to tell a
-   code fault from a connection problem. A body that is not JSON at all — a
-   proxy's error page, a truncated response — reads as "not this case" rather
-   than throwing, so the caller still reaches its raw-body line. */
+/* answerFailure reads the store's error envelope and reports whether the card in
+   front of the operator has gone STALE — the item moved underneath it since the
+   page drew it. Two codes say so, and they say different things:
+
+     ITEM_CLOSED       the item left the queue: nobody answered, nothing routed.
+     ALREADY_ANSWERED  another arm answered it first. The click DID land — this
+                       is a lost race, not a malformed request — so the card is a
+                       stale copy of an item the board already renders as a
+                       dimmed record.
+
+   Both leave a card offering a control that cannot succeed, which is the defect
+   this branch exists to fix: the operator's own report was of a second click on
+   an already-answered card, and the raw ALREADY_ANSWERED body it printed.
+
+   Every other failure keeps the raw body, because the body is what a reader needs
+   to tell a code fault from a connection problem — so a genuinely malformed
+   request still reads as malformed rather than being swallowed into a friendly
+   line. A body that is not JSON at all — a proxy's error page, a truncated
+   response — reads as "not this case" rather than throwing, so the caller still
+   reaches its raw-body line. */
 function answerFailure(body) {
   var envelope;
-  try { envelope = JSON.parse(body); } catch (error) { return { leftQueue: false }; }
+  try { envelope = JSON.parse(body); } catch (error) { return { staleCard: false }; }
   var failure = envelope && envelope.error;
-  if (!failure || failure.code !== 'ITEM_CLOSED') { return { leftQueue: false }; }
-  var closedAt = (failure.details && failure.details.closed_at) || '';
-  return {
-    leftQueue: true,
-    message: closedAt
-      ? 'This item was already closed at ' + closedAt + ' - it left the queue before this answer arrived. Returning to the queue.'
-      : 'This item had already left the queue before this answer arrived. Returning to the queue.'
-  };
+  if (!failure) { return { staleCard: false }; }
+  if (failure.code === 'ITEM_CLOSED') {
+    var closedAt = (failure.details && failure.details.closed_at) || '';
+    return {
+      staleCard: true,
+      message: closedAt
+        ? 'This item was already closed at ' + closedAt + ' - it left the queue before this answer arrived. Returning to the queue.'
+        : 'This item had already left the queue before this answer arrived. Returning to the queue.'
+    };
+  }
+  if (failure.code === 'ALREADY_ANSWERED') {
+    /* The line names what happened and the return to the queue replaces the stale
+       form with the record of the answer that actually landed — which is the card
+       the operator asked to keep, so this delivers the dim-and-stay decision to a
+       client that had gone stale rather than reversing it. */
+    return {
+      staleCard: true,
+      message: 'This item was already answered. Returning to the queue to show what was recorded.'
+    };
+  }
+  return { staleCard: false };
 }
 function showNote(form, message, isError) {
   var previous = form.querySelector('.note');
