@@ -12,7 +12,10 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
+	libtime "github.com/bborbe/time"
 	"github.com/golang/glog"
 )
 
@@ -191,22 +194,92 @@ func NewProvenanceResolver(
 	spawnDir string,
 	panes PaneLister,
 	tasks TaskIndex,
+	currentDateTimeGetter libtime.CurrentDateTimeGetter,
 ) ProvenanceResolver {
 	return &provenanceResolver{
-		stateDir:    stateDir,
-		sessionsDir: sessionsDir,
-		spawnDir:    spawnDir,
-		panes:       panes,
-		tasks:       tasks,
+		stateDir:              stateDir,
+		sessionsDir:           sessionsDir,
+		spawnDir:              spawnDir,
+		panes:                 panes,
+		tasks:                 tasks,
+		currentDateTimeGetter: currentDateTimeGetter,
 	}
 }
 
+// provenanceCacheWindow is how long a host snapshot — the pane listing, the
+// session registry and the spawn ledger — is served before all three are read
+// again. It bounds the per-resolve host scan so a store with many open boards
+// no longer multiplies one scan by the number of connected clients: every
+// store change wakes every stream, and without this window each stream re-read
+// the pane listing, the registry and the ledger on every wake. The window is
+// short enough that a pane that has just closed still disappears within it.
+const provenanceCacheWindow = libtime.Duration(2 * time.Second)
+
 type provenanceResolver struct {
-	stateDir    string
-	sessionsDir string
-	spawnDir    string
-	panes       PaneLister
-	tasks       TaskIndex
+	stateDir              string
+	sessionsDir           string
+	spawnDir              string
+	panes                 PaneLister
+	tasks                 TaskIndex
+	currentDateTimeGetter libtime.CurrentDateTimeGetter
+	// mu guards the cached snapshot below. It is held across the whole
+	// check-and-refresh, so two concurrent stream handlers cannot refresh at
+	// once or read a map mid-write.
+	mu sync.Mutex
+	// cached is the last host snapshot, or nil before the first refresh.
+	cached *hostState
+	// cachedAt is the clock reading at which cached was taken.
+	cachedAt libtime.DateTime
+}
+
+// hostState is the resolver's view of the host at one instant: the pane
+// listing and its error, the session registry's names, and the spawn ledger's
+// modes. The three are captured together because they are read together — one
+// refresh produces all three, so a page never renders a pane listing from one
+// instant against names from another.
+type hostState struct {
+	panes    map[int]Pane
+	panesErr error
+	names    map[string]sessionName
+	modes    map[string]string
+}
+
+// hostState returns the pane listing, the session registry and the spawn
+// ledger, serving them from a cache refreshed at most once per
+// provenanceCacheWindow.
+//
+// ⚠️ The mutex is held across the whole check-and-refresh, so two concurrent
+// stream handlers cannot both refresh, and neither can read the cached maps
+// while a refresh replaces them. A second request arriving during a refresh
+// waits on the mutex for it to complete; that wait is bounded rather than
+// unbounded because the owning request's ctx cancellation propagates into all
+// three readers, so a cancelled refresh returns instead of blocking the waiter.
+//
+// ⚠️ The per-producer event-log reads are deliberately NOT cached here. Those
+// describe individual items and change as items are posted, so a newly pushed
+// item must still resolve on the first push after it lands; only the three
+// host-wide reads above are shared.
+func (r *provenanceResolver) hostState(ctx context.Context) hostState {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := r.currentDateTimeGetter.Now()
+	if r.cached != nil && now.Sub(r.cachedAt) < provenanceCacheWindow {
+		return *r.cached
+	}
+	state := hostState{
+		names: r.sessionNames(ctx),
+		modes: r.sessionModes(ctx),
+	}
+	state.panes, state.panesErr = r.panes.List(ctx)
+	if state.panesErr != nil {
+		// Logged, never flattened into an empty map: "no panes" would mark every
+		// row unroutable, which asserts the pane does not resolve to this session —
+		// something an unreadable listing cannot establish.
+		glog.V(2).Infof("pane listing unavailable, rendering no pane: %v", state.panesErr)
+	}
+	r.cached = &state
+	r.cachedAt = now
+	return state
 }
 
 // eventRecord is one line of a producer's event log, reduced to the fields the
@@ -260,17 +333,16 @@ func (r *provenanceResolver) Resolve(ctx context.Context, items Items) Provenanc
 	if len(items) == 0 {
 		return resolved
 	}
-	// A listing that could not be read yields no pane claims at all. It is
-	// logged, never flattened into an empty map: "no panes" would mark every row
-	// unroutable, which asserts the pane does not resolve to this session —
-	// something an unreadable listing cannot establish.
-	panes, panesErr := r.panes.List(ctx)
-	panesAvailable := panesErr == nil
-	if !panesAvailable {
-		glog.V(2).Infof("pane listing unavailable, rendering no pane: %v", panesErr)
-	}
-	names := r.sessionNames(ctx)
-	modes := r.sessionModes(ctx)
+	// The pane listing, the session registry and the spawn ledger are host-wide
+	// reads that are identical for every row, so they are fetched together from
+	// hostState's cache rather than re-read on every resolve. A listing that could
+	// not be read yields no pane claims at all — see hostState, which carries the
+	// error through and logs it rather than flattening it into an empty map.
+	state := r.hostState(ctx)
+	panes := state.panes
+	panesAvailable := state.panesErr == nil
+	names := state.names
+	modes := state.modes
 
 	// One read of each producer's log, reused across that producer's items.
 	// A session with six open items would otherwise re-read the same file six

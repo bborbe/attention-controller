@@ -53,6 +53,10 @@ var _ = Describe("the Allow / Deny pair on the served page", func() {
 	var stateDir string
 	var sessionsDir string
 	var spawnDir string
+	// clock drives the provenance resolver's host-snapshot cache. Frozen in
+	// BeforeEach so the cases that change the ledger between loads can advance
+	// it with SetNow rather than sleeping past the cache window.
+	var clock libtime.CurrentDateTime
 
 	// The Allow / Deny control's identity is frozen, and this is the exact markup
 	// the template emits for it. Written as a hand-written literal, never built
@@ -97,6 +101,8 @@ var _ = Describe("the Allow / Deny pair on the served page", func() {
 		stateDir = GinkgoT().TempDir()
 		sessionsDir = GinkgoT().TempDir()
 		spawnDir = GinkgoT().TempDir()
+		clock = libtime.NewCurrentDateTime()
+		clock.SetNow(clock.Now())
 	})
 
 	AfterEach(func() {
@@ -197,6 +203,7 @@ var _ = Describe("the Allow / Deny pair on the served page", func() {
 				spawn,
 				panes,
 				pkg.NewTaskIndex(ctx, vault),
+				clock,
 			),
 			false,
 			vault,
@@ -322,14 +329,20 @@ var _ = Describe("the Allow / Deny pair on the served page", func() {
 			Expect(first).To(ContainSubstring(item.Payload.String()))
 			Expect(strings.Count(first, `data-decision=`)).To(Equal(0))
 
-			// The record appears between the two loads.
+			// The record appears between the two loads. The clock is advanced past
+			// the resolver's two-second host-snapshot window first: the ledger is
+			// read at render time, but it is served from that cache inside the
+			// window, so without this the second load would legitimately still see
+			// the pre-change ledger.
 			writeSpawn("session-late", "headless")
+			clock.SetNow(clock.Now().Add(libtime.Duration(3 * 1e9)))
 			second := rowOf(get(page).Body.String(), item.ItemID)
 			Expect(second).To(ContainSubstring(item.Payload.String()))
 			Expect(second).To(ContainSubstring(`data-decision="allow"`))
 
 			// And disappears again: the control is gone on the third load.
 			Expect(os.Remove(filepath.Join(spawnDir, "session-late.json"))).To(BeNil())
+			clock.SetNow(clock.Now().Add(libtime.Duration(3 * 1e9)))
 			third := rowOf(get(page).Body.String(), item.ItemID)
 			Expect(third).To(ContainSubstring(item.Payload.String()))
 			Expect(strings.Count(third, `data-decision=`)).To(Equal(0))
