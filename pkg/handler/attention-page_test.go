@@ -1597,4 +1597,27 @@ var _ = Describe("AttentionPageHandler", func() {
 		Expect(body).To(ContainSubstring("showJumpNote(row, failure.message, true)"))
 		Expect(body).To(ContainSubstring("showCloseNote(row, failure.message, true)"))
 	})
+
+	// ⚠️ This is a SOURCE-PRESENCE guard and NOT browser behaviour. The inline
+	// script has no unit harness, so nothing here clicks the control or reads
+	// the panel's hidden state back; the behavioural proof is the Playwright
+	// case in the e2e prompt. What this catches is the script losing the
+	// delegated selector, the panel lookup or one of the two transitions.
+	// The reserved console prefix is asserted once, by "keeps the reserved
+	// console prefix at exactly nine lines" above — this listener has no error
+	// path and logs nothing, so a tenth line means it grew one by mistake.
+	It("ships the card info affordance and its delegated listener", func() {
+		body := get("GET").Body.String()
+
+		// The delegated selector the listener is bound on, and the panel it
+		// looks up within the row.
+		Expect(body).To(ContainSubstring("button[data-info-toggle]"))
+		Expect(body).To(ContainSubstring("[data-info-panel]"))
+
+		// Both transitions, asserted separately rather than as a count: an
+		// open-only or close-only handler is a one-way control, which is the
+		// defect this affordance exists to avoid.
+		Expect(body).To(ContainSubstring("button.setAttribute('aria-expanded', 'true')"))
+		Expect(body).To(ContainSubstring("button.setAttribute('aria-expanded', 'false')"))
+	})
 })

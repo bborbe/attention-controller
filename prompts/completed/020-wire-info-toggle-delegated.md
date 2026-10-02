@@ -1,8 +1,13 @@
 ---
-status: approved
+status: completed
 spec: [005-card-metadata-behind-info]
+summary: Added a document-delegated click listener for button[data-info-toggle] that flips the card's info panel open/closed via aria-expanded, plus a source-presence spec guarding the selector, panel lookup and both transitions
+execution_id: attention-controller-card-info-exec-020-wire-info-toggle-delegated
+dark-factory-version: v0.196.0
 created: "2026-10-02T08:03:00Z"
 queued: "2026-10-02T08:22:35Z"
+started: "2026-10-02T08:28:24Z"
+completed: "2026-10-02T08:31:27Z"
 ---
 
 # Wire the card's info affordance with a document-delegated listener

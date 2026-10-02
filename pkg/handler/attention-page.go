@@ -939,6 +939,39 @@ document.addEventListener('click', function (event) {
       console.error('attention board: jump failed - ' + String(error));
     });
 });
+/* The card's machine identity, behind an "i" at the card's top right. The
+   panel ships hidden in the served markup and this only flips that state, so a
+   row the stream re-renders comes back closed with the control still
+   operable — never open-by-default, and never rendered-and-dead.
+
+   ⚠️ Delegated on the document, NOT bound per button — for the same reason the
+   Jump and read-aloud controls are, and the reason is a defect rather than a
+   preference. The stream replaces a row's whole outerHTML on every event
+   (upsertRow), and a listener attached to the old node dies with it: the
+   button is there, the click does nothing, and no panel opens. That is the
+   failure this repo already shipped once at v0.19.0.
+
+   ⚠️ The state is read from the button's own aria-expanded attribute rather
+   than from a page-local map, and that is deliberate rather than incidental:
+   the attribute is server-rendered on every row the stream sends, so it is the
+   one place the open/closed state survives a swap without a second store to
+   keep in step. */
+document.addEventListener('click', function (event) {
+  if (!event.target || !event.target.closest) { return; }
+  var button = event.target.closest('button[data-info-toggle]');
+  if (!button) { return; }
+  var row = button.closest('li.item');
+  if (!row) { return; }
+  var panel = row.querySelector('[data-info-panel]');
+  if (!panel) { return; }
+  if (button.getAttribute('aria-expanded') === 'true') {
+    button.setAttribute('aria-expanded', 'false');
+    panel.setAttribute('hidden', '');
+    return;
+  }
+  button.setAttribute('aria-expanded', 'true');
+  panel.removeAttribute('hidden');
+});
 function showJumpNote(row, message, isError) {
   var container = row.querySelector('.jump');
   var previous = container.querySelector('.note');

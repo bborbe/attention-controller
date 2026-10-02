@@ -1,5 +1,5 @@
 ---
-status: generating
+status: approved
 approved: "2026-10-02T07:51:13Z"
 generating: "2026-10-02T07:51:13Z"
 branch: dark-factory/card-metadata-behind-info
