@@ -1,8 +1,13 @@
 ---
-status: approved
+status: completed
 spec: [005-card-metadata-behind-info]
+summary: 'Added pkg/handler/attention-card-info-page_test.go serving the restructured card end to end through the real page handler and store, asserting the ask leads, the machine identity relocates into each card''s own panel, the navigation spans stay on the face, and a card with no machine identity renders no affordance; appended a test: bullet to CHANGELOG.md'
+execution_id: attention-controller-card-info-exec-021-served-page-card-info-test
+dark-factory-version: v0.196.0
 created: "2026-10-02T08:03:00Z"
 queued: "2026-10-02T08:22:35Z"
+started: "2026-10-02T08:31:28Z"
+completed: "2026-10-02T08:36:56Z"
 ---
 
 # Serve the board and assert the ask leads, the metadata relocates, and no identity means no affordance
