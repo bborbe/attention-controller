@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.34.0
 
 - feat: Lead each attention-board card with the ask it exists to deliver, moving the producer line, the host/cwd/tool/pane provenance values and the `state - createdAt` footer into a per-card info panel behind a new `i` control at the card's top right, revealed on activation; a card carrying no machine identity renders no control, the task/goal/topic/session-name spans stay on the card face after the ask unchanged in order and separator, no value is deleted, and the board's build-identity footer, the corner X, the read-aloud toggle and the jump control are untouched
 
