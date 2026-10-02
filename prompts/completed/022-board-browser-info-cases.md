@@ -1,8 +1,13 @@
 ---
-status: approved
+status: completed
 spec: [005-card-metadata-behind-info]
+summary: Added two Playwright browser cases (AC3/AC4) driving the card's info affordance — reveal/toggle with aria-expanded and survival of a stream row swap — plus the three selector/helper additions, and reconciled the suite's asserted package total to 25 of 25 Specs in both scenario files and the CHANGELOG.
+execution_id: attention-controller-card-info-exec-022-board-browser-info-cases
+dark-factory-version: v0.196.0
 created: "2026-10-02T08:03:00Z"
 queued: "2026-10-02T08:22:35Z"
+started: "2026-10-02T08:36:57Z"
+completed: "2026-10-02T08:40:00Z"
 ---
 
 # Drive the card's info affordance in a real browser and keep it working across a row swap
