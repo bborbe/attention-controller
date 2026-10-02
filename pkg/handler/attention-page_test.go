@@ -430,9 +430,11 @@ var _ = Describe("AttentionPageHandler", func() {
 
 			row := rowOf(get("GET").Body.String(), item.ItemID)
 
-			// Positive control: the line rendered, so the absences below are a
-			// withheld link rather than an absent line.
-			Expect(row).To(ContainSubstring(`class="provenance"`))
+			// Positive control: the panel rendered, so the absences below are
+			// about the card face rather than a row that was not drawn.
+			// The machine values relocated into the info panel; the card face carries
+			// no navigation line because nothing navigational resolved.
+			Expect(strings.Count(row, `class="info-panel"`)).To(Equal(1))
 			Expect(row).To(ContainSubstring(`<span class="host">burn</span>`))
 			Expect(row).NotTo(ContainSubstring(`class="task"`))
 			Expect(row).NotTo(ContainSubstring("<a href="))
@@ -569,7 +571,8 @@ var _ = Describe("AttentionPageHandler", func() {
 
 			row := rowOf(get("GET").Body.String(), item.ItemID)
 
-			Expect(strings.Count(row, `class="provenance"`)).To(Equal(1))
+			Expect(strings.Count(row, `class="provenance"`)).To(Equal(0))
+			Expect(strings.Count(row, `class="info-panel"`)).To(Equal(1))
 			Expect(strings.Count(row, `class="host"`)).To(Equal(1))
 			Expect(strings.Count(row, `class="session-name"`)).To(Equal(0))
 			// An unresolved value renders absent, never as a stand-in presented as

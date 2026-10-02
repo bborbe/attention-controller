@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- feat: Lead each attention-board card with the ask it exists to deliver, moving the producer line, the host/cwd/tool/pane provenance values and the `state - createdAt` footer into a per-card info panel behind a new `i` control at the card's top right, revealed on activation; a card carrying no machine identity renders no control, the task/goal/topic/session-name spans stay on the card face after the ask unchanged in order and separator, no value is deleted, and the board's build-identity footer, the corner X, the read-aloud toggle and the jump control are untouched
+
 ## v0.33.0
 
 - feat: carry a fail-closed `Headless` fact from the supervisor's spawn ledger through `pkg.ProvenanceResolver`. `Provenance` gains `Headless`, set from a new `sessionModes` read of the spawn ledger — the only source that separates a headless worker from a tab worker, since a headless worker inherits its spawner's `WEZTERM_PANE` and so reads as routable exactly like a tab worker's. The ledger is read once per page load beside `sessionNames`, never once per card, and is confined beneath the configured directory through an `os.Root` handle with the item's session id used only as a map key. It fails closed in every direction — an absent or unreadable directory, a missing record, an unparseable record and any `mode` other than `headless` all leave the fact false — and `Headless` is deliberately **not** a member of `Provenance.Resolved()`, so a card whose only resolved fact is headless draws no provenance line rather than an empty one. `NewProvenanceResolver` gains a `spawnDir` parameter, and `application` gains `SpawnStateDir` (`--spawn-state-dir` / `SPAWN_STATE_DIR`) defaulting to `~/.local/state/claude-supervisor/sessions`; an unresolvable home directory is logged and the board still starts, rendering no answering control on any permission card. No page bytes change in this step.

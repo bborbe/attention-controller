@@ -1,6 +1,6 @@
 ---
 status: completed
-spec: ["004"]
+spec: [004-decide-headless-only]
 summary: Gated the Allow / Deny pair on the headless fact in newAttentionPageRow (attention-page-helpers.go), reconciled the two existing permission-row specs, and added the served-page integration suite; the frozen `Decide` doc comment in attention-page.go is now stale for tab workers and is a follow-up for the sibling task that owns that file.
 execution_id: attention-controller-headless-decide-exec-016-spec-004-row-gate
 dark-factory-version: v0.196.0

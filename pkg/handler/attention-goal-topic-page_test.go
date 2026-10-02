@@ -278,7 +278,7 @@ var _ = Describe("the goal and topic spans on the served page", func() {
 		//
 		// ⚠️ The provenance DIV is what is asserted, and deliberately not the
 		// absence of `-`. The spec lists `-` among the placeholders, but the row's
-		// own meta line renders `{{ .Item.State }} - {{ .Item.CreatedAt }}`, so a
+		// own meta line renders `{{ .Meta }}` (inside the info panel), so a
 		// bare dash is present on every row of the board and an assertion on it
 		// could never hold. The placeholder this case is about would stand where a
 		// span would — inside the provenance div — so the div's absence is the
