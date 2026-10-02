@@ -1,7 +1,8 @@
 ---
-status: approved
+status: verifying
 approved: "2026-10-02T07:51:13Z"
 generating: "2026-10-02T07:51:13Z"
+verifying: "2026-10-02T08:40:00Z"
 branch: dark-factory/card-metadata-behind-info
 ---
 
