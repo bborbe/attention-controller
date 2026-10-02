@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.34.1
 
 - perf: serve the provenance resolver's three host-wide reads — the pane listing (`wezterm cli list`), the session registry and the supervisor's spawn ledger — from a two-second snapshot cache instead of re-reading all three on every `Resolve`, so a store with many open boards no longer multiplies one host scan by the number of connected clients. The snapshot is guarded by a mutex held across the whole check-and-refresh, so concurrent stream handlers cannot refresh at once or read a map mid-write; `NewProvenanceResolver` gains a `libtime.CurrentDateTimeGetter` parameter to time the window. The per-producer event-log reads stay uncached, so a newly posted item still resolves on its first push, and the pane-error semantics are unchanged: a failed listing is carried through the cache and logged rather than flattened into an empty map, and every row it affects still makes no pane claim.
 
