@@ -58,6 +58,10 @@ var _ = Describe("the session name on the served page", func() {
 	var stateDir string
 	var sessionsDir string
 	var spawnDir string
+	// clock drives the provenance resolver's host-snapshot cache. Frozen in
+	// BeforeEach so the case that renames the session between loads can advance
+	// it with SetNow rather than sleeping past the cache window.
+	var clock libtime.CurrentDateTime
 
 	BeforeEach(func() {
 		ctx = context.Background()
@@ -96,6 +100,8 @@ var _ = Describe("the session name on the served page", func() {
 		stateDir = GinkgoT().TempDir()
 		sessionsDir = GinkgoT().TempDir()
 		spawnDir = GinkgoT().TempDir()
+		clock = libtime.NewCurrentDateTime()
+		clock.SetNow(clock.Now())
 	})
 
 	AfterEach(func() {
@@ -202,6 +208,7 @@ var _ = Describe("the session name on the served page", func() {
 				spawnDir,
 				panes,
 				pkg.NewTaskIndex(ctx, vault),
+				clock,
 			),
 			false,
 			vault,
@@ -353,8 +360,13 @@ var _ = Describe("the session name on the served page", func() {
 		Expect(first).To(ContainSubstring(`<span class="session-name">Before Rename</span>`))
 		Expect(strings.Count(first, `class="session-name"`)).To(Equal(1))
 
-		// The same pid, so the same file is overwritten.
+		// The same pid, so the same file is overwritten. The clock is advanced
+		// past the resolver's two-second host-snapshot window first: the registry
+		// is read at render time, but it is served from that cache inside the
+		// window, so without this the second load would legitimately still see the
+		// pre-rename registry.
 		writeSession("106", "session-renamed", "After Rename", "user")
+		clock.SetNow(clock.Now().Add(libtime.Duration(3 * 1e9)))
 
 		second := rowOf(get(page).Body.String(), item.ItemID)
 		Expect(second).To(ContainSubstring(`<span class="session-name">After Rename</span>`))

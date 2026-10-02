@@ -161,7 +161,14 @@ var _ = Describe("the goal and topic spans on the served page", func() {
 	buildPageWith := func(index pkg.TaskIndex) http.Handler {
 		return handler.NewAttentionPageHandler(
 			store,
-			pkg.NewProvenanceResolver(stateDir, sessionsDir, spawnDir, panes, index),
+			pkg.NewProvenanceResolver(
+				stateDir,
+				sessionsDir,
+				spawnDir,
+				panes,
+				index,
+				libtime.NewCurrentDateTime(),
+			),
 			false,
 			vault,
 			testBuildIdentity,
@@ -367,6 +374,7 @@ var _ = Describe("the goal and topic spans on the served page", func() {
 				spawnDir,
 				panes,
 				pkg.NewTaskIndex(ctx, ""),
+				libtime.NewCurrentDateTime(),
 			),
 			false,
 			"",

@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 
 	"github.com/bborbe/errors"
+	"github.com/bborbe/run"
+	libtime "github.com/bborbe/time"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -24,6 +26,11 @@ var _ = Describe("ProvenanceResolver", func() {
 	var spawnDir string
 	var paneLister *mocks.PaneLister
 	var resolver pkg.ProvenanceResolver
+	// clock drives the resolver's host-snapshot cache. It is frozen in
+	// BeforeEach so the cache window is measured from a fixed instant rather
+	// than from the wall clock, and the caching specs advance it with SetNow
+	// instead of sleeping.
+	var clock libtime.CurrentDateTime
 
 	// eventLine writes one event-log line. Written as raw JSON rather than
 	// marshalled from a struct, so the fixture is the *file shape* the watcher
@@ -103,6 +110,8 @@ var _ = Describe("ProvenanceResolver", func() {
 		spawnDir = GinkgoT().TempDir()
 		paneLister = &mocks.PaneLister{}
 		paneLister.ListReturns(map[int]pkg.Pane{}, nil)
+		clock = libtime.NewCurrentDateTime()
+		clock.SetNow(clock.Now())
 		// An empty vault: the specs below are about the event log, the registry
 		// and the pane listing, so no task resolves and TaskName/TaskPath stay
 		// empty. The vault itself is covered by the TaskIndex specs.
@@ -112,6 +121,7 @@ var _ = Describe("ProvenanceResolver", func() {
 			spawnDir,
 			paneLister,
 			pkg.NewTaskIndex(ctx, GinkgoT().TempDir()),
+			clock,
 		)
 	})
 
@@ -378,6 +388,7 @@ var _ = Describe("ProvenanceResolver", func() {
 			spawnDir,
 			paneLister,
 			pkg.NewTaskIndex(ctx, GinkgoT().TempDir()),
+			clock,
 		)
 
 		resolved := unavailable.Resolve(ctx, pkg.Items{item("item-7", "producer-e", "key-e")})
@@ -397,6 +408,120 @@ var _ = Describe("ProvenanceResolver", func() {
 		Expect(paneLister.ListCallCount()).To(Equal(1))
 	})
 
+	// advanceClock moves the resolver's injected clock past the two-second
+	// host-snapshot window, so the next Resolve re-reads the pane listing, the
+	// session registry and the spawn ledger. The specs drive the clock rather
+	// than sleeping, per the repo's time-injection rule.
+	advanceClock := func() {
+		clock.SetNow(clock.Now().Add(libtime.Duration(3 * 1e9)))
+	}
+
+	It("reads the host snapshot once inside the window and again past it", func() {
+		// The cache is what stops the live stream's cost scaling with the number
+		// of connected clients: every store change wakes every stream, and each
+		// one would otherwise re-read the pane listing (a subprocess), the
+		// registry and the 1,114-file ledger.
+		writeEvents("producer-w", eventLine("key-w", "producer-w", "burn", "/w/w", "", ""))
+		items := pkg.Items{item("item-w", "producer-w", "key-w")}
+
+		resolver.Resolve(ctx, items)
+		Expect(paneLister.ListCallCount()).To(Equal(1))
+
+		// A second resolve inside the window is served from the cache.
+		resolver.Resolve(ctx, items)
+		Expect(paneLister.ListCallCount()).To(Equal(1))
+
+		advanceClock()
+		resolver.Resolve(ctx, items)
+		Expect(paneLister.ListCallCount()).To(Equal(2))
+	})
+
+	It("serves the registry and the ledger from the cache inside the window", func() {
+		// ⚠️ The pane-lister count alone cannot prove sessionNames and
+		// sessionModes are cached. This case changes both on disk and shows the
+		// change is not observed until the window lapses, which is what proves
+		// those two reads are served from the same snapshot.
+		writeSessionWithSource("1", "session-cached", "Before Name", "user")
+		writeSpawn("session-cached", "interactive")
+		items := pkg.Items{
+			sessionItem("item-cached", "producer-cached", "key-cached", "session-cached"),
+		}
+
+		first := resolver.Resolve(ctx, items)[pkg.ItemID("item-cached")]
+		Expect(first.SessionName).To(Equal("Before Name"))
+		Expect(first.Headless).To(BeFalse())
+
+		// Both files change on disk. Inside the window neither change is seen.
+		writeSessionWithSource("1", "session-cached", "After Name", "user")
+		writeSpawn("session-cached", "headless")
+
+		second := resolver.Resolve(ctx, items)[pkg.ItemID("item-cached")]
+		Expect(second.SessionName).To(Equal("Before Name"))
+		Expect(second.Headless).To(BeFalse())
+
+		// Past the window the fresh registry and ledger are served.
+		advanceClock()
+		third := resolver.Resolve(ctx, items)[pkg.ItemID("item-cached")]
+		Expect(third.SessionName).To(Equal("After Name"))
+		Expect(third.Headless).To(BeTrue())
+	})
+
+	It("carries a pane listing error through the cache and never serves it as success", func() {
+		// The fail-closed direction requirement 5 pins: an unreadable listing
+		// yields no pane claim, and a cached error is not later replaced by a
+		// successful listing until the window lapses.
+		writeSession("111", "producer-cached-err", "⚙ Session E")
+		writeEvents(
+			"producer-cached-err",
+			eventLine("key-cached-err", "producer-cached-err", "burn", "/w/e", "", "928"),
+		)
+		items := pkg.Items{item("item-cached-err", "producer-cached-err", "key-cached-err")}
+
+		paneLister.ListReturns(nil, errors.New(ctx, "wezterm unreachable"))
+		first := resolver.Resolve(ctx, items)[pkg.ItemID("item-cached-err")]
+		Expect(first.PaneRecorded).To(BeFalse())
+		Expect(first.Pane).To(BeEmpty())
+		// The rest of the row still resolves — an unreadable listing is not a
+		// reason to drop host, cwd or tool.
+		Expect(first.Host).To(Equal("burn"))
+
+		// A listing that would now succeed is not consulted inside the window:
+		// the cached error stands and still makes no pane claim.
+		paneLister.ListReturns(map[int]pkg.Pane{
+			928: {PaneID: 928, Title: "◑ Session E"},
+		}, nil)
+		second := resolver.Resolve(ctx, items)[pkg.ItemID("item-cached-err")]
+		Expect(second.PaneRecorded).To(BeFalse())
+		Expect(second.Pane).To(BeEmpty())
+
+		// Past the window the fresh listing is read and the pane resolves.
+		advanceClock()
+		third := resolver.Resolve(ctx, items)[pkg.ItemID("item-cached-err")]
+		Expect(third.PaneRecorded).To(BeTrue())
+		Expect(third.Routable).To(BeTrue())
+		Expect(third.Pane).To(Equal("928"))
+	})
+
+	It("does not race when many resolves share one resolver", func() {
+		// ⚠️ make precommit runs with -race=false, so a data race in the cache
+		// guard would not be reported here. This case exists to drive concurrent
+		// Resolve calls through the same resolver — the shape the SSE stream
+		// produces with many open boards — so the mutex-guarded check-and-refresh
+		// is exercised under contention rather than only serially.
+		writeEvents("producer-conc", eventLine("key-conc", "producer-conc", "burn", "/w/c", "", ""))
+		items := pkg.Items{item("item-conc", "producer-conc", "key-conc")}
+
+		funcs := make([]run.Func, 0, 8)
+		for i := 0; i < 8; i++ {
+			funcs = append(funcs, func(ctx context.Context) error {
+				resolver.Resolve(ctx, items)
+				return nil
+			})
+		}
+		Expect(run.CancelOnFirstErrorWait(ctx, funcs...)).To(BeNil())
+		Expect(paneLister.ListCallCount()).To(BeNumerically(">=", 1))
+	})
+
 	// withVault is the BeforeEach resolver plus a task index over vault. The
 	// vault is per-spec rather than shared, so each case's fixture is the only
 	// thing its index can see.
@@ -407,6 +532,7 @@ var _ = Describe("ProvenanceResolver", func() {
 			spawnDir,
 			paneLister,
 			pkg.NewTaskIndex(ctx, vault),
+			clock,
 		)
 	}
 
@@ -478,7 +604,14 @@ var _ = Describe("ProvenanceResolver", func() {
 		// The standalone host: no vault, so no index. Everything else still
 		// resolves exactly as it did before the index existed.
 		writeEvents("producer-nil", eventLine("key-nil", "session-nil", "burn", "/w/nil", "", ""))
-		nilIndex := pkg.NewProvenanceResolver(stateDir, sessionsDir, spawnDir, paneLister, nil)
+		nilIndex := pkg.NewProvenanceResolver(
+			stateDir,
+			sessionsDir,
+			spawnDir,
+			paneLister,
+			nil,
+			clock,
+		)
 
 		provenance := nilIndex.Resolve(ctx, pkg.Items{
 			sessionItem("item-nil", "producer-nil", "key-nil", "session-nil"),
@@ -578,7 +711,14 @@ var _ = Describe("ProvenanceResolver", func() {
 			"producer-novault",
 			eventLine("key-novault", "session-novault", "burn", "/w/nv", "", ""),
 		)
-		nilIndex := pkg.NewProvenanceResolver(stateDir, sessionsDir, spawnDir, paneLister, nil)
+		nilIndex := pkg.NewProvenanceResolver(
+			stateDir,
+			sessionsDir,
+			spawnDir,
+			paneLister,
+			nil,
+			clock,
+		)
 
 		provenance := nilIndex.Resolve(ctx, pkg.Items{
 			sessionItem("item-novault", "producer-novault", "key-novault", "session-novault"),
@@ -684,6 +824,7 @@ var _ = Describe("ProvenanceResolver", func() {
 			spawnDir,
 			paneLister,
 			pkg.NewTaskIndex(ctx, GinkgoT().TempDir()),
+			clock,
 		)
 
 		resolved := unavailable.Resolve(ctx, pkg.Items{
@@ -801,6 +942,7 @@ var _ = Describe("ProvenanceResolver", func() {
 			filepath.Join(spawnDir, "does-not-exist"),
 			paneLister,
 			pkg.NewTaskIndex(ctx, GinkgoT().TempDir()),
+			clock,
 		)
 
 		provenance := unavailable.Resolve(ctx, pkg.Items{
