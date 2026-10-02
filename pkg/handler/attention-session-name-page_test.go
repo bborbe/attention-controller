@@ -178,19 +178,6 @@ var _ = Describe("the session name on the served page", func() {
 		return rest[:end]
 	}
 
-	// provenanceDivOf returns the row's provenance div. It is needed by the
-	// absence cases: the placeholder they are about would stand where a span
-	// would, which is inside this div, and the div is the only one with that
-	// class and holds no nested div, so the first `</div>` closes it.
-	provenanceDivOf := func(row string) string {
-		start := strings.Index(row, `<div class="provenance">`)
-		Expect(start).To(BeNumerically(">=", 0), "provenance div not found")
-		rest := row[start:]
-		end := strings.Index(rest, "</div>")
-		Expect(end).To(BeNumerically(">=", 0))
-		return rest[:end]
-	}
-
 	// get renders the page through the given handler and returns the recorder.
 	get := func(httpHandler http.Handler) *httptest.ResponseRecorder {
 		req := httptest.NewRequest("GET", "/", nil)
@@ -291,9 +278,10 @@ var _ = Describe("the session name on the served page", func() {
 
 		row := rowOf(get(buildPage()).Body.String(), item.ItemID)
 
-		// The line rendered, so the absences below are about a span that was
-		// withheld rather than a row that was not drawn.
-		Expect(strings.Count(row, `class="provenance"`)).To(Equal(1))
+		// The card face carries no navigation line at all, so no placeholder can
+		// stand where a span would; the machine values relocated into the panel.
+		Expect(strings.Count(row, `class="provenance"`)).To(Equal(0))
+		Expect(strings.Count(row, `class="info-panel"`)).To(Equal(1))
 		Expect(strings.Count(row, `class="host"`)).To(Equal(1))
 		Expect(strings.Count(row, `class="session-name"`)).To(Equal(0))
 		// An unresolved value renders absent, never as a stand-in presented as
@@ -301,20 +289,13 @@ var _ = Describe("the session name on the served page", func() {
 		Expect(row).NotTo(ContainSubstring("Peer Name"))
 		Expect(row).NotTo(ContainSubstring("unknown"))
 		Expect(row).NotTo(ContainSubstring("n/a"))
-		// ⚠️ The `-` and session-id assertions are scoped to the provenance div,
-		// and they must be. The row's own meta line renders
-		// `{{ .Item.State }} - {{ .Item.CreatedAt }}`, so a bare dash is present on
-		// every row of the board and a row-wide assertion on it could never hold;
-		// and the row carries the item's ProducerID, which is
-		// `producer-session-peer`, so a row-wide "does not contain the session id"
-		// assertion could never hold either. The placeholder this criterion is
-		// about would stand where a span would, which is inside the provenance
-		// div, so the div is the scope that carries the claim. Do not "fix" this
-		// back into a row-wide assertion.
-		div := provenanceDivOf(row)
-		Expect(div).NotTo(ContainSubstring("session-peer"))
-		Expect(div).NotTo(ContainSubstring("unknown"))
-		Expect(div).NotTo(ContainSubstring("-"))
+		// ⚠️ The old div-scoped `-` and session-id assertions are gone with the
+		// provenance div they were scoped to. The div's absence is a stronger
+		// statement than the three assertions it carried: no span can stand where
+		// no line renders. The `-` assertion in particular has no scope that
+		// excludes the row's own meta line, which carries a ` - ` and now lives
+		// inside the panel, so it could never hold row-wide. Do not reintroduce a
+		// row-wide dash assertion.
 	})
 
 	It("an unknown session renders no session-name span", func() {
@@ -328,17 +309,16 @@ var _ = Describe("the session name on the served page", func() {
 		row := rowOf(get(buildPage()).Body.String(), item.ItemID)
 
 		Expect(row).To(ContainSubstring(item.Payload.String()))
-		Expect(strings.Count(row, `class="provenance"`)).To(Equal(1))
+		Expect(strings.Count(row, `class="provenance"`)).To(Equal(0))
+		Expect(strings.Count(row, `class="info-panel"`)).To(Equal(1))
 		Expect(strings.Count(row, `class="host"`)).To(Equal(1))
 		Expect(strings.Count(row, `class="session-name"`)).To(Equal(0))
 		Expect(row).NotTo(ContainSubstring("unknown"))
 		Expect(row).NotTo(ContainSubstring("n/a"))
-		// Same div-scoped reasoning as the peer case above: the row carries
-		// `producer-session-absent` as its ProducerID and a dash in its meta line.
-		div := provenanceDivOf(row)
-		Expect(div).NotTo(ContainSubstring("session-absent"))
-		Expect(div).NotTo(ContainSubstring("unknown"))
-		Expect(div).NotTo(ContainSubstring("-"))
+		// Same reasoning as the peer case above: the provenance div no longer
+		// renders for this machine-only row, so the div-scoped session-id, unknown
+		// and dash assertions went with it — the row's own meta line carries a
+		// ` - ` and now lives inside the panel.
 	})
 
 	It("a name and nothing else still renders the provenance line", func() {

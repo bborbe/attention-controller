@@ -84,6 +84,22 @@ func newAttentionPageRow(
 		TopicURL:   vaultFileURL(vaultName, provenance.TopicPath),
 	}
 	row.Message, row.Ack = affordance(item.AnswerMechanism)
+	// Info is the single gate for both the info-toggle and its panel, so the
+	// control and the panel it opens cannot disagree about whether this row
+	// carries machine identity. It is the implementation of
+	// [[Attention Item Schema]] silence 26's placement rule — the ask leads,
+	// the machine identity relocates behind the affordance — rather than a
+	// restatement of it: a row with none of these values renders neither.
+	row.Info = item.ProducerID != "" ||
+		item.ProducerKind != "" ||
+		provenance.Host != "" ||
+		provenance.Cwd != "" ||
+		provenance.Tool != "" ||
+		provenance.Pane != "" ||
+		provenance.PaneRecorded ||
+		item.State != "" ||
+		!item.CreatedAt.Time().IsZero()
+	row.Meta = infoMetaLine(item)
 	// The Allow / Deny pair renders only for a headless worker's park. A tab
 	// worker's gate is answered by pressing the prompt in the session's own pane,
 	// so a board verdict there would be permission laundering — the exact failure
@@ -382,4 +398,26 @@ func noJumpReason(item pkg.Item, provenance pkg.Provenance) string {
 		return "The pane recorded for this item does not resolve to this session."
 	}
 	return "No pane was recorded for this item, so there is no session to jump to."
+}
+
+// infoMetaLine renders the panel's state-and-timestamp line, and is empty when
+// the item carries neither. ⚠️ It is a derived string rather than a template
+// expression over the item's own fields because libtime.DateTime is a struct:
+// a zero value is truthy in a Go template, so `{{if .Item.CreatedAt}}` can
+// never test for absence, and its String() renders a zero value as
+// `0001-01-01T00:00:00Z` rather than "". Deriving here is what lets the panel
+// draw no element for an absent value, per the schema's absence rule.
+func infoMetaLine(item pkg.Item) string {
+	state := item.State.String()
+	created := item.CreatedAt.String()
+	switch {
+	case item.State == "" && item.CreatedAt.Time().IsZero():
+		return ""
+	case item.CreatedAt.Time().IsZero():
+		return state
+	case item.State == "":
+		return created
+	default:
+		return state + " - " + created
+	}
 }

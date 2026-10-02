@@ -224,6 +224,43 @@ li.item {
    the corner control rather than by the presence of the corner at all. */
 .jump-reason .no-jump { color: var(--muted); }
 .meta { color: var(--muted); font-size: 12px; }
+/* The info toggle and its panel. The control sits in the corner cluster's next
+   free slot: the corner X is pinned at right: 12px, the read-aloud control at
+   right: 48px and the jump corner at right: 84px, all 28px wide with an 8px gap,
+   so right: 120px places this control 8px to the jump corner's left and no
+   control's position depends on another's. It mirrors that geometry rather than
+   sharing a rule with it, so moving one control cannot move another. The
+   .info-panel span + span::before rule re-expresses the provenance line's
+   separator for the machine spans relocated here. */
+.info-toggle {
+  position: absolute;
+  top: 10px;
+  right: 120px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.info-toggle:hover { color: var(--text); border-color: var(--border); }
+.info-toggle[aria-expanded="true"] { color: var(--text); border-color: var(--border); }
+.info-panel {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  margin: 8px 0 0;
+}
+.info-panel span + span::before { content: " · "; }
+.info-panel .unroutable { color: var(--warn); }
 .empty { color: var(--muted); font-size: 14px; }
 /* The answer card, rendered for message items only. The context line carries
    the background the producer declared, kept separate from the question so the
@@ -902,6 +939,39 @@ document.addEventListener('click', function (event) {
       console.error('attention board: jump failed - ' + String(error));
     });
 });
+/* The card's machine identity, behind an "i" at the card's top right. The
+   panel ships hidden in the served markup and this only flips that state, so a
+   row the stream re-renders comes back closed with the control still
+   operable — never open-by-default, and never rendered-and-dead.
+
+   ⚠️ Delegated on the document, NOT bound per button — for the same reason the
+   Jump and read-aloud controls are, and the reason is a defect rather than a
+   preference. The stream replaces a row's whole outerHTML on every event
+   (upsertRow), and a listener attached to the old node dies with it: the
+   button is there, the click does nothing, and no panel opens. That is the
+   failure this repo already shipped once at v0.19.0.
+
+   ⚠️ The state is read from the button's own aria-expanded attribute rather
+   than from a page-local map, and that is deliberate rather than incidental:
+   the attribute is server-rendered on every row the stream sends, so it is the
+   one place the open/closed state survives a swap without a second store to
+   keep in step. */
+document.addEventListener('click', function (event) {
+  if (!event.target || !event.target.closest) { return; }
+  var button = event.target.closest('button[data-info-toggle]');
+  if (!button) { return; }
+  var row = button.closest('li.item');
+  if (!row) { return; }
+  var panel = row.querySelector('[data-info-panel]');
+  if (!panel) { return; }
+  if (button.getAttribute('aria-expanded') === 'true') {
+    button.setAttribute('aria-expanded', 'false');
+    panel.setAttribute('hidden', '');
+    return;
+  }
+  button.setAttribute('aria-expanded', 'true');
+  panel.removeAttribute('hidden');
+});
 function showJumpNote(row, message, isError) {
   var container = row.querySelector('.jump');
   var previous = container.querySelector('.note');
@@ -1370,7 +1440,6 @@ function replayFailure(row) {
      from this one. The dollar sign inside a sub-template is the value passed to
      it, which is why Speak is carried on the row and read as dot-Speak here. */}}
 {{define "attention-row"}}<li class="item{{if .Dimmed}} dimmed{{end}}" data-item-id="{{ .Item.ItemID }}">
-<div class="producer">{{ .Item.ProducerID }} ({{ .Item.ProducerKind }})</div>
 {{/* The corner X renders on every OPEN row, ungated by mechanism, from
      2026-09-27 — message, ack and permission alike — and is withheld from the
      dimmed record card by the (not .Dimmed) conjunct, added 2026-10-01. It was
@@ -1409,9 +1478,9 @@ function replayFailure(row) {
      stay: with no tts server configured, no row renders a speaker. */}}{{if and .Speak (not .Dimmed)}}<button type="button" class="speak" data-speak aria-label="Read aloud" title="Read aloud"><svg class="speak-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2.75 5.25 5.5H2.75v5h2.5L9 13.25z"/><path d="M11.5 5.75a3.25 3.25 0 0 1 0 4.5"/><path d="M13.5 3.75a6 6 0 0 1 0 8.5"/></svg></button>
 {{end}}{{if .JumpURL}}<button type="button" class="jump-corner" data-jump="{{ .JumpURL }}" aria-label="Jump to session" title="Jump to session"><svg class="jump-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.75 3.25h8.5a1.5 1.5 0 0 1 1.5 1.5v6.5a1.5 1.5 0 0 1-1.5 1.5h-8.5a1.5 1.5 0 0 1-1.5-1.5v-6.5a1.5 1.5 0 0 1 1.5-1.5z"/><path d="M5.75 6.5 7.5 8.25 5.75 10"/><path d="M9 10h1.75"/></svg></button>
 {{else if .NoJump}}<button type="button" class="jump-corner" disabled aria-label="Jump to session" title="Jump to session"><svg class="jump-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.75 3.25h8.5a1.5 1.5 0 0 1 1.5 1.5v6.5a1.5 1.5 0 0 1-1.5 1.5h-8.5a1.5 1.5 0 0 1-1.5-1.5v-6.5a1.5 1.5 0 0 1 1.5-1.5z"/><path d="M5.75 6.5 7.5 8.25 5.75 10"/><path d="M9 10h1.75"/></svg></button>
+{{end}}{{if .Info}}<button type="button" class="info-toggle" data-info-toggle aria-expanded="false" aria-label="Card information">i</button>
 {{end}}{{if not .Message}}<div class="payload">{{ .Item.Payload }}</div>
 {{end}}{{if .Item.Context}}<div class="context">{{ .Item.Context }}</div>
-{{end}}{{if .Provenance.Resolved}}<div class="provenance">{{if .TaskURL}}<span class="task"><a href="{{ .TaskURL }}">{{ .Provenance.TaskName }}</a></span>{{end}}{{if .GoalURL}}<span class="goal"><a href="{{ .GoalURL }}">{{ .Provenance.GoalName }}</a></span>{{end}}{{if .TopicURL}}<span class="topic"><a href="{{ .TopicURL }}">{{ .Provenance.TopicName }}</a></span>{{end}}{{if .Provenance.Host}}<span class="host">{{ .Provenance.Host }}</span>{{end}}{{if .Provenance.Cwd}}<span class="cwd">{{ .Provenance.Cwd }}</span>{{end}}{{if .Provenance.Tool}}<span class="tool">{{ .Provenance.Tool }}</span>{{end}}{{if .Provenance.Pane}}<span class="pane">pane {{ .Provenance.Pane }}</span>{{else if .Provenance.PaneRecorded}}<span class="unroutable">unroutable</span>{{end}}{{if .Provenance.SessionName}}<span class="session-name">{{ .Provenance.SessionName }}</span>{{end}}</div>
 {{end}}{{if .Dimmed}}<div class="record"><div class="record-question">{{ .Item.Payload }}</div><div class="record-answer">answered: {{ .Record }}</div></div>
 {{else if .Message}}<form class="answer" data-multi="{{ .Tabs }}">
 {{if .Tabs}}<div class="tabs">{{range .Questions}}<button type="button" class="tab{{if .Active}} active{{end}}" data-tab="{{ .Tab }}">{{ .Tab }}</button>{{end}}</div>
@@ -1427,10 +1496,19 @@ function replayFailure(row) {
 </form>
 {{end}}{{if and .Ack (not .Dimmed)}}<div class="actions"><button type="button" class="ack" data-ack>Acknowledge</button></div>
 {{end}}{{if and .Decide (not .Dimmed)}}<div class="actions"><button type="button" class="dismiss" data-decision="deny">✕ Deny</button><button type="button" class="next" data-decision="allow">✓ Allow</button></div>
+{{end}}{{if or .TaskURL .GoalURL .TopicURL .Provenance.SessionName}}<div class="provenance">{{if .TaskURL}}<span class="task"><a href="{{ .TaskURL }}">{{ .Provenance.TaskName }}</a></span>{{end}}{{if .GoalURL}}<span class="goal"><a href="{{ .GoalURL }}">{{ .Provenance.GoalName }}</a></span>{{end}}{{if .TopicURL}}<span class="topic"><a href="{{ .TopicURL }}">{{ .Provenance.TopicName }}</a></span>{{end}}{{if .Provenance.SessionName}}<span class="session-name">{{ .Provenance.SessionName }}</span>{{end}}</div>
 {{end}}{{if or .Jump .JumpURL}}<div class="jump">{{if .Jump}}<span>Approve in the session that asked: <code>{{ .Jump }}</code></span>{{end}}</div>
 {{else if .NoJump}}<div class="jump-reason"><span class="no-jump">{{ .NoJump }}</span></div>
-{{end}}<div class="meta">{{ .Item.State }} - {{ .Item.CreatedAt }}</div>
-</li>{{end}}
+{{end}}{{/* [[Attention Item Schema]] silence 26's placement rule implemented:
+     the ask leads the card and the machine identity — producer, host, cwd,
+     tool, pane and the state/timestamp line — relocates into this per-card
+     panel behind the info affordance, while the navigation spans stay on the
+     face above. The panel is server-rendered and carries the hidden
+     attribute, so a card with no JavaScript still serves its values and a
+     stream row-swap renders the same markup a fresh load does. The rule is
+     implemented here rather than restated; the schema page owns its
+     statement. */}}{{if .Info}}<div class="info-panel" data-info-panel hidden>{{if or .Item.ProducerID .Item.ProducerKind}}<div class="producer">{{ .Item.ProducerID }} ({{ .Item.ProducerKind }})</div>{{end}}{{if .Provenance.Host}}<span class="host">{{ .Provenance.Host }}</span>{{end}}{{if .Provenance.Cwd}}<span class="cwd">{{ .Provenance.Cwd }}</span>{{end}}{{if .Provenance.Tool}}<span class="tool">{{ .Provenance.Tool }}</span>{{end}}{{if .Provenance.Pane}}<span class="pane">pane {{ .Provenance.Pane }}</span>{{else if .Provenance.PaneRecorded}}<span class="unroutable">unroutable</span>{{end}}{{if .Meta}}<div class="meta">{{ .Meta }}</div>{{end}}</div>
+{{end}}</li>{{end}}
 `
 
 // attentionPageQuestion is one question unit as the card renders it: the unit a
@@ -1578,6 +1656,14 @@ type attentionPageRow struct {
 	// data, so `$` inside it is the row and not the page, and a `$.Speak` left
 	// in place would resolve against the wrong value.
 	Speak bool
+	// Info reports whether this row carries machine identity — a producer id or
+	// kind, a machine provenance value, or a state/timestamp — and therefore
+	// renders the info-toggle and its panel. A row carrying none of them renders
+	// no control at all, never a control that opens onto nothing.
+	Info bool
+	// Meta is the panel's state-and-timestamp line. Empty when the item carries
+	// neither, so the panel draws no element for an absent value.
+	Meta string
 	// TaskURL is the link that opens this item's vault task, rendered as the
 	// first element of the provenance line. Empty when no task resolved — an
 	// unresolvable value renders absent rather than as a stand-in, the same rule
