@@ -391,4 +391,38 @@ var _ = Describe("the Allow / Deny pair on the served page", func() {
 			Expect(headlessRow).To(ContainSubstring(allowDenyPair))
 		},
 	)
+
+	// ⚠️ A SOURCE-PRESENCE guard, like its neighbours above: the inline script has
+	// no unit harness, so this reads the served page rather than clicking it. The
+	// operator-visible half is the browser observation recorded on the task.
+	It(
+		"hands the decision path the failure's message, never the answerFailure object",
+		func() {
+			body := get(buildPage()).Body.String()
+
+			// ⚠️ Asserted as an ABSENCE, and that absence is the whole guard. The
+			// defect is a WRONG ARGUMENT, not a missing branch: answerFailure
+			// returns an object, showCloseNote's contract is a string, so
+			// textContent coerced it and the card rendered the literal
+			// [object Object] for every code — the store's own code and message
+			// dropped with it. A presence check for the corrected call proves
+			// nothing here, because the form path and replayFailure already emit
+			// `showCloseNote(row, failure.message, true)` elsewhere on this same
+			// page: a build that added the new branch BESIDE the object-passing
+			// line would satisfy it and still render [object Object] on every
+			// failed Allow / Deny.
+			Expect(body).NotTo(
+				ContainSubstring("showCloseNote(row, answerFailure(body), true)"),
+				"the decision path must not hand showCloseNote the answerFailure object",
+			)
+
+			// The two arms it carries instead. The raw-body line is unique to this
+			// call site — the form path renders through showNote(form, …) — so it
+			// pins the decision path's fallback rather than a call string shared
+			// with the other note helpers.
+			Expect(body).To(ContainSubstring(
+				"showCloseNote(row, 'Answer failed - HTTP ' + response.status + ' - ' + body, true)",
+			))
+		},
+	)
 })
