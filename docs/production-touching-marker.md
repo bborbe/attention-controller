@@ -13,8 +13,10 @@ A task's subtask line carries it:
 The detected form is a task checkbox, an optional warning glyph, the phrase `production-touching`, and an em-dash separator:
 
 ```
-^\s*-\s*\[[ x/]\]\s*⚠️?\s*production-touching\s*—
+^\s*-\s*\[[ x/]\]\s*(?:⚠️?)?\s*production-touching\s*—
 ```
+
+⚠️ **The glyph group is `(?:⚠️?)?`, and the outer group is load-bearing.** `⚠️` is two code points — U+26A0 plus the variation selector U+FE0F — so a bare `⚠️?` makes only the *selector* optional and still **requires** the base glyph. That silently fails every marker written without it, which is the opposite of what "optional glyph" means. The outer non-capturing group is what makes the whole glyph optional.
 
 ## Why the marker and not the command
 
