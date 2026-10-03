@@ -60,6 +60,27 @@ type AttentionStore interface {
 	// never prunes, never filters on liveness and never filters on state.
 	History(ctx context.Context) (Items, error)
 
+	// SweepAnswered closes every answered item whose AnsweredAt is older than
+	// maxAge, returning how many it closed.
+	//
+	// ⚠️ The bound exists because the live index admits `answered` items —
+	// liveIndexWorthy is `State != ClosedState` — so an answered item that is
+	// never closed is decoded on every read for the life of the store. Measured
+	// 2026-10-03: 2,547 answered against 16 open, so every read decoded ~2,563
+	// items and ~3.4 MB to return 16, and the JSON read API is polled by every
+	// supervisor, twice, every 2 s.
+	//
+	// ⚠️ The max age is a correctness constraint, not a tuning knob. Managers read
+	// a card's answer with `attention-ask.py poll` only at the START of each tick
+	// (15 min default), and both message-delivery and attention-poll skip any item
+	// not in state `answered` — so an item closed before a consumer looks has lost
+	// its verdict. One hour is 4x the tick.
+	//
+	// It is a separate call rather than a step inside Read because the read path
+	// stays read-only: a read that writes is the writer-lock-across-a-scan shape
+	// v0.23.2 removed.
+	SweepAnswered(ctx context.Context, maxAge libtime.Duration) (int, error)
+
 	// Answer applies open -> answered as an atomic compare-and-set. Exactly one
 	// of two concurrent answers transitions the item; the loser receives
 	// ErrAlreadyAnswered and must read back and report rather than retry.

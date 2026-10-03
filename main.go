@@ -47,6 +47,7 @@ type application struct {
 	Listen            string `required:"true"  arg:"listen"              env:"LISTEN"              usage:"address to listen to"`
 	DataDir           string `required:"true"  arg:"datadir"             env:"DATADIR"             usage:"data directory"`
 	HeartbeatWindow   string `required:"false" arg:"heartbeat-window"    env:"HEARTBEAT_WINDOW"    usage:"how stale a heartbeat:<path> mtime may be before the producer counts as finished"                                                            default:"15m"`
+	AnsweredMaxAge    string `required:"false" arg:"answered-max-age"    env:"ANSWERED_MAX_AGE"    usage:"how old an answered item may be before the store closes it; must stay well above the slowest consumer's poll interval"                       default:"1h"`
 	SessionsDir       string `required:"false" arg:"sessions-dir"        env:"SESSIONS_DIR"        usage:"directory holding the session registry used to resolve session:<id> liveness"`
 	AttentionStateDir string `required:"false" arg:"attention-state-dir" env:"ATTENTION_STATE_DIR" usage:"directory holding the producers' event logs the page resolves item provenance from"`
 	SpawnStateDir     string `required:"false" arg:"spawn-state-dir"     env:"SPAWN_STATE_DIR"     usage:"directory holding the supervisor's spawn ledger the page reads each session's headless/interactive mode from"`
@@ -357,7 +358,16 @@ func (a *application) createHTTPServer(
 		// under one context, so a failure in either takes the process down and
 		// launchd restarts both: a half-up state — board serving, jumps dead — is
 		// exactly the two-lifecycle problem the fold exists to remove.
-		runner := run.NewConcurrentRunner(2)
+		// Three slots, not two: the answered sweep below is a third long-running
+		// function under the same context.
+		//
+		// ⚠️ It does NOT share the listeners' failure semantics, and saying so here
+		// matters because the difference is deliberate: the sweep returns nil on
+		// cancellation and logs-and-continues on a failed sweep, because a sweep
+		// that fails costs decode work and loses nothing — taking the process down
+		// for it would drop the board over something the board survives. The third
+		// slot is for the goroutine, not for a shared failure path.
+		runner := run.NewConcurrentRunner(3)
 		defer runner.Close()
 
 		glog.V(2).Infof("starting http server listen on %s", a.Listen)
@@ -366,7 +376,127 @@ func (a *application) createHTTPServer(
 			return err
 		}
 
+		// ⚠️ This sweep is what keeps the live index bounded. The index admits
+		// `answered` items — liveIndexWorthy is `State != ClosedState` — so an
+		// answered item that is never closed is decoded on every read for the life
+		// of the store. Measured 2026-10-03: 2,547 answered against 16 open, so
+		// every read decoded ~2,563 items and ~3.4 MB to return 16, on an API every
+		// supervisor polls twice every 2 s.
+		answeredMaxAge, err := parseAnsweredMaxAge(ctx, a.AnsweredMaxAge)
+		if err != nil {
+			return err
+		}
+		runner.Add(ctx, runAnsweredSweep(store, answeredMaxAge, answeredSweepInterval))
+
 		return runner.Run(ctx)
+	}
+}
+
+// answeredMaxAgeCeiling is the largest max age the store accepts.
+//
+// ⚠️ The lower bound protects verdicts; this upper bound protects the invariant
+// the flag exists for. The max age is what keeps the live index bounded, so a
+// very large value reinstates exactly the unbounded index this change removes.
+// At the measured arrival rate — 2,547 answered over ~9.5 days, ~11/h — a day
+// leaves ~264 items in the index, which is still small; a year would leave
+// ~96,000 and be indistinguishable from having no bound at all.
+const answeredMaxAgeCeiling = 24 * time.Hour
+
+// parseAnsweredMaxAge validates the configured answered max age.
+//
+// ⚠️ Both bounds are load-bearing and neither is a formality. The sweep computes
+// its cutoff as now minus maxAge, so a zero or negative value makes EVERY
+// answered item due on the first tick and closes the whole backlog at once —
+// destroying every verdict a consumer had not read yet, which is the exact
+// outcome the max age exists to prevent. And an unbounded value reinstates the
+// unbounded live index the max age exists to remove.
+//
+// It is a function rather than four inline statements so the bounds can be
+// tested directly: the branch that rejects a zero is the highest-consequence
+// line in this change, and it is unreachable from the HTTP path a spec would
+// otherwise have to stand up.
+func parseAnsweredMaxAge(ctx context.Context, raw string) (libtime.Duration, error) {
+	maxAge, err := libtime.ParseDuration(ctx, raw)
+	if err != nil {
+		return 0, errors.Wrapf(ctx, err, "parse answered max age '%s' failed", raw)
+	}
+	if *maxAge <= 0 {
+		return 0, errors.Errorf(ctx, "answered max age must be positive, got '%s'", raw)
+	}
+	if time.Duration(*maxAge) > answeredMaxAgeCeiling {
+		return 0, errors.Errorf(
+			ctx,
+			"answered max age '%s' exceeds the %s ceiling, which would reinstate the unbounded live index the bound exists to remove",
+			raw,
+			answeredMaxAgeCeiling,
+		)
+	}
+	return *maxAge, nil
+}
+
+// answeredSweepInterval is how often the store is asked to close answered items
+// past their max age. It is short because the sweep is cheap when nothing is due
+// — it scans the live index, which the bound itself keeps small — and a long
+// interval would let a burst of answers sit in the index for a whole interval
+// after their age had passed.
+const answeredSweepInterval = time.Minute
+
+// answeredSweepTimeout bounds one sweep. It is well under the interval so a slow
+// sweep cannot push one tick into the next, and far above the few milliseconds a
+// sweep of the bounded index actually takes.
+const answeredSweepTimeout = 30 * time.Second
+
+// runAnsweredSweep closes answered items older than maxAge on a ticker.
+//
+// ⚠️ It runs in its own goroutine and calls the store's own Update — never a step
+// inside a read, because the read path stays read-only.
+// The interval is a parameter rather than the constant read directly, so a spec
+// can drive the tick without waiting a minute for it — the loop's error-and-
+// continue branch is otherwise unreachable in a test.
+func runAnsweredSweep(
+	store pkg.AttentionStore,
+	maxAge libtime.Duration,
+	interval time.Duration,
+) run.Func {
+	return func(ctx context.Context) error {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-ticker.C:
+				// ⚠️ A deadline per tick, because the reasoning below assumes a sweep
+				// always returns and a store call that never returns would make that
+				// false: this loop would block for good, no further tick would fire,
+				// ctx.Done() would be unreachable while the call is in flight, and the
+				// bound this whole change installs would be silently disabled.
+				//
+				// It bounds what the store's own work may take and turns the failure
+				// into a log line. It cannot pre-empt a bbolt transaction that has
+				// already stopped honouring its context — bbolt checks the context as
+				// it starts, not mid-commit — so for that one case a log is all that
+				// can honestly be offered, and saying so is better than implying the
+				// deadline guarantees the loop keeps ticking.
+				sweepCtx, cancel := context.WithTimeout(ctx, answeredSweepTimeout)
+				closed, err := store.SweepAnswered(sweepCtx, maxAge)
+				cancel()
+				if err != nil {
+					// Logged, not fatal: a failed sweep costs decode work, it does
+					// not lose an item, and taking the process down for it would
+					// drop the board over something the board survives.
+					glog.Errorf("sweep answered failed: %v", err)
+					continue
+				}
+				if closed > 0 {
+					glog.V(2).Infof(
+						"swept %d answered items older than %s",
+						closed,
+						time.Duration(maxAge),
+					)
+				}
+			}
+		}
 	}
 }
 

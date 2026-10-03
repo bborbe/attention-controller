@@ -6,6 +6,8 @@ package pkg
 
 import (
 	"context"
+
+	libtime "github.com/bborbe/time"
 )
 
 // NewNotifyingAttentionStore wraps an AttentionStore so every successful write
@@ -149,4 +151,25 @@ func (n *notifyingAttentionStore) Delivery(
 	itemID ItemID,
 ) (*DeliveryReport, error) {
 	return n.store.Delivery(ctx, itemID)
+}
+
+// SweepAnswered delegates and signals ONLY when it closed something.
+//
+// ⚠️ The conditional is the point, not a micro-optimisation. Every other write
+// here signals unconditionally because a caller asked for it; this one runs on a
+// ticker, so an unconditional signal would wake every live view to re-read an
+// unchanged store once per interval for the life of the process — a permanent
+// false alarm that no caller caused.
+func (n *notifyingAttentionStore) SweepAnswered(
+	ctx context.Context,
+	maxAge libtime.Duration,
+) (int, error) {
+	closed, err := n.store.SweepAnswered(ctx, maxAge)
+	if err != nil {
+		return 0, err
+	}
+	if closed > 0 {
+		n.notifier.Notify()
+	}
+	return closed, nil
 }
