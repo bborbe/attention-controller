@@ -72,7 +72,7 @@ install:
 	go build -o "$(INSTALL_BIN).new" .
 	codesign -f -s "$(CODESIGN_IDENTITY)" -i de.bborbe.attention-controller "$(INSTALL_BIN).new"
 	codesign --verify --strict "$(INSTALL_BIN).new"
-	codesign -d -r- "$(INSTALL_BIN).new" 2>&1 | grep -q 'identifier "de.bborbe.attention-controller"'
+	codesign -d -r- "$(INSTALL_BIN).new" 2>&1 | grep -q 'identifier "de.bborbe.attention-controller" and certificate leaf = H"'
 	mv -f "$(INSTALL_BIN).new" "$(INSTALL_BIN)"
 	launchctl kickstart -k gui/$$(id -u)/$(LAUNCHD_LABEL)
 
