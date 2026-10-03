@@ -8,6 +8,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/bborbe/errors"
 	"github.com/bborbe/run"
@@ -416,6 +417,19 @@ var _ = Describe("ProvenanceResolver", func() {
 		clock.SetNow(clock.Now().Add(libtime.Duration(3 * 1e9)))
 	}
 
+	// releaseOnce returns a closer for ch that closes it exactly once, so it can be
+	// called from the happy path AND deferred as a cleanup without panicking on the
+	// second call. ⚠️ The defer is the point: without it, a spec that fails before
+	// its own close leaks the refresher goroutine parked in the lister stub for the
+	// rest of the suite. That is harmless with today's fake — mocks.PaneLister
+	// releases its mutex before invoking the stub, and the fake is rebuilt per spec
+	// — but the failure mode of a regression test should not depend on the fake
+	// happening to be harmless after the fact.
+	releaseOnce := func(ch chan struct{}) func() {
+		var once sync.Once
+		return func() { once.Do(func() { close(ch) }) }
+	}
+
 	It("reads the host snapshot once inside the window and again past it", func() {
 		// The cache is what stops the live stream's cost scaling with the number
 		// of connected clients: every store change wakes every stream, and each
@@ -435,6 +449,195 @@ var _ = Describe("ProvenanceResolver", func() {
 		resolver.Resolve(ctx, items)
 		Expect(paneLister.ListCallCount()).To(Equal(2))
 	})
+
+	It(
+		"serves the last good snapshot while a refresh is in flight instead of queueing behind it",
+		func() {
+			// ⚠️ The guard against the 2026-10-03 outage. The resolver used to hold
+			// its mutex across the refresh, and the refresh runs a subprocess, so one
+			// wedged `wezterm cli list` stalled every Resolve in the process: the board
+			// page timed out at 25 s while /healthz and the API answered in 1 ms and
+			// 20 ms, because neither of those calls Resolve. Here the listing is held
+			// open on purpose, standing in for a mux that has stopped answering, and a
+			// concurrent caller must be served the previous snapshot rather than block
+			// behind it. The refresh itself is bounded separately, by
+			// paneListingTimeout in the lister.
+			// ⚠️ The assertion is on SessionName, not Pane. Pane carries the id the
+			// event recorded, which is the same string in both snapshots and so cannot
+			// tell a stale answer from a fresh one; the registry's name is what changes
+			// underneath, and it is therefore what proves which snapshot was served.
+			writeSessionWithSource("1", "session-block", "Before Name", "user")
+			writeSpawn("session-block", "interactive")
+			items := pkg.Items{
+				sessionItem("item-block", "producer-block", "key-block", "session-block"),
+			}
+
+			first := resolver.Resolve(ctx, items)[pkg.ItemID("item-block")]
+			Expect(first.SessionName).To(Equal("Before Name"))
+
+			// Past the window the next caller refreshes — and that refresh is held
+			// open for as long as this spec needs, so the lock-free path is the only
+			// way a concurrent caller can return at all.
+			advanceClock()
+			writeSessionWithSource("1", "session-block", "After Name", "user")
+			// Buffered send rather than a bare close. The single-flight contract admits
+			// exactly one post-stub invocation today, so a close is correct as written —
+			// but if that contract ever regresses, a second invocation would panic with
+			// "close of closed channel" inside the resolver goroutine instead of failing
+			// the assertion below, which is a far harder failure to read.
+			entered := make(chan struct{}, 1)
+			release := make(chan struct{})
+			releaseAll := releaseOnce(release)
+			DeferCleanup(releaseAll)
+			paneLister.ListCalls(func(context.Context) (map[int]pkg.Pane, error) {
+				select {
+				case entered <- struct{}{}:
+				default:
+				}
+				<-release
+				return map[int]pkg.Pane{}, nil
+			})
+
+			refresher := make(chan pkg.Provenances, 1)
+			go func() { refresher <- resolver.Resolve(ctx, items) }()
+			// Waiting for List to be entered is what makes the race deterministic:
+			// the refreshing flag is set before the call, so by here the concurrent
+			// caller below is guaranteed to take the stale-snapshot path rather than
+			// becoming a second refresher.
+			Eventually(entered).Should(Receive())
+
+			concurrent := make(chan pkg.Provenances, 1)
+			go func() { concurrent <- resolver.Resolve(ctx, items) }()
+
+			// A timeout here IS the regression: it means the caller queued behind the
+			// in-flight subprocess instead of being served the last good snapshot.
+			var stale pkg.Provenances
+			Eventually(concurrent, "2s").Should(Receive(&stale))
+			// ⚠️ The stale snapshot, not the refreshed one. That is what proves the
+			// caller was served the last good host state rather than queueing behind
+			// the in-flight subprocess and then reading the registry that changed
+			// while it waited — a fresh read here would satisfy a mere "it returned".
+			Expect(stale[pkg.ItemID("item-block")].SessionName).To(Equal("Before Name"))
+
+			releaseAll()
+			var fresh pkg.Provenances
+			Eventually(refresher, "2s").Should(Receive(&fresh))
+			Expect(fresh[pkg.ItemID("item-block")].SessionName).To(Equal("After Name"))
+		},
+	)
+
+	It(
+		"lets concurrent callers each refresh on a cold start, where no snapshot exists to serve",
+		func() {
+			// ⚠️ The one branch of hostState that is NOT single-flight, pinned so it is
+			// a stated contract rather than an accident. The stale-serve branch requires
+			// cached != nil, so with no snapshot yet every concurrent caller falls
+			// through and refreshes — and a cold start is exactly when many streams
+			// wake at once. The exposure is bounded rather than unbounded: each caller
+			// runs exactly one exec, itself bounded by paneListingTimeout.
+			writeSessionWithSource("1", "session-cold", "Cold Name", "user")
+			items := pkg.Items{
+				sessionItem("item-cold", "producer-cold", "key-cold", "session-cold"),
+			}
+
+			entries := make(chan struct{}, 4)
+			release := make(chan struct{})
+			releaseAll := releaseOnce(release)
+			DeferCleanup(releaseAll)
+			paneLister.ListCalls(func(context.Context) (map[int]pkg.Pane, error) {
+				entries <- struct{}{}
+				<-release
+				return map[int]pkg.Pane{}, nil
+			})
+
+			first := make(chan pkg.Provenances, 1)
+			second := make(chan pkg.Provenances, 1)
+			go func() { first <- resolver.Resolve(ctx, items) }()
+			go func() { second <- resolver.Resolve(ctx, items) }()
+
+			// Both must reach the lister: neither can be served from a cache that has
+			// never been written, so two entries is the assertion that this branch is
+			// not single-flight. The call count is read while both are still blocked
+			// inside the stub, so it is 2 by construction rather than by timing.
+			Eventually(entries, "2s").Should(Receive())
+			Eventually(entries, "2s").Should(Receive())
+			Expect(paneLister.ListCallCount()).To(Equal(2))
+
+			releaseAll()
+			var got pkg.Provenances
+			Eventually(first, "2s").Should(Receive(&got))
+			Expect(got[pkg.ItemID("item-cold")].SessionName).To(Equal("Cold Name"))
+			Eventually(second, "2s").Should(Receive(&got))
+			Expect(got[pkg.ItemID("item-cold")].SessionName).To(Equal("Cold Name"))
+		},
+	)
+
+	It(
+		"does not clear the in-flight token for a refresh it did not start",
+		func() {
+			// ⚠️ The token's whole point, and the defect a bool had. Two cold callers
+			// both start a refresh; with a bool the first to finish cleared the marker
+			// for the second, still parked in its exec, so a third caller arriving once
+			// the window had lapsed found the cache stale AND the marker clear and
+			// started a third subprocess alongside it. Under a wedged mux a refresh
+			// takes the full paneListingTimeout — longer than provenanceCacheWindow —
+			// so that was the ordinary case there, not a race.
+			writeSessionWithSource("1", "session-token", "Token Name", "user")
+			items := pkg.Items{
+				sessionItem("item-token", "producer-token", "key-token", "session-token"),
+			}
+
+			// Each invocation gets its own release, so the spec can finish one
+			// refresher while deliberately leaving the other parked.
+			entered := make(chan chan struct{}, 4)
+			paneLister.ListCalls(func(context.Context) (map[int]pkg.Pane, error) {
+				release := make(chan struct{})
+				entered <- release
+				<-release
+				return map[int]pkg.Pane{}, nil
+			})
+
+			first := make(chan pkg.Provenances, 1)
+			go func() { first <- resolver.Resolve(ctx, items) }()
+			// ⚠️ The second caller starts only once the first is inside the lister, so
+			// the token order is deterministic rather than raced: the second is always
+			// the one whose token ends up stored, and the first is always the one whose
+			// deferred clear must leave it alone. Launching both at once makes the spec
+			// depend on which goroutine is scheduled last — and if the first to finish
+			// also happens to be the last to claim the token, clearing it is CORRECT,
+			// so the spec would fail on a resolver that is behaving properly. That is
+			// how this spec first failed.
+			firstRelease := releaseOnce(<-entered)
+			DeferCleanup(firstRelease)
+
+			second := make(chan pkg.Provenances, 1)
+			go func() { second <- resolver.Resolve(ctx, items) }()
+			secondRelease := releaseOnce(<-entered)
+			DeferCleanup(secondRelease)
+
+			// Finish the first refresher. It publishes, and its deferred clear must not
+			// take the second one's token with it.
+			firstRelease()
+			var published pkg.Provenances
+			Eventually(first, "2s").Should(Receive(&published))
+			Expect(published[pkg.ItemID("item-token")].SessionName).To(Equal("Token Name"))
+
+			// Let the window lapse while the second refresher is still parked, then
+			// arrive as a third caller. It must be served the published snapshot rather
+			// than start a subprocess of its own — which is exactly what a bool let
+			// through, and what makes the call count below read 3 instead of 2.
+			advanceClock()
+			third := make(chan pkg.Provenances, 1)
+			go func() { third <- resolver.Resolve(ctx, items) }()
+			var served pkg.Provenances
+			Eventually(third, "2s").Should(Receive(&served))
+			Expect(served[pkg.ItemID("item-token")].SessionName).To(Equal("Token Name"))
+			Expect(paneLister.ListCallCount()).To(Equal(2))
+
+			secondRelease()
+			Eventually(second, "2s").Should(Receive(&published))
+		},
+	)
 
 	It("serves the registry and the ledger from the cache inside the window", func() {
 		// ⚠️ The pane-lister count alone cannot prove sessionNames and
