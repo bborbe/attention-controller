@@ -1070,10 +1070,25 @@ type taskIndex struct {
 	// currentDateTimeGetter stamps each published index and measures the refresh
 	// window. Injected, never time.Now(), so the bound is testable.
 	currentDateTimeGetter libtime.CurrentDateTimeGetter
-	// mu guards the four fields below. It is an RWMutex because Lookup is a map
-	// hit on the common path and many renders read it concurrently, while only a
+	// mu guards the fields below. It is an RWMutex because Lookup is a map hit on
+	// the common path and many renders read it concurrently, while only a
 	// rebuild's swap takes the write side.
 	mu sync.RWMutex
+	// refreshing is the token of the rebuild currently in flight, or nil when none
+	// is, so a burst of concurrent lookups that all observe a lapsed window does
+	// not multiply one full-vault read by the number of renders.
+	//
+	// ⚠️ A token rather than a bool, mirroring provenanceResolver.refreshing, for
+	// the same reason: only the goroutine that set the token clears it, so a
+	// rebuild that finishes cannot reopen the single-flight window while another
+	// rebuild — started after the first claimed the token — is still reading the
+	// vault. The token is claimed in the SAME critical section that observes the
+	// window lapsed, so a caller descheduled between a separate stale check and
+	// the claim cannot start a second rebuild.
+	refreshing chan struct{}
+	// rebuilds counts the rebuilds that actually started, so a test can assert
+	// the single-flight property directly. Guarded by mu.
+	rebuilds int
 	// builtAt is the clock reading at which the serving index was published.
 	builtAt   libtime.DateTime
 	bySession map[string]taskEntry
@@ -1125,22 +1140,26 @@ func (t *taskIndex) install(fresh *taskIndex) {
 	t.builtAt = t.currentDateTimeGetter.Now()
 }
 
-// stale reports whether the serving index is older than taskIndexRefreshWindow.
-func (t *taskIndex) stale() bool {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	return t.currentDateTimeGetter.Now().Sub(t.builtAt) >= taskIndexRefreshWindow
-}
-
 // refreshIfStale rebuilds the index when the serving one is older than
 // taskIndexRefreshWindow, so a task file written after construction resolves on
 // a later lookup without a restart.
 //
+// ⚠️ Single-flight, mirroring provenanceResolver.hostState: the staleness check
+// and the token claim happen in ONE critical section, so however many concurrent
+// lookups observe the window lapsed, exactly one rebuild runs. Lookup is reached
+// once per item from the resolver's render loop, so without the guard a lapsed
+// window would start one full-vault rebuild per concurrent render — over 8,000
+// task files read synchronously inside each request. A caller that finds a
+// rebuild already in flight is served the index currently installed and returns,
+// rather than queueing behind the read; the winner performs the rebuild
+// synchronously, so a single Lookup issued after the window lapses still
+// resolves a task created since the last build.
+//
 // ⚠️ The rebuild happens OUTSIDE the lock and only the swap takes it. A rebuild
-// re-reads the whole vault — over 8,000 task files live — and holding the write
-// lock across it would block every render on the board for the duration. The
-// build therefore produces a fresh, fully populated index and install swaps its
-// maps in atomically, so a reader sees either the old index or the new one.
+// re-reads the whole vault and holding the write lock across it would block
+// every render on the board for the duration. The build therefore produces a
+// fresh, fully populated index and install swaps its maps in atomically, so a
+// reader sees either the old index or the new one.
 //
 // ⚠️ A cancelled rebuild is discarded, not installed. The build's soft-failure
 // rules mean a directory read that fails yields no entries rather than an error,
@@ -1149,15 +1168,56 @@ func (t *taskIndex) stale() bool {
 // losing every task that had resolved. The previous index keeps serving until a
 // later, uncancelled rebuild replaces it.
 func (t *taskIndex) refreshIfStale() {
-	if !t.stale() {
+	now := t.currentDateTimeGetter.Now()
+
+	t.mu.Lock()
+	if now.Sub(t.builtAt) < taskIndexRefreshWindow {
+		t.mu.Unlock()
 		return
 	}
+	if t.refreshing != nil {
+		// A rebuild is already in flight. Serve the index currently installed
+		// instead of starting a second full-vault read alongside it.
+		t.mu.Unlock()
+		return
+	}
+	token := make(chan struct{})
+	t.refreshing = token
+	t.rebuilds++
+	t.mu.Unlock()
+
+	// Deferred rather than inlined after the build: a panic anywhere in the build
+	// must still clear the token, or the index stays pinned to a snapshot that
+	// will never be replaced.
+	defer t.finishRefresh(token)
+
 	fresh := t.build(t.ctx)
 	if t.ctx.Err() != nil {
 		glog.V(3).Infof("task index refresh cancelled, keeping previous index")
 		return
 	}
 	t.install(fresh)
+}
+
+// finishRefresh clears the in-flight token, but only if it is still the one this
+// rebuild set. A rebuild that started afterwards overwrote it, and clearing it
+// here would reopen the single-flight window while that later rebuild is still
+// reading the vault — the amplification the token exists to prevent.
+func (t *taskIndex) finishRefresh(token chan struct{}) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.refreshing == token {
+		t.refreshing = nil
+	}
+}
+
+// RebuildCount returns how many rebuilds have actually started. It is the
+// observable the single-flight property is asserted against: a burst of
+// concurrent lookups past the window must leave this at exactly one.
+func (t *taskIndex) RebuildCount() int {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.rebuilds
 }
 
 // readTasks walks `<vault>/25 Tasks/` and indexes every task file that records
