@@ -74,6 +74,17 @@ var _ = Describe("Attention change notifier", func() {
 		// signals. A blocking send would hang this loop rather than fail the
 		// assertion, which is the one honest way to state the property.
 		Expect(changes).Should(HaveLen(1))
+
+		// ⚠️ And the generation counts every WRITE, not every DELIVERED signal —
+		// which is the half the shared board renderer depends on and the half
+		// this spec could otherwise pass without covering. The increment sits
+		// before the send rather than inside the branch that delivers, so a
+		// subscriber whose signals were coalesced still reads a value at least
+		// as new as the write that woke it. Were the increment moved inside that
+		// branch, this reader would see 1, and the renderer would stamp a
+		// snapshot as covering a change it never read — stranding that change
+		// until the next write. One assertion is what separates the two.
+		Expect(notifier.Generation()).Should(Equal(uint64(100)))
 	})
 
 	It("closes the subscriber's channel when it unsubscribes", func() {
@@ -103,5 +114,45 @@ var _ = Describe("Attention change notifier", func() {
 
 	It("does not panic when nothing is subscribed", func() {
 		Expect(notifier.Notify).ShouldNot(Panic())
+	})
+
+	// The generation is what lets one render be shared by every stream. Two
+	// subscribers woken by the same write must read the SAME value, because
+	// that equality is how a shared renderer tells "this change has already
+	// been rendered for" from "this change is still owed" — the difference
+	// between one render per change and one per stream per change.
+	It("counts writes, so every subscriber woken by one write reads the same value", func() {
+		first, unsubscribeFirst := notifier.Subscribe()
+		defer unsubscribeFirst()
+		second, unsubscribeSecond := notifier.Subscribe()
+		defer unsubscribeSecond()
+
+		Expect(notifier.Generation()).Should(Equal(uint64(0)))
+
+		notifier.Notify()
+		Eventually(first).Should(Receive())
+		Eventually(second).Should(Receive())
+
+		Expect(notifier.Generation()).Should(Equal(uint64(1)))
+
+		notifier.Notify()
+		Eventually(first).Should(Receive())
+		Eventually(second).Should(Receive())
+
+		Expect(notifier.Generation()).Should(Equal(uint64(2)))
+	})
+
+	// ⚠️ Subscribing is not a write, so it must not move the generation. A
+	// generation that advanced on attach would make every newly attached stream
+	// believe a change was outstanding, and it would render for one that had
+	// already been rendered for.
+	It("does not advance the generation when a subscriber attaches or detaches", func() {
+		_, unsubscribe := notifier.Subscribe()
+
+		Expect(notifier.Generation()).Should(Equal(uint64(0)))
+
+		unsubscribe()
+
+		Expect(notifier.Generation()).Should(Equal(uint64(0)))
 	})
 })

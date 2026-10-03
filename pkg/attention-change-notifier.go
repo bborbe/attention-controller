@@ -22,6 +22,16 @@ import (
 // re-reads the store for what that was — so the notifier cannot disagree with
 // the store, and a coalesced or dropped signal costs a read rather than a
 // wrong render.
+//
+// ⚠️ Generation is the one exception, and it is not a payload. It counts the
+// calls to Notify rather than describing what changed, so it cannot disagree
+// with the store either. It exists so a renderer shared by several subscribers
+// can tell "I have already rendered for the change you are waking for" from
+// "not yet": two subscribers woken by the same write read the same generation
+// and the second reuses the first's render instead of repeating it. Without it
+// there is no way to distinguish that case from a wake whose render is still
+// owed, and every subscriber would render once per change — which is the cost
+// this exists to remove.
 type AttentionChangeNotifier interface {
 	// Notify signals every current subscriber that the store changed. It never
 	// blocks and never fails: a subscriber that has not yet drained its signal
@@ -38,6 +48,11 @@ type AttentionChangeNotifier interface {
 	//
 	// The channel is buffered, so Notify never waits on a slow subscriber.
 	Subscribe() (<-chan struct{}, func())
+
+	// Generation returns the number of Notify calls made so far. It is read by
+	// a subscriber after it wakes, to tell a change already rendered for from
+	// one still owed — see the type doc. It is monotonic and never resets.
+	Generation() uint64
 }
 
 // NewAttentionChangeNotifier creates an in-process notifier. It holds no
@@ -52,6 +67,7 @@ type attentionChangeNotifier struct {
 	mutex       sync.Mutex
 	subscribers map[int]chan struct{}
 	nextID      int
+	generation  uint64
 }
 
 // Notify signals every subscriber without waiting for any of them. The send is
@@ -63,6 +79,11 @@ type attentionChangeNotifier struct {
 func (n *attentionChangeNotifier) Notify() {
 	n.mutex.Lock()
 	defer n.mutex.Unlock()
+	// ⚠️ Bumped once per call, before the sends, and deliberately not once per
+	// subscriber: the generation identifies the WRITE, and every subscriber
+	// woken by this call must read the same value or the shared renderer would
+	// see them as separate changes and render once for each.
+	n.generation++
 	for _, changes := range n.subscribers {
 		select {
 		case changes <- struct{}{}:
@@ -93,4 +114,14 @@ func (n *attentionChangeNotifier) Subscribe() (<-chan struct{}, func()) {
 		delete(n.subscribers, id)
 		close(subscribed)
 	}
+}
+
+// Generation returns the number of Notify calls made so far. It takes the same
+// mutex the sends do, so a value read after waking is at least the write that
+// woke the reader — the increment happens before the sends, and a subscriber
+// cannot receive its signal before that.
+func (n *attentionChangeNotifier) Generation() uint64 {
+	n.mutex.Lock()
+	defer n.mutex.Unlock()
+	return n.generation
 }

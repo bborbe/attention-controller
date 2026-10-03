@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"html/template"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/bborbe/errors"
@@ -66,7 +67,7 @@ func NewAttentionStreamHandler(
 	// The same template the page parses, so `attention-row` renders from one
 	// definition rather than from a copy kept in step by hand.
 	rows := template.Must(template.New("attention-page").Parse(attentionPageTemplate))
-	return &attentionStreamHandler{
+	handler := &attentionStreamHandler{
 		store:        store,
 		notifier:     notifier,
 		provenance:   provenance,
@@ -74,6 +75,13 @@ func NewAttentionStreamHandler(
 		vaultName:    vaultNameFromDir(vaultDir),
 		rows:         rows,
 	}
+	// ⚠️ One renderer per handler, and the handler is built once per process
+	// (`factory.CreateAttentionStreamHandler` is called from
+	// `createHTTPServer`), so every stream in the process shares this one. That
+	// is the whole point: `render` takes no client input, so building it per
+	// connection would recompute an identical result once per client.
+	handler.board = &boardRenderer{render: handler.render}
+	return handler
 }
 
 type attentionStreamHandler struct {
@@ -83,6 +91,144 @@ type attentionStreamHandler struct {
 	speakEnabled bool
 	vaultName    string
 	rows         *template.Template
+	board        *boardRenderer
+}
+
+// boardSnapshot is one rendered board, shared by every stream that receives it.
+type boardSnapshot struct {
+	// seq orders snapshots within one boardRenderer: it rises by one per
+	// render, so a stream can tell a snapshot it has already applied from one
+	// it has not, and a diff can be skipped outright when they are the same.
+	seq uint64
+	// rendered is each item's row as HTML, keyed by item id. ⚠️ Never written
+	// after publication, which is what makes it safe for every stream to read
+	// concurrently — the same property `provenance`'s hostState relies on.
+	rendered map[string]string
+}
+
+// boardRefresh is one render in flight. The stream that starts it fills it in
+// and closes done; every stream arriving while it runs waits on done and reads
+// the outcome rather than starting a second render of the same change.
+type boardRefresh struct {
+	done     chan struct{}
+	snapshot *boardSnapshot
+	err      error
+}
+
+// wait blocks until this render finishes or the caller goes away. A caller that
+// gives up returns its own error and never reads the refresh's outcome, which is
+// what keeps that read free of a data race with the goroutine still filling it
+// in.
+func (r *boardRefresh) wait(ctx context.Context) error {
+	select {
+	case <-r.done:
+		return nil
+	case <-ctx.Done():
+		return errors.Wrap(ctx, ctx.Err(), "wait for board render failed")
+	}
+}
+
+// boardRenderer renders the board once per store change and shares the result
+// with every connected stream.
+//
+// ⚠️ This is the fix for a cost that scaled with clients rather than with
+// changes. `render` takes no client input — it reads the store, resolves
+// provenance and executes the row template — so with eight streams attached
+// every change used to decode ~2,563 items and execute ~2,548 templates eight
+// times over, producing eight identical maps. Here the first wake renders and
+// the rest are served that result.
+//
+// The generation is what makes it exact. Every subscriber woken by one write
+// reads the same notifier generation, so the renderer can answer "has this
+// change already been rendered for?" rather than merely "is the cache warm?" —
+// and a wake carrying a later generation still renders, because a read taken
+// before that write cannot cover it.
+type boardRenderer struct {
+	render func(ctx context.Context) (map[string]string, error)
+
+	mu                 sync.Mutex
+	seq                uint64
+	current            *boardSnapshot
+	renderedGeneration uint64
+	refreshing         *boardRefresh
+}
+
+// snapshot returns a board rendered at or after the given notifier generation,
+// rendering one only if no snapshot that new is already held.
+//
+// A caller that has just been woken passes the generation it read after waking;
+// a new connection passes the notifier's current one. Both mean the same thing
+// — "give me a board at least as new as this" — and a snapshot older than the
+// request is never returned, because a caller diffing against a stale board
+// would re-send rows its client already has.
+//
+// ⚠️ The render runs under context.WithoutCancel — see run. A stream that
+// disconnects while its wake happens to be the one rendering must not be able
+// to cancel a render the other seven are waiting on.
+func (b *boardRenderer) snapshot(ctx context.Context, generation uint64) (*boardSnapshot, error) {
+	for {
+		b.mu.Lock()
+		if b.current != nil && b.renderedGeneration >= generation {
+			current := b.current
+			b.mu.Unlock()
+			return current, nil
+		}
+		// Somebody is already rendering. Wait for them rather than duplicating
+		// the work — this is the case that turns eight renders per change into
+		// one, and it is the common one: a write wakes every subscriber at
+		// once.
+		if refresh := b.refreshing; refresh != nil {
+			b.mu.Unlock()
+			if err := refresh.wait(ctx); err != nil {
+				return nil, err
+			}
+			if refresh.err != nil {
+				return nil, refresh.err
+			}
+			// A change can land while a render is in flight, so the snapshot
+			// that just arrived may still predate this generation. Re-check
+			// rather than assume it covers us.
+			continue
+		}
+		refresh := &boardRefresh{done: make(chan struct{})}
+		b.refreshing = refresh
+		b.mu.Unlock()
+
+		b.run(ctx, refresh, generation)
+		if refresh.err != nil {
+			return nil, refresh.err
+		}
+		return refresh.snapshot, nil
+	}
+}
+
+// run performs one render and publishes it, then releases every waiter.
+func (b *boardRenderer) run(ctx context.Context, refresh *boardRefresh, generation uint64) {
+	// ⚠️ WithoutCancel, and it is load bearing rather than defensive. The
+	// render is shared, so the client whose wake triggered it must not be able
+	// to cancel it for the streams waiting on the same result: a board tab
+	// closing mid-render would otherwise fail the render for every
+	// `answered-watch.py` behind it. The operations it wraps are bounded on
+	// their own — `ReadBoard` is a local BoltDB read and the one subprocess
+	// `Resolve` reaches for is bounded by `paneListingTimeout` — so removing
+	// the caller's deadline does not make an unbounded call unbounded.
+	rendered, err := b.render(context.WithoutCancel(ctx))
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	refresh.err = err
+	if err == nil {
+		b.seq++
+		b.current = &boardSnapshot{seq: b.seq, rendered: rendered}
+		// ⚠️ Stamped with the generation this render was FOR, never with the
+		// notifier's current one. A read taken for generation 5 may not cover
+		// generation 7, and stamping 7 would mark that change as rendered and
+		// strand it until the next write.
+		b.renderedGeneration = generation
+		refresh.snapshot = b.current
+	}
+	b.refreshing = nil
+	close(refresh.done)
 }
 
 // ServeHTTP streams row changes until the client goes away.
@@ -120,11 +266,26 @@ func (a *attentionStreamHandler) ServeHTTP(resp http.ResponseWriter, req *http.R
 	// baseline nor delivered — the client would be attached to a stream that had
 	// already decided the change was not a change.
 	//
+	// ⚠️ The baseline is the SHARED board, not a render of this client's own,
+	// so a connection made while the board is warm costs no render at all — and
+	// that snapshot comes from the same renderer the page reads through, which
+	// is what keeps a row arriving here identical to the same row on a fresh
+	// load.
+	//
+	// ⚠️ It is asked for at the notifier's CURRENT generation, not at zero.
+	// Zero would return whatever the board last held, which can predate the page
+	// this client is looking at — and a baseline older than the page makes the
+	// first diff re-send rows the page already drew, replacing nodes that did
+	// not change, which is the one thing the diff exists to prevent. Asking at
+	// the current generation keeps the pre-shared behaviour exactly: the
+	// baseline is the store as of this moment, and it costs a render only when
+	// the board is genuinely behind, which is precisely when one is owed.
+	//
 	// The baseline is what the page already rendered, so the first wake-up
 	// reports a difference rather than the whole board. A change landing between
 	// the page's own render and this subscribe is still missed, and is corrected
 	// by the next one.
-	rendered, err := a.render(ctx)
+	rendered, err := a.board.snapshot(ctx, a.notifier.Generation())
 	if err != nil {
 		glog.V(2).Infof("stream baseline failed: %v", err)
 		return
@@ -144,33 +305,54 @@ func (a *attentionStreamHandler) ServeHTTP(resp http.ResponseWriter, req *http.R
 			if !open {
 				return
 			}
-			if err := a.push(ctx, resp, flusher, &rendered); err != nil {
+			// The generation is read AFTER waking, so it names the write this
+			// wake is for — or a later one, if another landed while this stream
+			// was busy. Either way the renderer is asked for a board at least
+			// that new, and a wake whose change another stream has already
+			// rendered for costs no render here.
+			next, err := a.board.snapshot(ctx, a.notifier.Generation())
+			if err != nil {
 				glog.V(2).Infof("stream push failed: %v", err)
 				return
 			}
+			if err := a.push(ctx, resp, flusher, rendered, next); err != nil {
+				glog.V(2).Infof("stream push failed: %v", err)
+				return
+			}
+			rendered = next
 		}
 	}
 }
 
-// push re-reads the store, sends what differs from the last render, and adopts
-// the new state. It sends the difference rather than the whole board so a row
-// the operator is typing into is never replaced underneath them.
+// push sends what differs from the last board this stream applied, and adopts
+// the new one. It sends the difference rather than the whole board so a row the
+// operator is typing into is never replaced underneath them.
 //
 // A row is sent when its rendered HTML changed, which is a stricter test than
 // its fields changing and costs nothing extra: the render is already in hand,
 // and comparing the output is what the page actually shows.
+//
+// ⚠️ The diff stays per-client even though the render is now shared, and it has
+// to. Each stream's baseline is the last board IT sent, so two clients that
+// joined at different moments must be told different things about one change —
+// sharing the render is what removes the repeated decoding and templating, not
+// the comparison, which is a map walk over the same map every stream already
+// holds a reference to.
 func (a *attentionStreamHandler) push(
 	ctx context.Context,
 	resp http.ResponseWriter,
 	flusher http.Flusher,
-	rendered *map[string]string,
+	previous *boardSnapshot,
+	next *boardSnapshot,
 ) error {
-	next, err := a.render(ctx)
-	if err != nil {
-		return errors.Wrap(ctx, err, "render failed")
+	// The common case by design: a write wakes every stream, one of them
+	// renders, and the rest are handed the very snapshot they already applied.
+	// Nothing changed for this client, so nothing is sent.
+	if next.seq == previous.seq {
+		return nil
 	}
-	for itemID, html := range next {
-		if previous, seen := (*rendered)[itemID]; seen && previous == html {
+	for itemID, html := range next.rendered {
+		if prior, seen := previous.rendered[itemID]; seen && prior == html {
 			continue
 		}
 		if err := writeEvent(ctx, resp, flusher, attentionStreamEvent{
@@ -181,8 +363,8 @@ func (a *attentionStreamHandler) push(
 			return errors.Wrapf(ctx, err, "write upsert for %s failed", itemID)
 		}
 	}
-	for itemID := range *rendered {
-		if _, still := next[itemID]; still {
+	for itemID := range previous.rendered {
+		if _, still := next.rendered[itemID]; still {
 			continue
 		}
 		if err := writeEvent(ctx, resp, flusher, attentionStreamEvent{
@@ -192,7 +374,6 @@ func (a *attentionStreamHandler) push(
 			return errors.Wrapf(ctx, err, "write remove for %s failed", itemID)
 		}
 	}
-	*rendered = next
 	return nil
 }
 
