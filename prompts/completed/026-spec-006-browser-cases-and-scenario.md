@@ -1,8 +1,13 @@
 ---
-status: approved
+status: completed
 spec: [006-card-corner-band-and-identity-placement]
+summary: Added two Playwright browser cases proving a long ask wraps clear of the card's four corner controls and that the navigation line renders above the ask, with fixture, scenario totals and changelog reconciled
+execution_id: attention-controller-card-identity-exec-026-spec-006-browser-cases-and-scenario
+dark-factory-version: v0.196.0
 created: "2026-10-03T12:57:57Z"
 queued: "2026-10-03T13:17:44Z"
+started: "2026-10-03T13:36:19Z"
+completed: "2026-10-03T13:41:49Z"
 ---
 
 # Prove in a real browser that a long ask clears the corner controls and that the navigation line leads the ask
