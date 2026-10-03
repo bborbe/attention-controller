@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.35.0
 
 - feat: restyle the legacy `:1337/jump` page with the dark house style of the local service pages (tone-coloured heading, subtitle, Pane card), restoring the look of the retired Python fleet-jump server. The pane id is now escaped once, at the writer, instead of at the call site.
 
