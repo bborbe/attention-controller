@@ -61,6 +61,23 @@ var _ = Describe("runAnsweredSweep", func() {
 		cancel()
 		Eventually(done, "2s").Should(Receive(BeNil()))
 	})
+
+	It("keeps ticking after a sweep that closed items", func() {
+		// The closed > 0 branch is the one path the other specs never reach — both
+		// keep the count at zero — so the line that reports what a sweep did is
+		// otherwise uncovered.
+		store.SweepAnsweredReturnsOnCall(0, 3, nil)
+
+		runCtx, cancel := context.WithCancel(ctx)
+		done := make(chan error, 1)
+		go func() {
+			done <- runAnsweredSweep(store, libtime.Duration(time.Hour), time.Millisecond)(runCtx)
+		}()
+
+		Eventually(store.SweepAnsweredCallCount, "2s").Should(BeNumerically(">=", 2))
+		cancel()
+		Eventually(done, "2s").Should(Receive(BeNil()))
+	})
 })
 
 var _ = Describe("parseAnsweredMaxAge", func() {

@@ -441,6 +441,11 @@ func parseAnsweredMaxAge(ctx context.Context, raw string) (libtime.Duration, err
 // after their age had passed.
 const answeredSweepInterval = time.Minute
 
+// answeredSweepTimeout bounds one sweep. It is well under the interval so a slow
+// sweep cannot push one tick into the next, and far above the few milliseconds a
+// sweep of the bounded index actually takes.
+const answeredSweepTimeout = 30 * time.Second
+
 // runAnsweredSweep closes answered items older than maxAge on a ticker.
 //
 // ⚠️ It runs in its own goroutine and calls the store's own Update — never a step
@@ -461,7 +466,21 @@ func runAnsweredSweep(
 			case <-ctx.Done():
 				return nil
 			case <-ticker.C:
-				closed, err := store.SweepAnswered(ctx, maxAge)
+				// ⚠️ A deadline per tick, because the reasoning below assumes a sweep
+				// always returns and a store call that never returns would make that
+				// false: this loop would block for good, no further tick would fire,
+				// ctx.Done() would be unreachable while the call is in flight, and the
+				// bound this whole change installs would be silently disabled.
+				//
+				// It bounds what the store's own work may take and turns the failure
+				// into a log line. It cannot pre-empt a bbolt transaction that has
+				// already stopped honouring its context — bbolt checks the context as
+				// it starts, not mid-commit — so for that one case a log is all that
+				// can honestly be offered, and saying so is better than implying the
+				// deadline guarantees the loop keeps ticking.
+				sweepCtx, cancel := context.WithTimeout(ctx, answeredSweepTimeout)
+				closed, err := store.SweepAnswered(sweepCtx, maxAge)
+				cancel()
 				if err != nil {
 					// Logged, not fatal: a failed sweep costs decode work, it does
 					// not lose an item, and taking the process down for it would
