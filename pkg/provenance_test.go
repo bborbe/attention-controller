@@ -1822,15 +1822,16 @@ var _ = Describe("TaskIndex refresh", func() {
 		// ⚠️ make precommit runs with -race=false, so a data race between a
 		// refresh's map swap and a concurrent Lookup would not be reported here.
 		// This case drives many lookups through one index while the window has
-		// already lapsed, so several of them trigger a rebuild and its swap races
-		// the reads — the RWMutex guard is exercised under contention rather than
-		// only serially.
+		// already lapsed, so the winner's rebuild and its swap race the reads — the
+		// RWMutex guard is exercised under contention rather than only serially.
 		vault := GinkgoT().TempDir()
 		writeVaultTask(vault, "Conc.md", "---\nclaude_session_id: session-conc\n---\n")
 		index := pkg.NewTaskIndex(ctx, vault, clock)
 
 		// Lapse the window once before the fan-out, so every goroutine's first
-		// lookup finds the index stale and attempts a rebuild.
+		// lookup finds the index stale and observes the same lapsed window. Only
+		// the first to claim the token rebuilds; the rest are served the index
+		// already installed.
 		advanceClock()
 
 		// Results are collected per goroutine and asserted after the fan-out:
@@ -1854,6 +1855,65 @@ var _ = Describe("TaskIndex refresh", func() {
 			Expect(oks[i]).To(BeTrue())
 			Expect(names[i]).To(Equal("Conc"))
 		}
+	})
+
+	It("runs exactly one rebuild when concurrent lookups observe a lapsed window", func() {
+		// ⚠️ The guard the render loop depends on. Lookup is reached once per item
+		// from the resolver's render loop, so when the window lapses every
+		// concurrent render would otherwise start its own full-vault rebuild —
+		// over 8,000 task files read synchronously inside each request. The
+		// staleness check and the token claim happen in ONE critical section, so a
+		// burst of lookups that all observe the lapsed window triggers exactly one
+		// rebuild: the winner rebuilds synchronously, and the rest are served the
+		// index already installed rather than queueing behind the read.
+		//
+		// ⚠️ The count is read off the index directly, not through the injected
+		// clock: both the staleness check and the install read the clock and the
+		// interleaving is nondeterministic, so counting clock reads would be flaky.
+		vault := GinkgoT().TempDir()
+		writeVaultTask(vault, "Conc.md", "---\nclaude_session_id: session-conc\n---\n")
+		index := pkg.NewTaskIndex(ctx, vault, clock)
+
+		counter, ok := index.(interface{ RebuildCount() int })
+		Expect(ok).To(BeTrue(), "the task index must expose its rebuild count")
+		Expect(counter.RebuildCount()).To(Equal(0), "the boot build is not a rebuild")
+
+		// Written after the boot build, so a lookup that resolves it proves the
+		// winner's rebuild was installed rather than merely started.
+		writeVaultTask(vault, "Late.md", "---\nclaude_session_id: session-late\n---\n")
+
+		// Lapse the window once before the fan-out, so every goroutine's first
+		// lookup observes the same lapsed window.
+		advanceClock()
+
+		// Results are collected per goroutine and asserted after the fan-out:
+		// Ginkgo assertions are not safe to make from the runner's goroutines.
+		const workers = 8
+		oks := make([]bool, workers)
+		funcs := make([]run.Func, 0, workers)
+		for i := 0; i < workers; i++ {
+			funcs = append(funcs, func(ctx context.Context) error {
+				_, ok := index.Lookup("session-conc")
+				oks[i] = ok
+				return nil
+			})
+		}
+		Expect(run.CancelOnFirstErrorWait(ctx, funcs...)).To(BeNil())
+
+		Expect(counter.RebuildCount()).To(Equal(1),
+			"concurrent lookups past the window started more than one rebuild")
+		for i := 0; i < workers; i++ {
+			Expect(oks[i]).To(BeTrue(),
+				"a lookup served no index while a rebuild was in flight")
+		}
+
+		// The winner's rebuild is installed, so a task written after the boot build
+		// resolves on a later lookup.
+		task, ok := index.Lookup("session-late")
+		Expect(ok).To(BeTrue())
+		Expect(task.Name).To(Equal("Late"))
+		Expect(counter.RebuildCount()).To(Equal(1),
+			"a later lookup inside the fresh window must not rebuild again")
 	})
 })
 
