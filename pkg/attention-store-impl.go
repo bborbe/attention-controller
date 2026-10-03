@@ -239,6 +239,7 @@ func (a *attentionStore) classifyForRead(
 	ctx context.Context,
 	item Item,
 	includeAnswered bool,
+	liveness sessionLiveness,
 ) (readDisposition, error) {
 	if item.State == AnsweredState && includeAnswered {
 		// Rendered as a dimmed record. Never liveness-tested and never pruned.
@@ -247,7 +248,7 @@ func (a *attentionStore) classifyForRead(
 	if item.State != OpenState {
 		return readDisposition{}, nil
 	}
-	live, err := a.isProducerLive(ctx, &item)
+	live, err := a.isProducerLiveWith(ctx, &item, liveness)
 	if err != nil {
 		return readDisposition{}, errors.Wrap(ctx, err, "check producer liveness failed")
 	}
@@ -319,10 +320,16 @@ func (a *attentionStore) read(ctx context.Context, includeAnswered bool) (Items,
 		return nil, errors.Wrap(ctx, err, "read failed")
 	}
 
+	// One liveness source for the whole read, so the session registry is listed
+	// at most once however many items the read classifies or prunes. It is
+	// shared with the prune below: a read that removes dead askers must not
+	// list the registry again for every item it re-checks.
+	liveness := newReadSessionLiveness(a.sessionLivenessChecker)
+
 	kept := make(Items, 0, len(items))
 	dead := make([]string, 0, len(items))
 	for _, stored := range items {
-		disposition, err := a.classifyForRead(ctx, stored.item, includeAnswered)
+		disposition, err := a.classifyForRead(ctx, stored.item, includeAnswered, liveness)
 		if err != nil {
 			return nil, errors.Wrap(ctx, err, "classify item failed")
 		}
@@ -343,7 +350,7 @@ func (a *attentionStore) read(ctx context.Context, includeAnswered bool) (Items,
 		kept = suppressAnsweredTwins(kept)
 	}
 
-	if err := a.pruneDead(ctx, dead); err != nil {
+	if err := a.pruneDead(ctx, dead, liveness); err != nil {
 		return nil, err
 	}
 	return kept, nil
@@ -853,13 +860,17 @@ func (a *attentionStore) readItems(ctx context.Context) ([]storedItem, error) {
 // Both are re-read here against the live value. The liveness check does file
 // I/O, but only for the dead subset — the whole scan still runs outside every
 // transaction, which is what the split was for.
-func (a *attentionStore) pruneDead(ctx context.Context, keys []string) error {
+func (a *attentionStore) pruneDead(
+	ctx context.Context,
+	keys []string,
+	liveness sessionLiveness,
+) error {
 	if len(keys) == 0 {
 		return nil
 	}
 	err := a.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
 		for _, key := range keys {
-			remove, err := a.stillDead(ctx, tx, key)
+			remove, err := a.stillDead(ctx, tx, key, liveness)
 			if err != nil {
 				return err
 			}
@@ -889,6 +900,7 @@ func (a *attentionStore) stillDead(
 	ctx context.Context,
 	tx libkv.Tx,
 	key string,
+	liveness sessionLiveness,
 ) (bool, error) {
 	item, err := a.store.Get(ctx, tx, key)
 	if err != nil {
@@ -905,7 +917,7 @@ func (a *attentionStore) stillDead(
 	if item.State != OpenState {
 		return false, nil
 	}
-	live, err := a.isProducerLive(ctx, item)
+	live, err := a.isProducerLiveWith(ctx, item, liveness)
 	if err != nil {
 		return false, errors.Wrapf(ctx, err, "recheck liveness for dead item %s failed", key)
 	}
@@ -1371,16 +1383,29 @@ func (a *attentionStore) findOpenByDedupKey(
 	return found, nil
 }
 
-// isProducerLive resolves the item's declared liveness model. The producer
-// knows which model it is, so the store never guesses.
+// isProducerLive resolves the item's declared liveness model against the
+// checker directly. It is the PUSH path's form — duplicate suppression runs
+// outside any read, so it has no per-read liveness source to reuse.
 func (a *attentionStore) isProducerLive(ctx context.Context, item *Item) (bool, error) {
+	return a.isProducerLiveWith(ctx, item, a.sessionLivenessChecker)
+}
+
+// isProducerLiveWith resolves the item's declared liveness model against the
+// given source. The producer knows which model it is, so the store never
+// guesses; the read path hands in its per-read source so every session lookup
+// in one read is answered from a single registry listing.
+func (a *attentionStore) isProducerLiveWith(
+	ctx context.Context,
+	item *Item,
+	liveness sessionLiveness,
+) (bool, error) {
 	model, value, err := item.LivenessRef.Parse(ctx)
 	if err != nil {
 		return false, errors.Wrap(ctx, err, "parse liveness ref failed")
 	}
 	switch model {
 	case SessionLivenessModel:
-		return a.sessionLivenessChecker.IsLive(ctx, value), nil
+		return liveness.IsLive(ctx, value), nil
 	case HeartbeatLivenessModel:
 		return a.isHeartbeatFresh(value), nil
 	default:
