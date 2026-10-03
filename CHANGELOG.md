@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.35.1
 
 - fix: bound the `wezterm cli list` subprocess with a three-second timeout and a half-second wait delay, so a WezTerm mux that stops answering can no longer stall the store. ⚠️ This is one half of one defect — the other is the resolver's mutex, released in the bullet below, and neither alone would have ended the outage. `exec.CommandContext` was handed the caller's ctx, and for a stream handler or a deadline-free HTTP request that ctx is never cancelled, so nothing bounded the child at all: measured 2026-10-03, a wedged mux held one `wezterm cli list` child for over ten minutes while the parent sat in `wait4`. The resolver then held its mutex across that call, so the stall was not confined to the request that caused it — every `Resolve` in the process queued behind the lock, which is why the board page timed out at 25 s while `/healthz` and `/api/1.0/attention` answered in 1 ms and 20 ms, neither of them calling `Resolve`.
 
