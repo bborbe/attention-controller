@@ -89,6 +89,7 @@ var _ = Describe("Legacy pane-addressed jump", func() {
 
 		Expect(resp.Code).NotTo(Equal(http.StatusOK))
 		Expect(resp.Code).To(Equal(http.StatusBadGateway))
+		Expect(resp.Body.String()).To(ContainSubstring(`<h1 class="err">Jump failed</h1>`))
 	})
 
 	// The DNS-rebinding guard. A browser that resolves an attacker domain to
@@ -98,6 +99,7 @@ var _ = Describe("Legacy pane-addressed jump", func() {
 		resp := request("/jump?pane=1907&t="+legacyTokenSentinel, "evil.example.com")
 
 		Expect(resp.Code).To(Equal(http.StatusForbidden))
+		Expect(resp.Body.String()).To(ContainSubstring(`<h1 class="err">Forbidden</h1>`))
 		Expect(activator.ActivateCallCount()).To(Equal(0))
 	})
 
@@ -171,6 +173,7 @@ var _ = Describe("Legacy pane-addressed jump", func() {
 		resp := request("/jump?pane=abc&t="+legacyTokenSentinel, "127.0.0.1:1337")
 
 		Expect(resp.Code).To(Equal(http.StatusBadRequest))
+		Expect(resp.Body.String()).To(ContainSubstring(`<h1 class="warn">Bad request</h1>`))
 		Expect(activator.ActivateCallCount()).To(Equal(0))
 	})
 
@@ -180,6 +183,7 @@ var _ = Describe("Legacy pane-addressed jump", func() {
 		resp := request("/other?pane=1907&t="+legacyTokenSentinel, "127.0.0.1:1337")
 
 		Expect(resp.Code).To(Equal(http.StatusNotFound))
+		Expect(resp.Body.String()).To(ContainSubstring(`<h1 class="warn">Not found</h1>`))
 		Expect(activator.ActivateCallCount()).To(Equal(0))
 	})
 
@@ -193,6 +197,27 @@ var _ = Describe("Legacy pane-addressed jump", func() {
 		Expect(resp.Code).To(Equal(http.StatusOK))
 		Expect(resp.Body.String()).To(ContainSubstring("1907"))
 		Expect(resp.Body.String()).NotTo(ContainSubstring(legacyTokenSentinel))
+	})
+
+	// The page is the house-style page of the local services, not bare markup:
+	// a tone-coloured heading, and on success a card naming the pane.
+	It("renders the styled page with an ok heading and a pane card", func() {
+		resp := request("/jump?pane=1907&t="+legacyTokenSentinel, "127.0.0.1:1337")
+
+		Expect(resp.Code).To(Equal(http.StatusOK))
+		body := resp.Body.String()
+		Expect(body).To(ContainSubstring("<style>"))
+		Expect(body).To(ContainSubstring(`<h1 class="ok">Jumped</h1>`))
+		Expect(body).To(ContainSubstring(`<p class="value mono">1907</p>`))
+	})
+
+	It("renders a refusal with an err heading and no pane card", func() {
+		resp := request("/jump?pane=1907&t=wrong", "127.0.0.1:1337")
+
+		Expect(resp.Code).To(Equal(http.StatusForbidden))
+		body := resp.Body.String()
+		Expect(body).To(ContainSubstring(`<h1 class="err">Forbidden</h1>`))
+		Expect(body).NotTo(ContainSubstring(`class="card"`))
 	})
 })
 
