@@ -1,8 +1,13 @@
 ---
-status: approved
+status: completed
 spec: [006-card-corner-band-and-identity-placement]
+summary: Added pkg/handler/attention-card-navigation-page_test.go proving on the served page that the card's navigation line renders above the ask and outside the info panel, that each distinct navigation value renders once (with the differing-name negative control), and that a card with nothing navigational renders no line/span/separator/placeholder while its neighbour does; extended CHANGELOG.md.
+execution_id: attention-controller-card-identity-exec-025-spec-006-served-page-tests
+dark-factory-version: v0.196.0
 created: "2026-10-03T12:57:57Z"
 queued: "2026-10-03T13:11:31Z"
+started: "2026-10-03T13:32:36Z"
+completed: "2026-10-03T13:36:17Z"
 ---
 
 # Serve the board and assert the navigation line leads the ask and each distinct navigation value renders once
