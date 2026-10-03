@@ -213,7 +213,7 @@ func (a *application) createProvenanceResolver(
 		sessionsDir,
 		spawnDir,
 		panes,
-		pkg.NewTaskIndex(ctx, a.VaultDir),
+		pkg.NewTaskIndex(ctx, a.VaultDir, libtime.NewCurrentDateTime()),
 		libtime.NewCurrentDateTime(),
 	)
 }
