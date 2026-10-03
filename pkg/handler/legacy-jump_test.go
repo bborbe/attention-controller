@@ -89,6 +89,7 @@ var _ = Describe("Legacy pane-addressed jump", func() {
 
 		Expect(resp.Code).NotTo(Equal(http.StatusOK))
 		Expect(resp.Code).To(Equal(http.StatusBadGateway))
+		Expect(resp.Body.String()).To(ContainSubstring(`<h1 class="err">Jump failed</h1>`))
 	})
 
 	// The DNS-rebinding guard. A browser that resolves an attacker domain to
@@ -98,6 +99,7 @@ var _ = Describe("Legacy pane-addressed jump", func() {
 		resp := request("/jump?pane=1907&t="+legacyTokenSentinel, "evil.example.com")
 
 		Expect(resp.Code).To(Equal(http.StatusForbidden))
+		Expect(resp.Body.String()).To(ContainSubstring(`<h1 class="err">Forbidden</h1>`))
 		Expect(activator.ActivateCallCount()).To(Equal(0))
 	})
 

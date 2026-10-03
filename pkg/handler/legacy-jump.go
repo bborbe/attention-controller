@@ -52,7 +52,8 @@ import (
 // ⚠️ It takes no store and no provenance resolver, though the Python server it
 // replaces rendered the pane's session title. That render is deliberately not
 // reproduced here: it needs a title-to-session join this route does not
-// otherwise require, so the success card names the pane only. A future change that wants the title adds the dependency it actually
+// otherwise require, so the success card names the pane only. A future change
+// that wants the title adds the dependency it actually
 // needs, rather than this signature carrying two unused parameters on the guess
 // that it will.
 func NewLegacyJumpHandler(
