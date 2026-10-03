@@ -29,7 +29,12 @@ var _ = Describe("WeztermPaneLister", func() {
 		// copy of the WezTerm CLI is never reached.
 		dir := GinkgoT().TempDir()
 		script := filepath.Join(dir, "wezterm")
-		Expect(os.WriteFile(script, []byte("#!/bin/sh\nsleep 20\n"), 0o700)).To(Succeed())
+		// ⚠️ Ten seconds, not more. The spec finishes at the 3.5s deterministic worst
+		// case, and the `sh` wrapper's `sleep` survives the kill by design — WaitDelay
+		// closes the pipes, it does not reap the grandchild — so every second above
+		// the bound is a stray process left running per CI job. Ten still outlasts the
+		// bound by 6.5s and still fails the ceilings below if nothing bounds the call.
+		Expect(os.WriteFile(script, []byte("#!/bin/sh\nsleep 10\n"), 0o700)).To(Succeed())
 
 		original := os.Getenv("PATH")
 		Expect(os.Setenv("PATH", dir+string(os.PathListSeparator)+original)).To(Succeed())

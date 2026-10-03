@@ -130,6 +130,51 @@ const paneListingTimeout = 3 * time.Second
 // most paneListingTimeout plus this.
 const paneListingWaitDelay = 500 * time.Millisecond
 
+// logListingFailure records a failed pane listing. It is a function rather than an
+// inline block because these branches are what an operator reads to tell a wedged
+// mux from a mistyped flag, and spelling them inline pushed the caller past the
+// repo's nesting limit.
+//
+// ⚠️ The latency and the kind are what make the bound self-reporting. A killed
+// child and an ordinary non-zero exit render identically in a bare error, so
+// without them the wedged mux this bound exists for would leave no trace beyond a
+// failure — and the operator would be reading a log that cannot tell the defect
+// from a typo in a flag.
+//
+// ⚠️ The verdict follows the DEADLINE, not only the number. context.WithTimeout
+// keeps the earlier of the two and propagates the parent's cause, so a caller's own
+// limit expiring is indistinguishable from ours by Err() alone — and reporting it
+// as the mux failing to answer asserts a conclusion this branch exists to avoid. A
+// caller's limit is not evidence about the mux.
+func logListingFailure(
+	binary string,
+	elapsed time.Duration,
+	bound time.Duration,
+	timedOut bool,
+	callerDeadlineGoverns bool,
+	err error,
+) {
+	switch {
+	case timedOut && callerDeadlineGoverns:
+		glog.V(2).Infof(
+			"wezterm cli list TIMED OUT after %s — the caller's deadline, not ours: binary=%s err=%v",
+			elapsed,
+			binary,
+			err,
+		)
+	case timedOut:
+		glog.V(2).Infof(
+			"wezterm cli list TIMED OUT after %s (bound %s): binary=%s err=%v — the mux is not answering",
+			elapsed,
+			bound,
+			binary,
+			err,
+		)
+	default:
+		glog.V(2).Infof("wezterm cli list failed after %s: binary=%s err=%v", elapsed, binary, err)
+	}
+}
+
 // List runs `wezterm cli list --format json` and indexes the result by pane id.
 //
 // Every failure — wezterm absent, not running, non-zero exit, malformed JSON,
@@ -145,6 +190,12 @@ func (w *weztermPaneLister) List(ctx context.Context) (map[int]Pane, error) {
 	// ⚠️ Bounded here rather than trusting the caller's ctx, which is routinely
 	// deadline-free — see paneListingTimeout. This is the line that turns a
 	// wedged mux from a process-wide outage into one absent pane column.
+	//
+	// The caller's deadline is captured first so the timeout branch below can tell
+	// WHICH one fired: WithTimeout keeps the earlier of the two and propagates the
+	// parent's cause, so a caller's own limit expiring is indistinguishable from
+	// ours by Err() alone.
+	parentDeadline, parentHasDeadline := ctx.Deadline()
 	ctx, cancel := context.WithTimeout(ctx, paneListingTimeout)
 	defer cancel()
 	// #nosec G204 -- the reported risk is "subprocess launched with a variable",
@@ -188,43 +239,41 @@ func (w *weztermPaneLister) List(ctx context.Context) (map[int]Pane, error) {
 	// case over, and it would be logged on the ordinary path for any caller that
 	// supplies a deadline at all.
 	bound := paneListingTimeout
-	if deadline, ok := ctx.Deadline(); ok {
-		if remaining := time.Until(deadline); remaining < bound {
+	ourDeadline, ourHasDeadline := ctx.Deadline()
+	if ourHasDeadline {
+		if remaining := ourDeadline.Sub(started); remaining < bound {
 			bound = remaining
 		}
 	}
+	// ⚠️ Which deadline fired decides the VERDICT, not only the number. WithTimeout
+	// keeps the earlier of the two, so when the derived deadline IS the parent's, it
+	// is the caller's own limit that expired — and reporting that as the mux failing
+	// to answer asserts a conclusion this branch exists to avoid. A caller's limit is
+	// not evidence about the mux.
+	callerDeadlineGoverns := parentHasDeadline &&
+		ourHasDeadline &&
+		ourDeadline.Equal(parentDeadline)
 	raw, err := cmd.Output()
 	if err != nil {
-		// Logged, not just returned, and ⚠️ logged with its latency and its kind.
-		// This boundary call is the one whose failure is hardest to see from
-		// outside: when WezTerm is missing the page simply renders no pane, which is
-		// indistinguishable from a host that has none. Measured 2026-09-22 — the
-		// launchd PATH gap behind the first deployment of this feature was found only
-		// by probing the environment by hand, because the store's own log said nothing.
+		// Logged, not just returned. This boundary call is the one whose failure is
+		// hardest to see from outside: when WezTerm is missing the page simply renders
+		// no pane, which is indistinguishable from a host that has none. Measured
+		// 2026-09-22 — the launchd PATH gap behind the first deployment of this feature
+		// was found only by probing the environment by hand, because the store's own
+		// log said nothing. logListingFailure holds the rest of the reasoning.
 		//
-		// The latency and the deadline branch are what make the bound self-reporting.
-		// A killed child and an ordinary non-zero exit render identically here, so
-		// without them the wedged mux this bound exists for would leave no trace
-		// beyond a failure — and the operator would be reading a log that cannot tell
-		// the defect from a typo in a flag.
-		elapsed := time.Since(started)
-		// ⚠️ DeadlineExceeded specifically, not a bare non-nil Err(). The ctx here is
-		// the derived one, so Err() is non-nil for a caller cancellation too — and a
-		// stream handler whose client disconnects mid-call is the normal steady
-		// state, not a wedged mux. A non-nil test would report every cancelled stream
-		// as "the mux is not answering", which is exactly the misreport this branch
-		// exists to prevent.
-		if ctx.Err() == context.DeadlineExceeded {
-			glog.V(2).Infof(
-				"wezterm cli list TIMED OUT after %s (bound %s): binary=%s err=%v — the mux is not answering",
-				elapsed,
-				bound,
-				binary,
-				err,
-			)
-		} else {
-			glog.V(2).Infof("wezterm cli list failed after %s: binary=%s err=%v", elapsed, binary, err)
-		}
+		// ⚠️ DeadlineExceeded specifically, not a bare non-nil Err(): the ctx here is
+		// the derived one, so Err() is non-nil for a caller cancellation too, and a
+		// stream handler whose client disconnects mid-call is the normal steady state
+		// rather than a wedged mux.
+		logListingFailure(
+			binary,
+			time.Since(started),
+			bound,
+			ctx.Err() == context.DeadlineExceeded,
+			callerDeadlineGoverns,
+			err,
+		)
 		return nil, errors.Wrap(ctx, err, "list wezterm panes failed")
 	}
 	var panes []Pane
