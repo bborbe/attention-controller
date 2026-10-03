@@ -30,10 +30,10 @@ import (
 // whole point of the task.
 //
 // It answers an HTML page rather than JSON, because its caller is a hyperlink
-// the operator follows in a browser. The page is deliberately minimal: what
-// happened, and to which pane. The Python original's styled page is not
-// reproduced, because a card's rendering chrome is explicitly out of scope for
-// this change and a cosmetic copy would be the largest untested part of it.
+// the operator follows in a browser. The page says what happened and to which
+// pane, in the dark house style of the local service pages, so a stray jump tab
+// reads as part of the same family as the board. Its markup — tone-coloured
+// heading and the pane card — is pinned by the handler's tests.
 //
 // ⚠️ Three controls, all carried over from the server this replaces, and each
 // is load-bearing rather than inherited by habit:
@@ -52,8 +52,8 @@ import (
 // ⚠️ It takes no store and no provenance resolver, though the Python server it
 // replaces rendered the pane's session title. That render is deliberately not
 // reproduced here: it needs a title-to-session join this route does not
-// otherwise require, and the operator's ask was a working jump, not a styled
-// page. A future change that wants the title adds the dependency it actually
+// otherwise require, so the success card names the pane only. A future change
+// that wants the title adds the dependency it actually
 // needs, rather than this signature carrying two unused parameters on the guess
 // that it will.
 func NewLegacyJumpHandler(
@@ -69,9 +69,10 @@ func NewLegacyJumpHandler(
 			// handler that answers /jump regardless of the path it was reached by
 			// is a handler whose contract is only true by accident of wiring.
 			if req.URL.Path != "/jump" {
-				writeLegacyJumpPage(
+				writeLegacyJumpError(
 					resp,
 					http.StatusNotFound,
+					toneWarn,
 					"Not found",
 					"Only /jump and /health exist.",
 				)
@@ -79,9 +80,10 @@ func NewLegacyJumpHandler(
 			}
 
 			if err := requireLoopbackHost(ctx, req); err != nil {
-				writeLegacyJumpPage(
+				writeLegacyJumpError(
 					resp,
 					http.StatusForbidden,
+					toneErr,
 					"Forbidden",
 					"Host header is not loopback.",
 				)
@@ -94,9 +96,10 @@ func NewLegacyJumpHandler(
 				// and never reaches the log.
 				glog.V(2).
 					Infof("legacy jump refused: token_present=%t", req.URL.Query().Get("t") != "")
-				writeLegacyJumpPage(
+				writeLegacyJumpError(
 					resp,
 					http.StatusForbidden,
+					toneErr,
 					"Forbidden",
 					"Missing or invalid token.",
 				)
@@ -105,9 +108,10 @@ func NewLegacyJumpHandler(
 
 			pane := req.URL.Query().Get("pane")
 			if _, err := strconv.Atoi(pane); err != nil {
-				writeLegacyJumpPage(
+				writeLegacyJumpError(
 					resp,
 					http.StatusBadRequest,
+					toneWarn,
 					"Bad request",
 					"pane must be an integer.",
 				)
@@ -120,9 +124,10 @@ func NewLegacyJumpHandler(
 			// than two that can drift.
 			if err := activator.Activate(ctx, pane); err != nil {
 				glog.V(2).Infof("legacy jump pane %s failed: %v", pane, err)
-				writeLegacyJumpPage(
+				writeLegacyJumpError(
 					resp,
 					http.StatusBadGateway,
+					toneErr,
 					"Jump failed",
 					"The pane could not be activated — it may have been renumbered by a WezTerm restart.",
 				)
@@ -132,8 +137,10 @@ func NewLegacyJumpHandler(
 			writeLegacyJumpPage(
 				resp,
 				http.StatusOK,
+				toneOK,
 				"Jumped",
-				"Terminal focus moved to pane "+html.EscapeString(pane)+".",
+				"Terminal focus moved to the pane below.",
+				pane,
 			)
 		},
 	)
@@ -207,21 +214,107 @@ func requireJumpToken(
 	return nil
 }
 
-// writeLegacyJumpPage writes the minimal HTML page this route answers with.
+// headingTone is the heading colour class the stylesheet defines (h1.ok /
+// h1.warn / h1.err). A distinct type keeps an arbitrary string value (a heading,
+// a detail line) from being passed as a tone by accident; an untyped literal
+// still converts implicitly, so the handler tests pin the tone each refusal and
+// the success page render.
+type headingTone string
+
+const (
+	toneOK   headingTone = "ok"
+	toneWarn headingTone = "warn"
+	toneErr  headingTone = "err"
+)
+
+// legacyJumpPageCSS is the house style of the local service pages. The shared
+// `:root` tokens (--bg, --panel, --border, --text, --muted, --warn) and the `body`
+// block carry the same values attention-page.go declares (itself matching the
+// tts-mcp page); --ok and --err are this page's own additions for the success and
+// refusal headings. They are repeated here rather than shared
+// because the board's palette lives inside its page template string, and
+// extracting it is a change to the board, not to this route.
+const legacyJumpPageCSS = `
+:root {
+  color-scheme: dark;
+  --bg: #111418;
+  --panel: #1a1f26;
+  --border: #2a3038;
+  --text: #e8edf2;
+  --muted: #8b95a3;
+  --ok: #38c172;
+  --warn: #d08b5b;
+  --err: #e55b5b;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0 auto;
+  max-width: 760px;
+  padding: 24px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+h1 { font-size: 20px; margin: 0 0 4px; }
+h1.ok { color: var(--ok); }
+h1.warn { color: var(--warn); }
+h1.err { color: var(--err); }
+.subtitle { color: var(--muted); font-size: 13px; margin: 0 0 20px; }
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+.label {
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin: 0 0 4px;
+}
+.value { font-size: 15px; line-height: 1.45; margin: 0; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+`
+
+// writeLegacyJumpError writes a styled refusal page, which names no pane.
+func writeLegacyJumpError(
+	resp http.ResponseWriter,
+	code int,
+	tone headingTone,
+	heading, detail string,
+) {
+	writeLegacyJumpPage(resp, code, tone, heading, detail, "")
+}
+
+// writeLegacyJumpPage writes the styled status page this route answers with.
 //
-// It is plain text with a status line, and nothing else. The route's caller is
-// a human following a hyperlink, so a bare status code would leave them looking
-// at an empty document; but the Python original's styled page is chrome, and
-// chrome is out of scope for this change.
-func writeLegacyJumpPage(resp http.ResponseWriter, code int, heading, detail string) {
+// The route's caller is a human following a hyperlink, so the page explains
+// itself: tone colours the heading (ok / warn / err) and a non-empty pane
+// renders a card naming the pane that was reached. Every value is escaped
+// here, once.
+func writeLegacyJumpPage(
+	resp http.ResponseWriter,
+	code int,
+	tone headingTone,
+	heading, detail, pane string,
+) {
+	card := ""
+	if pane != "" {
+		card = "<div class=\"card\"><p class=\"label\">Pane</p><p class=\"value mono\">" +
+			html.EscapeString(pane) + "</p></div>"
+	}
 	resp.Header().Set("Content-Type", "text/html; charset=utf-8")
 	resp.WriteHeader(code)
 	_, _ = resp.Write(
 		[]byte(
-			"<!doctype html><html><head><meta charset=\"utf-8\"><title>" +
-				html.EscapeString(heading) + "</title></head><body><h1>" +
-				html.EscapeString(heading) + "</h1><p>" + html.EscapeString(detail) +
-				"</p></body></html>",
+			"<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">" +
+				"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">" +
+				"<title>" + html.EscapeString(heading) + "</title><style>" + legacyJumpPageCSS +
+				"</style></head><body><h1 class=\"" + html.EscapeString(string(tone)) + "\">" +
+				html.EscapeString(heading) + "</h1><p class=\"subtitle\">" +
+				html.EscapeString(detail) + "</p>" + card + "</body></html>",
 		),
 	)
 }
