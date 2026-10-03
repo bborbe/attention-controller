@@ -439,7 +439,21 @@ func infoMetaLine(item pkg.Item) string {
 // alternative the schema rejected. A name that differs from the title is
 // returned unchanged, so no navigation value is dropped.
 func navigationSessionName(provenance pkg.Provenance) string {
-	if provenance.SessionName == provenance.TaskName {
+	// ⚠️ Compare GLYPH-STRIPPED, and the raw comparison is the defect this
+	// replaces. The registry name may carry Claude Code's leading status glyph
+	// (`⚙ …`) while the task title never does, so `SessionName == TaskName` was
+	// false for exactly the case this exists for — a session named after its
+	// task — and the card rendered that title twice anyway. Measured on the live
+	// board 2026-10-03: the second occurrence read
+	// `⚙ An Attention Card's Task Name Renders Twice Below the Ask and the
+	// Header Text Overlaps the Corner Icons` beside a task link carrying the
+	// same title without the glyph.
+	//
+	// pkg.StripStatusGlyph is the same stripper the pane-ownership comparison
+	// uses, deliberately: the reader and the page must not drift on what "the
+	// name" is. The value returned is the registry name as given — the glyph is
+	// the session's own decoration and is kept whenever the span renders at all.
+	if pkg.StripStatusGlyph(provenance.SessionName) == pkg.StripStatusGlyph(provenance.TaskName) {
 		return ""
 	}
 	return provenance.SessionName
