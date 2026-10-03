@@ -735,7 +735,47 @@ document.addEventListener('click', function (event) {
     if (response.ok) { return; }
     return response.text().then(function (body) {
       button.disabled = false;
-      showCloseNote(row, answerFailure(body), true);
+      /* ⚠️ The branch, not the envelope. answerFailure returns an OBJECT whose
+         message is present only on the stale classification, and showCloseNote's
+         contract is a STRING: passing the object straight through made
+         note.textContent coerce it, so the card rendered the literal
+         [object Object] for every code and dropped the store's own code and
+         message along with it. rememberFailure persists whatever it is handed
+         and replayFailure re-renders it, so the object survived the row swap as
+         well — the fix has to produce a string HERE, not guard the coercion
+         downstream. (Backticks are unavailable in this comment: the whole page
+         is one Go raw-string literal.) */
+      var failure = answerFailure(body);
+      if (failure.staleCard) {
+        /* The card went stale between this page being drawn and this answer
+           arriving — either the item left the queue, or another arm answered it
+           first. Neither is a malformed request, and in both the operator's
+           click carried an outcome the raw body buries, so the line the code
+           earns is shown AND the page returns to the queue, in that order and
+           with a beat between them — the form path's order, for the form path's
+           reason.
+
+           ⚠️ The reload is load bearing here, and the reason is an error path.
+           notifyingAttentionStore.Answer returns BEFORE its Notify when the
+           answer fails, so a REJECTED answer publishes no change and the stream
+           sends no delta: the row is never swapped, and a card left to the
+           stream alone keeps a dead Allow / Deny pair under a line promising a
+           return that never comes. That is exactly the ALREADY_ANSWERED case
+           this branch exists for, and the stream-blocked state as well — the
+           board names the latter "Not tracking the store", and it is the state
+           the e2e case constructs. Reloading first would swallow the outcome
+           into the reload, which the rule above forbids; staying put would leave
+           the promise unkept. Both halves are the point, so neither is dropped. */
+        showCloseNote(row, failure.message, true);
+        console.error('attention board: answer failed - HTTP ' + response.status, body);
+        window.setTimeout(function () { window.location.reload(); }, 2500);
+        return;
+      }
+      /* Every other failure keeps the raw body, matching the form path: the body
+         is what a reader needs to tell a code fault from a connection problem,
+         so a genuinely malformed request still reads as malformed rather than
+         being swallowed into a friendly line. */
+      showCloseNote(row, 'Answer failed - HTTP ' + response.status + ' - ' + body, true);
     });
   }).catch(function (error) {
     button.disabled = false;
@@ -1575,38 +1615,6 @@ function replayFailure(row) {
      restated; the schema page owns its statement. */}}{{if .Info}}<div class="info-panel" data-info-panel hidden>{{if or .Item.ProducerID .Item.ProducerKind}}<div class="producer">{{ .Item.ProducerID }} ({{ .Item.ProducerKind }})</div>{{end}}{{if .Provenance.Host}}<span class="host">{{ .Provenance.Host }}</span>{{end}}{{if .Provenance.Cwd}}<span class="cwd">{{ .Provenance.Cwd }}</span>{{end}}{{if .Provenance.Tool}}<span class="tool">{{ .Provenance.Tool }}</span>{{end}}{{if .Provenance.Pane}}<span class="pane">pane {{ .Provenance.Pane }}</span>{{else if .Provenance.PaneRecorded}}<span class="unroutable">unroutable</span>{{end}}{{if .Meta}}<div class="meta">{{ .Meta }}</div>{{end}}</div>
 {{end}}</li>{{end}}
 `
-
-// attentionPageQuestion is one question unit as the card renders it: the unit a
-// tab selects and a panel shows. A single-question item renders exactly one of
-// these, built from the item's own Payload, Options and AnswerCardinality, so
-// the template has one panel shape to render rather than two.
-type attentionPageQuestion struct {
-	// Tab is the tab label, and the key an answer names. Empty on a
-	// single-question item, which renders no tab strip.
-	Tab string
-	// Payload is the question itself.
-	Payload pkg.Payload
-	// Hint is the cardinality hint appended to the question line in the
-	// producer's own wording, e.g. "pick any number". Empty when the question
-	// offers no options, where a statement about picks would describe a choice
-	// the question does not offer.
-	Hint string
-	// Multi reports whether the question takes several picks. It selects the
-	// control — a checkbox when true, a radio button when false — and is read
-	// from the declared cardinality, never from the option count.
-	Multi bool
-	// Active marks the question whose panel renders open. Exactly one carries it,
-	// which is what the tab strip and the panels agree on before any click.
-	Active bool
-	// Name is the input group name for this question's controls, scoped to the
-	// item as well as to the question so two cards on one page cannot share a
-	// radio group — a shared name would let a pick on one card clear another's.
-	Name string
-	// Options are this question's choices, in the order the producer declared
-	// them. They are the schema's own type rather than a mirror of it, exactly as
-	// Provenance is, so the card cannot drift from the field it renders.
-	Options pkg.AnswerOptions
-}
 
 // attentionPageRow is one item paired with what could be resolved about its
 // origin. Pairing here rather than in the template keeps the lookup out of the

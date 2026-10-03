@@ -444,3 +444,35 @@ func navigationSessionName(provenance pkg.Provenance) string {
 	}
 	return provenance.SessionName
 }
+
+// attentionPageQuestion is one question unit as the card renders it: the unit a
+// tab selects and a panel shows. A single-question item renders exactly one of
+// these, built from the item's own Payload, Options and AnswerCardinality, so
+// the template has one panel shape to render rather than two.
+type attentionPageQuestion struct {
+	// Tab is the tab label, and the key an answer names. Empty on a
+	// single-question item, which renders no tab strip.
+	Tab string
+	// Payload is the question itself.
+	Payload pkg.Payload
+	// Hint is the cardinality hint appended to the question line in the
+	// producer's own wording, e.g. "pick any number". Empty when the question
+	// offers no options, where a statement about picks would describe a choice
+	// the question does not offer.
+	Hint string
+	// Multi reports whether the question takes several picks. It selects the
+	// control — a checkbox when true, a radio button when false — and is read
+	// from the declared cardinality, never from the option count.
+	Multi bool
+	// Active marks the question whose panel renders open. Exactly one carries it,
+	// which is what the tab strip and the panels agree on before any click.
+	Active bool
+	// Name is the input group name for this question's controls, scoped to the
+	// item as well as to the question so two cards on one page cannot share a
+	// radio group — a shared name would let a pick on one card clear another's.
+	Name string
+	// Options are this question's choices, in the order the producer declared
+	// them. They are the schema's own type rather than a mirror of it, exactly as
+	// Provenance is, so the card cannot drift from the field it renders.
+	Options pkg.AnswerOptions
+}

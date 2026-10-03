@@ -1500,23 +1500,26 @@ var _ = Describe("AttentionPageHandler", func() {
 		Expect(body).To(ContainSubstring("attention board: jump failed - HTTP "))
 		Expect(body).To(ContainSubstring("attention board: close failed - HTTP "))
 
-		// The prefix is reserved for those nine action lines — the global handlers
-		// and the parse guard log without it — which is what makes this count
-		// unambiguous where a bare console.error count is not.
-		Expect(strings.Count(body, "attention board: ")).To(Equal(9))
+		// The prefix is reserved for the action lines — the global handlers and
+		// the parse guard log without it — which is what makes this count
+		// unambiguous where a bare console.error count is not. TEN since the
+		// decision path's stale arm gained its own line, matching the form path.
+		Expect(strings.Count(body, "attention board: ")).To(Equal(10))
 
-		// The answer path renders TWO failure branches and each logs, so a branch
-		// that was logged and a branch that was forgotten are distinguishable
-		// rather than both satisfying a bare count. The trailing "HTTP " is
-		// load-bearing: it excludes the catch line, which carries no status.
-		Expect(strings.Count(body, "attention board: answer failed - HTTP ")).To(Equal(2))
+		// THREE now: the form path's two failure branches, and the decision path's
+		// stale arm, which gained one when it took the form path's shape. Each
+		// logs, so a branch that was logged and a branch that was forgotten stay
+		// distinguishable rather than all satisfying a bare count. The trailing
+		// "HTTP " is load-bearing: it excludes the two catch lines, which carry
+		// no status.
+		Expect(strings.Count(body, "attention board: answer failed - HTTP ")).To(Equal(3))
 	})
 
 	// The reserved prefix is asserted here as well as in the spec above, so a
-	// later change that introduces a tenth occurrence fails loudly instead of
-	// silently widening a name another spec depends on.
-	It("keeps the reserved console prefix at exactly nine lines", func() {
-		Expect(strings.Count(get("GET").Body.String(), "attention board: ")).To(Equal(9))
+	// later change that introduces an eleventh occurrence fails loudly instead
+	// of silently widening a name another spec depends on.
+	It("keeps the reserved console prefix at exactly ten lines", func() {
+		Expect(strings.Count(get("GET").Body.String(), "attention board: ")).To(Equal(10))
 	})
 
 	// The stream's own health. A stream that has stopped for good — a 404 after

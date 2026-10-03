@@ -21,13 +21,14 @@ Same harness as scenario 001: own binary, random port, temp `DATADIR`; the launc
 
 ## Expected
 
-- [ ] Suite reports `27 of 27 Specs` and `ok github.com/bborbe/attention-controller/e2e`. ⚠️ **This is the package total** — the answer-shape cases plus the board's cases in `e2e/board_test.go`. ⚠️ **Read it with `go test -mod=mod -tags e2e -count=1 -v ./e2e/`, not with `make e2e`:** that target runs `go test -tags e2e ./e2e/` **without `-v`**, and `go test` discards a passing package's stdout, so Ginkgo's `Ran N of N Specs` summary never appears.
+- [ ] Suite reports `28 of 28 Specs` and `ok github.com/bborbe/attention-controller/e2e`. ⚠️ **This is the package total** — the answer-shape cases plus the board's cases in `e2e/board_test.go`. ⚠️ **Read it with `go test -mod=mod -tags e2e -count=1 -v ./e2e/`, not with `make e2e`:** that target runs `go test -tags e2e ./e2e/` **without `-v`**, and `go test` discards a passing package's stdout, so Ginkgo's `Ran N of N Specs` summary never appears.
 - [ ] `stores a single-question radio pick as option + value` — `answer.kind=option`, `answer.value=Dog`
 - [ ] `stores a single-question multi-select as option + values` — `answer.values` = Cheese, Olives
 - [ ] `stores free text typed in Other as text` — `answer.kind=text`, `answer.value=Zoe`
 - [ ] `stores a multi-tab card as one entry per answered question, keyed by question` — `answers[].question` is the tab name (never `tab`), radio → `value`, multi-pick → `values`
 - [ ] `stores Dismiss as skip on every question, never as an option` — every entry `kind=skip`
 - [ ] `stores Allow on a permission card as decision allow` and `… Deny … decision deny` — the card renders the two verdict buttons and they write `decision`
+- [ ] `renders the store's failure on a lost-race Allow, never the answerFailure object` — a permission card whose Allow loses a race to another arm renders the store's own human line, and the card never shows `[object Object]`. ⚠️ The case blocks the stream route **before the first paint**, because the pair only outlives its item on a page that has gone stale: the board renders no closed item at all, and an answered one loses its Allow / Deny to the dimmed record
 - [ ] Port `18080` was never contacted
 
 ## Cleanup
