@@ -17,8 +17,21 @@ import (
 type ProducerKind string
 
 const (
-	// SessionProducerKind is a Claude Code session or a manager.
+	// SessionProducerKind is a Claude Code session.
 	SessionProducerKind ProducerKind = "session"
+	// ManagerProducerKind is a manager session — the layer that resolves
+	// prompts between a worker and the operator. It is deliberately distinct
+	// from SessionProducerKind, because "a manager asked" and "a worker
+	// asked" are different populations, and the per-producer rate this field
+	// exists to measure is only useful if they can be told apart.
+	//
+	// ⚠️ It is a *kind*, never a route. The jump back to a manager's pane
+	// resolves from LivenessRef — pkg/provenance.go never reads ProducerKind
+	// — so adding this value grants no jump and widens no liveness model.
+	// A `pane:` liveness model stays rejected: a pane id is a lease, so a
+	// liveness verdict keyed on one resolves to another session's pane
+	// rather than failing.
+	ManagerProducerKind ProducerKind = "manager"
 	// AgentProducerKind is a k8s Pattern B agent.
 	AgentProducerKind ProducerKind = "agent"
 	// CronProducerKind is a cron job.
@@ -33,6 +46,7 @@ type ProducerKinds []ProducerKind
 // AvailableProducerKinds holds every legal producer kind.
 var AvailableProducerKinds = ProducerKinds{
 	SessionProducerKind,
+	ManagerProducerKind,
 	AgentProducerKind,
 	CronProducerKind,
 	DarkFactoryProducerKind,
