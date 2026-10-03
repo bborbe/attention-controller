@@ -358,9 +358,15 @@ func (a *application) createHTTPServer(
 		// under one context, so a failure in either takes the process down and
 		// launchd restarts both: a half-up state — board serving, jumps dead — is
 		// exactly the two-lifecycle problem the fold exists to remove.
-		// Three, not two: the answered sweep below is a third long-running function
-		// under the same context, so a failure in it takes the process down exactly
-		// as a listener failure does.
+		// Three slots, not two: the answered sweep below is a third long-running
+		// function under the same context.
+		//
+		// ⚠️ It does NOT share the listeners' failure semantics, and saying so here
+		// matters because the difference is deliberate: the sweep returns nil on
+		// cancellation and logs-and-continues on a failed sweep, because a sweep
+		// that fails costs decode work and loses nothing — taking the process down
+		// for it would drop the board over something the board survives. The third
+		// slot is for the goroutine, not for a shared failure path.
 		runner := run.NewConcurrentRunner(3)
 		defer runner.Close()
 
@@ -380,7 +386,20 @@ func (a *application) createHTTPServer(
 		if err != nil {
 			return errors.Wrapf(ctx, err, "parse answered max age '%s' failed", a.AnsweredMaxAge)
 		}
-		runner.Add(ctx, runAnsweredSweep(store, *answeredMaxAge))
+		// ⚠️ Validated rather than trusted, and the failure mode is the reason: the
+		// sweep computes its cutoff as now minus maxAge, so a zero or negative
+		// value makes EVERY answered item due on the first tick and closes the whole
+		// backlog at once — destroying every verdict a consumer had not read yet,
+		// which is the exact outcome the max age exists to prevent. The 1h default
+		// is safe; this guards the operator who sets the flag to 0.
+		if *answeredMaxAge <= 0 {
+			return errors.Errorf(
+				ctx,
+				"answered max age must be positive, got '%s'",
+				a.AnsweredMaxAge,
+			)
+		}
+		runner.Add(ctx, runAnsweredSweep(store, *answeredMaxAge, answeredSweepInterval))
 
 		return runner.Run(ctx)
 	}
@@ -397,9 +416,16 @@ const answeredSweepInterval = time.Minute
 //
 // ⚠️ It runs in its own goroutine and calls the store's own Update — never a step
 // inside a read, because the read path stays read-only.
-func runAnsweredSweep(store pkg.AttentionStore, maxAge libtime.Duration) run.Func {
+// The interval is a parameter rather than the constant read directly, so a spec
+// can drive the tick without waiting a minute for it — the loop's error-and-
+// continue branch is otherwise unreachable in a test.
+func runAnsweredSweep(
+	store pkg.AttentionStore,
+	maxAge libtime.Duration,
+	interval time.Duration,
+) run.Func {
 	return func(ctx context.Context) error {
-		ticker := time.NewTicker(answeredSweepInterval)
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
 			select {
