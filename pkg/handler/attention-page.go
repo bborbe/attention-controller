@@ -89,7 +89,10 @@ import (
 // line, drawn last as its own span, and it is the one value on the line that
 // comes from the session registry rather than from the producer's event log or
 // the vault — so a card whose session resolves a name and nothing else renders a
-// line carrying only that span.
+// line carrying only that span. The line leads the card, above the ask, per
+// silence 26 as amended 2026-10-03, and each distinct navigation value renders
+// once: a session name equal to the resolved task title is not drawn, because
+// the task link already carries it.
 //
 // ⚠️ The goal and the topic follow the task as two more spans of the same shape,
 // each gated on its own resolved link: the goal this item's task names first, and
@@ -127,6 +130,15 @@ const attentionPageTemplate = `<!DOCTYPE html>
      literals so the pair stays one decision. */
   --green: #8fd39a;
   --green-bg: #2c4a37;
+  /* The corner band. The card's four corner controls occupy its rightmost
+     148px within its top 38px: the X at right: 12px, the read-aloud control at
+     right: 48px, the jump corner at right: 84px and the info toggle at
+     right: 120px, each 28px wide and 28px tall at top: 10px. A card's text
+     reserves that band on its own right so it wraps before the controls rather
+     than running through them. It mirrors the controls' geometry rather than
+     driving it, exactly as each control's own right offset does: moving a
+     control cannot move another, and this token cannot move one either. */
+  --corner-band: 148px;
 }
 * { box-sizing: border-box; }
 body {
@@ -289,6 +301,30 @@ li.item {
    wording, so the operator reads what the control will accept before using it. */
 .question { font-size: 17px; font-weight: 600; line-height: 1.4; margin: 0 0 20px; }
 .question .hint { font-weight: 400; color: var(--muted); }
+/* The card's text reserves the corner band on its right, so a block that
+   renders in the band wraps before the controls instead of painting through
+   them. li.item's own 16px padding already keeps text 16px clear of the
+   card's right edge, so a block needs the remaining 132px of the 148px band,
+   plus 4px of clearance so the two boxes do not merely touch — written as the
+   band minus 12px so the value follows the controls' geometry rather than
+   restating it.
+
+   It is scoped to the text blocks rather than to li.item, so the card's box,
+   its border, the corner controls and the info panel keep their full width,
+   and a block that renders below the band is not narrowed by a rule meant for
+   the band. ⚠️ It is margin-right rather than padding-right on purpose: a
+   block's bounding box is its border box, so padding-right would leave the box
+   spanning the band while only the text moved out of it, and a geometry check
+   comparing the ask's box against the controls' would still report an
+   intersection the layout does not have. */
+.provenance,
+.payload,
+.context,
+.card-title,
+.question,
+.record {
+  margin-right: calc(var(--corner-band) - 12px);
+}
 .options { display: flex; flex-direction: column; gap: 18px; margin: 0 0 22px; }
 .option { display: flex; align-items: flex-start; gap: 12px; cursor: pointer; }
 /* The control is aligned to the label's first line rather than to the row, so
@@ -1548,6 +1584,7 @@ function replayFailure(row) {
 {{end}}{{if .JumpURL}}<button type="button" class="jump-corner" data-jump="{{ .JumpURL }}" aria-label="Jump to session" title="Jump to session"><svg class="jump-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.75 3.25h8.5a1.5 1.5 0 0 1 1.5 1.5v6.5a1.5 1.5 0 0 1-1.5 1.5h-8.5a1.5 1.5 0 0 1-1.5-1.5v-6.5a1.5 1.5 0 0 1 1.5-1.5z"/><path d="M5.75 6.5 7.5 8.25 5.75 10"/><path d="M9 10h1.75"/></svg></button>
 {{else if .NoJump}}<button type="button" class="jump-corner" disabled aria-label="Jump to session" title="Jump to session"><svg class="jump-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.75 3.25h8.5a1.5 1.5 0 0 1 1.5 1.5v6.5a1.5 1.5 0 0 1-1.5 1.5h-8.5a1.5 1.5 0 0 1-1.5-1.5v-6.5a1.5 1.5 0 0 1 1.5-1.5z"/><path d="M5.75 6.5 7.5 8.25 5.75 10"/><path d="M9 10h1.75"/></svg></button>
 {{end}}{{if .Info}}<button type="button" class="info-toggle" data-info-toggle aria-expanded="false" aria-label="Card information">i</button>
+{{end}}{{if or .TaskURL .GoalURL .TopicURL .Provenance.SessionName}}<div class="provenance">{{if .TaskURL}}<span class="task"><a href="{{ .TaskURL }}">{{ .Provenance.TaskName }}</a></span>{{end}}{{if .GoalURL}}<span class="goal"><a href="{{ .GoalURL }}">{{ .Provenance.GoalName }}</a></span>{{end}}{{if .TopicURL}}<span class="topic"><a href="{{ .TopicURL }}">{{ .Provenance.TopicName }}</a></span>{{end}}{{if .Provenance.SessionName}}<span class="session-name">{{ .Provenance.SessionName }}</span>{{end}}</div>
 {{end}}{{if not .Message}}<div class="payload">{{ .Item.Payload }}</div>
 {{end}}{{if .Item.Context}}<div class="context">{{ .Item.Context }}</div>
 {{end}}{{if .Dimmed}}<div class="record"><div class="record-question">{{ .Item.Payload }}</div><div class="record-answer">answered: {{ .Record }}</div></div>
@@ -1565,52 +1602,19 @@ function replayFailure(row) {
 </form>
 {{end}}{{if and .Ack (not .Dimmed)}}<div class="actions"><button type="button" class="ack" data-ack>Acknowledge</button></div>
 {{end}}{{if and .Decide (not .Dimmed)}}<div class="actions"><button type="button" class="dismiss" data-decision="deny">✕ Deny</button><button type="button" class="next" data-decision="allow">✓ Allow</button></div>
-{{end}}{{if or .TaskURL .GoalURL .TopicURL .Provenance.SessionName}}<div class="provenance">{{if .TaskURL}}<span class="task"><a href="{{ .TaskURL }}">{{ .Provenance.TaskName }}</a></span>{{end}}{{if .GoalURL}}<span class="goal"><a href="{{ .GoalURL }}">{{ .Provenance.GoalName }}</a></span>{{end}}{{if .TopicURL}}<span class="topic"><a href="{{ .TopicURL }}">{{ .Provenance.TopicName }}</a></span>{{end}}{{if .Provenance.SessionName}}<span class="session-name">{{ .Provenance.SessionName }}</span>{{end}}</div>
 {{end}}{{if or .Jump .JumpURL}}<div class="jump">{{if .Jump}}<span>Approve in the session that asked: <code>{{ .Jump }}</code></span>{{end}}</div>
 {{else if .NoJump}}<div class="jump-reason"><span class="no-jump">{{ .NoJump }}</span></div>
-{{end}}{{/* [[Attention Item Schema]] silence 26's placement rule implemented:
-     the ask leads the card and the machine identity — producer, host, cwd,
-     tool, pane and the state/timestamp line — relocates into this per-card
-     panel behind the info affordance, while the navigation spans stay on the
-     face above. The panel is server-rendered and carries the hidden
-     attribute, so a card with no JavaScript still serves its values and a
-     stream row-swap renders the same markup a fresh load does. The rule is
-     implemented here rather than restated; the schema page owns its
-     statement. */}}{{if .Info}}<div class="info-panel" data-info-panel hidden>{{if or .Item.ProducerID .Item.ProducerKind}}<div class="producer">{{ .Item.ProducerID }} ({{ .Item.ProducerKind }})</div>{{end}}{{if .Provenance.Host}}<span class="host">{{ .Provenance.Host }}</span>{{end}}{{if .Provenance.Cwd}}<span class="cwd">{{ .Provenance.Cwd }}</span>{{end}}{{if .Provenance.Tool}}<span class="tool">{{ .Provenance.Tool }}</span>{{end}}{{if .Provenance.Pane}}<span class="pane">pane {{ .Provenance.Pane }}</span>{{else if .Provenance.PaneRecorded}}<span class="unroutable">unroutable</span>{{end}}{{if .Meta}}<div class="meta">{{ .Meta }}</div>{{end}}</div>
+{{end}}{{/* [[Attention Item Schema]] silence 26's placement rule implemented,
+     as amended 2026-10-03: the ask-first rule is scoped to the card's MACHINE
+     identity — producer, host, cwd, tool, pane and the state/timestamp line —
+     which relocates into this per-card panel behind the info affordance, while
+     the navigation spans lead the card above the ask. The panel is
+     server-rendered and carries the hidden attribute, so a card with no
+     JavaScript still serves its values and a stream row-swap renders the same
+     markup a fresh load does. The rule is implemented here rather than
+     restated; the schema page owns its statement. */}}{{if .Info}}<div class="info-panel" data-info-panel hidden>{{if or .Item.ProducerID .Item.ProducerKind}}<div class="producer">{{ .Item.ProducerID }} ({{ .Item.ProducerKind }})</div>{{end}}{{if .Provenance.Host}}<span class="host">{{ .Provenance.Host }}</span>{{end}}{{if .Provenance.Cwd}}<span class="cwd">{{ .Provenance.Cwd }}</span>{{end}}{{if .Provenance.Tool}}<span class="tool">{{ .Provenance.Tool }}</span>{{end}}{{if .Provenance.Pane}}<span class="pane">pane {{ .Provenance.Pane }}</span>{{else if .Provenance.PaneRecorded}}<span class="unroutable">unroutable</span>{{end}}{{if .Meta}}<div class="meta">{{ .Meta }}</div>{{end}}</div>
 {{end}}</li>{{end}}
 `
-
-// attentionPageQuestion is one question unit as the card renders it: the unit a
-// tab selects and a panel shows. A single-question item renders exactly one of
-// these, built from the item's own Payload, Options and AnswerCardinality, so
-// the template has one panel shape to render rather than two.
-type attentionPageQuestion struct {
-	// Tab is the tab label, and the key an answer names. Empty on a
-	// single-question item, which renders no tab strip.
-	Tab string
-	// Payload is the question itself.
-	Payload pkg.Payload
-	// Hint is the cardinality hint appended to the question line in the
-	// producer's own wording, e.g. "pick any number". Empty when the question
-	// offers no options, where a statement about picks would describe a choice
-	// the question does not offer.
-	Hint string
-	// Multi reports whether the question takes several picks. It selects the
-	// control — a checkbox when true, a radio button when false — and is read
-	// from the declared cardinality, never from the option count.
-	Multi bool
-	// Active marks the question whose panel renders open. Exactly one carries it,
-	// which is what the tab strip and the panels agree on before any click.
-	Active bool
-	// Name is the input group name for this question's controls, scoped to the
-	// item as well as to the question so two cards on one page cannot share a
-	// radio group — a shared name would let a pick on one card clear another's.
-	Name string
-	// Options are this question's choices, in the order the producer declared
-	// them. They are the schema's own type rather than a mirror of it, exactly as
-	// Provenance is, so the card cannot drift from the field it renders.
-	Options pkg.AnswerOptions
-}
 
 // attentionPageRow is one item paired with what could be resolved about its
 // origin. Pairing here rather than in the template keeps the lookup out of the

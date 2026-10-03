@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -48,6 +49,18 @@ const (
 	// the served markup, so only the browser's rendered state tells an open card
 	// from a closed one.
 	infoPanelSelector = "[data-info-panel]"
+	// cornerXSelector is the card's whole skip affordance, pinned in the card's
+	// top-right corner.
+	cornerXSelector = "button[data-corner-x]"
+	// jumpCornerSelector is the jump control in the corner. It is addressed by
+	// class rather than by `data-jump`, because the disabled arm — the one a
+	// fixture card renders, since no pane resolves in this harness — carries no
+	// `data-jump` attribute.
+	jumpCornerSelector = "button.jump-corner"
+	// provenanceSelector is the card's navigation line. It renders only when a
+	// navigation value resolved, so the harness's registry name is what makes it
+	// present on a fixture card.
+	provenanceSelector = ".provenance"
 	// rowSelectorFmt addresses one board row by the item id the store assigned.
 	rowSelectorFmt = `li.item[data-item-id=%q]`
 	// staleSelector addresses the board's not-tracking state: the span the
@@ -147,7 +160,22 @@ func writeSessionRegistry(dir string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	entry := map[string]string{"sessionId": e2eSessionID, "name": "e2e"}
+	// ⚠️ The `nameSource` is load-bearing, not decoration. Only a source of
+	// `user` renders a session name (pkg/provenance.go's sessionNameSourceUser),
+	// and the navigation line is the only place the session name appears — so
+	// without it every fixture card renders no `.provenance` element and the
+	// navigation case below has nothing to assert on.
+	//
+	// ⚠️ This changes the shared fixture for EVERY case in the suite, and that
+	// is intended rather than incidental: the fixture cards gain a session-name
+	// span in a navigation line, and no existing case asserts the absence of
+	// one. The store, the row count, the panel contents, the tab strip, the
+	// note cases and the answer shapes are all unaffected.
+	entry := map[string]string{
+		"sessionId":  e2eSessionID,
+		"name":       "e2e",
+		"nameSource": "user",
+	}
 	content, err := json.Marshal(entry)
 	if err != nil {
 		return err
@@ -514,6 +542,48 @@ func infoPanelVisible(page playwright.Page, itemID string) bool {
 	visible, err := page.Locator(rowSelector(itemID) + " " + infoPanelSelector).IsVisible()
 	Expect(err).NotTo(HaveOccurred())
 	return visible
+}
+
+// computedStyle reads one CSS property off one element, as the browser
+// resolves it. It is the only way to assert a control's slot: the served
+// stylesheet states the rule, but only the browser can say what the element
+// actually computes.
+func computedStyle(page playwright.Page, selector, property string) string {
+	value, err := page.Locator(selector).Evaluate(
+		"el => getComputedStyle(el).getPropertyValue("+strconv.Quote(property)+")",
+		nil,
+	)
+	Expect(err).NotTo(HaveOccurred())
+	return strings.TrimSpace(fmt.Sprintf("%v", value))
+}
+
+// textBox returns the bounding box of an element's TEXT, not of its border
+// box. The two differ here and the difference is load-bearing: the card's text
+// blocks reserve the corner band with a right margin, so the text ends where
+// the reservation begins while the element's box stops at the same place — but
+// a Range over the text is what the acceptance criterion names, and it is the
+// only measurement that answers "does the text run through the controls".
+func textBox(page playwright.Page, selector string) playwright.Rect {
+	box, err := page.Locator(selector).Evaluate(`el => {
+		const range = document.createRange();
+		range.selectNodeContents(el);
+		const r = range.getBoundingClientRect();
+		return {x: r.x, y: r.y, width: r.width, height: r.height};
+	}`, nil)
+	Expect(err).NotTo(HaveOccurred())
+	decoded, err := json.Marshal(box)
+	Expect(err).NotTo(HaveOccurred())
+	var rect playwright.Rect
+	Expect(json.Unmarshal(decoded, &rect)).To(Succeed())
+	return rect
+}
+
+// overlaps reports whether two rectangles share any area. Touching edges do
+// not count: the reserved band is sized to clear the controls' leftmost edge,
+// so a strict comparison is what distinguishes "wraps before the control" from
+// "touches it".
+func overlaps(a, b playwright.Rect) bool {
+	return a.X < b.X+b.Width && b.X < a.X+a.Width && a.Y < b.Y+b.Height && b.Y < a.Y+a.Height
 }
 
 // infoExpanded reads one item's affordance state, the attribute the control
@@ -1175,6 +1245,12 @@ var _ = Describe("the attention board", func() {
 	// anticipated — leaving it stale would turn the board's pre-release gate into
 	// a check that fails on a correct build.
 	//
+	// ⚠️ The same finding holds for the two corner-band and navigation cases
+	// added below: they move the package total again (25 → 27), so BOTH scenario
+	// files move with them. Recorded here beside the previous instance of the
+	// finding rather than only in the changelog, because the next case added to
+	// this file will hit it a third time.
+	//
 	// ⚠️ The card's info affordance is driven here in a real browser because the
 	// panel ships hidden in EVERY response: the served markup is identical
 	// whether a card is open or closed, so only the browser's rendered state can
@@ -1297,5 +1373,153 @@ var _ = Describe("the attention board", func() {
 		clickInfoToggle(page, itemID)
 		Eventually(func() bool { return infoPanelVisible(page, itemID) }).Should(BeTrue())
 		Eventually(func() string { return infoExpanded(page, itemID) }).Should(Equal("true"))
+	})
+
+	// ⚠️ AC1 and AC4, and both halves need a browser rather than served markup.
+	// The reserved corner band is a stylesheet rule, so the served HTML states
+	// it; only the browser can say what the ask's text and the four controls
+	// actually compute. The payload MUST be long enough to reach the band — a
+	// short body would satisfy the non-overlap assertion while the reported
+	// defect persists, which the acceptance criterion explicitly forbids.
+	//
+	// ⚠️ A screenshot cannot be asserted from Go, and the acceptance criterion
+	// names one as the OPERATOR's evidence. It is deliberately not produced
+	// here: the geometry assertion below is the mechanism, and the operator's
+	// own click-through is the evidence.
+	It("wraps a long ask clear of the card's corner controls", func() {
+		itemID := push(
+			"e2e: an ask long enough to run past the card's corner band and wrap "+
+				"before the read-aloud control, the corner X, the jump control and "+
+				"the i, so it occupies several rendered lines inside the board's column",
+			"e2e-corner-band",
+		)
+
+		page := newPage("")
+		defer func() { _ = page.Close() }()
+
+		// The leading positive, so every assertion below is about a drawn row.
+		Eventually(func() int { return rowCount(page, itemID) }).Should(Equal(1))
+
+		// A single-question `message` card renders its ask as `.question`.
+		askSelector := rowSelector(itemID) + " .question"
+		Expect(page.Locator(askSelector).Count()).To(Equal(1))
+
+		Expect(page.Locator(rowSelector(itemID)).ScrollIntoViewIfNeeded()).To(Succeed())
+
+		// Each control, and the slot it settles in. The identifiers and the
+		// positions are frozen: this case asserts them rather than accepting a
+		// change to them.
+		controls := []struct {
+			name     string
+			selector string
+			right    string
+		}{
+			{"read-aloud control", speakSelector, "48px"},
+			{"corner X", cornerXSelector, "12px"},
+			{"jump control", jumpCornerSelector, "84px"},
+			{"info control", infoToggleSelector, "120px"},
+		}
+
+		// The ask's TEXT box, not its border box — the measurement the
+		// acceptance criterion names.
+		askBox := textBox(page, askSelector)
+		for _, control := range controls {
+			selector := rowSelector(itemID) + " " + control.selector
+
+			// ⚠️ The existence check comes first: an absent control would
+			// satisfy the non-overlap assertion vacuously.
+			Expect(page.Locator(selector).Count()).To(Equal(1), "%s is missing", control.name)
+
+			controlBox, err := page.Locator(selector).BoundingBox()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(controlBox).NotTo(BeNil())
+			Expect(overlaps(askBox, *controlBox)).To(BeFalse(),
+				"the ask's text overlaps the %s", control.name)
+
+			// AC4's static half — no control moved to escape the text.
+			Expect(computedStyle(page, selector, "top")).To(Equal("10px"),
+				"the %s did not keep its settled top", control.name)
+			Expect(computedStyle(page, selector, "right")).To(Equal(control.right),
+				"the %s did not keep its settled right", control.name)
+		}
+
+		// ⚠️ The band is cleared by WRAPPING, not by shrinking the text. The
+		// computed size is the `.question` size, unchanged, and the ask still
+		// occupies more than one rendered line.
+		Expect(computedStyle(page, askSelector, "font-size")).To(Equal("17px"))
+		metrics, err := page.Locator(askSelector).Evaluate(`el => {
+			const style = getComputedStyle(el);
+			return {
+				height: el.getBoundingClientRect().height,
+				lineHeight: style.lineHeight,
+			};
+		}`, nil)
+		Expect(err).NotTo(HaveOccurred())
+		decoded, err := json.Marshal(metrics)
+		Expect(err).NotTo(HaveOccurred())
+		var measured struct {
+			Height     float64 `json:"height"`
+			LineHeight string  `json:"lineHeight"`
+		}
+		Expect(json.Unmarshal(decoded, &measured)).To(Succeed())
+		lineHeight, err := strconv.ParseFloat(strings.TrimSuffix(measured.LineHeight, "px"), 64)
+		Expect(err).NotTo(HaveOccurred(), "line-height was not a pixel value")
+		Expect(measured.Height).To(BeNumerically(">", lineHeight),
+			"the ask occupies one line, so the band was not cleared by wrapping")
+
+		// AC4's corner-X half, last, so it disposes of the fixture: the corner
+		// X still closes its row.
+		//
+		// ⚠️ AC4's "every control still works" is already covered elsewhere and
+		// is deliberately NOT duplicated here: the read-aloud click by
+		// `forwards the utterance to the tts server when the read-aloud control
+		// is clicked`, and the info-toggle click by `reveals a card's metadata
+		// from the info affordance and reports its state`. This case asserts the
+		// corner X because it is the one control those two do not click.
+		Expect(page.Locator(rowSelector(itemID) + " " + cornerXSelector).Click()).To(Succeed())
+		Eventually(func() int { return rowCount(page, itemID) }).
+			WithTimeout(5 * time.Second).Should(Equal(0))
+	})
+
+	// ⚠️ AC2's rendered half (b). Its markup half — the provenance div's index
+	// being less than the ask's in the served row — belongs to the handler-level
+	// prompt; this case is not the whole criterion. ⚠️ A stale stylesheet cannot
+	// satisfy this one, which is exactly why the criterion requires both halves:
+	// the markup half can be true while the line is painted below the ask by a
+	// stylesheet that still places it there.
+	It("leads with the navigation line above the ask", func() {
+		itemID := push("e2e: the card whose navigation line leads", "e2e-nav-above")
+
+		page := newPage("")
+		defer func() { _ = page.Close() }()
+
+		Eventually(func() int { return rowCount(page, itemID) }).Should(Equal(1))
+
+		// The line is rendered, with a value on it: the harness's registry name,
+		// which requirement 1 made renderable. Without this positive the offset
+		// comparison below could pass on an element that is not the navigation
+		// line.
+		provenanceLocator := page.Locator(rowSelector(itemID) + " " + provenanceSelector)
+		Expect(provenanceLocator.Count()).To(Equal(1))
+		provenanceText, err := provenanceLocator.TextContent()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(strings.TrimSpace(provenanceText)).NotTo(BeEmpty())
+
+		Expect(page.Locator(rowSelector(itemID)).ScrollIntoViewIfNeeded()).To(Succeed())
+
+		// The ask is the same selector requirement 4 uses: `push` seeds a
+		// single-question `message` card.
+		askLocator := page.Locator(rowSelector(itemID) + " .question")
+		Expect(askLocator.Count()).To(Equal(1))
+
+		provBox, err := provenanceLocator.BoundingBox()
+		Expect(err).NotTo(HaveOccurred())
+		askBox, err := askLocator.BoundingBox()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(provBox).NotTo(BeNil())
+		Expect(askBox).NotTo(BeNil())
+
+		// The rendered top offset, in the same row.
+		Expect(provBox.Y).To(BeNumerically("<", askBox.Y))
 	})
 })
