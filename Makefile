@@ -58,11 +58,23 @@ e2e:
 CODESIGN_IDENTITY ?= bborbe local codesign
 INSTALL_BIN ?= $(HOME)/.local/bin/attention-controller
 
+#
+# The binary is built and signed at a staging path and only moved into place
+# once signed and verified, so a failed codesign never leaves an unsigned binary
+# where the plist will load it on the next start.
+LAUNCHD_LABEL ?= com.bborbe.attention-controller
+
 .PHONY: install
 install:
-	go build -o "$(INSTALL_BIN)" .
-	codesign -f -s "$(CODESIGN_IDENTITY)" -i de.bborbe.attention-controller "$(INSTALL_BIN)"
-	launchctl kickstart -k gui/$$(id -u)/com.bborbe.attention-controller
+	@security find-identity -p codesigning | grep -qF '"$(CODESIGN_IDENTITY)"' \
+		|| { echo "codesign identity '$(CODESIGN_IDENTITY)' not in keychain; check: security find-identity -p codesigning" >&2; exit 1; }
+	mkdir -p "$(dir $(INSTALL_BIN))"
+	go build -o "$(INSTALL_BIN).new" .
+	codesign -f -s "$(CODESIGN_IDENTITY)" -i de.bborbe.attention-controller "$(INSTALL_BIN).new"
+	codesign --verify --strict "$(INSTALL_BIN).new"
+	codesign -d -r- "$(INSTALL_BIN).new" 2>&1 | grep -q 'identifier "de.bborbe.attention-controller"'
+	mv -f "$(INSTALL_BIN).new" "$(INSTALL_BIN)"
+	launchctl kickstart -k gui/$$(id -u)/$(LAUNCHD_LABEL)
 
 deps:
 	go install github.com/bborbe/teamvault-utils/cmd/teamvault-config-parser@latest
