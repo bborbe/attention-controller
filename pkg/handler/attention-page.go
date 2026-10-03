@@ -714,13 +714,25 @@ document.addEventListener('click', function (event) {
         /* The card went stale between this page being drawn and this answer
            arriving — either the item left the queue, or another arm answered it
            first. Neither is a malformed request, and in both the operator's
-           click carried an outcome the raw body buries. Only the LINE is shown
-           here, with no reload: the store notifies on answer
-           (notifyingAttentionStore.Answer), and the stream's upsertRow puts the
-           answered record in this card's place, which is the return to the queue
-           the line promises. The form path reloads because it has to rebuild its
-           own form; this row is swapped for it. */
+           click carried an outcome the raw body buries, so the line the code
+           earns is shown AND the page returns to the queue, in that order and
+           with a beat between them — the form path's order, for the form path's
+           reason.
+
+           ⚠️ The reload is load bearing here, and the reason is an error path.
+           notifyingAttentionStore.Answer returns BEFORE its Notify when the
+           answer fails, so a REJECTED answer publishes no change and the stream
+           sends no delta: the row is never swapped, and a card left to the
+           stream alone keeps a dead Allow / Deny pair under a line promising a
+           return that never comes. That is exactly the ALREADY_ANSWERED case
+           this branch exists for, and the stream-blocked state as well — the
+           board names the latter "Not tracking the store", and it is the state
+           the e2e case constructs. Reloading first would swallow the outcome
+           into the reload, which the rule above forbids; staying put would leave
+           the promise unkept. Both halves are the point, so neither is dropped. */
         showCloseNote(row, failure.message, true);
+        console.error('attention board: answer failed - HTTP ' + response.status, body);
+        window.setTimeout(function () { window.location.reload(); }, 2500);
         return;
       }
       /* Every other failure keeps the raw body, matching the form path: the body

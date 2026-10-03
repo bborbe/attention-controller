@@ -262,7 +262,12 @@ var _ = Describe("an answer given on the rendered board", func() {
 		Expect(page.Route(streamPattern, func(route playwright.Route) {
 			_ = route.Abort("failed")
 		})).To(Succeed())
-		_, err = page.Goto(baseURL, playwright.PageGotoOptions{
+		// ?hide=none for the reason the stream cases use it: this case ends on the
+		// reload the stale arm schedules, and that reload re-renders the answered
+		// card. Under the default filter that row is parked out of the DOM, so
+		// the return-to-queue assertion below would find nothing however well the
+		// reload had worked.
+		_, err = page.Goto(baseURL+"?hide=none", playwright.PageGotoOptions{
 			WaitUntil: playwright.WaitUntilStateLoad,
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -289,10 +294,26 @@ var _ = Describe("an answer given on the rendered board", func() {
 		// answerFailure OBJECT, whose textContent coercion rendered the literal
 		// [object Object] for every code and dropped the store's own message with
 		// it. The PRESENCE is the fix: the human line that code earns.
+		// ⚠️ Captured INSIDE the probe. The stale arm schedules a reload 2.5s
+		// after the click — deliberately, because a rejected answer publishes no
+		// stream delta so the row would otherwise never be swapped — which makes
+		// the note transient by design. A read after the reload would find the
+		// reloaded page instead of the thing under test.
+		var seen string
 		Eventually(func() string {
-			return noteText(page, itemID)
+			seen = noteText(page, itemID)
+			return seen
 		}).WithTimeout(5 * time.Second).Should(ContainSubstring("This item was already answered."))
-		Expect(noteText(page, itemID)).NotTo(ContainSubstring("[object Object]"))
+		Expect(seen).NotTo(ContainSubstring("[object Object]"))
+
+		// And the return the line promises actually arrives: the reload replaces
+		// the stale card with the record of the answer that landed. Asserted
+		// separately because the two halves fail independently — a card that
+		// renders the line and then keeps a dead Allow / Deny pair under it is
+		// the defect the reload exists to prevent.
+		Eventually(func() int {
+			return noteCount(page, itemID, ".record")
+		}).WithTimeout(10 * time.Second).Should(Equal(1))
 	})
 })
 
