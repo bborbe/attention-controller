@@ -180,6 +180,19 @@ func (w *weztermPaneLister) List(ctx context.Context) (map[int]Pane, error) {
 	// satisfy the rule at the cost of the measurement being wrong in the case it
 	// exists to report on.
 	started := time.Now()
+	// ⚠️ The bound actually in force, which is the EARLIER of ours and the caller's:
+	// context.WithTimeout returns the tighter deadline, so a request arriving with
+	// its own one-second deadline is bounded by that second and not by three.
+	// Logging our own constant would report a caller's deadline as the mux failing
+	// to answer — the same misreport the kind test below was narrowed to stop, one
+	// case over, and it would be logged on the ordinary path for any caller that
+	// supplies a deadline at all.
+	bound := paneListingTimeout
+	if deadline, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(deadline); remaining < bound {
+			bound = remaining
+		}
+	}
 	raw, err := cmd.Output()
 	if err != nil {
 		// Logged, not just returned, and ⚠️ logged with its latency and its kind.
@@ -205,7 +218,7 @@ func (w *weztermPaneLister) List(ctx context.Context) (map[int]Pane, error) {
 			glog.V(2).Infof(
 				"wezterm cli list TIMED OUT after %s (bound %s): binary=%s err=%v — the mux is not answering",
 				elapsed,
-				paneListingTimeout,
+				bound,
 				binary,
 				err,
 			)

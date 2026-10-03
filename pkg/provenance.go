@@ -330,6 +330,13 @@ func (r *provenanceResolver) hostState(ctx context.Context) hostState {
 	// paneListingTimeout is stamped at publication but began reading a bound
 	// earlier, so the worst-case age of a value a reader sees is
 	// provenanceCacheWindow plus one refresh — about five seconds, not two.
+	//
+	// ⚠️ And because the lock is released across the refresh, two overlapping
+	// cold-start refreshes can publish out of READ order: the one that read first
+	// but finished last overwrites the fresher snapshot, so the window can serve
+	// content one refresh older than this stamp suggests, for one window after the
+	// overwrite. Bounded and self-healing — the next refresh replaces it — rather
+	// than an age that grows.
 	r.cachedAt = r.currentDateTimeGetter.Now()
 	r.mu.Unlock()
 	return state

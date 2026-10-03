@@ -65,8 +65,15 @@ var _ = Describe("WeztermPaneLister", func() {
 		// deadline, not the fake failing to start, is what ended it.
 		Expect(elapsed).
 			To(BeNumerically(">=", 2*time.Second), "the fake lister never ran, so nothing was bounded")
-		Expect(elapsed).To(BeNumerically("<", 10*time.Second), "the listing was not bounded at all")
+		// ⚠️ Eight seconds, not five. The deterministic worst case is the deadline
+		// plus the wait delay — 3.5s — so a 5s ceiling left only 1.5s for process
+		// teardown and goroutine scheduling, and on a loaded runner (or with
+		// ENABLE_RACE=true, which this repo supports) a hiccup of that size failed the
+		// spec with a message blaming the code for a slow machine. Eight still fails a
+		// raise to nine seconds, which is the regression this ceiling exists to catch,
+		// while leaving 4.5s of margin. The lower bound above is what carries the
+		// contract; this one pins the constant without pinning the machine.
 		Expect(elapsed).
-			To(BeNumerically("<", 5*time.Second), "the bound in force is larger than the declared one")
+			To(BeNumerically("<", 8*time.Second), "the bound in force is larger than the declared one")
 	})
 })

@@ -8,6 +8,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/bborbe/errors"
 	"github.com/bborbe/run"
@@ -416,6 +417,19 @@ var _ = Describe("ProvenanceResolver", func() {
 		clock.SetNow(clock.Now().Add(libtime.Duration(3 * 1e9)))
 	}
 
+	// releaseOnce returns a closer for ch that closes it exactly once, so it can be
+	// called from the happy path AND deferred as a cleanup without panicking on the
+	// second call. ⚠️ The defer is the point: without it, a spec that fails before
+	// its own close leaks the refresher goroutine parked in the lister stub for the
+	// rest of the suite. That is harmless with today's fake — mocks.PaneLister
+	// releases its mutex before invoking the stub, and the fake is rebuilt per spec
+	// — but the failure mode of a regression test should not depend on the fake
+	// happening to be harmless after the fact.
+	releaseOnce := func(ch chan struct{}) func() {
+		var once sync.Once
+		return func() { once.Do(func() { close(ch) }) }
+	}
+
 	It("reads the host snapshot once inside the window and again past it", func() {
 		// The cache is what stops the live stream's cost scaling with the number
 		// of connected clients: every store change wakes every stream, and each
@@ -473,6 +487,8 @@ var _ = Describe("ProvenanceResolver", func() {
 			// the assertion below, which is a far harder failure to read.
 			entered := make(chan struct{}, 1)
 			release := make(chan struct{})
+			releaseAll := releaseOnce(release)
+			DeferCleanup(releaseAll)
 			paneLister.ListCalls(func(context.Context) (map[int]pkg.Pane, error) {
 				select {
 				case entered <- struct{}{}:
@@ -503,7 +519,7 @@ var _ = Describe("ProvenanceResolver", func() {
 			// while it waited — a fresh read here would satisfy a mere "it returned".
 			Expect(stale[pkg.ItemID("item-block")].SessionName).To(Equal("Before Name"))
 
-			close(release)
+			releaseAll()
 			var fresh pkg.Provenances
 			Eventually(refresher, "2s").Should(Receive(&fresh))
 			Expect(fresh[pkg.ItemID("item-block")].SessionName).To(Equal("After Name"))
@@ -526,6 +542,8 @@ var _ = Describe("ProvenanceResolver", func() {
 
 			entries := make(chan struct{}, 4)
 			release := make(chan struct{})
+			releaseAll := releaseOnce(release)
+			DeferCleanup(releaseAll)
 			paneLister.ListCalls(func(context.Context) (map[int]pkg.Pane, error) {
 				entries <- struct{}{}
 				<-release
@@ -545,7 +563,7 @@ var _ = Describe("ProvenanceResolver", func() {
 			Eventually(entries, "2s").Should(Receive())
 			Expect(paneLister.ListCallCount()).To(Equal(2))
 
-			close(release)
+			releaseAll()
 			var got pkg.Provenances
 			Eventually(first, "2s").Should(Receive(&got))
 			Expect(got[pkg.ItemID("item-cold")].SessionName).To(Equal("Cold Name"))
@@ -589,15 +607,17 @@ var _ = Describe("ProvenanceResolver", func() {
 			// also happens to be the last to claim the token, clearing it is CORRECT,
 			// so the spec would fail on a resolver that is behaving properly. That is
 			// how this spec first failed.
-			firstRelease := <-entered
+			firstRelease := releaseOnce(<-entered)
+			DeferCleanup(firstRelease)
 
 			second := make(chan pkg.Provenances, 1)
 			go func() { second <- resolver.Resolve(ctx, items) }()
-			secondRelease := <-entered
+			secondRelease := releaseOnce(<-entered)
+			DeferCleanup(secondRelease)
 
 			// Finish the first refresher. It publishes, and its deferred clear must not
 			// take the second one's token with it.
-			close(firstRelease)
+			firstRelease()
 			var published pkg.Provenances
 			Eventually(first, "2s").Should(Receive(&published))
 			Expect(published[pkg.ItemID("item-token")].SessionName).To(Equal("Token Name"))
@@ -614,7 +634,7 @@ var _ = Describe("ProvenanceResolver", func() {
 			Expect(served[pkg.ItemID("item-token")].SessionName).To(Equal("Token Name"))
 			Expect(paneLister.ListCallCount()).To(Equal(2))
 
-			close(secondRelease)
+			secondRelease()
 			Eventually(second, "2s").Should(Receive(&published))
 		},
 	)
