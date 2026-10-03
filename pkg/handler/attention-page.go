@@ -127,6 +127,15 @@ const attentionPageTemplate = `<!DOCTYPE html>
      literals so the pair stays one decision. */
   --green: #8fd39a;
   --green-bg: #2c4a37;
+  /* The corner band. The card's four corner controls occupy its rightmost
+     148px within its top 38px: the X at right: 12px, the read-aloud control at
+     right: 48px, the jump corner at right: 84px and the info toggle at
+     right: 120px, each 28px wide and 28px tall at top: 10px. A card's text
+     reserves that band on its own right so it wraps before the controls rather
+     than running through them. It mirrors the controls' geometry rather than
+     driving it, exactly as each control's own right offset does: moving a
+     control cannot move another, and this token cannot move one either. */
+  --corner-band: 148px;
 }
 * { box-sizing: border-box; }
 body {
@@ -289,6 +298,30 @@ li.item {
    wording, so the operator reads what the control will accept before using it. */
 .question { font-size: 17px; font-weight: 600; line-height: 1.4; margin: 0 0 20px; }
 .question .hint { font-weight: 400; color: var(--muted); }
+/* The card's text reserves the corner band on its right, so a block that
+   renders in the band wraps before the controls instead of painting through
+   them. li.item's own 16px padding already keeps text 16px clear of the
+   card's right edge, so a block needs the remaining 132px of the 148px band,
+   plus 4px of clearance so the two boxes do not merely touch — written as the
+   band minus 12px so the value follows the controls' geometry rather than
+   restating it.
+
+   It is scoped to the text blocks rather than to li.item, so the card's box,
+   its border, the corner controls and the info panel keep their full width,
+   and a block that renders below the band is not narrowed by a rule meant for
+   the band. ⚠️ It is margin-right rather than padding-right on purpose: a
+   block's bounding box is its border box, so padding-right would leave the box
+   spanning the band while only the text moved out of it, and a geometry check
+   comparing the ask's box against the controls' would still report an
+   intersection the layout does not have. */
+.provenance,
+.payload,
+.context,
+.card-title,
+.question,
+.record {
+  margin-right: calc(var(--corner-band) - 12px);
+}
 .options { display: flex; flex-direction: column; gap: 18px; margin: 0 0 22px; }
 .option { display: flex; align-items: flex-start; gap: 12px; cursor: pointer; }
 /* The control is aligned to the label's first line rather than to the row, so
