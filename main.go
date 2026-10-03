@@ -297,7 +297,7 @@ func (a *application) createHTTPServer(
 		// refuse a stale pane id before touching the terminal. Two listers would
 		// be two subprocess paths whose failure semantics could drift — and the
 		// activator's correctness rests on resolving against the LIVE list.
-		panes := pkg.NewWeztermPaneLister()
+		panes := pkg.NewWeztermPaneLister(libtime.NewCurrentDateTime())
 		provenance := a.createProvenanceResolver(ctx, panes)
 		jumpTokens := a.createJumpTokenReader(ctx)
 		activator := a.createPaneActivator(panes)

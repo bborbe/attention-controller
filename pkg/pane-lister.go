@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/bborbe/errors"
+	libtime "github.com/bborbe/time"
 	"github.com/golang/glog"
 )
 
@@ -61,11 +62,22 @@ type PaneLister interface {
 }
 
 // NewWeztermPaneLister creates a lister reading `wezterm cli list`.
-func NewWeztermPaneLister() PaneLister {
-	return &weztermPaneLister{}
+//
+// ⚠️ The clock is injected even though the only thing it times is this call's own
+// latency. `go-time/no-time-now-direct` is a MUST and
+// `go-testing/libtime-injection-required` fires on the same line, and a comment
+// recording the exception satisfies neither — leaving the next reader to "fix" a
+// violation by making the measurement wrong in exactly the case it exists to
+// report on. Injecting costs nothing: libtime.DateTime is a defined type over
+// time.Time, so a real getter returns a value that still carries the monotonic
+// reading, and the subtraction below stays immune to a clock step.
+func NewWeztermPaneLister(currentDateTimeGetter libtime.CurrentDateTimeGetter) PaneLister {
+	return &weztermPaneLister{currentDateTimeGetter: currentDateTimeGetter}
 }
 
-type weztermPaneLister struct{}
+type weztermPaneLister struct {
+	currentDateTimeGetter libtime.CurrentDateTimeGetter
+}
 
 // weztermBinaryCandidates are where the WezTerm CLI is looked for, in order.
 //
@@ -123,7 +135,10 @@ const paneListingTimeout = 3 * time.Second
 // forks and exits leaves the descendant holding the pipe: the kill lands, the
 // read does not return, and the caller is still parked. Measured 2026-10-03 by
 // the spec in pane-lister_test.go, which is exactly that shape — a `sh` wrapper
-// around `sleep 30` blocked Output for the full 30 s under a 3 s bound.
+// whose `sleep` outlasted the bound blocked Output for the script's whole run.
+// ⚠️ The number is deliberately left out of this sentence: it moved once already
+// (the spec shortened its sleep to cut an orphan), and a comment citing a value
+// the spec owns is a comment that goes stale without anyone editing it.
 //
 // Half a second is generous for closing a pipe nothing else holds — the delay is
 // a timer, not a wait for work — and the worst case stays bounded either way: at
@@ -222,15 +237,10 @@ func (w *weztermPaneLister) List(ctx context.Context) (map[int]Pane, error) {
 	// call, so a child that forks still parks the caller for as long as its
 	// descendant lives — the exact stall this fix exists to remove.
 	cmd.WaitDelay = paneListingWaitDelay
-	// ⚠️ time.Now/Since rather than the injected libtime clock — deliberately, and
-	// recorded here rather than left as a silent exception to go-time/no-time-now-
-	// direct. This is a latency measurement, not a business instant, and the two
-	// want different instruments: time.Since reads the monotonic clock, so a clock
-	// step during the call cannot make the duration negative or absurd, while a
-	// wall-clock getter is exactly what such a step moves. Injecting one would
-	// satisfy the rule at the cost of the measurement being wrong in the case it
-	// exists to report on.
-	started := time.Now()
+	// Timed through the injected getter — see NewWeztermPaneLister. The real getter
+	// returns a value that carries the monotonic reading, so this subtraction is
+	// immune to a clock step even though it is not time.Since.
+	started := w.currentDateTimeGetter.Now()
 	// ⚠️ The bound actually in force, which is the EARLIER of ours and the caller's:
 	// context.WithTimeout returns the tighter deadline, so a request arriving with
 	// its own one-second deadline is bounded by that second and not by three.
@@ -241,15 +251,14 @@ func (w *weztermPaneLister) List(ctx context.Context) (map[int]Pane, error) {
 	bound := paneListingTimeout
 	ourDeadline, ourHasDeadline := ctx.Deadline()
 	if ourHasDeadline {
-		if remaining := ourDeadline.Sub(started); remaining < bound {
+		if remaining := ourDeadline.Sub(started.Time()); remaining < bound {
 			bound = remaining
 		}
 	}
-	// ⚠️ Which deadline fired decides the VERDICT, not only the number. WithTimeout
-	// keeps the earlier of the two, so when the derived deadline IS the parent's, it
-	// is the caller's own limit that expired — and reporting that as the mux failing
-	// to answer asserts a conclusion this branch exists to avoid. A caller's limit is
-	// not evidence about the mux.
+	// ⚠️ Which deadline fired decides the verdict, not only the number — see
+	// logListingFailure, which holds the reasoning. This comparison is how the two
+	// are told apart: WithTimeout keeps the earlier, so when the derived deadline IS
+	// the parent's, the caller's limit is the one that expired.
 	callerDeadlineGoverns := parentHasDeadline &&
 		ourHasDeadline &&
 		ourDeadline.Equal(parentDeadline)
@@ -268,7 +277,7 @@ func (w *weztermPaneLister) List(ctx context.Context) (map[int]Pane, error) {
 		// rather than a wedged mux.
 		logListingFailure(
 			binary,
-			time.Since(started),
+			time.Duration(w.currentDateTimeGetter.Now().Sub(started)),
 			bound,
 			ctx.Err() == context.DeadlineExceeded,
 			callerDeadlineGoverns,

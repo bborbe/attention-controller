@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
+	libtime "github.com/bborbe/time"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -47,7 +48,8 @@ var _ = Describe("WeztermPaneLister", func() {
 		// the deadline-free caller context that made the old call unbounded, so a
 		// bound that only holds when the caller supplies its own deadline is not the
 		// bound this fix exists to provide.
-		_, err := pkg.NewWeztermPaneLister().List(context.Background())
+		_, err := pkg.NewWeztermPaneLister(libtime.NewCurrentDateTime()).
+			List(context.Background())
 		elapsed := time.Since(start)
 
 		Expect(err).To(HaveOccurred())
