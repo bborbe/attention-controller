@@ -125,9 +125,10 @@ const paneListingTimeout = 3 * time.Second
 // the spec in pane-lister_test.go, which is exactly that shape — a `sh` wrapper
 // around `sleep 30` blocked Output for the full 30 s under a 3 s bound.
 //
-// One second is generous for closing a pipe nothing else holds, and the worst
-// case stays bounded either way: at most paneListingTimeout plus this.
-const paneListingWaitDelay = 1 * time.Second
+// Half a second is generous for closing a pipe nothing else holds — the delay is
+// a timer, not a wait for work — and the worst case stays bounded either way: at
+// most paneListingTimeout plus this.
+const paneListingWaitDelay = 500 * time.Millisecond
 
 // List runs `wezterm cli list --format json` and indexes the result by pane id.
 //
@@ -170,15 +171,33 @@ func (w *weztermPaneLister) List(ctx context.Context) (map[int]Pane, error) {
 	// call, so a child that forks still parks the caller for as long as its
 	// descendant lives — the exact stall this fix exists to remove.
 	cmd.WaitDelay = paneListingWaitDelay
+	started := time.Now()
 	raw, err := cmd.Output()
 	if err != nil {
-		// Logged, not just returned. This boundary call is the one whose
-		// failure is hardest to see from outside: when WezTerm is missing the
-		// page simply renders no pane, which is indistinguishable from a host
-		// that has none. Measured 2026-09-22 — the launchd PATH gap behind the
-		// first deployment of this feature was found only by probing the
-		// environment by hand, because the store's own log said nothing.
-		glog.V(2).Infof("wezterm cli list failed: binary=%s err=%v", binary, err)
+		// Logged, not just returned, and ⚠️ logged with its latency and its kind.
+		// This boundary call is the one whose failure is hardest to see from
+		// outside: when WezTerm is missing the page simply renders no pane, which is
+		// indistinguishable from a host that has none. Measured 2026-09-22 — the
+		// launchd PATH gap behind the first deployment of this feature was found only
+		// by probing the environment by hand, because the store's own log said nothing.
+		//
+		// The latency and the deadline branch are what make the bound self-reporting.
+		// A killed child and an ordinary non-zero exit render identically here, so
+		// without them the wedged mux this bound exists for would leave no trace
+		// beyond a failure — and the operator would be reading a log that cannot tell
+		// the defect from a typo in a flag.
+		elapsed := time.Since(started)
+		if ctx.Err() != nil {
+			glog.V(2).Infof(
+				"wezterm cli list TIMED OUT after %s (bound %s): binary=%s err=%v — the mux is not answering",
+				elapsed,
+				paneListingTimeout,
+				binary,
+				err,
+			)
+		} else {
+			glog.V(2).Infof("wezterm cli list failed after %s: binary=%s err=%v", elapsed, binary, err)
+		}
 		return nil, errors.Wrap(ctx, err, "list wezterm panes failed")
 	}
 	var panes []Pane

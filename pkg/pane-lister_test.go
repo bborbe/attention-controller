@@ -25,11 +25,11 @@ var _ = Describe("WeztermPaneLister", func() {
 		//
 		// The lister resolves a real binary through exec.LookPath over a fixed
 		// candidate list, so PATH is the seam: a temp dir holding a `wezterm` that
-		// never exits is what LookPath resolves to, and the store's own copy of the
-		// WezTerm CLI is never reached.
+		// outlasts any sane bound is what LookPath resolves to, and the store's own
+		// copy of the WezTerm CLI is never reached.
 		dir := GinkgoT().TempDir()
 		script := filepath.Join(dir, "wezterm")
-		Expect(os.WriteFile(script, []byte("#!/bin/sh\nsleep 30\n"), 0o700)).To(Succeed())
+		Expect(os.WriteFile(script, []byte("#!/bin/sh\nsleep 20\n"), 0o700)).To(Succeed())
 
 		original := os.Getenv("PATH")
 		Expect(os.Setenv("PATH", dir+string(os.PathListSeparator)+original)).To(Succeed())
@@ -46,12 +46,18 @@ var _ = Describe("WeztermPaneLister", func() {
 		elapsed := time.Since(start)
 
 		Expect(err).To(HaveOccurred())
-		// The script sleeps 30 s. At or above that, nothing bounded the call — which
-		// is what this spec caught on its first run: with the deadline set but no
-		// WaitDelay, `sh` was killed at 3 s while `sleep` held the inherited stdout
-		// pipe, so Output blocked for the full 30 s. The bound is now the deadline
-		// plus the wait delay, so this leaves room for a loaded machine without ever
-		// passing on an unbounded call.
-		Expect(elapsed).To(BeNumerically("<", 10*time.Second))
+		// ⚠️ Two assertions, because they pin different things, and the loose one goes
+		// first so a catastrophic regression reports the clearer message.
+		//
+		// The loose ceiling is what caught this spec's first-run failure: with the
+		// deadline set but no WaitDelay, `sh` was killed at 3 s while the `sleep` it
+		// spawned held the inherited stdout pipe, and Output blocked for the script's
+		// full run. The tight one pins the CONSTANT rather than mere boundedness — the
+		// bound is 3 s and the wait delay 500 ms, so anything approaching 5 s means
+		// the declared bound is not the one in force, and raising paneListingTimeout
+		// to 9 s fails here rather than passing on a loose ceiling.
+		Expect(elapsed).To(BeNumerically("<", 10*time.Second), "the listing was not bounded at all")
+		Expect(elapsed).
+			To(BeNumerically("<", 5*time.Second), "the bound in force is larger than the declared one")
 	})
 })

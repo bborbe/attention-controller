@@ -313,6 +313,11 @@ func (r *provenanceResolver) hostState(ctx context.Context) hostState {
 	// the cache giving zero relief in exactly the case it exists for. The window
 	// is measured from when the snapshot became available, which is the only
 	// reading that makes it a window.
+	//
+	// ⚠️ It bounds the STAMP, not the content. A refresh that took the full
+	// paneListingTimeout is stamped at publication but began reading a bound
+	// earlier, so the worst-case age of a value a reader sees is
+	// provenanceCacheWindow plus one refresh — about five seconds, not two.
 	r.cachedAt = r.currentDateTimeGetter.Now()
 	r.mu.Unlock()
 	return state
