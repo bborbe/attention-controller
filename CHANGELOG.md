@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.37.0
 
 - feat: add `make install`, which builds the launchd binary, signs it with a stable local identity (`CODESIGN_IDENTITY`, identifier `de.bborbe.attention-controller`) and restarts the service. An ad-hoc-signed `go build` binary is a new macOS privacy (TCC) identity on every rebuild, so startup blocked in `open()` on the vault until Documents access was re-granted — the board and the `:1337` jump listener were down ~38 min on 2026-10-03. With a fixed signature one grant survives rebuilds. The binary is built and signed at a staging path, verified (`codesign --verify --strict` plus the designated requirement), and only then moved into place, so a failed sign never leaves an unsigned binary for the next service start; a preflight names a missing keychain identity. README deploy recipe updated to use it.
 
