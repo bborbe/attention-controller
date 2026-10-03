@@ -213,17 +213,24 @@ func requireJumpToken(
 	return nil
 }
 
-// The heading tones the stylesheet defines (h1.ok / h1.warn / h1.err). Named so a
-// typo at a call site fails to compile instead of rendering an uncoloured heading.
+// headingTone is the heading colour class the stylesheet defines (h1.ok /
+// h1.warn / h1.err). A distinct type keeps an arbitrary string value (a heading,
+// a detail line) from being passed as a tone by accident; an untyped literal
+// still converts implicitly, so the handler tests pin the tone each refusal and
+// the success page render.
+type headingTone string
+
 const (
-	toneOK   = "ok"
-	toneWarn = "warn"
-	toneErr  = "err"
+	toneOK   headingTone = "ok"
+	toneWarn headingTone = "warn"
+	toneErr  headingTone = "err"
 )
 
-// legacyJumpPageCSS is the house style of the local service pages. The `:root`
-// palette and `body` block are the same values attention-page.go declares
-// (itself matching the tts-mcp page); they are repeated here rather than shared
+// legacyJumpPageCSS is the house style of the local service pages. The shared
+// `:root` tokens (--bg, --panel, --border, --text, --muted, --warn) and the `body`
+// block carry the same values attention-page.go declares (itself matching the
+// tts-mcp page); --ok and --err are this page's own additions for the success and
+// refusal headings. They are repeated here rather than shared
 // because the board's palette lives inside its page template string, and
 // extracting it is a change to the board, not to this route.
 const legacyJumpPageCSS = `
@@ -271,7 +278,12 @@ h1.err { color: var(--err); }
 `
 
 // writeLegacyJumpError writes a styled refusal page, which names no pane.
-func writeLegacyJumpError(resp http.ResponseWriter, code int, tone, heading, detail string) {
+func writeLegacyJumpError(
+	resp http.ResponseWriter,
+	code int,
+	tone headingTone,
+	heading, detail string,
+) {
 	writeLegacyJumpPage(resp, code, tone, heading, detail, "")
 }
 
@@ -281,7 +293,12 @@ func writeLegacyJumpError(resp http.ResponseWriter, code int, tone, heading, det
 // itself: tone colours the heading (ok / warn / err) and a non-empty pane
 // renders a card naming the pane that was reached. Every value is escaped
 // here, once.
-func writeLegacyJumpPage(resp http.ResponseWriter, code int, tone, heading, detail, pane string) {
+func writeLegacyJumpPage(
+	resp http.ResponseWriter,
+	code int,
+	tone headingTone,
+	heading, detail, pane string,
+) {
 	card := ""
 	if pane != "" {
 		card = "<div class=\"card\"><p class=\"label\">Pane</p><p class=\"value mono\">" +
@@ -294,7 +311,7 @@ func writeLegacyJumpPage(resp http.ResponseWriter, code int, tone, heading, deta
 			"<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">" +
 				"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">" +
 				"<title>" + html.EscapeString(heading) + "</title><style>" + legacyJumpPageCSS +
-				"</style></head><body><h1 class=\"" + html.EscapeString(tone) + "\">" +
+				"</style></head><body><h1 class=\"" + html.EscapeString(string(tone)) + "\">" +
 				html.EscapeString(heading) + "</h1><p class=\"subtitle\">" +
 				html.EscapeString(detail) + "</p>" + card + "</body></html>",
 		),
