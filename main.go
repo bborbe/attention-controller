@@ -382,27 +382,56 @@ func (a *application) createHTTPServer(
 		// of the store. Measured 2026-10-03: 2,547 answered against 16 open, so
 		// every read decoded ~2,563 items and ~3.4 MB to return 16, on an API every
 		// supervisor polls twice every 2 s.
-		answeredMaxAge, err := libtime.ParseDuration(ctx, a.AnsweredMaxAge)
+		answeredMaxAge, err := parseAnsweredMaxAge(ctx, a.AnsweredMaxAge)
 		if err != nil {
-			return errors.Wrapf(ctx, err, "parse answered max age '%s' failed", a.AnsweredMaxAge)
+			return err
 		}
-		// ⚠️ Validated rather than trusted, and the failure mode is the reason: the
-		// sweep computes its cutoff as now minus maxAge, so a zero or negative
-		// value makes EVERY answered item due on the first tick and closes the whole
-		// backlog at once — destroying every verdict a consumer had not read yet,
-		// which is the exact outcome the max age exists to prevent. The 1h default
-		// is safe; this guards the operator who sets the flag to 0.
-		if *answeredMaxAge <= 0 {
-			return errors.Errorf(
-				ctx,
-				"answered max age must be positive, got '%s'",
-				a.AnsweredMaxAge,
-			)
-		}
-		runner.Add(ctx, runAnsweredSweep(store, *answeredMaxAge, answeredSweepInterval))
+		runner.Add(ctx, runAnsweredSweep(store, answeredMaxAge, answeredSweepInterval))
 
 		return runner.Run(ctx)
 	}
+}
+
+// answeredMaxAgeCeiling is the largest max age the store accepts.
+//
+// ⚠️ The lower bound protects verdicts; this upper bound protects the invariant
+// the flag exists for. The max age is what keeps the live index bounded, so a
+// very large value reinstates exactly the unbounded index this change removes.
+// At the measured arrival rate — 2,547 answered over ~9.5 days, ~11/h — a day
+// leaves ~264 items in the index, which is still small; a year would leave
+// ~96,000 and be indistinguishable from having no bound at all.
+const answeredMaxAgeCeiling = 24 * time.Hour
+
+// parseAnsweredMaxAge validates the configured answered max age.
+//
+// ⚠️ Both bounds are load-bearing and neither is a formality. The sweep computes
+// its cutoff as now minus maxAge, so a zero or negative value makes EVERY
+// answered item due on the first tick and closes the whole backlog at once —
+// destroying every verdict a consumer had not read yet, which is the exact
+// outcome the max age exists to prevent. And an unbounded value reinstates the
+// unbounded live index the max age exists to remove.
+//
+// It is a function rather than four inline statements so the bounds can be
+// tested directly: the branch that rejects a zero is the highest-consequence
+// line in this change, and it is unreachable from the HTTP path a spec would
+// otherwise have to stand up.
+func parseAnsweredMaxAge(ctx context.Context, raw string) (libtime.Duration, error) {
+	maxAge, err := libtime.ParseDuration(ctx, raw)
+	if err != nil {
+		return 0, errors.Wrapf(ctx, err, "parse answered max age '%s' failed", raw)
+	}
+	if *maxAge <= 0 {
+		return 0, errors.Errorf(ctx, "answered max age must be positive, got '%s'", raw)
+	}
+	if time.Duration(*maxAge) > answeredMaxAgeCeiling {
+		return 0, errors.Errorf(
+			ctx,
+			"answered max age '%s' exceeds the %s ceiling, which would reinstate the unbounded live index the bound exists to remove",
+			raw,
+			answeredMaxAgeCeiling,
+		)
+	}
+	return *maxAge, nil
 }
 
 // answeredSweepInterval is how often the store is asked to close answered items

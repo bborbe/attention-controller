@@ -30,7 +30,14 @@ var _ = Describe("runAnsweredSweep", func() {
 		cancelled, cancel := context.WithCancel(ctx)
 		cancel()
 
-		sweep := runAnsweredSweep(store, libtime.Duration(time.Hour), time.Millisecond)
+		// ⚠️ A long interval, not a short one, and the assertion is why: this spec
+		// proves that cancellation returns nil WITHOUT sweeping, and a 1 ms ticker
+		// races it — ctx.Done() is ready immediately but ticker.C becomes ready a
+		// millisecond after NewTicker, so a goroutine descheduled past that boundary
+		// leaves Go choosing between two ready cases at random and the zero-call
+		// assertion fails on a loaded runner. A second keeps the tick branch
+		// unreachable for the whole spec without weakening what it tests.
+		sweep := runAnsweredSweep(store, libtime.Duration(time.Hour), time.Second)
 		Expect(sweep(cancelled)).To(Succeed())
 		Expect(store.SweepAnsweredCallCount()).To(Equal(0))
 	})
@@ -53,5 +60,47 @@ var _ = Describe("runAnsweredSweep", func() {
 		Eventually(store.SweepAnsweredCallCount, "2s").Should(BeNumerically(">=", 2))
 		cancel()
 		Eventually(done, "2s").Should(Receive(BeNil()))
+	})
+})
+
+var _ = Describe("parseAnsweredMaxAge", func() {
+	var ctx context.Context
+
+	BeforeEach(func() {
+		ctx = context.Background()
+	})
+
+	It("accepts a positive value inside the ceiling", func() {
+		got, err := parseAnsweredMaxAge(ctx, "1h")
+		Expect(err).To(BeNil())
+		Expect(time.Duration(got)).To(Equal(time.Hour))
+	})
+
+	It("rejects zero", func() {
+		// ⚠️ The highest-consequence branch in this change. The sweep computes its
+		// cutoff as now minus maxAge, so a zero makes EVERY answered item due on the
+		// first tick and closes the whole backlog at once — destroying every verdict
+		// a consumer had not read yet, which is the outcome the bound exists to
+		// prevent.
+		_, err := parseAnsweredMaxAge(ctx, "0s")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("must be positive"))
+	})
+
+	It("rejects a negative value", func() {
+		_, err := parseAnsweredMaxAge(ctx, "-1h")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("must be positive"))
+	})
+
+	It("rejects a value above the ceiling, which would reinstate the unbounded index", func() {
+		_, err := parseAnsweredMaxAge(ctx, "8760h")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("exceeds"))
+	})
+
+	It("rejects an unparseable value", func() {
+		_, err := parseAnsweredMaxAge(ctx, "not-a-duration")
+		Expect(err).To(HaveOccurred())
 	})
 })
