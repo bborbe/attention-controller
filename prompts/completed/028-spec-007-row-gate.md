@@ -1,8 +1,13 @@
 ---
-status: approved
+status: completed
 spec: [007-production-touching-exclusion]
+summary: Gated the Allow/Deny pair on the production-touching fact in newAttentionPageRow and added the served-page integration suite for the exclusion
+execution_id: attention-controller-production-touching-exec-028-spec-007-row-gate
+dark-factory-version: v0.196.0
 created: "2026-10-03T23:52:00Z"
 queued: "2026-10-03T22:02:33Z"
+started: "2026-10-03T22:13:14Z"
+completed: "2026-10-03T22:17:16Z"
 branch: dark-factory/production-touching-exclusion
 ---
 
