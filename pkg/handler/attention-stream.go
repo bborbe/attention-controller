@@ -115,6 +115,19 @@ type boardRefresh struct {
 	err      error
 }
 
+// wait blocks until this render finishes or the caller goes away. A caller that
+// gives up returns its own error and never reads the refresh's outcome, which is
+// what keeps that read free of a data race with the goroutine still filling it
+// in.
+func (r *boardRefresh) wait(ctx context.Context) error {
+	select {
+	case <-r.done:
+		return nil
+	case <-ctx.Done():
+		return errors.Wrap(ctx, ctx.Err(), "wait for board render failed")
+	}
+}
+
 // boardRenderer renders the board once per store change and shares the result
 // with every connected stream.
 //
@@ -166,7 +179,7 @@ func (b *boardRenderer) snapshot(ctx context.Context, generation uint64) (*board
 		// once.
 		if refresh := b.refreshing; refresh != nil {
 			b.mu.Unlock()
-			if err := waitForRender(ctx, refresh.done); err != nil {
+			if err := refresh.wait(ctx); err != nil {
 				return nil, err
 			}
 			if refresh.err != nil {
@@ -216,19 +229,6 @@ func (b *boardRenderer) run(ctx context.Context, refresh *boardRefresh, generati
 	}
 	b.refreshing = nil
 	close(refresh.done)
-}
-
-// waitForRender blocks until the in-flight render finishes or the caller goes
-// away. A caller that gives up returns its own error and never reads the
-// refresh's outcome, which is what keeps the read free of a data race with the
-// goroutine still filling it in.
-func waitForRender(ctx context.Context, done <-chan struct{}) error {
-	select {
-	case <-done:
-		return nil
-	case <-ctx.Done():
-		return errors.Wrap(ctx, ctx.Err(), "wait for board render failed")
-	}
 }
 
 // ServeHTTP streams row changes until the client goes away.
