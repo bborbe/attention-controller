@@ -8,6 +8,16 @@ import (
 )
 
 type AttentionChangeNotifier struct {
+	GenerationStub        func() uint64
+	generationMutex       sync.RWMutex
+	generationArgsForCall []struct {
+	}
+	generationReturns struct {
+		result1 uint64
+	}
+	generationReturnsOnCall map[int]struct {
+		result1 uint64
+	}
 	NotifyStub        func()
 	notifyMutex       sync.RWMutex
 	notifyArgsForCall []struct {
@@ -26,6 +36,59 @@ type AttentionChangeNotifier struct {
 	}
 	invocations      map[string][][]interface{}
 	invocationsMutex sync.RWMutex
+}
+
+func (fake *AttentionChangeNotifier) Generation() uint64 {
+	fake.generationMutex.Lock()
+	ret, specificReturn := fake.generationReturnsOnCall[len(fake.generationArgsForCall)]
+	fake.generationArgsForCall = append(fake.generationArgsForCall, struct {
+	}{})
+	stub := fake.GenerationStub
+	fakeReturns := fake.generationReturns
+	fake.recordInvocation("Generation", []interface{}{})
+	fake.generationMutex.Unlock()
+	if stub != nil {
+		return stub()
+	}
+	if specificReturn {
+		return ret.result1
+	}
+	return fakeReturns.result1
+}
+
+func (fake *AttentionChangeNotifier) GenerationCallCount() int {
+	fake.generationMutex.RLock()
+	defer fake.generationMutex.RUnlock()
+	return len(fake.generationArgsForCall)
+}
+
+func (fake *AttentionChangeNotifier) GenerationCalls(stub func() uint64) {
+	fake.generationMutex.Lock()
+	defer fake.generationMutex.Unlock()
+	fake.GenerationStub = stub
+}
+
+func (fake *AttentionChangeNotifier) GenerationReturns(result1 uint64) {
+	fake.generationMutex.Lock()
+	defer fake.generationMutex.Unlock()
+	fake.GenerationStub = nil
+	fake.generationReturns = struct {
+		result1 uint64
+	}{result1}
+}
+
+func (fake *AttentionChangeNotifier) GenerationReturnsOnCall(i int, result1 uint64) {
+	fake.generationMutex.Lock()
+	defer fake.generationMutex.Unlock()
+	fake.GenerationStub = nil
+	if fake.generationReturnsOnCall == nil {
+		fake.generationReturnsOnCall = make(map[int]struct {
+			result1 uint64
+		})
+	}
+	fake.generationReturnsOnCall[i] = struct {
+		result1 uint64
+	}{result1}
 }
 
 func (fake *AttentionChangeNotifier) Notify() {
