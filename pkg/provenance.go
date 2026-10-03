@@ -231,7 +231,12 @@ type provenanceResolver struct {
 	cachedAt libtime.DateTime
 	// refreshing is true while a refresh is in flight, so the common case —
 	// many streams waking at once — does not multiply one subprocess by the
-	// number of callers.
+	// number of callers. ⚠️ It is single-flight only once a snapshot exists: the
+	// stale-serve branch in hostState requires cached != nil, so on a cold start
+	// every concurrent caller falls through and runs its own refresh — which is
+	// precisely when many streams wake at once. That is bounded rather than
+	// unbounded, since each caller runs exactly one exec and the listing carries
+	// its own paneListingTimeout, and it is pinned by the cold-start spec.
 	refreshing bool
 }
 

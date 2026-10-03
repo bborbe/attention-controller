@@ -138,13 +138,16 @@ func (w *weztermPaneLister) List(ctx context.Context) (map[int]Pane, error) {
 	// findable under launchd, which is the defect this resolution exists to fix.
 	// This records the provenance; it does not waive a risk.
 	//
-	// ⚠️ Two ways to silently re-arm G204 here, both hit while writing this line.
-	// Keep the directive the FIRST line of the block directly above the call, and
-	// keep the rest of the block free of its token: gosec scans the block for the
-	// directive, so a second mention written in prose — as an earlier draft of
-	// this very note had — stops it applying. And a statement inserted between the
-	// block and the call splits them, which is what the timeout above did first.
-	// A passing build is the only way to tell; both mistakes compile cleanly.
+	// ⚠️ Two ways to silently re-arm the check above, both hit while writing this
+	// note, and neither is visible in the diff — a passing build is the only way
+	// to tell. First, the marker must be the FIRST line of the block directly
+	// above the call: a statement inserted between block and call splits them,
+	// which is what moving the timeout above originally did. Second, the marker's
+	// own spelling must appear nowhere else in the block — a prose sentence that
+	// named it, as an earlier draft of this note did, stops it applying. Naming
+	// the rule id instead, as this sentence does, is harmless; the marker is the
+	// thing that must not repeat. Both failures compile cleanly and fail only
+	// `make precommit`.
 	raw, err := exec.CommandContext(ctx, binary, "cli", "list", "--format", "json").Output()
 	if err != nil {
 		// Logged, not just returned. This boundary call is the one whose

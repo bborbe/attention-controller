@@ -502,6 +502,50 @@ var _ = Describe("ProvenanceResolver", func() {
 		},
 	)
 
+	It(
+		"lets concurrent callers each refresh on a cold start, where no snapshot exists to serve",
+		func() {
+			// ⚠️ The one branch of hostState that is NOT single-flight, pinned so it is
+			// a stated contract rather than an accident. The stale-serve branch requires
+			// cached != nil, so with no snapshot yet every concurrent caller falls
+			// through and refreshes — and a cold start is exactly when many streams
+			// wake at once. The exposure is bounded rather than unbounded: each caller
+			// runs exactly one exec, itself bounded by paneListingTimeout.
+			writeSessionWithSource("1", "session-cold", "Cold Name", "user")
+			items := pkg.Items{
+				sessionItem("item-cold", "producer-cold", "key-cold", "session-cold"),
+			}
+
+			entries := make(chan struct{}, 4)
+			release := make(chan struct{})
+			paneLister.ListCalls(func(context.Context) (map[int]pkg.Pane, error) {
+				entries <- struct{}{}
+				<-release
+				return map[int]pkg.Pane{}, nil
+			})
+
+			first := make(chan pkg.Provenances, 1)
+			second := make(chan pkg.Provenances, 1)
+			go func() { first <- resolver.Resolve(ctx, items) }()
+			go func() { second <- resolver.Resolve(ctx, items) }()
+
+			// Both must reach the lister: neither can be served from a cache that has
+			// never been written, so two entries is the assertion that this branch is
+			// not single-flight. The call count is read while both are still blocked
+			// inside the stub, so it is 2 by construction rather than by timing.
+			Eventually(entries, "2s").Should(Receive())
+			Eventually(entries, "2s").Should(Receive())
+			Expect(paneLister.ListCallCount()).To(Equal(2))
+
+			close(release)
+			var got pkg.Provenances
+			Eventually(first, "2s").Should(Receive(&got))
+			Expect(got[pkg.ItemID("item-cold")].SessionName).To(Equal("Cold Name"))
+			Eventually(second, "2s").Should(Receive(&got))
+			Expect(got[pkg.ItemID("item-cold")].SessionName).To(Equal("Cold Name"))
+		},
+	)
+
 	It("serves the registry and the ledger from the cache inside the window", func() {
 		// ⚠️ The pane-lister count alone cannot prove sessionNames and
 		// sessionModes are cached. This case changes both on disk and shows the
