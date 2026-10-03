@@ -128,9 +128,19 @@ There is no Kubernetes deploy. The store runs on this machine as the launchd job
 `com.bborbe.attention-controller`, serving `http://127.0.0.1:18080`:
 
 ```bash
-go build -o ~/.local/bin/attention-controller .
-launchctl kickstart -k gui/$UID/com.bborbe.attention-controller
+make install   # go build . → codesign with a stable identity → launchctl kickstart
 ```
+
+⚠️ **Sign every deploy — never install a plain `go build` binary.** The service
+reads the vault under `~/Documents` at startup, and macOS privacy control (TCC)
+keys that grant to the binary's signature. A plain `go build` binary is ad-hoc
+signed, so every rebuild is a new identity and startup blocks in `open()` on the
+vault until access is granted again — the board and the `:1337` jump listener
+stay down meanwhile (2026-10-03, ~38 min). `make install` signs with
+`CODESIGN_IDENTITY` (default `bborbe local codesign`) and the fixed identifier
+`de.bborbe.attention-controller`, so one Documents / Full Disk Access grant
+survives rebuilds. The identity must be in the login keychain:
+`security find-identity -p codesigning`.
 
 ⚠️ **Build the package (`.`), never the file list (`main.go`).** The two forms
 differ in one way that matters here: `go build main.go` builds a list of files
