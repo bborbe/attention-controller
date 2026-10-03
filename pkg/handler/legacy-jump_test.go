@@ -194,6 +194,27 @@ var _ = Describe("Legacy pane-addressed jump", func() {
 		Expect(resp.Body.String()).To(ContainSubstring("1907"))
 		Expect(resp.Body.String()).NotTo(ContainSubstring(legacyTokenSentinel))
 	})
+
+	// The page is the house-style page of the local services, not bare markup:
+	// a tone-coloured heading, and on success a card naming the pane.
+	It("renders the styled page with an ok heading and a pane card", func() {
+		resp := request("/jump?pane=1907&t="+legacyTokenSentinel, "127.0.0.1:1337")
+
+		Expect(resp.Code).To(Equal(http.StatusOK))
+		body := resp.Body.String()
+		Expect(body).To(ContainSubstring("<style>"))
+		Expect(body).To(ContainSubstring(`<h1 class="ok">Jumped</h1>`))
+		Expect(body).To(ContainSubstring(`<p class="value mono">1907</p>`))
+	})
+
+	It("renders a refusal with an err heading and no pane card", func() {
+		resp := request("/jump?pane=1907&t=wrong", "127.0.0.1:1337")
+
+		Expect(resp.Code).To(Equal(http.StatusForbidden))
+		body := resp.Body.String()
+		Expect(body).To(ContainSubstring(`<h1 class="err">Forbidden</h1>`))
+		Expect(body).NotTo(ContainSubstring(`class="card"`))
+	})
 })
 
 // The legacy listener's liveness probe. It answers the plain-text contract of
