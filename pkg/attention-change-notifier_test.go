@@ -74,6 +74,17 @@ var _ = Describe("Attention change notifier", func() {
 		// signals. A blocking send would hang this loop rather than fail the
 		// assertion, which is the one honest way to state the property.
 		Expect(changes).Should(HaveLen(1))
+
+		// ⚠️ And the generation counts every WRITE, not every DELIVERED signal —
+		// which is the half the shared board renderer depends on and the half
+		// this spec could otherwise pass without covering. The increment sits
+		// before the send rather than inside the branch that delivers, so a
+		// subscriber whose signals were coalesced still reads a value at least
+		// as new as the write that woke it. Were the increment moved inside that
+		// branch, this reader would see 1, and the renderer would stamp a
+		// snapshot as covering a change it never read — stranding that change
+		// until the next write. One assertion is what separates the two.
+		Expect(notifier.Generation()).Should(Equal(uint64(100)))
 	})
 
 	It("closes the subscriber's channel when it unsubscribes", func() {
