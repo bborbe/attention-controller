@@ -1,8 +1,13 @@
 ---
-status: approved
+status: completed
 spec: [007-production-touching-exclusion]
+summary: 'Appended the production-touching exclusion''s feat bullet under the existing ## Unreleased section in CHANGELOG.md and passed make test plus make precommit'
+execution_id: attention-controller-production-touching-exec-029-spec-007-changelog
+dark-factory-version: v0.196.0
 created: "2026-10-03T23:52:00Z"
 queued: "2026-10-03T22:02:33Z"
+started: "2026-10-03T22:17:18Z"
+completed: "2026-10-03T22:21:03Z"
 branch: dark-factory/production-touching-exclusion
 ---
 
