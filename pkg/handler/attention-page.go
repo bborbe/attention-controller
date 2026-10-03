@@ -699,7 +699,35 @@ document.addEventListener('click', function (event) {
     if (response.ok) { return; }
     return response.text().then(function (body) {
       button.disabled = false;
-      showCloseNote(row, answerFailure(body), true);
+      /* ⚠️ The branch, not the envelope. answerFailure returns an OBJECT whose
+         message is present only on the stale classification, and showCloseNote's
+         contract is a STRING: passing the object straight through made
+         note.textContent coerce it, so the card rendered the literal
+         [object Object] for every code and dropped the store's own code and
+         message along with it. rememberFailure persists whatever it is handed
+         and replayFailure re-renders it, so the object survived the row swap as
+         well — the fix has to produce a string HERE, not guard the coercion
+         downstream. (Backticks are unavailable in this comment: the whole page
+         is one Go raw-string literal.) */
+      var failure = answerFailure(body);
+      if (failure.staleCard) {
+        /* The card went stale between this page being drawn and this answer
+           arriving — either the item left the queue, or another arm answered it
+           first. Neither is a malformed request, and in both the operator's
+           click carried an outcome the raw body buries. Only the LINE is shown
+           here, with no reload: the store notifies on answer
+           (notifyingAttentionStore.Answer), and the stream's upsertRow puts the
+           answered record in this card's place, which is the return to the queue
+           the line promises. The form path reloads because it has to rebuild its
+           own form; this row is swapped for it. */
+        showCloseNote(row, failure.message, true);
+        return;
+      }
+      /* Every other failure keeps the raw body, matching the form path: the body
+         is what a reader needs to tell a code fault from a connection problem,
+         so a genuinely malformed request still reads as malformed rather than
+         being swallowed into a friendly line. */
+      showCloseNote(row, 'Answer failed - HTTP ' + response.status + ' - ' + body, true);
     });
   }).catch(function (error) {
     button.disabled = false;
