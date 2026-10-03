@@ -30,10 +30,10 @@ import (
 // whole point of the task.
 //
 // It answers an HTML page rather than JSON, because its caller is a hyperlink
-// the operator follows in a browser. The page is deliberately minimal: what
-// happened, and to which pane. The Python original's styled page is not
-// reproduced, because a card's rendering chrome is explicitly out of scope for
-// this change and a cosmetic copy would be the largest untested part of it.
+// the operator follows in a browser. The page says what happened and to which
+// pane, in the dark house style of the local service pages, so a stray jump tab
+// reads as part of the same family as the board. Its markup — tone-coloured
+// heading and the pane card — is pinned by the handler's tests.
 //
 // ⚠️ Three controls, all carried over from the server this replaces, and each
 // is load-bearing rather than inherited by habit:
@@ -52,8 +52,7 @@ import (
 // ⚠️ It takes no store and no provenance resolver, though the Python server it
 // replaces rendered the pane's session title. That render is deliberately not
 // reproduced here: it needs a title-to-session join this route does not
-// otherwise require, and the operator's ask was a working jump, not a styled
-// page. A future change that wants the title adds the dependency it actually
+// otherwise require, so the success card names the pane only. A future change that wants the title adds the dependency it actually
 // needs, rather than this signature carrying two unused parameters on the guess
 // that it will.
 func NewLegacyJumpHandler(
@@ -72,7 +71,7 @@ func NewLegacyJumpHandler(
 				writeLegacyJumpError(
 					resp,
 					http.StatusNotFound,
-					"warn",
+					toneWarn,
 					"Not found",
 					"Only /jump and /health exist.",
 				)
@@ -83,7 +82,7 @@ func NewLegacyJumpHandler(
 				writeLegacyJumpError(
 					resp,
 					http.StatusForbidden,
-					"err",
+					toneErr,
 					"Forbidden",
 					"Host header is not loopback.",
 				)
@@ -99,7 +98,7 @@ func NewLegacyJumpHandler(
 				writeLegacyJumpError(
 					resp,
 					http.StatusForbidden,
-					"err",
+					toneErr,
 					"Forbidden",
 					"Missing or invalid token.",
 				)
@@ -111,7 +110,7 @@ func NewLegacyJumpHandler(
 				writeLegacyJumpError(
 					resp,
 					http.StatusBadRequest,
-					"warn",
+					toneWarn,
 					"Bad request",
 					"pane must be an integer.",
 				)
@@ -127,7 +126,7 @@ func NewLegacyJumpHandler(
 				writeLegacyJumpError(
 					resp,
 					http.StatusBadGateway,
-					"err",
+					toneErr,
 					"Jump failed",
 					"The pane could not be activated — it may have been renumbered by a WezTerm restart.",
 				)
@@ -137,7 +136,7 @@ func NewLegacyJumpHandler(
 			writeLegacyJumpPage(
 				resp,
 				http.StatusOK,
-				"ok",
+				toneOK,
 				"Jumped",
 				"Terminal focus moved to the pane below.",
 				pane,
@@ -214,9 +213,19 @@ func requireJumpToken(
 	return nil
 }
 
-// legacyJumpPageCSS is the house style of the local service pages, copied
-// from the Python fleet-jump server this route replaced so a stray jump tab
-// still reads as part of the same family as the tts and attention pages.
+// The heading tones the stylesheet defines (h1.ok / h1.warn / h1.err). Named so a
+// typo at a call site fails to compile instead of rendering an uncoloured heading.
+const (
+	toneOK   = "ok"
+	toneWarn = "warn"
+	toneErr  = "err"
+)
+
+// legacyJumpPageCSS is the house style of the local service pages. The `:root`
+// palette and `body` block are the same values attention-page.go declares
+// (itself matching the tts-mcp page); they are repeated here rather than shared
+// because the board's palette lives inside its page template string, and
+// extracting it is a change to the board, not to this route.
 const legacyJumpPageCSS = `
 :root {
   color-scheme: dark;

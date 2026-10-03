@@ -171,6 +171,7 @@ var _ = Describe("Legacy pane-addressed jump", func() {
 		resp := request("/jump?pane=abc&t="+legacyTokenSentinel, "127.0.0.1:1337")
 
 		Expect(resp.Code).To(Equal(http.StatusBadRequest))
+		Expect(resp.Body.String()).To(ContainSubstring(`<h1 class="warn">Bad request</h1>`))
 		Expect(activator.ActivateCallCount()).To(Equal(0))
 	})
 
@@ -180,6 +181,7 @@ var _ = Describe("Legacy pane-addressed jump", func() {
 		resp := request("/other?pane=1907&t="+legacyTokenSentinel, "127.0.0.1:1337")
 
 		Expect(resp.Code).To(Equal(http.StatusNotFound))
+		Expect(resp.Body.String()).To(ContainSubstring(`<h1 class="warn">Not found</h1>`))
 		Expect(activator.ActivateCallCount()).To(Equal(0))
 	})
 
