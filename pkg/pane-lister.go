@@ -113,6 +113,22 @@ func resolveWezterm(ctx context.Context) (string, error) {
 // unreadable probe is no pane claim at all — never a stalled request.
 const paneListingTimeout = 3 * time.Second
 
+// paneListingWaitDelay bounds how long the listing waits for the child's output
+// pipes to close AFTER the process itself has been killed.
+//
+// ⚠️ It exists because paneListingTimeout alone bounds the PROCESS and not the
+// CALL. exec.CommandContext kills the direct child when the deadline fires, but
+// Output reads that child's stdout to EOF, and EOF requires every holder of the
+// write end to close it — including any process the child spawned. A child that
+// forks and exits leaves the descendant holding the pipe: the kill lands, the
+// read does not return, and the caller is still parked. Measured 2026-10-03 by
+// the spec in pane-lister_test.go, which is exactly that shape — a `sh` wrapper
+// around `sleep 30` blocked Output for the full 30 s under a 3 s bound.
+//
+// One second is generous for closing a pipe nothing else holds, and the worst
+// case stays bounded either way: at most paneListingTimeout plus this.
+const paneListingWaitDelay = 1 * time.Second
+
 // List runs `wezterm cli list --format json` and indexes the result by pane id.
 //
 // Every failure — wezterm absent, not running, non-zero exit, malformed JSON,
@@ -148,7 +164,13 @@ func (w *weztermPaneLister) List(ctx context.Context) (map[int]Pane, error) {
 	// the rule id instead, as this sentence does, is harmless; the marker is the
 	// thing that must not repeat. Both failures compile cleanly and fail only
 	// `make precommit`.
-	raw, err := exec.CommandContext(ctx, binary, "cli", "list", "--format", "json").Output()
+	cmd := exec.CommandContext(ctx, binary, "cli", "list", "--format", "json")
+	// ⚠️ Set here rather than left to the default, and the spec below is why: see
+	// paneListingWaitDelay. Without it the deadline bounds the process and not the
+	// call, so a child that forks still parks the caller for as long as its
+	// descendant lives — the exact stall this fix exists to remove.
+	cmd.WaitDelay = paneListingWaitDelay
+	raw, err := cmd.Output()
 	if err != nil {
 		// Logged, not just returned. This boundary call is the one whose
 		// failure is hardest to see from outside: when WezTerm is missing the

@@ -466,10 +466,18 @@ var _ = Describe("ProvenanceResolver", func() {
 			// way a concurrent caller can return at all.
 			advanceClock()
 			writeSessionWithSource("1", "session-block", "After Name", "user")
-			entered := make(chan struct{})
+			// Buffered send rather than a bare close. The single-flight contract admits
+			// exactly one post-stub invocation today, so a close is correct as written —
+			// but if that contract ever regresses, a second invocation would panic with
+			// "close of closed channel" inside the resolver goroutine instead of failing
+			// the assertion below, which is a far harder failure to read.
+			entered := make(chan struct{}, 1)
 			release := make(chan struct{})
 			paneLister.ListCalls(func(context.Context) (map[int]pkg.Pane, error) {
-				close(entered)
+				select {
+				case entered <- struct{}{}:
+				default:
+				}
 				<-release
 				return map[int]pkg.Pane{}, nil
 			})
@@ -480,7 +488,7 @@ var _ = Describe("ProvenanceResolver", func() {
 			// the refreshing flag is set before the call, so by here the concurrent
 			// caller below is guaranteed to take the stale-snapshot path rather than
 			// becoming a second refresher.
-			Eventually(entered).Should(BeClosed())
+			Eventually(entered).Should(Receive())
 
 			concurrent := make(chan pkg.Provenances, 1)
 			go func() { concurrent <- resolver.Resolve(ctx, items) }()

@@ -306,7 +306,14 @@ func (r *provenanceResolver) hostState(ctx context.Context) hostState {
 	state := r.readHostState(ctx)
 	r.mu.Lock()
 	r.cached = &state
-	r.cachedAt = now
+	// ⚠️ Stamped at publication, not at entry. `now` was read before the refresh,
+	// and a refresh can now take up to paneListingTimeout — so stamping it there
+	// would publish a snapshot already older than provenanceCacheWindow and the
+	// next sequential caller would refresh again for another full bound, leaving
+	// the cache giving zero relief in exactly the case it exists for. The window
+	// is measured from when the snapshot became available, which is the only
+	// reading that makes it a window.
+	r.cachedAt = r.currentDateTimeGetter.Now()
 	r.mu.Unlock()
 	return state
 }
