@@ -39,6 +39,31 @@ e2e:
 	go run $(PLAYWRIGHT_GO_MODULE)/cmd/playwright@$(PLAYWRIGHT_GO_VERSION) install chromium
 	go test -mod=mod -tags e2e -count=1 -timeout 15m ./e2e/
 
+# Builds the launchd binary and signs it with a stable local identity, then
+# restarts the service.
+#
+# The signature is what keeps macOS privacy control (TCC) working across
+# deploys. The service reads the vault under ~/Documents at startup, and TCC
+# keys that grant to the binary's designated requirement. A plain `go build`
+# binary is ad-hoc signed, so its requirement is its cdhash and every rebuild
+# is a new identity: startup then blocks in open() on the vault until access is
+# granted again (outage 2026-10-03, board and :1337 down ~38 min). Signing
+# with a fixed identity and identifier makes the requirement
+# `identifier "de.bborbe.attention-controller" and certificate leaf = H"…"`,
+# which survives rebuilds, so one grant holds.
+#
+# The package (`.`) is built, never `main.go`, so the binary keeps its VCS stamp.
+# CODESIGN_IDENTITY must exist in the login keychain
+# (`security find-identity -p codesigning`).
+CODESIGN_IDENTITY ?= bborbe local codesign
+INSTALL_BIN ?= $(HOME)/.local/bin/attention-controller
+
+.PHONY: install
+install:
+	go build -o "$(INSTALL_BIN)" .
+	codesign -f -s "$(CODESIGN_IDENTITY)" -i de.bborbe.attention-controller "$(INSTALL_BIN)"
+	launchctl kickstart -k gui/$$(id -u)/com.bborbe.attention-controller
+
 deps:
 	go install github.com/bborbe/teamvault-utils/cmd/teamvault-config-parser@latest
 	go install github.com/bborbe/teamvault-utils/cmd/teamvault-file@latest
