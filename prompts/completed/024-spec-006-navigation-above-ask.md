@@ -1,8 +1,13 @@
 ---
-status: approved
+status: completed
 spec: [006-card-corner-band-and-identity-placement]
+summary: Moved the attention card's navigation line above the ask and suppressed the session-name span when it repeats the task title, via a new navigationSessionName helper and re-anchored specs
+execution_id: attention-controller-card-identity-exec-024-spec-006-navigation-above-ask
+dark-factory-version: v0.196.0
 created: "2026-10-03T12:57:57Z"
 queued: "2026-10-03T13:11:31Z"
+started: "2026-10-03T13:29:30Z"
+completed: "2026-10-03T13:32:35Z"
 ---
 
 # Lead the card with its navigation line, above the ask, and render each distinct navigation value once

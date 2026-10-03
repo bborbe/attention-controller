@@ -89,7 +89,10 @@ import (
 // line, drawn last as its own span, and it is the one value on the line that
 // comes from the session registry rather than from the producer's event log or
 // the vault — so a card whose session resolves a name and nothing else renders a
-// line carrying only that span.
+// line carrying only that span. The line leads the card, above the ask, per
+// silence 26 as amended 2026-10-03, and each distinct navigation value renders
+// once: a session name equal to the resolved task title is not drawn, because
+// the task link already carries it.
 //
 // ⚠️ The goal and the topic follow the task as two more spans of the same shape,
 // each gated on its own resolved link: the goal this item's task names first, and
@@ -1541,6 +1544,7 @@ function replayFailure(row) {
 {{end}}{{if .JumpURL}}<button type="button" class="jump-corner" data-jump="{{ .JumpURL }}" aria-label="Jump to session" title="Jump to session"><svg class="jump-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.75 3.25h8.5a1.5 1.5 0 0 1 1.5 1.5v6.5a1.5 1.5 0 0 1-1.5 1.5h-8.5a1.5 1.5 0 0 1-1.5-1.5v-6.5a1.5 1.5 0 0 1 1.5-1.5z"/><path d="M5.75 6.5 7.5 8.25 5.75 10"/><path d="M9 10h1.75"/></svg></button>
 {{else if .NoJump}}<button type="button" class="jump-corner" disabled aria-label="Jump to session" title="Jump to session"><svg class="jump-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.75 3.25h8.5a1.5 1.5 0 0 1 1.5 1.5v6.5a1.5 1.5 0 0 1-1.5 1.5h-8.5a1.5 1.5 0 0 1-1.5-1.5v-6.5a1.5 1.5 0 0 1 1.5-1.5z"/><path d="M5.75 6.5 7.5 8.25 5.75 10"/><path d="M9 10h1.75"/></svg></button>
 {{end}}{{if .Info}}<button type="button" class="info-toggle" data-info-toggle aria-expanded="false" aria-label="Card information">i</button>
+{{end}}{{if or .TaskURL .GoalURL .TopicURL .Provenance.SessionName}}<div class="provenance">{{if .TaskURL}}<span class="task"><a href="{{ .TaskURL }}">{{ .Provenance.TaskName }}</a></span>{{end}}{{if .GoalURL}}<span class="goal"><a href="{{ .GoalURL }}">{{ .Provenance.GoalName }}</a></span>{{end}}{{if .TopicURL}}<span class="topic"><a href="{{ .TopicURL }}">{{ .Provenance.TopicName }}</a></span>{{end}}{{if .Provenance.SessionName}}<span class="session-name">{{ .Provenance.SessionName }}</span>{{end}}</div>
 {{end}}{{if not .Message}}<div class="payload">{{ .Item.Payload }}</div>
 {{end}}{{if .Item.Context}}<div class="context">{{ .Item.Context }}</div>
 {{end}}{{if .Dimmed}}<div class="record"><div class="record-question">{{ .Item.Payload }}</div><div class="record-answer">answered: {{ .Record }}</div></div>
@@ -1558,18 +1562,17 @@ function replayFailure(row) {
 </form>
 {{end}}{{if and .Ack (not .Dimmed)}}<div class="actions"><button type="button" class="ack" data-ack>Acknowledge</button></div>
 {{end}}{{if and .Decide (not .Dimmed)}}<div class="actions"><button type="button" class="dismiss" data-decision="deny">✕ Deny</button><button type="button" class="next" data-decision="allow">✓ Allow</button></div>
-{{end}}{{if or .TaskURL .GoalURL .TopicURL .Provenance.SessionName}}<div class="provenance">{{if .TaskURL}}<span class="task"><a href="{{ .TaskURL }}">{{ .Provenance.TaskName }}</a></span>{{end}}{{if .GoalURL}}<span class="goal"><a href="{{ .GoalURL }}">{{ .Provenance.GoalName }}</a></span>{{end}}{{if .TopicURL}}<span class="topic"><a href="{{ .TopicURL }}">{{ .Provenance.TopicName }}</a></span>{{end}}{{if .Provenance.SessionName}}<span class="session-name">{{ .Provenance.SessionName }}</span>{{end}}</div>
 {{end}}{{if or .Jump .JumpURL}}<div class="jump">{{if .Jump}}<span>Approve in the session that asked: <code>{{ .Jump }}</code></span>{{end}}</div>
 {{else if .NoJump}}<div class="jump-reason"><span class="no-jump">{{ .NoJump }}</span></div>
-{{end}}{{/* [[Attention Item Schema]] silence 26's placement rule implemented:
-     the ask leads the card and the machine identity — producer, host, cwd,
-     tool, pane and the state/timestamp line — relocates into this per-card
-     panel behind the info affordance, while the navigation spans stay on the
-     face above. The panel is server-rendered and carries the hidden
-     attribute, so a card with no JavaScript still serves its values and a
-     stream row-swap renders the same markup a fresh load does. The rule is
-     implemented here rather than restated; the schema page owns its
-     statement. */}}{{if .Info}}<div class="info-panel" data-info-panel hidden>{{if or .Item.ProducerID .Item.ProducerKind}}<div class="producer">{{ .Item.ProducerID }} ({{ .Item.ProducerKind }})</div>{{end}}{{if .Provenance.Host}}<span class="host">{{ .Provenance.Host }}</span>{{end}}{{if .Provenance.Cwd}}<span class="cwd">{{ .Provenance.Cwd }}</span>{{end}}{{if .Provenance.Tool}}<span class="tool">{{ .Provenance.Tool }}</span>{{end}}{{if .Provenance.Pane}}<span class="pane">pane {{ .Provenance.Pane }}</span>{{else if .Provenance.PaneRecorded}}<span class="unroutable">unroutable</span>{{end}}{{if .Meta}}<div class="meta">{{ .Meta }}</div>{{end}}</div>
+{{end}}{{/* [[Attention Item Schema]] silence 26's placement rule implemented,
+     as amended 2026-10-03: the ask-first rule is scoped to the card's MACHINE
+     identity — producer, host, cwd, tool, pane and the state/timestamp line —
+     which relocates into this per-card panel behind the info affordance, while
+     the navigation spans lead the card above the ask. The panel is
+     server-rendered and carries the hidden attribute, so a card with no
+     JavaScript still serves its values and a stream row-swap renders the same
+     markup a fresh load does. The rule is implemented here rather than
+     restated; the schema page owns its statement. */}}{{if .Info}}<div class="info-panel" data-info-panel hidden>{{if or .Item.ProducerID .Item.ProducerKind}}<div class="producer">{{ .Item.ProducerID }} ({{ .Item.ProducerKind }})</div>{{end}}{{if .Provenance.Host}}<span class="host">{{ .Provenance.Host }}</span>{{end}}{{if .Provenance.Cwd}}<span class="cwd">{{ .Provenance.Cwd }}</span>{{end}}{{if .Provenance.Tool}}<span class="tool">{{ .Provenance.Tool }}</span>{{end}}{{if .Provenance.Pane}}<span class="pane">pane {{ .Provenance.Pane }}</span>{{else if .Provenance.PaneRecorded}}<span class="unroutable">unroutable</span>{{end}}{{if .Meta}}<div class="meta">{{ .Meta }}</div>{{end}}</div>
 {{end}}</li>{{end}}
 `
 
