@@ -62,6 +62,27 @@ var _ = Describe("runAnsweredSweep", func() {
 		Eventually(done, "2s").Should(Receive(BeNil()))
 	})
 
+	It("hands each sweep its own deadline", func() {
+		// ⚠️ The deadline IS the mechanism the per-tick bound installs, and nothing
+		// else in this file can notice its absence: the mock ignores the context, so
+		// a regression back to a bare `ctx` would leave every spec here green while
+		// silently re-disabling the bound the change exists to add.
+		runCtx, cancel := context.WithCancel(ctx)
+		done := make(chan error, 1)
+		go func() {
+			done <- runAnsweredSweep(store, libtime.Duration(time.Hour), time.Millisecond)(runCtx)
+		}()
+
+		Eventually(store.SweepAnsweredCallCount, "2s").Should(BeNumerically(">=", 1))
+		// The counterfeiter ArgsForCall returns the arguments as a tuple, not a
+		// struct, so the context is taken positionally.
+		callCtx, _ := store.SweepAnsweredArgsForCall(0)
+		_, hasDeadline := callCtx.Deadline()
+		Expect(hasDeadline).To(BeTrue(), "every tick must carry its own deadline")
+		cancel()
+		Eventually(done, "2s").Should(Receive(BeNil()))
+	})
+
 	It("keeps ticking after a sweep that closed items", func() {
 		// The closed > 0 branch is the one path the other specs never reach — both
 		// keep the count at zero — so the line that reports what a sweep did is
