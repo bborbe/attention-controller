@@ -100,6 +100,11 @@ func newAttentionPageRow(
 		item.State != "" ||
 		!item.CreatedAt.Time().IsZero()
 	row.Meta = infoMetaLine(item)
+	// The navigation line renders each distinct value once. Clearing the field
+	// rather than adding a second flag is deliberate: the template's div gate and
+	// its session-name span both read this one field, so they cannot disagree
+	// about whether the line renders or what it carries.
+	row.Provenance.SessionName = navigationSessionName(row.Provenance)
 	// The Allow / Deny pair renders only for a headless worker's park. A tab
 	// worker's gate is answered by pressing the prompt in the session's own pane,
 	// so a board verdict there would be permission laundering — the exact failure
@@ -420,4 +425,54 @@ func infoMetaLine(item pkg.Item) string {
 	default:
 		return state + " - " + created
 	}
+}
+
+// navigationSessionName is the value the session-name span renders: the
+// registry name the resolver returned, except when it repeats the task title
+// the task link already carries, in which case it is empty and the span
+// renders nothing.
+//
+// ⚠️ The two are different fields that coincide whenever a session is named
+// after its task — this vault's own `/rename <task name>` convention — so the
+// busiest cards are the ones that pay it. The task link carries the value; the
+// span is what goes, because hiding the link behind the affordance is the
+// alternative the schema rejected. A name that differs from the title is
+// returned unchanged, so no navigation value is dropped.
+func navigationSessionName(provenance pkg.Provenance) string {
+	if provenance.SessionName == provenance.TaskName {
+		return ""
+	}
+	return provenance.SessionName
+}
+
+// attentionPageQuestion is one question unit as the card renders it: the unit a
+// tab selects and a panel shows. A single-question item renders exactly one of
+// these, built from the item's own Payload, Options and AnswerCardinality, so
+// the template has one panel shape to render rather than two.
+type attentionPageQuestion struct {
+	// Tab is the tab label, and the key an answer names. Empty on a
+	// single-question item, which renders no tab strip.
+	Tab string
+	// Payload is the question itself.
+	Payload pkg.Payload
+	// Hint is the cardinality hint appended to the question line in the
+	// producer's own wording, e.g. "pick any number". Empty when the question
+	// offers no options, where a statement about picks would describe a choice
+	// the question does not offer.
+	Hint string
+	// Multi reports whether the question takes several picks. It selects the
+	// control — a checkbox when true, a radio button when false — and is read
+	// from the declared cardinality, never from the option count.
+	Multi bool
+	// Active marks the question whose panel renders open. Exactly one carries it,
+	// which is what the tab strip and the panels agree on before any click.
+	Active bool
+	// Name is the input group name for this question's controls, scoped to the
+	// item as well as to the question so two cards on one page cannot share a
+	// radio group — a shared name would let a pick on one card clear another's.
+	Name string
+	// Options are this question's choices, in the order the producer declared
+	// them. They are the schema's own type rather than a mirror of it, exactly as
+	// Provenance is, so the card cannot drift from the field it renders.
+	Options pkg.AnswerOptions
 }

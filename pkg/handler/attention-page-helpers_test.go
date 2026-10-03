@@ -41,3 +41,33 @@ var _ = Describe("infoMetaLine", func() {
 			To(Equal("open - 2026-03-01T12:00:00Z"))
 	})
 })
+
+// navigationSessionName is a pure function whose whole job is one comparison,
+// so every branch is reachable here — and none of them cheaply through the
+// served page: the suppression's end-to-end proof against a served row is the
+// sibling integration spec's, and this case exists so the new function has
+// tests of its own.
+var _ = Describe("navigationSessionName", func() {
+	It("returns the name unchanged when there is no task title to compare against", func() {
+		Expect(navigationSessionName(pkg.Provenance{SessionName: "Board Polish Session"})).
+			To(Equal("Board Polish Session"))
+	})
+
+	It("suppresses the name when it repeats the task title", func() {
+		Expect(navigationSessionName(pkg.Provenance{
+			TaskName:    "Fix the board",
+			SessionName: "Fix the board",
+		})).To(Equal(""))
+	})
+
+	It("returns the name when it differs from the task title", func() {
+		Expect(navigationSessionName(pkg.Provenance{
+			TaskName:    "Fix the board",
+			SessionName: "Board Polish Session",
+		})).To(Equal("Board Polish Session"))
+	})
+
+	It("returns empty for a provenance carrying neither value", func() {
+		Expect(navigationSessionName(pkg.Provenance{})).To(Equal(""))
+	})
+})

@@ -27,7 +27,7 @@ import (
 // file carries the acceptance criteria that are observable in the fixture-served
 // HTML: the ask leading the card, the machine identity relocating into the
 // per-card panel with that card's own values, the navigation spans staying on
-// the card face after the ask, and the no-machine-identity card rendering no
+// the card face above the ask, and the no-machine-identity card rendering no
 // affordance at all. The browser-only halves — the click that reveals the panel
 // and its survival across a stream row-swap — belong to the e2e suite and are
 // deliberately not asserted here.
@@ -123,6 +123,16 @@ var _ = Describe("the card's information affordance on the served page", func() 
 		at := strings.Index(row, marker)
 		Expect(at).To(BeNumerically(">=", 0), "%s is not on the row", marker)
 		Expect(at).To(BeNumerically(">", askAt), "%s renders before the ask", marker)
+	}
+
+	// rendersBefore asserts marker is on the row and before the ask. ⚠️ It
+	// asserts presence BEFORE comparing positions on purpose: strings.Index
+	// returns -1 for an absent marker, and -1 < askAt would pass for exactly the
+	// element the assertion exists to place.
+	rendersBefore := func(row string, askAt int, marker string) {
+		at := strings.Index(row, marker)
+		Expect(at).To(BeNumerically(">=", 0), "%s is not on the row", marker)
+		Expect(at).To(BeNumerically("<", askAt), "%s renders after the ask", marker)
 	}
 
 	// cardFixture is one card's declaration and the provenance its row is served
@@ -241,11 +251,11 @@ var _ = Describe("the card's information affordance on the served page", func() 
 			rendersAfter(row, askAt, `class="meta"`)
 			rendersAfter(row, askAt, `class="host"`)
 
-			// The navigation line is on the card face — after the ask, not inside
+			// The navigation line is on the card face — above the ask, not inside
 			// the panel — and only the message card carries one, because only its
 			// provenance resolved a task.
 			if item.AnswerMechanism == pkg.MessageAnswerMechanism {
-				rendersAfter(row, askAt, `class="provenance"`)
+				rendersBefore(row, askAt, `class="provenance"`)
 			}
 
 			// The text before the ask carries no machine identity.
@@ -328,7 +338,7 @@ var _ = Describe("the card's information affordance on the served page", func() 
 	// NewProvenanceResolver — is already covered end to end by
 	// attention-goal-topic-page_test.go and attention-session-name-page_test.go,
 	// and this criterion is about where the spans render on the served row.
-	It("keeps the navigation spans on the face, after the ask", func() {
+	It("keeps the navigation spans on the face, above the ask", func() {
 		fixtures := pushCards()
 
 		// The ask-question card: its mocked provenance carries a task, the goal
@@ -366,11 +376,11 @@ var _ = Describe("the card's information affordance on the served page", func() 
 			Expect(strings.Count(face, marker)).To(Equal(1), "%s is not on the card face", marker)
 		}
 
-		// Each appears after the ask in document order.
+		// Each appears above the ask in document order.
 		askAt := strings.Index(row, `<div class="question">`)
 		Expect(askAt).To(BeNumerically(">=", 0), "the ask is not on the row")
 		for _, marker := range navigation {
-			rendersAfter(row, askAt, marker)
+			rendersBefore(row, askAt, marker)
 		}
 
 		// The order among themselves is unchanged.
