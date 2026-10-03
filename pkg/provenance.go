@@ -222,14 +222,17 @@ type provenanceResolver struct {
 	panes                 PaneLister
 	tasks                 TaskIndex
 	currentDateTimeGetter libtime.CurrentDateTimeGetter
-	// mu guards the cached snapshot below. It is held across the whole
-	// check-and-refresh, so two concurrent stream handlers cannot refresh at
-	// once or read a map mid-write.
+	// mu guards the cached snapshot and the refresh flag below. ⚠️ It is NOT
+	// held across the refresh itself — see hostState.
 	mu sync.Mutex
 	// cached is the last host snapshot, or nil before the first refresh.
 	cached *hostState
 	// cachedAt is the clock reading at which cached was taken.
 	cachedAt libtime.DateTime
+	// refreshing is true while a refresh is in flight, so the common case —
+	// many streams waking at once — does not multiply one subprocess by the
+	// number of callers.
+	refreshing bool
 }
 
 // hostState is the resolver's view of the host at one instant: the pane
@@ -248,24 +251,63 @@ type hostState struct {
 // ledger, serving them from a cache refreshed at most once per
 // provenanceCacheWindow.
 //
-// ⚠️ The mutex is held across the whole check-and-refresh, so two concurrent
-// stream handlers cannot both refresh, and neither can read the cached maps
-// while a refresh replaces them. A second request arriving during a refresh
-// waits on the mutex for it to complete; that wait is bounded rather than
-// unbounded because the owning request's ctx cancellation propagates into all
-// three readers, so a cancelled refresh returns instead of blocking the waiter.
+// ⚠️ The mutex guards the cache, NOT the refresh. It is released across the
+// refresh deliberately, because a refresh runs a subprocess — and holding a
+// lock across a call that can block is what turns one slow reader into a
+// process-wide outage. The previous shape held it across the whole
+// check-and-refresh and claimed the wait was "bounded rather than unbounded
+// because the owning request's ctx cancellation propagates"; that claim was
+// false whenever the owner's ctx carried no deadline, which is the normal case
+// for a stream handler. Measured 2026-10-03: a wedged `wezterm cli list` held
+// the lock for over ten minutes, and every Resolve in the process — the board
+// page, the jump, and every connected stream — queued behind it, while
+// /healthz and the API stayed fast because those never call Resolve.
+//
+// Single-flight is kept by the refreshing flag instead: the first caller past
+// the window refreshes, and any caller arriving while it runs is served the
+// last good snapshot rather than queueing behind a subprocess. Only a cold
+// start — no snapshot to serve — lets more than one caller refresh, and that is
+// bounded by paneListingTimeout rather than by luck.
 //
 // ⚠️ The per-producer event-log reads are deliberately NOT cached here. Those
 // describe individual items and change as items are posted, so a newly pushed
 // item must still resolve on the first push after it lands; only the three
 // host-wide reads above are shared.
 func (r *provenanceResolver) hostState(ctx context.Context) hostState {
-	r.mu.Lock()
-	defer r.mu.Unlock()
 	now := r.currentDateTimeGetter.Now()
+
+	r.mu.Lock()
 	if r.cached != nil && now.Sub(r.cachedAt) < provenanceCacheWindow {
-		return *r.cached
+		state := *r.cached
+		r.mu.Unlock()
+		return state
 	}
+	if r.refreshing && r.cached != nil {
+		// A refresh is already running. Serve the last good snapshot instead of
+		// queueing behind a subprocess: a pane listing a second or two old is
+		// always better than a stalled request.
+		state := *r.cached
+		r.mu.Unlock()
+		return state
+	}
+	r.refreshing = true
+	r.mu.Unlock()
+
+	// Deferred rather than inlined after the read: a panic in any of the three
+	// readers must still clear the flag, or the resolver stays pinned to a
+	// snapshot that will never be replaced.
+	defer r.finishRefresh()
+
+	state := r.readHostState(ctx)
+	r.mu.Lock()
+	r.cached = &state
+	r.cachedAt = now
+	r.mu.Unlock()
+	return state
+}
+
+// readHostState reads all three host-wide sources in one pass.
+func (r *provenanceResolver) readHostState(ctx context.Context) hostState {
 	state := hostState{
 		names: r.sessionNames(ctx),
 		modes: r.sessionModes(ctx),
@@ -277,9 +319,14 @@ func (r *provenanceResolver) hostState(ctx context.Context) hostState {
 		// something an unreadable listing cannot establish.
 		glog.V(2).Infof("pane listing unavailable, rendering no pane: %v", state.panesErr)
 	}
-	r.cached = &state
-	r.cachedAt = now
 	return state
+}
+
+// finishRefresh clears the in-flight flag.
+func (r *provenanceResolver) finishRefresh() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.refreshing = false
 }
 
 // eventRecord is one line of a producer's event log, reduced to the fields the

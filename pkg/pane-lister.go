@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"os/exec"
+	"time"
 
 	"github.com/bborbe/errors"
 	"github.com/golang/glog"
@@ -94,6 +95,24 @@ func resolveWezterm(ctx context.Context) (string, error) {
 	return "", errors.New(ctx, "wezterm not found on PATH or in the macOS app bundle")
 }
 
+// paneListingTimeout bounds the `wezterm cli list` subprocess.
+//
+// ⚠️ Without it this call has NO bound at all. The ctx handed in is the
+// caller's — a long-lived stream context, or an HTTP request that carries no
+// deadline — so exec.CommandContext has nothing to fire on, and a WezTerm mux
+// that stops answering leaves the child running and the caller parked in
+// wait4 for as long as the process lives. Measured 2026-10-03: a wedged mux
+// held one child for over ten minutes; because the resolver held its mutex
+// across this call, every Resolve in the process queued behind it, and the
+// board page timed out at 25 s while /healthz and the API — which do not call
+// Resolve — answered in 1 ms and 20 ms.
+//
+// Three seconds is two orders of magnitude of headroom: the listing is a local
+// IPC round trip measuring ~26 ms by hand and ~54 ms on a healthy mux. Anything
+// slower is a mux that is not going to answer, and the correct rendering for an
+// unreadable probe is no pane claim at all — never a stalled request.
+const paneListingTimeout = 3 * time.Second
+
 // List runs `wezterm cli list --format json` and indexes the result by pane id.
 //
 // Every failure — wezterm absent, not running, non-zero exit, malformed JSON,
@@ -106,6 +125,11 @@ func (w *weztermPaneLister) List(ctx context.Context) (map[int]Pane, error) {
 	if err != nil {
 		return nil, err
 	}
+	// ⚠️ Bounded here rather than trusting the caller's ctx, which is routinely
+	// deadline-free — see paneListingTimeout. This is the line that turns a
+	// wedged mux from a process-wide outage into one absent pane column.
+	ctx, cancel := context.WithTimeout(ctx, paneListingTimeout)
+	defer cancel()
 	// #nosec G204 -- the reported risk is "subprocess launched with a variable",
 	// and the variable is the point: `binary` is resolved by resolveWezterm from
 	// the fixed, compile-time `weztermBinaryCandidates` list via exec.LookPath,
@@ -113,6 +137,14 @@ func (w *weztermPaneLister) List(ctx context.Context) (map[int]Pane, error) {
 	// here is impossible without giving up the fallback that makes the CLI
 	// findable under launchd, which is the defect this resolution exists to fix.
 	// This records the provenance; it does not waive a risk.
+	//
+	// ⚠️ Two ways to silently re-arm G204 here, both hit while writing this line.
+	// Keep the directive the FIRST line of the block directly above the call, and
+	// keep the rest of the block free of its token: gosec scans the block for the
+	// directive, so a second mention written in prose — as an earlier draft of
+	// this very note had — stops it applying. And a statement inserted between the
+	// block and the call splits them, which is what the timeout above did first.
+	// A passing build is the only way to tell; both mistakes compile cleanly.
 	raw, err := exec.CommandContext(ctx, binary, "cli", "list", "--format", "json").Output()
 	if err != nil {
 		// Logged, not just returned. This boundary call is the one whose

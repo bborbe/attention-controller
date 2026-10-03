@@ -436,6 +436,72 @@ var _ = Describe("ProvenanceResolver", func() {
 		Expect(paneLister.ListCallCount()).To(Equal(2))
 	})
 
+	It(
+		"serves the last good snapshot while a refresh is in flight instead of queueing behind it",
+		func() {
+			// ⚠️ The guard against the 2026-10-03 outage. The resolver used to hold
+			// its mutex across the refresh, and the refresh runs a subprocess, so one
+			// wedged `wezterm cli list` stalled every Resolve in the process: the board
+			// page timed out at 25 s while /healthz and the API answered in 1 ms and
+			// 20 ms, because neither of those calls Resolve. Here the listing is held
+			// open on purpose, standing in for a mux that has stopped answering, and a
+			// concurrent caller must be served the previous snapshot rather than block
+			// behind it. The refresh itself is bounded separately, by
+			// paneListingTimeout in the lister.
+			// ⚠️ The assertion is on SessionName, not Pane. Pane carries the id the
+			// event recorded, which is the same string in both snapshots and so cannot
+			// tell a stale answer from a fresh one; the registry's name is what changes
+			// underneath, and it is therefore what proves which snapshot was served.
+			writeSessionWithSource("1", "session-block", "Before Name", "user")
+			writeSpawn("session-block", "interactive")
+			items := pkg.Items{
+				sessionItem("item-block", "producer-block", "key-block", "session-block"),
+			}
+
+			first := resolver.Resolve(ctx, items)[pkg.ItemID("item-block")]
+			Expect(first.SessionName).To(Equal("Before Name"))
+
+			// Past the window the next caller refreshes — and that refresh is held
+			// open for as long as this spec needs, so the lock-free path is the only
+			// way a concurrent caller can return at all.
+			advanceClock()
+			writeSessionWithSource("1", "session-block", "After Name", "user")
+			entered := make(chan struct{})
+			release := make(chan struct{})
+			paneLister.ListCalls(func(context.Context) (map[int]pkg.Pane, error) {
+				close(entered)
+				<-release
+				return map[int]pkg.Pane{}, nil
+			})
+
+			refresher := make(chan pkg.Provenances, 1)
+			go func() { refresher <- resolver.Resolve(ctx, items) }()
+			// Waiting for List to be entered is what makes the race deterministic:
+			// the refreshing flag is set before the call, so by here the concurrent
+			// caller below is guaranteed to take the stale-snapshot path rather than
+			// becoming a second refresher.
+			Eventually(entered).Should(BeClosed())
+
+			concurrent := make(chan pkg.Provenances, 1)
+			go func() { concurrent <- resolver.Resolve(ctx, items) }()
+
+			// A timeout here IS the regression: it means the caller queued behind the
+			// in-flight subprocess instead of being served the last good snapshot.
+			var stale pkg.Provenances
+			Eventually(concurrent, "2s").Should(Receive(&stale))
+			// ⚠️ The stale snapshot, not the refreshed one. That is what proves the
+			// caller was served the last good host state rather than queueing behind
+			// the in-flight subprocess and then reading the registry that changed
+			// while it waited — a fresh read here would satisfy a mere "it returned".
+			Expect(stale[pkg.ItemID("item-block")].SessionName).To(Equal("Before Name"))
+
+			close(release)
+			var fresh pkg.Provenances
+			Eventually(refresher, "2s").Should(Receive(&fresh))
+			Expect(fresh[pkg.ItemID("item-block")].SessionName).To(Equal("After Name"))
+		},
+	)
+
 	It("serves the registry and the ledger from the cache inside the window", func() {
 		// ⚠️ The pane-lister count alone cannot prove sessionNames and
 		// sessionModes are cached. This case changes both on disk and shows the
