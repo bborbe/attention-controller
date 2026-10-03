@@ -17,7 +17,7 @@ import (
 	"github.com/bborbe/attention-controller/pkg"
 )
 
-var _ = Describe("AttentionStore SweepAnswered", func() {
+var _ = Describe("AttentionStore answered retention", func() {
 	var ctx context.Context
 	var db libkv.DB
 	var clock libtime.CurrentDateTime
@@ -30,8 +30,8 @@ var _ = Describe("AttentionStore SweepAnswered", func() {
 		twoHours        = libtime.Duration(2 * 60 * 60 * 1e9)
 	)
 
-	// answer pushes a fresh ask and answers it, returning its id.
-	answer := func(producer pkg.ProducerID, dedup pkg.DedupKey) pkg.ItemID {
+	// push stores a fresh ask and returns its id.
+	push := func(producer pkg.ProducerID, dedup pkg.DedupKey) pkg.ItemID {
 		item, err := store.Push(ctx, pkg.PushRequest{
 			ProducerID:      producer,
 			ProducerKind:    pkg.SessionProducerKind,
@@ -42,9 +42,24 @@ var _ = Describe("AttentionStore SweepAnswered", func() {
 			AnswerMechanism: pkg.MessageAnswerMechanism,
 		})
 		Expect(err).To(BeNil())
-		_, err = store.Answer(ctx, item.ItemID, "arm", "session", pkg.Decision(""), nil, nil, nil)
-		Expect(err).To(BeNil())
 		return item.ItemID
+	}
+
+	// answer pushes a fresh ask and answers it, returning its id.
+	answer := func(producer pkg.ProducerID, dedup pkg.DedupKey) pkg.ItemID {
+		id := push(producer, dedup)
+		_, err := store.Answer(ctx, id, "arm", "session", pkg.Decision(""), nil, nil, nil)
+		Expect(err).To(BeNil())
+		return id
+	}
+
+	// ids collects an item set into a lookup for assertions.
+	ids := func(items pkg.Items) map[pkg.ItemID]struct{} {
+		out := make(map[pkg.ItemID]struct{}, len(items))
+		for _, item := range items {
+			out[item.ItemID] = struct{}{}
+		}
+		return out
 	}
 
 	BeforeEach(func() {
@@ -153,5 +168,55 @@ var _ = Describe("AttentionStore SweepAnswered", func() {
 		got, err := store.Get(ctx, item.ItemID)
 		Expect(err).To(BeNil())
 		Expect(got.State).To(Equal(pkg.OpenState))
+	})
+
+	It("hides an answered item from Read while ReadBoard still renders it", func() {
+		// ⚠️ The two readers differ by intent and must not converge. Read feeds the
+		// JSON API, whose consumers act on what they are given — and an answered
+		// item is not something to act on. ReadBoard is the surface where the
+		// operator checks what stands recorded in their name, and there the answered
+		// record IS the point. The open-only index is what makes Read stop paying for
+		// the answered half it discards.
+		openID := push("producer-open-visible", "key-open-visible")
+		answeredID := answer("producer-answered-visible", "key-answered-visible")
+
+		read, err := store.Read(ctx)
+		Expect(err).To(BeNil())
+		Expect(ids(read)).To(HaveKey(openID))
+		Expect(ids(read)).NotTo(HaveKey(answeredID))
+
+		board, err := store.ReadBoard(ctx)
+		Expect(err).To(BeNil())
+		Expect(ids(board)).To(HaveKey(openID))
+		Expect(ids(board)).To(HaveKey(answeredID))
+	})
+
+	It("drops an item from the open index when it is answered, and from both when closed", func() {
+		// The open index is derived, so it has to follow every state move. An entry
+		// left behind would keep the open-only read decoding an item it discards —
+		// the cost this index exists to remove — and a LIVE item missing from it
+		// would vanish from Read entirely, which is the correctness half.
+		id := push("producer-moves", "key-moves")
+
+		read, err := store.Read(ctx)
+		Expect(err).To(BeNil())
+		Expect(ids(read)).To(HaveKey(id))
+
+		_, err = store.Answer(ctx, id, "arm", "session", pkg.Decision(""), nil, nil, nil)
+		Expect(err).To(BeNil())
+
+		read, err = store.Read(ctx)
+		Expect(err).To(BeNil())
+		Expect(ids(read)).NotTo(HaveKey(id))
+
+		_, err = store.Close(ctx, id, "arm", nil)
+		Expect(err).To(BeNil())
+
+		read, err = store.Read(ctx)
+		Expect(err).To(BeNil())
+		Expect(ids(read)).NotTo(HaveKey(id))
+		board, err := store.ReadBoard(ctx)
+		Expect(err).To(BeNil())
+		Expect(ids(board)).NotTo(HaveKey(id))
 	})
 })

@@ -30,6 +30,7 @@ func NewAttentionStore(
 	return &attentionStore{
 		store:     libkv.NewStoreTx[string, Item](AttentionStoreBucketName),
 		liveIndex: libkv.NewStoreTx[string, Item](attentionLiveIndexBucketName),
+		openIndex: libkv.NewStoreTx[string, Item](attentionOpenIndexBucketName),
 		attempts: libkv.NewStoreTx[string, DeliveryAttempt](
 			deliveryAttemptBucketName,
 		),
@@ -65,9 +66,29 @@ var attentionLiveIndexBucketName = libkv.NewBucketName("attention-live-index")
 // skips it by key.
 const liveIndexMarkerKey = "!"
 
+// attentionOpenIndexBucketName is the bucket the OPEN-ONLY read scans. It holds
+// a copy of every item whose state is `OpenState`, keyed by the same item id.
+//
+// ⚠️ It exists because the live index admits `answered` items and the JSON read
+// API every supervisor polls does not want them: `Read` decoded the whole live
+// index and then threw the answered half away in `classifyForRead` — measured
+// 2026-10-03 at 2,547 decoded to return 16. The answered max age bounds that
+// backlog; this index is what stops it coming back, because the open-only read
+// then costs the OPEN population whatever the backlog does.
+//
+// Like the live index it is a STORAGE layout and not a schema — the item schema
+// is untouched — and it is derived data, rebuildable from the items bucket.
+var attentionOpenIndexBucketName = libkv.NewBucketName("attention-open-index")
+
+// openIndexMarkerKey marks the open index as BUILT. It carries the same spelling
+// as the live index's marker because the two live in different buckets, so `!`
+// in either means the same thing to a reader.
+const openIndexMarkerKey = "!"
+
 type attentionStore struct {
 	store                  libkv.StoreTx[string, Item]
 	liveIndex              libkv.StoreTx[string, Item]
+	openIndex              libkv.StoreTx[string, Item]
 	attempts               libkv.StoreTx[string, DeliveryAttempt]
 	db                     libkv.DB
 	itemIDGenerator        ItemIDGenerator
@@ -282,7 +303,18 @@ func (a *attentionStore) classifyForRead(
 // transaction, which is the repo's own rule: a compare-and-set belongs inside
 // the transaction, never as a separate read then write.
 func (a *attentionStore) read(ctx context.Context, includeAnswered bool) (Items, error) {
-	items, err := a.readItems(ctx)
+	// ⚠️ The open-only read scans the open-only index, so it never decodes the
+	// answered items classifyForRead would discard. ReadBoard keeps the live
+	// index, because it renders those answered items as dimmed records.
+	var (
+		items []storedItem
+		err   error
+	)
+	if includeAnswered {
+		items, err = a.readItems(ctx)
+	} else {
+		items, err = a.readOpenItems(ctx)
+	}
 	if err != nil {
 		return nil, errors.Wrap(ctx, err, "read failed")
 	}
@@ -391,6 +423,14 @@ func liveIndexWorthy(item Item) bool {
 	return item.State != ClosedState
 }
 
+// openIndexWorthy reports whether an item belongs in the open-only index, which
+// is the exact set `Read` can keep: an answered item is dropped by
+// `classifyForRead` when includeAnswered is false, so indexing it would only
+// make the open-only read decode something it discards.
+func openIndexWorthy(item Item) bool {
+	return item.State == OpenState
+}
+
 // putItem writes an item to the items bucket and reconciles its live-index
 // entry, both inside the caller's transaction.
 //
@@ -430,14 +470,52 @@ func (a *attentionStore) putItem(ctx context.Context, tx libkv.Tx, item Item) er
 		if err := a.liveIndex.Add(ctx, tx, liveIndexMarkerKey, Item{}); err != nil {
 			return errors.Wrap(ctx, err, "mark live index built failed")
 		}
+		// Both markers, for the reason above: a store with no items bucket held
+		// no items, so both indexes this same call maintains are complete by
+		// construction.
+		if err := a.openIndex.Add(ctx, tx, openIndexMarkerKey, Item{}); err != nil {
+			return errors.Wrap(ctx, err, "mark open index built failed")
+		}
 	}
-	if liveIndexWorthy(item) {
-		if err := a.liveIndex.Add(ctx, tx, item.ItemID.String(), item); err != nil {
-			return errors.Wrap(ctx, err, "add live index entry failed")
+	return a.reconcileIndexes(ctx, tx, item)
+}
+
+// reconcileIndexes brings BOTH derived indexes in line with one item: the live
+// index holds everything not closed, the open-only index holds open items only.
+//
+// ⚠️ One function for both rather than two call sites that must agree. An item
+// moving between states has to leave one index as it enters the other, and
+// splitting that across callers is how an index silently drifts — the failure
+// `rebuildLiveIndex` exists to repair.
+func (a *attentionStore) reconcileIndexes(
+	ctx context.Context,
+	tx libkv.Tx,
+	item Item,
+) error {
+	if err := a.reconcileIndex(ctx, tx, a.liveIndex, "live", item, liveIndexWorthy(item)); err != nil {
+		return err
+	}
+	return a.reconcileIndex(ctx, tx, a.openIndex, "open", item, openIndexWorthy(item))
+}
+
+// reconcileIndex adds the item to index when it belongs there and removes it
+// otherwise.
+func (a *attentionStore) reconcileIndex(
+	ctx context.Context,
+	tx libkv.Tx,
+	index libkv.StoreTx[string, Item],
+	name string,
+	item Item,
+	worthy bool,
+) error {
+	key := item.ItemID.String()
+	if worthy {
+		if err := index.Add(ctx, tx, key, item); err != nil {
+			return errors.Wrapf(ctx, err, "add %s index entry failed", name)
 		}
 		return nil
 	}
-	return a.removeIndexEntry(ctx, tx, item.ItemID.String())
+	return a.removeIndexKey(ctx, tx, index, key, name)
 }
 
 // itemsBucketAbsent reports whether the items bucket is missing, which — read
@@ -492,15 +570,30 @@ func (a *attentionStore) removeAttemptEntry(ctx context.Context, tx libkv.Tx, ke
 // so callers stay idempotent. It checks first because `kv`'s Remove would
 // otherwise create the index bucket to delete nothing from it.
 func (a *attentionStore) removeIndexEntry(ctx context.Context, tx libkv.Tx, key string) error {
-	exists, err := a.liveIndex.Exists(ctx, tx, key)
+	if err := a.removeIndexKey(ctx, tx, a.liveIndex, key, "live"); err != nil {
+		return err
+	}
+	return a.removeIndexKey(ctx, tx, a.openIndex, key, "open")
+}
+
+// removeIndexKey removes one key from one index, tolerating its absence — a
+// removal can run after a state change that already took the entry out.
+func (a *attentionStore) removeIndexKey(
+	ctx context.Context,
+	tx libkv.Tx,
+	index libkv.StoreTx[string, Item],
+	key string,
+	name string,
+) error {
+	exists, err := index.Exists(ctx, tx, key)
 	if err != nil {
-		return errors.Wrapf(ctx, err, "check live index entry %s failed", key)
+		return errors.Wrapf(ctx, err, "check %s index entry %s failed", name, key)
 	}
 	if !exists {
 		return nil
 	}
-	if err := a.liveIndex.Remove(ctx, tx, key); err != nil {
-		return errors.Wrapf(ctx, err, "remove live index entry %s failed", key)
+	if err := index.Remove(ctx, tx, key); err != nil {
+		return errors.Wrapf(ctx, err, "remove %s index entry %s failed", name, key)
 	}
 	return nil
 }
@@ -528,7 +621,14 @@ func (a *attentionStore) ensureLiveIndex(ctx context.Context) error {
 		if built {
 			return nil
 		}
-		if err := a.rebuildLiveIndex(ctx, tx); err != nil {
+		if err := a.rebuildIndex(
+			ctx,
+			tx,
+			a.liveIndex,
+			liveIndexMarkerKey,
+			"live",
+			liveIndexWorthy,
+		); err != nil {
 			return err
 		}
 		// The marker is written in the SAME transaction as the build, so an
@@ -552,8 +652,9 @@ func (a *attentionStore) liveIndexBuilt(ctx context.Context) (bool, error) {
 	return built, nil
 }
 
-// rebuildLiveIndex reconciles the index against the items bucket inside the
-// caller's transaction.
+// rebuildIndex reconciles ONE derived index against the items bucket inside the
+// caller's transaction. Both indexes use it: they differ only in which items
+// they admit and which bucket they live in.
 //
 // ⚠️ Two passes, because the index can be wrong in two directions and adding
 // alone only fixes one. An item that is closed but still indexed is merely
@@ -562,31 +663,38 @@ func (a *attentionStore) liveIndexBuilt(ctx context.Context) (bool, error) {
 // correctness failure. The second pass is what makes a drifted index
 // restorable rather than merely faster, and it is why the build is safe to
 // re-run after a crash rather than a one-shot migration.
-func (a *attentionStore) rebuildLiveIndex(ctx context.Context, tx libkv.Tx) error {
-	live := make(map[string]struct{})
+func (a *attentionStore) rebuildIndex(
+	ctx context.Context,
+	tx libkv.Tx,
+	index libkv.StoreTx[string, Item],
+	markerKey string,
+	name string,
+	worthy func(Item) bool,
+) error {
+	want := make(map[string]struct{})
 	err := a.store.Map(ctx, tx, func(ctx context.Context, key string, item Item) error {
-		if !liveIndexWorthy(item) {
+		if !worthy(item) {
 			return nil
 		}
-		live[key] = struct{}{}
-		return a.liveIndex.Add(ctx, tx, key, item)
+		want[key] = struct{}{}
+		return index.Add(ctx, tx, key, item)
 	})
 	if err != nil {
-		return errors.Wrap(ctx, err, "rebuild live index failed")
+		return errors.Wrapf(ctx, err, "rebuild %s index failed", name)
 	}
 
 	stale := make([]string, 0)
-	err = a.liveIndex.Map(ctx, tx, func(ctx context.Context, key string, _ Item) error {
-		if key == liveIndexMarkerKey {
+	err = index.Map(ctx, tx, func(ctx context.Context, key string, _ Item) error {
+		if key == markerKey {
 			return nil
 		}
-		if _, ok := live[key]; !ok {
+		if _, ok := want[key]; !ok {
 			stale = append(stale, key)
 		}
 		return nil
 	})
 	if err != nil {
-		return errors.Wrap(ctx, err, "scan live index failed")
+		return errors.Wrapf(ctx, err, "scan %s index failed", name)
 	}
 	for _, key := range stale {
 		// Same shape `storeTx.Map` uses, and for the same reason: on a drifted
@@ -597,11 +705,89 @@ func (a *attentionStore) rebuildLiveIndex(ctx context.Context, tx libkv.Tx) erro
 			return ctx.Err()
 		default:
 		}
-		if err := a.liveIndex.Remove(ctx, tx, key); err != nil {
-			return errors.Wrapf(ctx, err, "remove stale live index entry %s failed", key)
+		if err := index.Remove(ctx, tx, key); err != nil {
+			return errors.Wrapf(ctx, err, "remove stale %s index entry %s failed", name, key)
 		}
 	}
 	return nil
+}
+
+// ensureOpenIndex builds the open-only index if it has not been built, and is a
+// no-op otherwise.
+//
+// ⚠️ Same shape and the same reason as ensureLiveIndex: the steady-state path is
+// a `View`, so an ordinary read still takes no writer lock. Only the first read
+// after the index is created, or after it is lost, opens an `Update`.
+func (a *attentionStore) ensureOpenIndex(ctx context.Context) error {
+	built, err := a.openIndexBuilt(ctx)
+	if err != nil || built {
+		return err
+	}
+	return a.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
+		// Re-checked inside the write transaction, as the live index does: bbolt
+		// admits one writer at a time, so a concurrent first read that lost the
+		// race finds the marker and does no work rather than rebuilding twice.
+		built, err := a.openIndex.Exists(ctx, tx, openIndexMarkerKey)
+		if err != nil {
+			return errors.Wrap(ctx, err, "check open index failed")
+		}
+		if built {
+			return nil
+		}
+		if err := a.rebuildIndex(
+			ctx,
+			tx,
+			a.openIndex,
+			openIndexMarkerKey,
+			"open",
+			openIndexWorthy,
+		); err != nil {
+			return err
+		}
+		// Marker written in the SAME transaction as the build, so the index can
+		// never be marked built while half-populated.
+		return a.openIndex.Add(ctx, tx, openIndexMarkerKey, Item{})
+	})
+}
+
+// openIndexBuilt reports whether the marker is present, in a read-only
+// transaction.
+func (a *attentionStore) openIndexBuilt(ctx context.Context) (bool, error) {
+	var built bool
+	err := a.db.View(ctx, func(ctx context.Context, tx libkv.Tx) error {
+		var err error
+		built, err = a.openIndex.Exists(ctx, tx, openIndexMarkerKey)
+		return err
+	})
+	if err != nil {
+		return false, errors.Wrap(ctx, err, "check open index failed")
+	}
+	return built, nil
+}
+
+// readOpenItems decodes the OPEN items inside a read-only transaction.
+//
+// It is readItems' open-only twin: same shape, different index. Read uses this
+// one, so the JSON API every supervisor polls never decodes an answered item —
+// the cost the answered max age bounds, and the dependence this index removes.
+func (a *attentionStore) readOpenItems(ctx context.Context) ([]storedItem, error) {
+	if err := a.ensureOpenIndex(ctx); err != nil {
+		return nil, err
+	}
+	items := make([]storedItem, 0)
+	err := a.db.View(ctx, func(ctx context.Context, tx libkv.Tx) error {
+		return a.openIndex.Map(ctx, tx, func(ctx context.Context, key string, item Item) error {
+			if key == openIndexMarkerKey {
+				return nil
+			}
+			items = append(items, storedItem{key: key, item: item})
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, errors.Wrap(ctx, err, "read open items failed")
+	}
+	return items, nil
 }
 
 // readItems decodes the LIVE items inside a read-only transaction.
