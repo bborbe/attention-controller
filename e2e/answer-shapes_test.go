@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/mxschmitt/playwright-go"
 	. "github.com/onsi/ginkgo/v2"
@@ -238,4 +239,72 @@ var _ = Describe("an answer given on the rendered board", func() {
 
 		Expect(answeredItem(itemID).Decision).To(Equal(pkg.Decision("deny")))
 	})
+
+	It("renders the store's failure on a lost-race Allow, never the answerFailure object", func() {
+		// ⚠️ The pair only survives on a card the store still holds open, so the
+		// click has to OUTLIVE the item. The board renders no closed item at all,
+		// and an answered one loses its Allow / Deny to the dimmed record, so
+		// there is no live page on which this failure can be reached. Blocking
+		// the stream is what holds the drawn row in place — the state the board
+		// itself names "Not tracking the store - showing the last known state." —
+		// and the route must be installed BEFORE the first paint, because the
+		// page subscribes to the stream on load.
+		itemID := pushCard(pkg.PushRequest{
+			DedupKey:        "answer-failure-render",
+			Payload:         "e2e: a lost-race Allow renders the store's own message",
+			InterruptClass:  pkg.InterruptClass("approve"),
+			AnswerMechanism: pkg.PermissionAnswerMechanism,
+		})
+
+		page, err := browser.NewPage()
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = page.Close() }()
+		Expect(page.Route(streamPattern, func(route playwright.Route) {
+			_ = route.Abort("failed")
+		})).To(Succeed())
+		_, err = page.Goto(baseURL, playwright.PageGotoOptions{
+			WaitUntil: playwright.WaitUntilStateLoad,
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Positive control: the pair IS on the page, so a missing note below is a
+		// render failure rather than a card that never drew a control.
+		Eventually(func() int {
+			return noteCount(page, itemID, `button[data-decision="allow"]`)
+		}).WithTimeout(5 * time.Second).Should(Equal(1))
+
+		// Another arm answers first. This is the lost race the ALREADY_ANSWERED
+		// classifier exists for, and it is driven through the API rather than
+		// fabricated, so the envelope is one the store really emits.
+		post("api/1.0/attention/"+itemID+"/answer", map[string]any{
+			"answered_by": "e2e-other-arm",
+			"decision":    "allow",
+		})
+
+		// The operator's own click now loses that race.
+		click(page, itemID, `button[data-decision="allow"]`)
+
+		// ⚠️ Both halves, because either alone passes on the broken build. The
+		// ABSENCE is the defect: the decision path handed showCloseNote the
+		// answerFailure OBJECT, whose textContent coercion rendered the literal
+		// [object Object] for every code and dropped the store's own message with
+		// it. The PRESENCE is the fix: the human line that code earns.
+		Eventually(func() string {
+			return noteText(page, itemID)
+		}).WithTimeout(5 * time.Second).Should(ContainSubstring("This item was already answered."))
+		Expect(noteText(page, itemID)).NotTo(ContainSubstring("[object Object]"))
+	})
 })
+
+// noteText returns the text of the failure note rendered into an item's row, or
+// "" when no note is there yet — which is what makes it usable as an Eventually
+// probe. Read as TEXT rather than matched by selector, because the defect under
+// test rendered a coerced object: the assertion has to see the characters the
+// operator saw.
+func noteText(page playwright.Page, itemID string) string {
+	text, err := page.Locator(rowSelector(itemID) + " " + failedNoteSelector).First().TextContent()
+	if err != nil {
+		return ""
+	}
+	return text
+}
