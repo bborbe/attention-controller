@@ -554,6 +554,71 @@ var _ = Describe("ProvenanceResolver", func() {
 		},
 	)
 
+	It(
+		"does not clear the in-flight token for a refresh it did not start",
+		func() {
+			// ⚠️ The token's whole point, and the defect a bool had. Two cold callers
+			// both start a refresh; with a bool the first to finish cleared the marker
+			// for the second, still parked in its exec, so a third caller arriving once
+			// the window had lapsed found the cache stale AND the marker clear and
+			// started a third subprocess alongside it. Under a wedged mux a refresh
+			// takes the full paneListingTimeout — longer than provenanceCacheWindow —
+			// so that was the ordinary case there, not a race.
+			writeSessionWithSource("1", "session-token", "Token Name", "user")
+			items := pkg.Items{
+				sessionItem("item-token", "producer-token", "key-token", "session-token"),
+			}
+
+			// Each invocation gets its own release, so the spec can finish one
+			// refresher while deliberately leaving the other parked.
+			entered := make(chan chan struct{}, 4)
+			paneLister.ListCalls(func(context.Context) (map[int]pkg.Pane, error) {
+				release := make(chan struct{})
+				entered <- release
+				<-release
+				return map[int]pkg.Pane{}, nil
+			})
+
+			first := make(chan pkg.Provenances, 1)
+			go func() { first <- resolver.Resolve(ctx, items) }()
+			// ⚠️ The second caller starts only once the first is inside the lister, so
+			// the token order is deterministic rather than raced: the second is always
+			// the one whose token ends up stored, and the first is always the one whose
+			// deferred clear must leave it alone. Launching both at once makes the spec
+			// depend on which goroutine is scheduled last — and if the first to finish
+			// also happens to be the last to claim the token, clearing it is CORRECT,
+			// so the spec would fail on a resolver that is behaving properly. That is
+			// how this spec first failed.
+			firstRelease := <-entered
+
+			second := make(chan pkg.Provenances, 1)
+			go func() { second <- resolver.Resolve(ctx, items) }()
+			secondRelease := <-entered
+
+			// Finish the first refresher. It publishes, and its deferred clear must not
+			// take the second one's token with it.
+			close(firstRelease)
+			var published pkg.Provenances
+			Eventually(first, "2s").Should(Receive(&published))
+			Expect(published[pkg.ItemID("item-token")].SessionName).To(Equal("Token Name"))
+
+			// Let the window lapse while the second refresher is still parked, then
+			// arrive as a third caller. It must be served the published snapshot rather
+			// than start a subprocess of its own — which is exactly what a bool let
+			// through, and what makes the call count below read 3 instead of 2.
+			advanceClock()
+			third := make(chan pkg.Provenances, 1)
+			go func() { third <- resolver.Resolve(ctx, items) }()
+			var served pkg.Provenances
+			Eventually(third, "2s").Should(Receive(&served))
+			Expect(served[pkg.ItemID("item-token")].SessionName).To(Equal("Token Name"))
+			Expect(paneLister.ListCallCount()).To(Equal(2))
+
+			close(secondRelease)
+			Eventually(second, "2s").Should(Receive(&published))
+		},
+	)
+
 	It("serves the registry and the ledger from the cache inside the window", func() {
 		// ⚠️ The pane-lister count alone cannot prove sessionNames and
 		// sessionModes are cached. This case changes both on disk and shows the

@@ -171,6 +171,14 @@ func (w *weztermPaneLister) List(ctx context.Context) (map[int]Pane, error) {
 	// call, so a child that forks still parks the caller for as long as its
 	// descendant lives — the exact stall this fix exists to remove.
 	cmd.WaitDelay = paneListingWaitDelay
+	// ⚠️ time.Now/Since rather than the injected libtime clock — deliberately, and
+	// recorded here rather than left as a silent exception to go-time/no-time-now-
+	// direct. This is a latency measurement, not a business instant, and the two
+	// want different instruments: time.Since reads the monotonic clock, so a clock
+	// step during the call cannot make the duration negative or absurd, while a
+	// wall-clock getter is exactly what such a step moves. Injecting one would
+	// satisfy the rule at the cost of the measurement being wrong in the case it
+	// exists to report on.
 	started := time.Now()
 	raw, err := cmd.Output()
 	if err != nil {
@@ -187,7 +195,13 @@ func (w *weztermPaneLister) List(ctx context.Context) (map[int]Pane, error) {
 		// beyond a failure — and the operator would be reading a log that cannot tell
 		// the defect from a typo in a flag.
 		elapsed := time.Since(started)
-		if ctx.Err() != nil {
+		// ⚠️ DeadlineExceeded specifically, not a bare non-nil Err(). The ctx here is
+		// the derived one, so Err() is non-nil for a caller cancellation too — and a
+		// stream handler whose client disconnects mid-call is the normal steady
+		// state, not a wedged mux. A non-nil test would report every cancelled stream
+		// as "the mux is not answering", which is exactly the misreport this branch
+		// exists to prevent.
+		if ctx.Err() == context.DeadlineExceeded {
 			glog.V(2).Infof(
 				"wezterm cli list TIMED OUT after %s (bound %s): binary=%s err=%v — the mux is not answering",
 				elapsed,

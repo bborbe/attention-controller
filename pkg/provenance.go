@@ -229,15 +229,26 @@ type provenanceResolver struct {
 	cached *hostState
 	// cachedAt is the clock reading at which cached was taken.
 	cachedAt libtime.DateTime
-	// refreshing is true while a refresh is in flight, so the common case —
-	// many streams waking at once — does not multiply one subprocess by the
-	// number of callers. ⚠️ It is single-flight only once a snapshot exists: the
-	// stale-serve branch in hostState requires cached != nil, so on a cold start
-	// every concurrent caller falls through and runs its own refresh — which is
-	// precisely when many streams wake at once. That is bounded rather than
-	// unbounded, since each caller runs exactly one exec and the listing carries
-	// its own paneListingTimeout, and it is pinned by the cold-start spec.
-	refreshing bool
+	// refreshing is the token of the refresh currently in flight, or nil when none
+	// is, so the common case — many streams waking at once — does not multiply one
+	// subprocess by the number of callers.
+	//
+	// ⚠️ A token rather than a bool, and the difference is the incident path. Two
+	// callers can both start a refresh on the cold path; with a bool the first to
+	// finish clears the marker for the second, which is still parked in its exec,
+	// so a third caller arriving once provenanceCacheWindow has lapsed finds the
+	// cache stale AND the marker clear and starts another subprocess alongside it.
+	// Under a wedged mux a refresh takes the full paneListingTimeout — longer than
+	// the window — so that is the ordinary case there, not a race. Only the
+	// goroutine that set the token clears it.
+	//
+	// ⚠️ It is single-flight only once a snapshot exists: the stale-serve branch in
+	// hostState requires cached != nil, so on a cold start every concurrent caller
+	// falls through and runs its own refresh — which is precisely when many streams
+	// wake at once. That is bounded rather than unbounded, since each caller runs
+	// exactly one exec and the listing carries its own paneListingTimeout, and it
+	// is pinned by the cold-start spec.
+	refreshing chan struct{}
 }
 
 // hostState is the resolver's view of the host at one instant: the pane
@@ -268,7 +279,7 @@ type hostState struct {
 // page, the jump, and every connected stream — queued behind it, while
 // /healthz and the API stayed fast because those never call Resolve.
 //
-// Single-flight is kept by the refreshing flag instead: the first caller past
+// Single-flight is kept by the refreshing token instead: the first caller past
 // the window refreshes, and any caller arriving while it runs is served the
 // last good snapshot rather than queueing behind a subprocess. Only a cold
 // start — no snapshot to serve — lets more than one caller refresh, and that is
@@ -287,7 +298,7 @@ func (r *provenanceResolver) hostState(ctx context.Context) hostState {
 		r.mu.Unlock()
 		return state
 	}
-	if r.refreshing && r.cached != nil {
+	if r.refreshing != nil && r.cached != nil {
 		// A refresh is already running. Serve the last good snapshot instead of
 		// queueing behind a subprocess: a pane listing a second or two old is
 		// always better than a stalled request.
@@ -295,13 +306,14 @@ func (r *provenanceResolver) hostState(ctx context.Context) hostState {
 		r.mu.Unlock()
 		return state
 	}
-	r.refreshing = true
+	token := make(chan struct{})
+	r.refreshing = token
 	r.mu.Unlock()
 
 	// Deferred rather than inlined after the read: a panic in any of the three
-	// readers must still clear the flag, or the resolver stays pinned to a
+	// readers must still clear the token, or the resolver stays pinned to a
 	// snapshot that will never be replaced.
-	defer r.finishRefresh()
+	defer r.finishRefresh(token)
 
 	state := r.readHostState(ctx)
 	r.mu.Lock()
@@ -339,11 +351,17 @@ func (r *provenanceResolver) readHostState(ctx context.Context) hostState {
 	return state
 }
 
-// finishRefresh clears the in-flight flag.
-func (r *provenanceResolver) finishRefresh() {
+// finishRefresh clears the in-flight token, but only if it is still the one this
+// refresh set. A second refresh that started afterwards overwrote it, and
+// clearing it here would reopen the single-flight window while that second
+// refresh is still parked in its exec — the amplification the token exists to
+// prevent.
+func (r *provenanceResolver) finishRefresh(token chan struct{}) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.refreshing = false
+	if r.refreshing == token {
+		r.refreshing = nil
+	}
 }
 
 // eventRecord is one line of a producer's event log, reduced to the fields the

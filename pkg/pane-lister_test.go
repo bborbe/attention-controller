@@ -56,6 +56,15 @@ var _ = Describe("WeztermPaneLister", func() {
 		// bound is 3 s and the wait delay 500 ms, so anything approaching 5 s means
 		// the declared bound is not the one in force, and raising paneListingTimeout
 		// to 9 s fails here rather than passing on a loose ceiling.
+		// ⚠️ The lower bound is the positive control, and without it this spec can
+		// pass vacuously. If the PATH seam ever stops resolving — a change in
+		// LookPath, a temp file written without the exec bit, a platform without
+		// `#!/bin/sh` — List returns "wezterm not found" in about a millisecond and
+		// BOTH upper bounds below pass with the WithTimeout deleted. Requiring the
+		// call to have actually waited is what proves the subprocess ran and that the
+		// deadline, not the fake failing to start, is what ended it.
+		Expect(elapsed).
+			To(BeNumerically(">=", 2*time.Second), "the fake lister never ran, so nothing was bounded")
 		Expect(elapsed).To(BeNumerically("<", 10*time.Second), "the listing was not bounded at all")
 		Expect(elapsed).
 			To(BeNumerically("<", 5*time.Second), "the bound in force is larger than the declared one")
