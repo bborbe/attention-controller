@@ -1,7 +1,12 @@
 ---
-status: approved
+status: completed
+summary: Gave the vault task index a clock-bounded, mutex-guarded rebuild so a task created while the controller runs resolves its provenance without a restart, preserving every soft-failure rule.
+execution_id: attention-controller-registry-snapshot-exec-028-task-index-refresh-after-boot
+dark-factory-version: v0.196.0
 created: "2026-10-03T21:51:59Z"
 queued: "2026-10-03T21:51:59Z"
+started: "2026-10-03T22:02:41Z"
+completed: "2026-10-03T22:11:12Z"
 ---
 
 # Refresh the task index after boot

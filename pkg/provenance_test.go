@@ -121,7 +121,7 @@ var _ = Describe("ProvenanceResolver", func() {
 			sessionsDir,
 			spawnDir,
 			paneLister,
-			pkg.NewTaskIndex(ctx, GinkgoT().TempDir()),
+			pkg.NewTaskIndex(ctx, GinkgoT().TempDir(), clock),
 			clock,
 		)
 	})
@@ -388,7 +388,7 @@ var _ = Describe("ProvenanceResolver", func() {
 			filepath.Join(sessionsDir, "does-not-exist"),
 			spawnDir,
 			paneLister,
-			pkg.NewTaskIndex(ctx, GinkgoT().TempDir()),
+			pkg.NewTaskIndex(ctx, GinkgoT().TempDir(), clock),
 			clock,
 		)
 
@@ -734,7 +734,7 @@ var _ = Describe("ProvenanceResolver", func() {
 			sessionsDir,
 			spawnDir,
 			paneLister,
-			pkg.NewTaskIndex(ctx, vault),
+			pkg.NewTaskIndex(ctx, vault, clock),
 			clock,
 		)
 	}
@@ -1026,7 +1026,7 @@ var _ = Describe("ProvenanceResolver", func() {
 			filepath.Join(sessionsDir, "does-not-exist"),
 			spawnDir,
 			paneLister,
-			pkg.NewTaskIndex(ctx, GinkgoT().TempDir()),
+			pkg.NewTaskIndex(ctx, GinkgoT().TempDir(), clock),
 			clock,
 		)
 
@@ -1144,7 +1144,7 @@ var _ = Describe("ProvenanceResolver", func() {
 			sessionsDir,
 			filepath.Join(spawnDir, "does-not-exist"),
 			paneLister,
-			pkg.NewTaskIndex(ctx, GinkgoT().TempDir()),
+			pkg.NewTaskIndex(ctx, GinkgoT().TempDir(), clock),
 			clock,
 		)
 
@@ -1225,9 +1225,15 @@ func writeVaultTask(vault, name, content string) {
 
 var _ = Describe("TaskIndex", func() {
 	var ctx context.Context
+	// clock is frozen in BeforeEach so the refresh window is measured from a
+	// fixed instant; the refresh specs advance it with SetNow rather than
+	// sleeping, per the repo's time-injection rule.
+	var clock libtime.CurrentDateTime
 
 	BeforeEach(func() {
 		ctx = context.Background()
+		clock = libtime.NewCurrentDateTime()
+		clock.SetNow(clock.Now())
 	})
 
 	// Each entry builds its own vault and returns the directory the index is
@@ -1237,7 +1243,7 @@ var _ = Describe("TaskIndex", func() {
 		func(build func(root string) string, sessionID, wantName, wantPath string, wantOK bool) {
 			vault := build(GinkgoT().TempDir())
 
-			task, ok := pkg.NewTaskIndex(ctx, vault).Lookup(sessionID)
+			task, ok := pkg.NewTaskIndex(ctx, vault, clock).Lookup(sessionID)
 
 			Expect(ok).To(Equal(wantOK))
 			Expect(task.Name).To(Equal(wantName))
@@ -1322,7 +1328,7 @@ var _ = Describe("TaskIndex", func() {
 		func(build func(root string) string, sessionID, wantGoalName, wantGoalPath, wantTopicName, wantTopicPath string) {
 			vault := build(GinkgoT().TempDir())
 
-			task, _ := pkg.NewTaskIndex(ctx, vault).Lookup(sessionID)
+			task, _ := pkg.NewTaskIndex(ctx, vault, clock).Lookup(sessionID)
 
 			Expect(task.GoalName).To(Equal(wantGoalName))
 			Expect(task.GoalPath).To(Equal(wantGoalPath))
@@ -1569,13 +1575,159 @@ var _ = Describe("TaskIndex", func() {
 		cancelled, cancel := context.WithCancel(ctx)
 		cancel()
 
-		task, _ := pkg.NewTaskIndex(cancelled, vault).Lookup("session-a")
+		task, _ := pkg.NewTaskIndex(cancelled, vault, clock).Lookup("session-a")
 
 		// A cancelled build holds what it read before cancellation and no more,
 		// so the goal rung — which reads before the task walk — contributes
 		// nothing rather than failing.
 		Expect(task.GoalName).To(BeEmpty())
 		Expect(task.TopicName).To(BeEmpty())
+	})
+})
+
+// The index used to read the vault once, at construction, so every task created
+// afterwards was invisible for the process's lifetime. These specs pin the
+// bounded re-read that fixes it: a task file written after the build resolves on
+// a later lookup, and only once the injected clock has passed the window.
+var _ = Describe("TaskIndex refresh", func() {
+	var ctx context.Context
+	var clock libtime.CurrentDateTime
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		// Frozen, so the refresh window is measured from a fixed instant and the
+		// specs advance it with SetNow rather than sleeping.
+		clock = libtime.NewCurrentDateTime()
+		clock.SetNow(clock.Now())
+	})
+
+	// advanceClock moves the injected clock past the two-second refresh window,
+	// so the next Lookup rebuilds the index from the vault.
+	advanceClock := func() {
+		clock.SetNow(clock.Now().Add(libtime.Duration(3 * 1e9)))
+	}
+
+	It("resolves a task written after the index was built, once the window lapses", func() {
+		vault := GinkgoT().TempDir()
+		index := pkg.NewTaskIndex(ctx, vault, clock)
+
+		// The vault is empty at construction, so the session resolves nothing.
+		_, ok := index.Lookup("session-late")
+		Expect(ok).To(BeFalse())
+
+		writeVaultTask(vault, "Late Task.md",
+			"---\nclaude_session_id: session-late\n---\n")
+
+		// ⚠️ Inside the window the new file is not observed. This is the assertion
+		// that makes the bound real rather than a no-op: a Lookup that re-read the
+		// vault unconditionally would resolve here and fail this line.
+		_, ok = index.Lookup("session-late")
+		Expect(ok).To(BeFalse())
+
+		advanceClock()
+		task, ok := index.Lookup("session-late")
+		Expect(ok).To(BeTrue())
+		Expect(task.Name).To(Equal("Late Task"))
+		Expect(task.Path).To(Equal("25 Tasks/Late Task.md"))
+	})
+
+	It("resolves the goal and the topic for a task written after the build", func() {
+		// ⚠️ The whole reason the refresh re-runs all three index steps rather than
+		// the task walk alone: the goal rung and the topic rung are built before the
+		// walk, and a task naming a goal that did not exist at construction would
+		// resolve no goal if only the walk were re-run.
+		vault := GinkgoT().TempDir()
+		index := pkg.NewTaskIndex(ctx, vault, clock)
+
+		writeVaultTask(vault, "New Goal Task.md",
+			"---\nclaude_session_id: session-late-goal\ngoals:\n  - \"[[New Goal]]\"\n---\n")
+		writeVaultFile(vault, "24 Goals", "New Goal.md", "---\ntitle: New Goal\n---\n")
+		writeVaultFile(vault, "23 Topics", "New Topic.md",
+			"---\ntitle: New Topic\n---\n\n## Goals\n\n- [[New Goal]]\n")
+
+		advanceClock()
+		task, ok := index.Lookup("session-late-goal")
+		Expect(ok).To(BeTrue())
+		Expect(task.GoalName).To(Equal("New Goal"))
+		Expect(task.GoalPath).To(Equal("24 Goals/New Goal.md"))
+		Expect(task.TopicName).To(Equal("New Topic"))
+		Expect(task.TopicPath).To(Equal("23 Topics/New Topic.md"))
+	})
+
+	It("yields no entry and no error when the tasks directory is unreadable", func() {
+		// The soft-failure rule survives the refresh: a vault with no `25 Tasks/`
+		// resolves nothing rather than failing, and a rebuild that reads no tasks
+		// installs an empty index rather than returning an error.
+		vault := GinkgoT().TempDir()
+		index := pkg.NewTaskIndex(ctx, vault, clock)
+
+		advanceClock()
+		task, ok := index.Lookup("session-none")
+		Expect(ok).To(BeFalse())
+		Expect(task.Name).To(BeEmpty())
+	})
+
+	It("keeps serving earlier entries when a refresh is cancelled", func() {
+		vault := GinkgoT().TempDir()
+		writeVaultTask(vault, "Kept.md", "---\nclaude_session_id: session-kept\n---\n")
+		buildCtx, cancel := context.WithCancel(ctx)
+		index := pkg.NewTaskIndex(buildCtx, vault, clock)
+
+		task, ok := index.Lookup("session-kept")
+		Expect(ok).To(BeTrue())
+		Expect(task.Name).To(Equal("Kept"))
+
+		// The build context is cancelled and the vault changes before the window
+		// lapses. The refresh the next Lookup triggers stops early, and its partial
+		// index must be discarded rather than installed — so the earlier entry
+		// keeps resolving instead of being replaced by an empty index.
+		cancel()
+		writeVaultTask(vault, "New.md", "---\nclaude_session_id: session-new\n---\n")
+		advanceClock()
+
+		task, ok = index.Lookup("session-kept")
+		Expect(ok).To(BeTrue())
+		Expect(task.Name).To(Equal("Kept"))
+		_, ok = index.Lookup("session-new")
+		Expect(ok).To(BeFalse())
+	})
+
+	It("does not race when lookups run against a refresh", func() {
+		// ⚠️ make precommit runs with -race=false, so a data race between a
+		// refresh's map swap and a concurrent Lookup would not be reported here.
+		// This case drives many lookups through one index while the window has
+		// already lapsed, so several of them trigger a rebuild and its swap races
+		// the reads — the RWMutex guard is exercised under contention rather than
+		// only serially.
+		vault := GinkgoT().TempDir()
+		writeVaultTask(vault, "Conc.md", "---\nclaude_session_id: session-conc\n---\n")
+		index := pkg.NewTaskIndex(ctx, vault, clock)
+
+		// Lapse the window once before the fan-out, so every goroutine's first
+		// lookup finds the index stale and attempts a rebuild.
+		advanceClock()
+
+		// Results are collected per goroutine and asserted after the fan-out:
+		// Ginkgo assertions are not safe to make from the runner's goroutines.
+		// Each goroutine writes its own slot, so the slice needs no lock.
+		const workers = 8
+		names := make([]string, workers)
+		oks := make([]bool, workers)
+
+		funcs := make([]run.Func, 0, workers)
+		for i := 0; i < workers; i++ {
+			funcs = append(funcs, func(ctx context.Context) error {
+				task, ok := index.Lookup("session-conc")
+				names[i] = task.Name
+				oks[i] = ok
+				return nil
+			})
+		}
+		Expect(run.CancelOnFirstErrorWait(ctx, funcs...)).To(BeNil())
+		for i := 0; i < workers; i++ {
+			Expect(oks[i]).To(BeTrue())
+			Expect(names[i]).To(Equal("Conc"))
+		}
 	})
 })
 

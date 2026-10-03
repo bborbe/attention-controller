@@ -207,7 +207,7 @@ var _ = Describe("the session name on the served page", func() {
 				sessionsDir,
 				spawnDir,
 				panes,
-				pkg.NewTaskIndex(ctx, vault),
+				pkg.NewTaskIndex(ctx, vault, clock),
 				clock,
 			),
 			false,
