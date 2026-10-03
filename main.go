@@ -47,6 +47,7 @@ type application struct {
 	Listen            string `required:"true"  arg:"listen"              env:"LISTEN"              usage:"address to listen to"`
 	DataDir           string `required:"true"  arg:"datadir"             env:"DATADIR"             usage:"data directory"`
 	HeartbeatWindow   string `required:"false" arg:"heartbeat-window"    env:"HEARTBEAT_WINDOW"    usage:"how stale a heartbeat:<path> mtime may be before the producer counts as finished"                                                            default:"15m"`
+	AnsweredMaxAge    string `required:"false" arg:"answered-max-age"    env:"ANSWERED_MAX_AGE"    usage:"how old an answered item may be before the store closes it; must stay well above the slowest consumer's poll interval"                       default:"1h"`
 	SessionsDir       string `required:"false" arg:"sessions-dir"        env:"SESSIONS_DIR"        usage:"directory holding the session registry used to resolve session:<id> liveness"`
 	AttentionStateDir string `required:"false" arg:"attention-state-dir" env:"ATTENTION_STATE_DIR" usage:"directory holding the producers' event logs the page resolves item provenance from"`
 	SpawnStateDir     string `required:"false" arg:"spawn-state-dir"     env:"SPAWN_STATE_DIR"     usage:"directory holding the supervisor's spawn ledger the page reads each session's headless/interactive mode from"`
@@ -357,7 +358,10 @@ func (a *application) createHTTPServer(
 		// under one context, so a failure in either takes the process down and
 		// launchd restarts both: a half-up state — board serving, jumps dead — is
 		// exactly the two-lifecycle problem the fold exists to remove.
-		runner := run.NewConcurrentRunner(2)
+		// Three, not two: the answered sweep below is a third long-running function
+		// under the same context, so a failure in it takes the process down exactly
+		// as a listener failure does.
+		runner := run.NewConcurrentRunner(3)
 		defer runner.Close()
 
 		glog.V(2).Infof("starting http server listen on %s", a.Listen)
@@ -366,7 +370,59 @@ func (a *application) createHTTPServer(
 			return err
 		}
 
+		// ⚠️ This sweep is what keeps the live index bounded. The index admits
+		// `answered` items — liveIndexWorthy is `State != ClosedState` — so an
+		// answered item that is never closed is decoded on every read for the life
+		// of the store. Measured 2026-10-03: 2,547 answered against 16 open, so
+		// every read decoded ~2,563 items and ~3.4 MB to return 16, on an API every
+		// supervisor polls twice every 2 s.
+		answeredMaxAge, err := libtime.ParseDuration(ctx, a.AnsweredMaxAge)
+		if err != nil {
+			return errors.Wrapf(ctx, err, "parse answered max age '%s' failed", a.AnsweredMaxAge)
+		}
+		runner.Add(ctx, runAnsweredSweep(store, *answeredMaxAge))
+
 		return runner.Run(ctx)
+	}
+}
+
+// answeredSweepInterval is how often the store is asked to close answered items
+// past their max age. It is short because the sweep is cheap when nothing is due
+// — it scans the live index, which the bound itself keeps small — and a long
+// interval would let a burst of answers sit in the index for a whole interval
+// after their age had passed.
+const answeredSweepInterval = time.Minute
+
+// runAnsweredSweep closes answered items older than maxAge on a ticker.
+//
+// ⚠️ It runs in its own goroutine and calls the store's own Update — never a step
+// inside a read, because the read path stays read-only.
+func runAnsweredSweep(store pkg.AttentionStore, maxAge libtime.Duration) run.Func {
+	return func(ctx context.Context) error {
+		ticker := time.NewTicker(answeredSweepInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-ticker.C:
+				closed, err := store.SweepAnswered(ctx, maxAge)
+				if err != nil {
+					// Logged, not fatal: a failed sweep costs decode work, it does
+					// not lose an item, and taking the process down for it would
+					// drop the board over something the board survives.
+					glog.Errorf("sweep answered failed: %v", err)
+					continue
+				}
+				if closed > 0 {
+					glog.V(2).Infof(
+						"swept %d answered items older than %s",
+						closed,
+						time.Duration(maxAge),
+					)
+				}
+			}
+		}
 	}
 }
 

@@ -997,6 +997,122 @@ func (a *attentionStore) Close(
 	return result, nil
 }
 
+// SweepAnswered closes every answered item whose AnsweredAt is older than maxAge.
+//
+// ⚠️ It is an Update of its own, never a step inside Read: the read path stays
+// read-only, because a read that writes is the writer-lock-across-a-scan shape
+// v0.23.2 removed.
+//
+// ⚠️ It scans the LIVE INDEX rather than the items bucket, so it decodes the
+// population it can act on and not the ~19,500 closed rows beside it. The index
+// entry carries the whole Item, so the age test needs no second read; the item
+// is re-read only to close it, and only for the ones that are due.
+//
+// ⚠️ The age is re-checked inside the write. The scan and the close are two
+// steps, and an item can be re-answered or closed between them — the state is
+// read again from the item bucket rather than trusted from the index snapshot,
+// so a sweep can never close something that has moved on.
+func (a *attentionStore) SweepAnswered(
+	ctx context.Context,
+	maxAge libtime.Duration,
+) (int, error) {
+	if err := a.ensureLiveIndex(ctx); err != nil {
+		return 0, errors.Wrap(ctx, err, "ensure live index failed")
+	}
+	cutoff := a.currentDateTimeGetter.Now().Add(-maxAge)
+	closed := 0
+	err := a.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
+		due, err := a.dueAnsweredKeys(ctx, tx, cutoff)
+		if err != nil {
+			return err
+		}
+		for _, key := range due {
+			didClose, err := a.closeAnsweredItem(ctx, tx, key)
+			if err != nil {
+				return err
+			}
+			if didClose {
+				closed++
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, errors.Wrap(ctx, err, "sweep answered failed")
+	}
+	return closed, nil
+}
+
+// dueAnsweredKeys returns the live-index keys of the answered items answered
+// before cutoff.
+//
+// ⚠️ It scans the INDEX, not the items bucket, so it decodes the population it
+// can act on and not the closed rows beside it — which is the whole point of
+// the bound the sweep enforces.
+func (a *attentionStore) dueAnsweredKeys(
+	ctx context.Context,
+	tx libkv.Tx,
+	cutoff libtime.DateTime,
+) ([]string, error) {
+	due := make([]string, 0)
+	err := a.liveIndex.Map(
+		ctx,
+		tx,
+		func(ctx context.Context, key string, item Item) error {
+			if key == liveIndexMarkerKey || item.State != AnsweredState {
+				return nil
+			}
+			if item.AnsweredAt == nil {
+				return nil
+			}
+			if item.AnsweredAt.Time().Before(cutoff.Time()) {
+				due = append(due, key)
+			}
+			return nil
+		},
+	)
+	if err != nil {
+		return nil, errors.Wrap(ctx, err, "scan live index failed")
+	}
+	return due, nil
+}
+
+// closeAnsweredItem closes one answered item, reporting whether it closed it.
+//
+// ⚠️ The state is re-read here rather than trusted from the index snapshot the
+// scan produced: the scan and the close are two steps, and the item can have
+// been re-answered or closed between them. Re-reading is what makes a sweep
+// unable to close something that has moved on.
+func (a *attentionStore) closeAnsweredItem(
+	ctx context.Context,
+	tx libkv.Tx,
+	key string,
+) (bool, error) {
+	item, err := a.store.Get(ctx, tx, key)
+	if err != nil {
+		if isNotFound(err) {
+			return false, nil
+		}
+		return false, errors.Wrapf(ctx, err, "get item %s failed", key)
+	}
+	if item.State != AnsweredState {
+		return false, nil
+	}
+	if err := ValidateTransition(ctx, item.State, ClosedState); err != nil {
+		return false, err
+	}
+	now := a.currentDateTimeGetter.Now()
+	item.State = ClosedState
+	item.ClosedAt = &now
+	// answeredBy is deliberately NOT written: this is the answered -> closed
+	// row, and that field already names the arm that answered. Overwriting it
+	// here would replace the answerer with the sweeper.
+	if err := a.putItem(ctx, tx, *item); err != nil {
+		return false, errors.Wrapf(ctx, err, "close answered item %s failed", key)
+	}
+	return true, nil
+}
+
 // updateExistingIfLive applies duplicate suppression. Suppression compares
 // dedup_key *within a live producer_id*: when an open item already carries this
 // producer and dedup key and its producer is still live, the push updates that

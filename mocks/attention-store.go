@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/bborbe/attention-controller/pkg"
+	"github.com/bborbe/time"
 )
 
 type AttentionStore struct {
@@ -155,6 +156,20 @@ type AttentionStore struct {
 	}
 	recordAttemptReturnsOnCall map[int]struct {
 		result1 *pkg.DeliveryAttempt
+		result2 error
+	}
+	SweepAnsweredStub        func(context.Context, time.Duration) (int, error)
+	sweepAnsweredMutex       sync.RWMutex
+	sweepAnsweredArgsForCall []struct {
+		arg1 context.Context
+		arg2 time.Duration
+	}
+	sweepAnsweredReturns struct {
+		result1 int
+		result2 error
+	}
+	sweepAnsweredReturnsOnCall map[int]struct {
+		result1 int
 		result2 error
 	}
 	invocations      map[string][][]interface{}
@@ -815,6 +830,71 @@ func (fake *AttentionStore) RecordAttemptReturnsOnCall(i int, result1 *pkg.Deliv
 	}
 	fake.recordAttemptReturnsOnCall[i] = struct {
 		result1 *pkg.DeliveryAttempt
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *AttentionStore) SweepAnswered(arg1 context.Context, arg2 time.Duration) (int, error) {
+	fake.sweepAnsweredMutex.Lock()
+	ret, specificReturn := fake.sweepAnsweredReturnsOnCall[len(fake.sweepAnsweredArgsForCall)]
+	fake.sweepAnsweredArgsForCall = append(fake.sweepAnsweredArgsForCall, struct {
+		arg1 context.Context
+		arg2 time.Duration
+	}{arg1, arg2})
+	stub := fake.SweepAnsweredStub
+	fakeReturns := fake.sweepAnsweredReturns
+	fake.recordInvocation("SweepAnswered", []interface{}{arg1, arg2})
+	fake.sweepAnsweredMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *AttentionStore) SweepAnsweredCallCount() int {
+	fake.sweepAnsweredMutex.RLock()
+	defer fake.sweepAnsweredMutex.RUnlock()
+	return len(fake.sweepAnsweredArgsForCall)
+}
+
+func (fake *AttentionStore) SweepAnsweredCalls(stub func(context.Context, time.Duration) (int, error)) {
+	fake.sweepAnsweredMutex.Lock()
+	defer fake.sweepAnsweredMutex.Unlock()
+	fake.SweepAnsweredStub = stub
+}
+
+func (fake *AttentionStore) SweepAnsweredArgsForCall(i int) (context.Context, time.Duration) {
+	fake.sweepAnsweredMutex.RLock()
+	defer fake.sweepAnsweredMutex.RUnlock()
+	argsForCall := fake.sweepAnsweredArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2
+}
+
+func (fake *AttentionStore) SweepAnsweredReturns(result1 int, result2 error) {
+	fake.sweepAnsweredMutex.Lock()
+	defer fake.sweepAnsweredMutex.Unlock()
+	fake.SweepAnsweredStub = nil
+	fake.sweepAnsweredReturns = struct {
+		result1 int
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *AttentionStore) SweepAnsweredReturnsOnCall(i int, result1 int, result2 error) {
+	fake.sweepAnsweredMutex.Lock()
+	defer fake.sweepAnsweredMutex.Unlock()
+	fake.SweepAnsweredStub = nil
+	if fake.sweepAnsweredReturnsOnCall == nil {
+		fake.sweepAnsweredReturnsOnCall = make(map[int]struct {
+			result1 int
+			result2 error
+		})
+	}
+	fake.sweepAnsweredReturnsOnCall[i] = struct {
+		result1 int
 		result2 error
 	}{result1, result2}
 }
