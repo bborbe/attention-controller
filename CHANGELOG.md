@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.40.0
 
 - feat: expose `attention_board_renders_total` and `attention_board_rows_rendered_total` on the board's `/metrics`, so the shared render path's fan-out — one render per store change, shared by every connected stream — is readable off the deployed binary rather than only provable by a spec. Both counters are injected through the stream handler's constructor and incremented from `boardRenderer.run`, the one place a render happens, so N attached streams and M store changes move the render counter by M and never by N×M; a failed render moves neither. The fan-out spec now asserts the same `1 + changes` figure at two and four attached streams and pins the render counter's delta to the change count, so the subscriber count does not appear in the figure.
 
