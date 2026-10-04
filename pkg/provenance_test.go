@@ -1818,6 +1818,36 @@ var _ = Describe("TaskIndex refresh", func() {
 		Expect(ok).To(BeFalse())
 	})
 
+	It("keeps serving earlier entries when a refresh cannot read the tasks directory", func() {
+		// ⚠️ The data-loss window this spec closes. The build fails soft on I/O, so
+		// an unreadable `25 Tasks/` yields no entries rather than an error — and
+		// before the read report existed, that empty rebuild was installed anyway,
+		// replacing a fully resolved index with an empty one. The directory is
+		// removed rather than chmod 000: absence is how the repo's other specs
+		// produce an unreadable `25 Tasks/`, and a permission bit is not enforced
+		// when the suite runs as root.
+		vault := GinkgoT().TempDir()
+		writeVaultTask(vault, "Kept.md", "---\nclaude_session_id: session-kept\n---\n")
+		index := pkg.NewTaskIndex(ctx, vault, clock)
+
+		task, ok := index.Lookup("session-kept")
+		Expect(ok).To(BeTrue())
+		Expect(task.Name).To(Equal("Kept"))
+
+		// The tasks directory is gone before the window lapses, so the next
+		// Lookup's rebuild reads no tasks. Its result must be discarded rather
+		// than installed — the earlier entry keeps resolving instead of being
+		// replaced by an empty index.
+		Expect(os.RemoveAll(filepath.Join(vault, "25 Tasks"))).To(Succeed())
+		advanceClock()
+
+		task, ok = index.Lookup("session-kept")
+		Expect(ok).To(BeTrue(),
+			"a failed task walk must not wipe the previously resolved index")
+		Expect(task.Name).To(Equal("Kept"))
+		Expect(task.Path).To(Equal("25 Tasks/Kept.md"))
+	})
+
 	It("does not race when lookups run against a refresh", func() {
 		// ⚠️ make precommit runs with -race=false, so a data race between a
 		// refresh's map swap and a concurrent Lookup would not be reported here.

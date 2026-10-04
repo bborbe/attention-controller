@@ -205,9 +205,12 @@ func (a *application) createProvenanceResolver(
 		}
 		spawnDir = resolved
 	}
-	// ⚠️ The task index is built here, once, and handed to the resolver — never
-	// built per page. The vault holds thousands of task files, and the page is
-	// served continuously by the SSE stream.
+	// ⚠️ The task index is constructed here, once, and handed to the resolver —
+	// never built per page. The vault holds thousands of task files, and the page
+	// is served continuously by the SSE stream, so the whole vault must not be
+	// re-read on every render. It is not frozen at construction, though: Lookup
+	// rebuilds it on a bounded window (taskIndexRefreshWindow) so a task file
+	// written while the process runs still resolves, without a restart.
 	return pkg.NewProvenanceResolver(
 		stateDir,
 		sessionsDir,

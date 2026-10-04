@@ -1113,11 +1113,13 @@ func NewTaskIndex(
 		currentDateTimeGetter: currentDateTimeGetter,
 	}
 	// The boot build is installed unconditionally, even when ctx is already
-	// cancelled: there is no previous index to preserve, and the fail-soft
-	// contract is that a cancelled boot holds what it read and no more rather
-	// than failing. Every later rebuild is installed only when it completed — see
+	// cancelled or the task walk read nothing: there is no previous index to
+	// preserve, and the fail-soft contract is that a cancelled or empty boot
+	// holds what it read and no more rather than failing. Every later rebuild is
+	// installed only when it completed AND actually read `25 Tasks/` — see
 	// refreshIfStale.
-	index.install(index.build(ctx))
+	fresh, _ := index.build(ctx)
+	index.install(fresh)
 	return index
 }
 
@@ -1173,22 +1175,34 @@ type taskEntry struct {
 	terminal bool
 }
 
-// build reads the vault into a fresh index and returns it. Nothing on the
-// receiver is mutated: the fresh index carries its own maps, so a build that is
-// discarded — because it was cancelled — leaves the serving index untouched.
-func (t *taskIndex) build(ctx context.Context) *taskIndex {
+// build reads the vault into a fresh index and reports whether the task walk
+// actually read `25 Tasks/`. Nothing on the receiver is mutated: the fresh index
+// carries its own maps, so a build that is discarded — because it was cancelled
+// or because the task walk could not read its directory — leaves the serving
+// index untouched.
+//
+// ⚠️ The boolean is the task-walk half alone, and deliberately not a conjunct
+// over the goal and topic rungs. Those two degrade to "no goal" and "no topic"
+// by design — a vault with no `24 Goals/` is a legal state that must still
+// resolve its tasks — so refusing an install on their failure would refuse a
+// perfectly good task walk. Only an unreadable `25 Tasks/` means the rebuild
+// learned nothing about the population the index exists to serve.
+//
+// ⚠️ An empty vaultDir reports true: there is no directory to read and no
+// previous index holding entries it could lose, so a rebuild over it is a
+// no-op rather than a failed read.
+func (t *taskIndex) build(ctx context.Context) (*taskIndex, bool) {
 	fresh := &taskIndex{
 		bySession:  map[string]taskEntry{},
 		goals:      map[string]struct{}{},
 		goalTopics: map[string]goalTopic{},
 	}
 	if t.vaultDir == "" {
-		return fresh
+		return fresh, true
 	}
 	fresh.readGoalTitles(t.vaultDir)
 	fresh.readGoalTopics(ctx, t.vaultDir)
-	fresh.readTasks(ctx, t.vaultDir)
-	return fresh
+	return fresh, fresh.readTasks(ctx, t.vaultDir)
 }
 
 // install swaps a freshly built index's maps in as the serving index and stamps
@@ -1224,12 +1238,29 @@ func (t *taskIndex) install(fresh *taskIndex) {
 // fresh, fully populated index and install swaps its maps in atomically, so a
 // reader sees either the old index or the new one.
 //
-// ⚠️ A cancelled rebuild is discarded, not installed. The build's soft-failure
-// rules mean a directory read that fails yields no entries rather than an error,
-// so cancellation is the only signal that a rebuild stopped early — and
-// installing its partial maps would replace a good index with an empty one,
-// losing every task that had resolved. The previous index keeps serving until a
-// later, uncancelled rebuild replaces it.
+// ⚠️ A rebuild is installed only when it both completed and actually read
+// `25 Tasks/`. The build's soft-failure rules mean a directory read that fails
+// yields no entries rather than an error, so an empty result is ambiguous — it
+// is what a genuinely empty vault produces AND what an unreadable `25 Tasks/`
+// produces — and installing the latter would replace a fully resolved index with
+// an empty one, losing every task that had resolved. Two signals separate them:
+// a cancelled build (the context is done) and a build whose task walk reported
+// it could not read the directory. Either one leaves the previous index serving.
+//
+// ⚠️ A failed `24 Goals/` or `23 Topics/` read is deliberately NOT such a
+// signal: those rungs degrade to no goal and no topic by design, and refusing
+// the install on them would block a perfectly good task walk — including the
+// ordinary case of a vault that has no `24 Goals/` at all.
+//
+// ⚠️ A refused install does not advance builtAt, so the window stays lapsed and
+// the next Lookup re-attempts the rebuild. That is deliberate: a healthy vault
+// whose read failed transiently re-attempts, succeeds and re-advances builtAt,
+// so no separate retry loop is needed. The cost is that a permanently unreadable
+// `25 Tasks/` re-runs the goal and topic rungs on every lookup, since the build
+// reaches them before the task walk fails (only an absent `24 Goals/`
+// short-circuits the topic rung). If that cost ever matters, bound it by
+// advancing builtAt on refusal instead — but that trades the retry away, so it
+// is not done here.
 func (t *taskIndex) refreshIfStale() {
 	now := t.currentDateTimeGetter.Now()
 
@@ -1254,9 +1285,16 @@ func (t *taskIndex) refreshIfStale() {
 	// will never be replaced.
 	defer t.finishRefresh(token)
 
-	fresh := t.build(t.ctx)
+	fresh, tasksRead := t.build(t.ctx)
 	if t.ctx.Err() != nil {
 		glog.V(3).Infof("task index refresh cancelled, keeping previous index")
+		return
+	}
+	if !tasksRead {
+		glog.V(2).Infof(
+			"task index refresh could not read %s, keeping previous index",
+			filepath.Join(t.vaultDir, taskDirName),
+		)
 		return
 	}
 	t.install(fresh)
@@ -1284,17 +1322,23 @@ func (t *taskIndex) RebuildCount() int {
 }
 
 // readTasks walks `<vault>/25 Tasks/` and indexes every task file that records
-// a session.
+// a session. It reports whether that directory was actually read: false when
+// either the listing or the os.Root handle could not be opened, which is the
+// signal a rebuild uses to refuse installing itself — see refreshIfStale.
+//
+// A directory that reads but holds no task file reports true: an empty vault is
+// a legal state, and an index that read it holds the honest answer rather than
+// a failed one.
 //
 // os.ReadDir returns entries sorted by filename, and the tie-break in add
 // depends on it: candidates are added in ascending path order, so the later
 // candidate is the lexicographically greater path.
-func (t *taskIndex) readTasks(ctx context.Context, vaultDir string) {
+func (t *taskIndex) readTasks(ctx context.Context, vaultDir string) bool {
 	tasksDir := filepath.Join(vaultDir, taskDirName)
 	entries, err := os.ReadDir(tasksDir)
 	if err != nil {
 		glog.V(2).Infof("read vault tasks dir %s failed: %v", tasksDir, err)
-		return
+		return false
 	}
 	// Opened as an os.Root so every read is confined beneath the tasks
 	// directory: the file names come from the directory listing, and scoping the
@@ -1303,18 +1347,19 @@ func (t *taskIndex) readTasks(ctx context.Context, vaultDir string) {
 	root, err := os.OpenRoot(tasksDir)
 	if err != nil {
 		glog.V(2).Infof("open vault tasks dir %s failed: %v", tasksDir, err)
-		return
+		return false
 	}
 	defer root.Close()
 	for _, entry := range entries {
 		select {
 		case <-ctx.Done():
 			glog.V(3).Infof("task index build cancelled")
-			return
+			return true
 		default:
 		}
 		t.addFile(root, entry)
 	}
+	return true
 }
 
 // Lookup returns the task recorded for sessionID.
