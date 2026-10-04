@@ -1511,7 +1511,7 @@ function replayFailure(row) {
        The rest of this handler reads change.type and change.item_id, so a throw
        here aborted the row swap with nothing said; a truncated frame or one from
        a newer store version is not a reason to stop listening, and the stream
-       reconnects on its own. */
+       reconnects — itself for a drop, via connect() for the terminal case. */
     try {
       change = JSON.parse(event.data);
     } catch (error) {
