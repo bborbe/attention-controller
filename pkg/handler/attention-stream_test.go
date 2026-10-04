@@ -552,38 +552,53 @@ var _ = Describe("AttentionStreamHandler render fan-out", func() {
 		return event
 	}
 
-	It("reads the store once per change however many streams are attached", func() {
-		const streams = 4
-		const changes = 3
+	DescribeTable("reads the store once per change however many streams are attached",
+		func(streams int) {
+			const changes = 3
 
-		readers := make([]*bufio.Reader, 0, streams)
-		for i := 0; i < streams; i++ {
-			reader, cancel := connect()
-			defer cancel()
-			readers = append(readers, reader)
-		}
-
-		// The baseline is shared, so four connections cost one render between
-		// them rather than four. It is asserted here, before any change, so a
-		// per-client baseline cannot hide inside the total below.
-		Expect(store.Reads()).Should(Equal(int64(1)))
-
-		for i := 0; i < changes; i++ {
-			item := push(fmt.Sprintf("change-%d", i))
-			// Every stream is drained before the next change is pushed, so each
-			// change's renders are counted on their own rather than racing the
-			// next one's.
-			for _, reader := range readers {
-				event := readEvent(reader)
-				Expect(event["type"]).Should(Equal("upsert"))
-				Expect(event["item_id"]).Should(Equal(item.ItemID.String()))
+			readers := make([]*bufio.Reader, 0, streams)
+			for i := 0; i < streams; i++ {
+				reader, cancel := connect()
+				defer cancel()
+				readers = append(readers, reader)
 			}
-		}
 
-		// 1 + changes, and the subscriber count does not appear in the figure at
-		// all — which is the whole claim.
-		Expect(store.Reads()).Should(Equal(int64(1 + changes)))
-	})
+			// The baseline is shared, so several connections cost one render
+			// between them rather than one each. It is asserted here, before any
+			// change, so a per-client baseline cannot hide inside the total below.
+			Expect(store.Reads()).Should(Equal(int64(1)))
+
+			// The counter baseline is read AFTER the streams are attached, so the
+			// single render the first connection performs is already counted and is
+			// excluded from the delta below. Read before connecting, the same window
+			// would be 1 + changes.
+			rendersBefore := counterValue(registry, "attention_board_renders_total")
+
+			for i := 0; i < changes; i++ {
+				item := push(fmt.Sprintf("change-%d", i))
+				// Every stream is drained before the next change is pushed, so each
+				// change's renders are counted on their own rather than racing the
+				// next one's.
+				for _, reader := range readers {
+					event := readEvent(reader)
+					Expect(event["type"]).Should(Equal("upsert"))
+					Expect(event["item_id"]).Should(Equal(item.ItemID.String()))
+				}
+			}
+
+			// 1 + changes, and the subscriber count does not appear in the figure at
+			// all — which is the whole claim. Asserted at two and at four streams so
+			// the claim is shown independent of N rather than merely correct at one.
+			Expect(store.Reads()).Should(Equal(int64(1 + changes)))
+			// The render counter's rise is the change count, never streams × changes:
+			// a per-client render would move it by streams × changes here.
+			Expect(
+				counterValue(registry, "attention_board_renders_total") - rendersBefore,
+			).Should(Equal(float64(changes)))
+		},
+		Entry("two streams", 2),
+		Entry("four streams", 4),
+	)
 
 	// ⚠️ SC4's probe. Sharing the render must not cost the per-client diff: a
 	// row the operator is typing into is still never replaced underneath them,

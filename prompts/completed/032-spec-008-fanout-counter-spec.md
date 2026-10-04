@@ -1,8 +1,13 @@
 ---
-status: approved
+status: completed
 spec: [008-board-render-counter]
+summary: 'Parameterised the board fan-out spec over 2 and 4 subscribers and added a render-counter delta assertion pinning attention_board_renders_total''s rise to the change count, plus one feat: changelog bullet under a new ## Unreleased section.'
+execution_id: attention-controller-render-counter-exec-032-spec-008-fanout-counter-spec
+dark-factory-version: v0.196.0
 created: "2026-10-04T12:50:02Z"
 queued: "2026-10-04T13:08:06Z"
+started: "2026-10-04T13:15:42Z"
+completed: "2026-10-04T13:17:29Z"
 branch: dark-factory/board-render-counter
 ---
 
