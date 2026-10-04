@@ -124,7 +124,7 @@ var _ = Describe("AttentionStore answered retention", func() {
 		Expect(err).To(BeNil())
 		Expect(closed).To(Equal(1))
 
-		history, err := store.History(ctx)
+		history, err := store.History(ctx, 0, 0)
 		Expect(err).To(BeNil())
 		found := false
 		for _, item := range history {
