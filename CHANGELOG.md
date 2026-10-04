@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.39.3
 
 - fix: give the prune its own session-liveness snapshot, so the read's compare-and-delete re-check answers against the value that is live NOW instead of the snapshot the disposition came from. `read` threaded one `readSessionLiveness` through both `classifyForRead` and `pruneDead`, so the prune's re-check read the same listing the classification used — and a re-check that cannot disagree with the verdict that produced it is a no-op, silently removing the protection against deleting an item whose session resumed in the classification→prune window, the "live now" contract the ⚠️ comment above `pruneDead` states. `pruneDead` now builds its own `readSessionLiveness` over the same checker and resolves it BEFORE its `Update` opens — resolving lazily inside the callback would hold the writer lock across a whole registry listing, the lock-hold the read split exists to avoid — while `classifyForRead` keeps the read's source, so a read lists the registry at most twice whatever the open-item count: once for classification, once for the prune. A read that prunes nothing still returns early and lists nothing extra. The pruning spec in `pkg/read-liveness-count_test.go` moves from 1 to 2 consults, because the prune re-lists once and shares that one listing across all re-checked items.
 
