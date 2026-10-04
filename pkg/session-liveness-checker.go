@@ -190,8 +190,10 @@ func (s sessionSnapshot) IsLive(ctx context.Context, sessionID string) bool {
 	return s.ids.Contains(sessionID)
 }
 
-// readSessionLiveness answers liveness for one read of the store, resolving the
-// registry at most once.
+// readSessionLiveness answers liveness for ONE caller, resolving the registry at
+// most once. The read path builds one for its classification and the prune
+// builds its own for the re-check, so a read holds two of these and the registry
+// is listed at most twice per read.
 //
 // ⚠️ The snapshot is taken LAZILY, on the first session-liveness lookup. A read
 // that tests no session-model item — one whose items all carry heartbeat refs —
@@ -202,17 +204,29 @@ type readSessionLiveness struct {
 	resolved sessionLiveness
 }
 
-// newReadSessionLiveness creates the per-read liveness source over a checker.
+// newReadSessionLiveness creates a per-caller liveness source over a checker.
 func newReadSessionLiveness(checker SessionLivenessChecker) *readSessionLiveness {
 	return &readSessionLiveness{checker: checker}
 }
 
 // IsLive resolves the source on the first call and answers from it thereafter.
 func (r *readSessionLiveness) IsLive(ctx context.Context, sessionID string) bool {
+	r.resolveNow(ctx)
+	return r.resolved.IsLive(ctx, sessionID)
+}
+
+// resolveNow takes the one snapshot this source will use, if it has not been
+// taken already.
+//
+// ⚠️ It exists for the prune, which must resolve BEFORE it opens its write
+// transaction: resolving lazily inside that transaction would hold the writer
+// lock across a whole registry listing, which is the lock-hold the read split
+// exists to avoid. The snapshot is still lazy in the sense that a read that
+// prunes nothing never builds a source at all.
+func (r *readSessionLiveness) resolveNow(ctx context.Context) {
 	if r.resolved == nil {
 		r.resolved = r.resolve(ctx)
 	}
-	return r.resolved.IsLive(ctx, sessionID)
 }
 
 // resolve takes the one snapshot this read will use. A checker that can list

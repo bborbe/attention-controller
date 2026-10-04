@@ -216,9 +216,14 @@ var _ = Describe("Read session-registry cost", func() {
 	// ⚠️ The pruning case, and the one that catches `stillDead` being left on the
 	// direct checker. Every producer is gone and every item is an ask (message,
 	// not ack), so `classifyForRead` marks them for removal and `pruneDead`
-	// re-checks each one through `stillDead`. A read that re-listed the registry
-	// per pruned item would count 1 + count here.
-	It("does not re-list the registry for the items a read prunes", func() {
+	// re-checks each one through `stillDead`. The classification lists the
+	// registry once, and the prune takes its OWN snapshot — so the re-check
+	// answers against the value that is live NOW rather than the snapshot the
+	// verdict came from, which is what lets a session resumed in between be seen
+	// as live. That second listing is shared by every re-checked item, so the
+	// count is exactly 2: a prune that re-listed per dead item would count
+	// 1 + count here, and one that reused the read's snapshot would count 1.
+	It("re-lists the registry once for the items a read prunes", func() {
 		dir := GinkgoT().TempDir()
 		checker := newCountingSessionLiveness(dir)
 		store, db := newStore(checker)
@@ -233,8 +238,8 @@ var _ = Describe("Read session-registry cost", func() {
 		Expect(
 			items,
 		).To(BeEmpty(), "every producer is gone and every item was asked, so all are pruned")
-		Expect(checker.consults).To(Equal(1),
-			"the prune re-listed the registry once per dead item instead of reusing the read's snapshot")
+		Expect(checker.consults).To(Equal(2),
+			"the prune must take its own snapshot — one listing shared by all re-checked items — not one per dead item, and not the read's stale one")
 
 		Expect(db.Close()).To(BeNil())
 	})

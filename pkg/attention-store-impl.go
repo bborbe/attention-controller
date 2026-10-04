@@ -390,10 +390,10 @@ func (a *attentionStore) read(ctx context.Context, includeAnswered bool) (Items,
 		return nil, errors.Wrap(ctx, err, "read failed")
 	}
 
-	// One liveness source for the whole read, so the session registry is listed
-	// at most once however many items the read classifies or prunes. It is
-	// shared with the prune below: a read that removes dead askers must not
-	// list the registry again for every item it re-checks.
+	// The classification's own liveness source: one listing answers every
+	// session lookup the read classifies, however many items it holds. The prune
+	// below builds its own for its re-check, so a read lists the registry at most
+	// twice — once here, once there.
 	liveness := newReadSessionLiveness(a.sessionLivenessChecker)
 
 	kept := make(Items, 0, len(items))
@@ -420,7 +420,7 @@ func (a *attentionStore) read(ctx context.Context, includeAnswered bool) (Items,
 		kept = suppressAnsweredTwins(kept)
 	}
 
-	if err := a.pruneDead(ctx, dead, liveness); err != nil {
+	if err := a.pruneDead(ctx, dead); err != nil {
 		return nil, err
 	}
 	return kept, nil
@@ -1102,14 +1102,22 @@ func (a *attentionStore) readItems(ctx context.Context) ([]storedItem, error) {
 // Both are re-read here against the live value. The liveness check does file
 // I/O, but only for the dead subset — the whole scan still runs outside every
 // transaction, which is what the split was for.
-func (a *attentionStore) pruneDead(
-	ctx context.Context,
-	keys []string,
-	liveness sessionLiveness,
-) error {
+//
+// ⚠️ The liveness re-check takes its OWN source rather than the one the
+// classification used. A source answers from the snapshot it took, so reusing
+// the read's would answer "is this producer live now?" with the value from
+// before the classification — which can never differ from the verdict that put
+// the item here, making the re-check a no-op. A fresh source lists the registry
+// again, so a session resumed between the classification and this prune is seen
+// as live and its item is kept. The source is resolved BEFORE the transaction
+// opens, so the writer lock is never held across a registry listing; a read
+// that prunes nothing still returns above and lists nothing extra.
+func (a *attentionStore) pruneDead(ctx context.Context, keys []string) error {
 	if len(keys) == 0 {
 		return nil
 	}
+	liveness := newReadSessionLiveness(a.sessionLivenessChecker)
+	liveness.resolveNow(ctx)
 	err := a.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
 		for _, key := range keys {
 			remove, err := a.stillDead(ctx, tx, key, liveness)
@@ -1731,8 +1739,8 @@ func (a *attentionStore) isProducerLive(ctx context.Context, item *Item) (bool, 
 
 // isProducerLiveWith resolves the item's declared liveness model against the
 // given source. The producer knows which model it is, so the store never
-// guesses; the read path hands in its per-read source so every session lookup
-// in one read is answered from a single registry listing.
+// guesses; each read-path caller hands in its own source, so the lookups one
+// caller makes are answered from a single registry listing.
 func (a *attentionStore) isProducerLiveWith(
 	ctx context.Context,
 	item *Item,
