@@ -358,7 +358,7 @@ var _ = Describe("AttentionStore", func() {
 			_, err = store.Escalate(ctx, escalated.ItemID, manager2SessionID)
 			Expect(err).To(BeNil())
 
-			items, err := store.History(ctx)
+			items, err := store.History(ctx, 0, 0)
 			Expect(err).To(BeNil())
 			byID := map[pkg.ItemID]pkg.Item{}
 			for _, item := range items {
@@ -487,7 +487,7 @@ var _ = Describe("AttentionStore", func() {
 			Expect(err).To(BeNil())
 			Expect(read).To(HaveLen(1))
 
-			history, err := store.History(ctx)
+			history, err := store.History(ctx, 0, 0)
 			Expect(err).To(BeNil())
 			ids := make([]pkg.ItemID, 0, len(history))
 			for _, item := range history {
@@ -503,13 +503,132 @@ var _ = Describe("AttentionStore", func() {
 			Expect(err).To(BeNil())
 			sessionLivenessChecker.IsLiveReturns(false)
 
-			history, err := store.History(ctx)
+			history, err := store.History(ctx, 0, 0)
 			Expect(err).To(BeNil())
 			Expect(history).To(HaveLen(1))
 
 			got, err := store.Get(ctx, item.ItemID)
 			Expect(err).To(BeNil())
 			Expect(got.ItemID).To(Equal(item.ItemID))
+		})
+
+		// ⚠️ The ordering claim is asserted as "non-increasing by CreatedAt"
+		// rather than "history[0] is item-3". Naming the newest item would pass
+		// on a store whose clock happens to separate the pushes and fail on one
+		// that does not, which is a spec testing the clock rather than the
+		// index. The property is what the reverse cursor has to deliver.
+		It("returns items newest-first", func() {
+			for _, dedup := range []string{"gate-1", "gate-2", "gate-3"} {
+				_, err := store.Push(ctx, pushRequest("session-a", pkg.DedupKey(dedup)))
+				Expect(err).To(BeNil())
+			}
+
+			history, err := store.History(ctx, 0, 0)
+			Expect(err).To(BeNil())
+			Expect(history).To(HaveLen(3))
+			for i := 1; i < len(history); i++ {
+				Expect(
+					history[i].CreatedAt.Time().After(history[i-1].CreatedAt.Time()),
+				).To(BeFalse(), "history is not newest-first at index %d", i)
+			}
+		})
+
+		It("bounds the page to limit", func() {
+			for _, dedup := range []string{"gate-1", "gate-2", "gate-3"} {
+				_, err := store.Push(ctx, pushRequest("session-a", pkg.DedupKey(dedup)))
+				Expect(err).To(BeNil())
+			}
+
+			all, err := store.History(ctx, 0, 0)
+			Expect(err).To(BeNil())
+			Expect(all).To(HaveLen(3))
+
+			page, err := store.History(ctx, 2, 0)
+			Expect(err).To(BeNil())
+			Expect(page).To(HaveLen(2))
+			// The bound must not silently reorder: the page is the FIRST two of
+			// the full history, not an arbitrary two.
+			Expect(page[0].ItemID).To(Equal(all[0].ItemID))
+			Expect(page[1].ItemID).To(Equal(all[1].ItemID))
+		})
+
+		It("skips the first offset", func() {
+			for _, dedup := range []string{"gate-1", "gate-2", "gate-3"} {
+				_, err := store.Push(ctx, pushRequest("session-a", pkg.DedupKey(dedup)))
+				Expect(err).To(BeNil())
+			}
+
+			all, err := store.History(ctx, 0, 0)
+			Expect(err).To(BeNil())
+			Expect(all).To(HaveLen(3))
+
+			page, err := store.History(ctx, 0, 1)
+			Expect(err).To(BeNil())
+			Expect(page).To(HaveLen(2))
+			Expect(page[0].ItemID).To(Equal(all[1].ItemID))
+			Expect(page[1].ItemID).To(Equal(all[2].ItemID))
+		})
+
+		It("treats a negative offset as zero", func() {
+			_, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
+			Expect(err).To(BeNil())
+
+			page, err := store.History(ctx, 0, -1)
+			Expect(err).To(BeNil())
+			Expect(page).To(HaveLen(1))
+		})
+
+		It("returns every item when the limit is zero", func() {
+			for _, dedup := range []string{"gate-1", "gate-2", "gate-3"} {
+				_, err := store.Push(ctx, pushRequest("session-a", pkg.DedupKey(dedup)))
+				Expect(err).To(BeNil())
+			}
+
+			history, err := store.History(ctx, 0, 0)
+			Expect(err).To(BeNil())
+			Expect(history).To(HaveLen(3))
+		})
+
+		// The reachability claim the endpoint's consumers depend on: a bounded
+		// page is only safe if paging reaches everything, with no gap and no
+		// duplicate. This is the spec that would catch an offset applied to the
+		// wrong side of the cursor.
+		It("reaches every item by paging", func() {
+			pushed := make([]pkg.ItemID, 0, 5)
+			for _, dedup := range []string{"g1", "g2", "g3", "g4", "g5"} {
+				item, err := store.Push(ctx, pushRequest("session-a", pkg.DedupKey(dedup)))
+				Expect(err).To(BeNil())
+				pushed = append(pushed, item.ItemID)
+			}
+
+			seen := make([]pkg.ItemID, 0, len(pushed))
+			for offset := 0; offset < len(pushed); offset += 2 {
+				page, err := store.History(ctx, 2, offset)
+				Expect(err).To(BeNil())
+				for _, item := range page {
+					seen = append(seen, item.ItemID)
+				}
+			}
+
+			Expect(seen).To(HaveLen(len(pushed)))
+			Expect(seen).To(ConsistOf(pushed))
+		})
+
+		// A closed item is the population the endpoint exists to count, and the
+		// history index admits it because its predicate is constant. A spec that
+		// only paged open items would pass on an index that filtered states.
+		It("pages closed items too", func() {
+			for _, dedup := range []string{"gate-1", "gate-2"} {
+				item, err := store.Push(ctx, pushRequest("session-a", pkg.DedupKey(dedup)))
+				Expect(err).To(BeNil())
+				_, err = store.Close(ctx, item.ItemID, "", nil)
+				Expect(err).To(BeNil())
+			}
+
+			page, err := store.History(ctx, 1, 0)
+			Expect(err).To(BeNil())
+			Expect(page).To(HaveLen(1))
+			Expect(page[0].State).To(Equal(pkg.ClosedState))
 		})
 	})
 
@@ -1301,7 +1420,7 @@ var _ = Describe("AttentionStore", func() {
 			// The answer must survive. Pruning it would rewrite the history the
 			// schema says is never rewritten — the one thing the prune exists
 			// not to do.
-			history, err := store.History(ctx)
+			history, err := store.History(ctx, 0, 0)
 			Expect(err).To(BeNil())
 			Expect(history).To(HaveLen(1))
 			Expect(history[0].State).To(Equal(pkg.AnsweredState))
@@ -1327,7 +1446,7 @@ var _ = Describe("AttentionStore", func() {
 				Expect(err).To(BeNil())
 				Expect(items).To(BeEmpty())
 
-				history, err := store.History(ctx)
+				history, err := store.History(ctx, 0, 0)
 				Expect(err).To(BeNil())
 				Expect(history).To(HaveLen(1))
 				Expect(history[0].ItemID).To(Equal(item.ItemID))
