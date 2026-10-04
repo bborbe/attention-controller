@@ -520,6 +520,14 @@ func (a *attentionStore) putItem(ctx context.Context, tx libkv.Tx, item Item) er
 	if err != nil {
 		return err
 	}
+	// ⚠️ Also read BEFORE the write, because `Add` OVERWRITES in place — so this
+	// is the only point at which the item's previous value is knowable. The
+	// history index needs it: its key is derived from CreatedAt, and
+	// `updateExistingIfLive` REWRITES that field on a duplicate-suppressed push.
+	previous, err := a.storedItem(ctx, tx, item.ItemID.String())
+	if err != nil {
+		return err
+	}
 	if err := a.store.Add(ctx, tx, item.ItemID.String(), item); err != nil {
 		return errors.Wrap(ctx, err, "add item failed")
 	}
@@ -547,7 +555,28 @@ func (a *attentionStore) putItem(ctx context.Context, tx libkv.Tx, item Item) er
 			return errors.Wrap(ctx, err, "mark open index built failed")
 		}
 	}
-	return a.reconcileIndexes(ctx, tx, item)
+	return a.reconcileIndexes(ctx, tx, item, previous)
+}
+
+// storedItem returns the item currently stored under key, or nil when there is
+// none.
+//
+// It treats absence as a VALUE rather than an error because both callers ask a
+// question whose answer is legitimately "nothing there yet" — `putItem` on a
+// first write, and `removeItem` on an item another read already pruned.
+func (a *attentionStore) storedItem(
+	ctx context.Context,
+	tx libkv.Tx,
+	key string,
+) (*Item, error) {
+	item, err := a.store.Get(ctx, tx, key)
+	if err != nil {
+		if isNotFound(err) {
+			return nil, nil
+		}
+		return nil, errors.Wrapf(ctx, err, "get item %s failed", key)
+	}
+	return item, nil
 }
 
 // reconcileIndexes brings ALL THREE derived indexes in line with one item: the
@@ -562,6 +591,7 @@ func (a *attentionStore) reconcileIndexes(
 	ctx context.Context,
 	tx libkv.Tx,
 	item Item,
+	previous *Item,
 ) error {
 	if err := a.reconcileIndex(
 		ctx, tx, a.liveIndex, "live", item, liveIndexWorthy(item), itemIDIndexKey,
@@ -573,11 +603,26 @@ func (a *attentionStore) reconcileIndexes(
 	); err != nil {
 		return err
 	}
-	// ⚠️ History is the one index whose predicate is constant: every item belongs
-	// whatever its state, because History never filters. Its key is derived from
-	// the item rather than the bucket key, and since CreatedAt is written once and
-	// never rewritten, re-reconciling the same item writes the same key — so this
-	// entry is stable rather than accumulating duplicates across state changes.
+	// ⚠️ History is the one index whose predicate is constant — every item belongs
+	// whatever its state, because History never filters — and it is also the one
+	// index whose key can MOVE, because that key is derived from CreatedAt.
+	//
+	// ⚠️ An earlier version of this comment claimed CreatedAt "is written once and
+	// never rewritten", and that claim was FALSE: `updateExistingIfLive` rewrites
+	// it on a duplicate-suppressed push. Since `reconcileIndex` only ever ADDS for
+	// this index, the row written under the old key was stranded and the reverse
+	// cursor returned the same ItemID once per suppressed push — defeating the
+	// counting purpose the endpoint exists for. The removal below is the fix; the
+	// false claim is recorded rather than deleted because the assumption reads as
+	// obviously true and is not.
+	if previous != nil {
+		oldKey := timeOrderedIndexKey("", *previous)
+		if newKey := timeOrderedIndexKey("", item); oldKey != newKey {
+			if err := a.removeIndexKey(ctx, tx, a.historyIndex, oldKey, "history"); err != nil {
+				return err
+			}
+		}
+	}
 	return a.reconcileIndex(
 		ctx, tx, a.historyIndex, "history", item, true, timeOrderedIndexKey,
 	)
@@ -627,8 +672,8 @@ func (a *attentionStore) itemsBucketAbsent(ctx context.Context, tx libkv.Tx) (bo
 // deletion by key. Reading first is what stops a removal stranding a history
 // entry that would go on serving an item the store no longer holds.
 func (a *attentionStore) removeItem(ctx context.Context, tx libkv.Tx, key string) error {
-	item, err := a.store.Get(ctx, tx, key)
-	if err != nil && !isNotFound(err) {
+	item, err := a.storedItem(ctx, tx, key)
+	if err != nil {
 		return errors.Wrapf(ctx, err, "get item %s for removal failed", key)
 	}
 	if err := a.store.Remove(ctx, tx, key); err != nil {

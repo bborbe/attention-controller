@@ -159,6 +159,18 @@ var _ = Describe("AttentionStore", func() {
 			Expect(err).To(BeNil())
 			Expect(created.ProvenanceClass).To(Equal(pkg.ProvenanceClass("")))
 
+			// ⚠️ BUILD THE INDEX FIRST, and this call is load-bearing rather than
+			// incidental. `putItem` marks the live and open indexes built on a
+			// store's first write but NOT the history index, so the first
+			// `History` call performs the one-time build — and pass two of
+			// `rebuildIndex` removes any stale key, which would CLEAN the orphan
+			// this spec exists to catch. Reading here writes the marker, so the
+			// suppressed push below lands on the steady-state incremental path,
+			// which is the only path the defect occurs on.
+			built, err := store.History(ctx, 0, 0)
+			Expect(err).To(BeNil())
+			Expect(built).To(HaveLen(1))
+
 			second := pushRequest("session-a", "gate-1")
 			second.ProvenanceClass = pkg.HookProvenanceClass
 			updated, err := store.Push(ctx, second)
@@ -168,6 +180,25 @@ var _ = Describe("AttentionStore", func() {
 			got, err := store.Get(ctx, created.ItemID)
 			Expect(err).To(BeNil())
 			Expect(got.ProvenanceClass).To(Equal(pkg.HookProvenanceClass))
+
+			// ⚠️ This assertion is the one that catches an ORPHANED history index
+			// entry, and it is the reason the two above cannot: the suppression
+			// above REWRITES CreatedAt (impl:1630), the history index is keyed by
+			// `created_at|id`, and its predicate is the constant `true` — so
+			// reconcileIndex only ever ADDS. The row written at the first push is
+			// stranded when the second writes a new key, and the reverse cursor in
+			// collectHistoryPage returns BOTH.
+			//
+			// It is invisible without this assertion: `Get` is bucket-keyed and
+			// overwrites in place, and a freshly built index is clean because pass
+			// two of rebuildIndex removes stale keys — but that runs only from
+			// ensureHistoryIndex, once, when the marker is absent. The defect
+			// therefore appears only on the steady-state incremental path, after
+			// the one-time build, which is exactly where this spec sits.
+			history, err := store.History(ctx, 0, 0)
+			Expect(err).To(BeNil())
+			Expect(history).To(HaveLen(1), "a suppressed push must not add a second history row")
+			Expect(history[0].ItemID).To(Equal(created.ItemID))
 		})
 
 		It("rejects an invalid value", func() {
