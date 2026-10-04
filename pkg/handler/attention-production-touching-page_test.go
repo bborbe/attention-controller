@@ -190,7 +190,7 @@ var _ = Describe("the production-touching marker on the served page", func() {
 				sessionsDir,
 				spawnDir,
 				panes,
-				pkg.NewTaskIndex(ctx, vault),
+				pkg.NewTaskIndex(ctx, vault, clock),
 				clock,
 			),
 			false,
