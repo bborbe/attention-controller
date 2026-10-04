@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mxschmitt/playwright-go"
@@ -1012,6 +1013,61 @@ var _ = Describe("the attention board", func() {
 		Eventually(func() bool {
 			attempt++
 			push(fmt.Sprintf("e2e: recovery %d", attempt), fmt.Sprintf("e2e-recover-%d", attempt))
+			return !staleVisible(page)
+		}).WithTimeout(45 * time.Second).WithPolling(500 * time.Millisecond).Should(BeTrue())
+
+		// And it stays cleared, so the recovery is not a single repaint.
+		Consistently(func() bool { return staleVisible(page) }).
+			WithTimeout(2 * time.Second).Should(BeFalse())
+	})
+
+	It("recovers when the stream returns a response that is not an event stream", func() {
+		page := newPage("")
+		defer func() { _ = page.Close() }()
+
+		// ⚠️ The complement of the abort case above, and the reason it cannot be
+		// folded into it. EventSource re-establishes a network error but fails the
+		// connection for GOOD on a non-200 status or a body whose content type is
+		// not text/event-stream: readyState goes CLOSED and no retry is scheduled.
+		// The server produces exactly that shape when the baseline render fails —
+		// ServeHTTP returns before it sets the header — so this is the case the
+		// board's own reconnect exists for, and the one a restart cannot exercise
+		// (a restart is a network drop, which recovers on its own).
+		var requests int64
+		Expect(page.Route(streamPattern, func(route playwright.Route) {
+			atomic.AddInt64(&requests, 1)
+			_ = route.Fulfill(playwright.RouteFulfillOptions{
+				Status:      playwright.Int(200),
+				ContentType: playwright.String("text/plain; charset=utf-8"),
+				Body:        playwright.String(""),
+			})
+		})).To(Succeed())
+		_, err := page.Reload(
+			playwright.PageReloadOptions{WaitUntil: playwright.WaitUntilStateLoad},
+		)
+		Expect(err).NotTo(HaveOccurred())
+
+		Eventually(func() bool { return staleVisible(page) }).
+			WithTimeout(10 * time.Second).Should(BeTrue())
+
+		// The page must ask again. EventSource will not, so a count that stays at
+		// one is precisely the defect this case exists to catch — and it is the
+		// assertion the abort case above can never make, because there the retry
+		// is EventSource's own.
+		Eventually(func() int64 { return atomic.LoadInt64(&requests) }).
+			WithTimeout(20 * time.Second).Should(BeNumerically(">", 1))
+
+		// Letting the request through is what restores the stream. Nothing here
+		// re-opens it: the reconnect is the page's own.
+		Expect(page.Unroute(streamPattern)).To(Succeed())
+
+		attempt := 0
+		Eventually(func() bool {
+			attempt++
+			push(
+				fmt.Sprintf("e2e: terminal recovery %d", attempt),
+				fmt.Sprintf("e2e-terminal-recover-%d", attempt),
+			)
 			return !staleVisible(page)
 		}).WithTimeout(45 * time.Second).WithPolling(500 * time.Millisecond).Should(BeTrue())
 
