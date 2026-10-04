@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -21,9 +22,12 @@ import (
 	libtime "github.com/bborbe/time"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 
 	"github.com/bborbe/attention-controller/mocks"
 	"github.com/bborbe/attention-controller/pkg"
+	"github.com/bborbe/attention-controller/pkg/boardmetrics"
 	"github.com/bborbe/attention-controller/pkg/handler"
 )
 
@@ -79,12 +83,19 @@ var _ = Describe("AttentionStreamHandler", func() {
 
 		provenance = &mocks.ProvenanceResolver{}
 		vaultDir = filepath.Join(GinkgoT().TempDir(), "Personal")
+		// ⚠️ A private registry, never the process-wide default registry:
+		// MustRegister panics on a second registration of the same collector, so
+		// a spec on the default registry would panic as soon as another spec
+		// registered the same names.
+		registry := prometheus.NewRegistry()
+		metrics := boardmetrics.NewMetrics(registry)
 		server = httptest.NewServer(handler.NewAttentionStreamHandler(
 			store,
 			notifier,
 			provenance,
 			false,
 			vaultDir,
+			metrics,
 		))
 	})
 
@@ -326,12 +337,15 @@ var _ = Describe("AttentionStreamHandler under a write deadline", func() {
 		// One second rather than the real 30: the mechanism is identical and the
 		// assertion is the same, and a spec that waited out the real default
 		// would cost half a minute for no extra evidence.
+		registry := prometheus.NewRegistry()
+		metrics := boardmetrics.NewMetrics(registry)
 		server = httptest.NewUnstartedServer(handler.NewAttentionStreamHandler(
 			store,
 			notifier,
 			&mocks.ProvenanceResolver{},
 			false,
 			"",
+			metrics,
 		))
 		server.Config.WriteTimeout = 1 * time.Second
 		server.Start()
@@ -405,6 +419,36 @@ func (s *readCountingStore) Reads() int64 {
 	return atomic.LoadInt64(&s.reads)
 }
 
+// metricFamily returns the gathered family with the given name, failing the
+// spec when the registry does not expose it.
+func metricFamily(registry *prometheus.Registry, name string) *dto.MetricFamily {
+	families, err := registry.Gather()
+	Expect(err).Should(BeNil())
+	for _, family := range families {
+		if family.GetName() == name {
+			return family
+		}
+	}
+	return nil
+}
+
+// counterValue reads a single-series counter family's value.
+func counterValue(registry *prometheus.Registry, name string) float64 {
+	family := metricFamily(registry, name)
+	Expect(family).ShouldNot(BeNil())
+	return family.GetMetric()[0].GetCounter().GetValue()
+}
+
+// failingReadBoardStore makes the render path fail, so a spec can prove a
+// failed render moves neither counter.
+type failingReadBoardStore struct {
+	pkg.AttentionStore
+}
+
+func (s *failingReadBoardStore) ReadBoard(ctx context.Context) (pkg.Items, error) {
+	return nil, stderrors.New("read board failed")
+}
+
 // The board is rendered once per change and shared by every stream, not once
 // per stream per change.
 //
@@ -423,6 +467,10 @@ var _ = Describe("AttentionStreamHandler render fan-out", func() {
 	var notifier pkg.AttentionChangeNotifier
 	var store *readCountingStore
 	var server *httptest.Server
+	// registry is Describe-scoped because the counter specs read the render
+	// counter back off it, and it must be the same registry the handler under
+	// test reports through.
+	var registry *prometheus.Registry
 
 	BeforeEach(func() {
 		ctx = context.Background()
@@ -445,12 +493,15 @@ var _ = Describe("AttentionStreamHandler render fan-out", func() {
 			notifier,
 		)}
 
+		registry = prometheus.NewRegistry()
+		metrics := boardmetrics.NewMetrics(registry)
 		server = httptest.NewServer(handler.NewAttentionStreamHandler(
 			store,
 			notifier,
 			&mocks.ProvenanceResolver{},
 			false,
 			filepath.Join(GinkgoT().TempDir(), "Personal"),
+			metrics,
 		))
 	})
 
@@ -586,5 +637,181 @@ var _ = Describe("AttentionStreamHandler render fan-out", func() {
 		defer cancelSecond()
 
 		Expect(store.Reads()).Should(Equal(rendersBefore))
+	})
+})
+
+// The board's shared render path reports what it did, so the fan-out ratio can
+// be read off the deployed binary's /metrics rather than only proven by a spec.
+//
+// ⚠️ Every spec here builds its OWN registry and reads the counters back off it,
+// never the process-wide default registry: MustRegister panics on a second
+// registration of the same collector, so a spec on the default registry would
+// panic as soon as another spec registered the same names.
+var _ = Describe("AttentionStreamHandler render counters", func() {
+	var ctx context.Context
+	var db libkv.DB
+	var notifier pkg.AttentionChangeNotifier
+	var store pkg.AttentionStore
+	var registry *prometheus.Registry
+	var metrics pkg.Metrics
+	var server *httptest.Server
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		var err error
+		db, err = libboltkv.OpenTemp(ctx)
+		Expect(err).Should(BeNil())
+
+		// The mock defaults to false, which would prune every fixture during
+		// ReadBoard and change the row counts these specs assert on.
+		sessionLivenessChecker := &mocks.SessionLivenessChecker{}
+		sessionLivenessChecker.IsLiveReturns(true)
+
+		notifier = pkg.NewAttentionChangeNotifier()
+		store = pkg.NewNotifyingAttentionStore(
+			pkg.NewAttentionStore(
+				db,
+				pkg.NewItemIDGenerator(),
+				sessionLivenessChecker,
+				libtime.NewCurrentDateTime(),
+				libtime.Duration(15*60*1e9),
+			),
+			notifier,
+		)
+
+		registry = prometheus.NewRegistry()
+		metrics = boardmetrics.NewMetrics(registry)
+		server = httptest.NewServer(handler.NewAttentionStreamHandler(
+			store,
+			notifier,
+			&mocks.ProvenanceResolver{},
+			false,
+			filepath.Join(GinkgoT().TempDir(), "Personal"),
+			metrics,
+		))
+	})
+
+	AfterEach(func() {
+		server.Close()
+	})
+
+	connect := func() (*bufio.Reader, context.CancelFunc) {
+		streamCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		req, err := http.NewRequestWithContext(streamCtx, http.MethodGet, server.URL, nil)
+		Expect(err).Should(BeNil())
+		resp, err := http.DefaultClient.Do(req)
+		Expect(err).Should(BeNil())
+		Expect(resp.StatusCode).Should(Equal(http.StatusOK))
+		Expect(resp.Header.Get("Content-Type")).Should(Equal("text/event-stream"))
+		return bufio.NewReader(resp.Body), cancel
+	}
+
+	push := func(payload string) *pkg.Item {
+		item, err := store.Push(ctx, pkg.PushRequest{
+			ProducerID:      "producer-a",
+			ProducerKind:    pkg.SessionProducerKind,
+			LivenessRef:     pkg.LivenessRef("session:producer-a"),
+			DedupKey:        pkg.DedupKey(payload),
+			InterruptClass:  "approve",
+			Payload:         pkg.Payload(payload),
+			AnswerMechanism: pkg.MessageAnswerMechanism,
+		})
+		Expect(err).Should(BeNil())
+		return item
+	}
+
+	readEvent := func(reader *bufio.Reader) map[string]string {
+		var payload string
+		for {
+			line, err := reader.ReadString('\n')
+			Expect(err).Should(BeNil())
+			line = strings.TrimRight(line, "\n")
+			if line == "" {
+				break
+			}
+			if after, found := strings.CutPrefix(line, "data: "); found {
+				payload = after
+			}
+		}
+		var event map[string]string
+		Expect(json.Unmarshal([]byte(payload), &event)).Should(BeNil())
+		return event
+	}
+
+	// The figure is the number of renders performed, not the number of streams
+	// woken: one change costs one render however many streams are attached.
+	It("counts one render per change", func() {
+		reader, cancel := connect()
+		defer cancel()
+
+		// The baseline render is complete once the response headers arrive, so
+		// the counter already reads one here rather than racing the render.
+		Expect(counterValue(registry, "attention_board_renders_total")).Should(Equal(1.0))
+
+		first := push("first change?")
+		Expect(readEvent(reader)["item_id"]).Should(Equal(first.ItemID.String()))
+		Expect(counterValue(registry, "attention_board_renders_total")).Should(Equal(2.0))
+
+		second := push("second change?")
+		Expect(readEvent(reader)["item_id"]).Should(Equal(second.ItemID.String()))
+		Expect(counterValue(registry, "attention_board_renders_total")).Should(Equal(3.0))
+	})
+
+	// The rows counter is the render count multiplied by the board's size, which
+	// is what makes the fan-out ratio readable off a deployed binary.
+	It("counts the rows each render produced", func() {
+		// Pushed before any subscriber attaches, so the signals go nowhere and
+		// the board is two rows when the baseline render runs.
+		first := push("first row?")
+		second := push("second row?")
+
+		reader, cancel := connect()
+		defer cancel()
+		Expect(counterValue(registry, "attention_board_renders_total")).Should(Equal(1.0))
+		Expect(counterValue(registry, "attention_board_rows_rendered_total")).Should(Equal(2.0))
+
+		// Two changes that keep the board at two rows: an answered item stays in
+		// ReadBoard as a dimmed row, so each render still draws both. Answering
+		// a DIFFERENT item each time is load bearing — Answer is a compare-and-
+		// set from open, so answering the same item twice fails.
+		answer := pkg.Answer{Kind: pkg.TextAnswerKind, Value: "yes"}
+		_, err := store.Answer(ctx, first.ItemID, "attention-board", "", "", &answer, nil, nil)
+		Expect(err).Should(BeNil())
+		Expect(readEvent(reader)["item_id"]).Should(Equal(first.ItemID.String()))
+
+		_, err = store.Answer(ctx, second.ItemID, "attention-board", "", "", &answer, nil, nil)
+		Expect(err).Should(BeNil())
+		Expect(readEvent(reader)["item_id"]).Should(Equal(second.ItemID.String()))
+
+		// Three renders of two rows each: the baseline plus one per change.
+		Expect(counterValue(registry, "attention_board_renders_total")).Should(Equal(3.0))
+		Expect(counterValue(registry, "attention_board_rows_rendered_total")).Should(Equal(6.0))
+	})
+
+	// A render that returned an error reports nothing, so a board that cannot be
+	// read does not inflate either figure.
+	It("counts neither counter when a render fails", func() {
+		// ⚠️ A second server on the SAME metrics, and a plain http.Get rather
+		// than connect: the handler returns without writing headers once the
+		// baseline render fails, so the response arrives only after the render
+		// has already failed — and it is not a text/event-stream response.
+		failingServer := httptest.NewServer(handler.NewAttentionStreamHandler(
+			&failingReadBoardStore{AttentionStore: store},
+			notifier,
+			&mocks.ProvenanceResolver{},
+			false,
+			"",
+			metrics,
+		))
+		defer failingServer.Close()
+
+		resp, err := http.Get(failingServer.URL)
+		Expect(err).Should(BeNil())
+		resp.Body.Close()
+
+		// Registered-but-unincremented counters gather as 0, so this asserts the
+		// value rather than the absence of the series.
+		Expect(counterValue(registry, "attention_board_renders_total")).Should(Equal(0.0))
+		Expect(counterValue(registry, "attention_board_rows_rendered_total")).Should(Equal(0.0))
 	})
 })

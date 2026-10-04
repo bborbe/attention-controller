@@ -1,8 +1,13 @@
 ---
-status: approved
+status: completed
 spec: [008-board-render-counter]
+summary: Wired the two board render counters through the handler/factory/main constructors and incremented them in boardRenderer.run, with new specs proving one render per change, rows-per-render totals, and no movement on a failed render.
+execution_id: attention-controller-render-counter-exec-031-spec-008-wire-render-counter
+dark-factory-version: v0.196.0
 created: "2026-10-04T12:50:02Z"
 queued: "2026-10-04T13:08:06Z"
+started: "2026-10-04T13:10:34Z"
+completed: "2026-10-04T13:15:41Z"
 branch: dark-factory/board-render-counter
 ---
 
