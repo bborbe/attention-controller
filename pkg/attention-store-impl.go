@@ -370,9 +370,12 @@ func (a *attentionStore) classifyForRead(
 // taken: the item's STATE (Answer and Close take no liveness gate, so an item
 // can legitimately be answered while still open) and the producer's LIVENESS
 // (which is not monotonic — a refreshed heartbeat or a resumed session flips it
-// back). `pruneDead` re-reads both against the live value inside its own
+// back). `pruneDead` re-reads the STATE against the live value inside its own
 // transaction, which is the repo's own rule: a compare-and-set belongs inside
-// the transaction, never as a separate read then write.
+// the transaction, never as a separate read then write. Its LIVENESS re-check
+// is the documented exception — it takes a fresh snapshot resolved just before
+// the transaction opens, so the writer lock is never held across a registry
+// listing. The residual window is therefore resolve → lock-acquire, not zero.
 func (a *attentionStore) read(ctx context.Context, includeAnswered bool) (Items, error) {
 	// ⚠️ The open-only read scans the open-only index, so it never decodes the
 	// answered items classifyForRead would discard. ReadBoard keeps the live
@@ -1099,19 +1102,26 @@ func (a *attentionStore) readItems(ctx context.Context) ([]storedItem, error) {
 //     `updateExistingIfLive` then updates that item's key in place, so a blind
 //     delete would remove an item a live producer has just refreshed.
 //
-// Both are re-read here against the live value. The liveness check does file
-// I/O, but only for the dead subset — the whole scan still runs outside every
-// transaction, which is what the split was for.
+// The STATE is re-read here against the live value, inside the transaction. The
+// LIVENESS is re-read from a snapshot taken just before that transaction opens
+// — see the ⚠️ below for what that does and does not close. The liveness check
+// does file I/O, but only for the dead subset — the whole scan still runs
+// outside every transaction, which is what the split was for.
 //
 // ⚠️ The liveness re-check takes its OWN source rather than the one the
 // classification used. A source answers from the snapshot it took, so reusing
 // the read's would answer "is this producer live now?" with the value from
 // before the classification — which can never differ from the verdict that put
 // the item here, making the re-check a no-op. A fresh source lists the registry
-// again, so a session resumed between the classification and this prune is seen
-// as live and its item is kept. The source is resolved BEFORE the transaction
-// opens, so the writer lock is never held across a registry listing; a read
-// that prunes nothing still returns above and lists nothing extra.
+// again, so a session resumed between the classification and that listing is
+// seen as live and its item is kept.
+//
+// ⚠️ The window it closes is classification → prune. The window it leaves open
+// is resolve → lock-acquire: a session resumed after the listing but before the
+// write is still pruned. Stated rather than implied, because the snapshot is
+// fresher, not live. The source is resolved BEFORE the transaction opens, so the
+// writer lock is never held across a registry listing; a read that prunes
+// nothing still returns above and lists nothing extra.
 func (a *attentionStore) pruneDead(ctx context.Context, keys []string) error {
 	if len(keys) == 0 {
 		return nil
@@ -1139,8 +1149,12 @@ func (a *attentionStore) pruneDead(ctx context.Context, keys []string) error {
 	return nil
 }
 
-// stillDead re-checks one key the read classified dead, against the value that
-// is live now rather than the snapshot the disposition came from.
+// stillDead re-checks one key the read classified dead, against a snapshot taken
+// after the disposition rather than the one it came from — fresher, not live.
+// The window it closes is classification → prune; the window it leaves open is
+// resolve → lock-acquire, so a session resumed inside that second window is
+// still pruned. Named rather than implied: the earlier wording claimed "the
+// value that is live now", which the snapshot does not give.
 //
 // It is a method rather than an inline branch for the same reason
 // classifyForRead is one: the state check and the liveness check together
