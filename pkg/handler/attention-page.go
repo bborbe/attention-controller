@@ -1462,7 +1462,6 @@ function replayFailure(row) {
      work, and a browser with no EventSource still renders the board and still
      has to be able to ask what is left. */
   if (typeof EventSource === 'undefined') { return; }
-  var source = new EventSource('/api/1.0/attention/stream');
   /* The not-tracking state, shown in the board's control row. It is a state on
      the page rather than a console line because the operator has to be able to
      read it without opening devtools — that is the whole point: a stream that
@@ -1474,17 +1473,34 @@ function replayFailure(row) {
     if (!stale) { return; }
     stale.hidden = tracking;
   }
-  /* No reconnect handler: EventSource reconnects on its own, which is the
-     property that lets the board survive a restart of the store.
-     ⚠️ onerror renders the state and returns. It does NOT reconnect and must
-     not: it closes nothing, retries nothing and leaves reconnection to
-     EventSource exactly as the line above records. It fires on each failed
-     attempt, so a brief restart of the store shows the state only for the gap,
-     and the next message clears it. */
-  source.onerror = function () {
-    setTracking(false);
-  };
-  source.onmessage = function (event) {
+  /* Reconnect after a TERMINAL stream failure: EventSource retries a network
+     drop itself, but fails the connection for good on a non-200 status or a
+     non-event-stream content type — the shape this server returns when the
+     baseline render fails — and never asks again, so the state onerror renders
+     could never be cleared. See the e2e case "recovers when the stream
+     returns a response that is not an event stream". */
+  var reconnectDelayMs = 1000;
+  var reconnectTimer = null;
+  var source = null;
+  function connect() {
+    source = new EventSource('/api/1.0/attention/stream');
+    source.onopen = function () {
+      reconnectDelayMs = 1000; /* established, so a later outage backs off from the floor */
+    };
+    source.onerror = function () {
+      setTracking(false);
+      /* CONNECTING means EventSource retries by itself; only CLOSED is abandoned. */
+      if (source.readyState !== EventSource.CLOSED) { return; }
+      if (reconnectTimer !== null) { return; }
+      reconnectTimer = window.setTimeout(function () {
+        reconnectTimer = null;
+        reconnectDelayMs = Math.min(reconnectDelayMs * 2, 30000);
+        connect();
+      }, reconnectDelayMs);
+    };
+    source.onmessage = onMessage;
+  }
+  function onMessage(event) {
     /* Cleared before the frame is read: a message arrived, so the board is
        tracking the store again whatever that frame turns out to say — a frame
        this page cannot parse is logged and skipped below, and skipping it is
@@ -1495,7 +1511,7 @@ function replayFailure(row) {
        The rest of this handler reads change.type and change.item_id, so a throw
        here aborted the row swap with nothing said; a truncated frame or one from
        a newer store version is not a reason to stop listening, and the stream
-       reconnects on its own. */
+       reconnects — itself for a drop, via connect() for the terminal case. */
     try {
       change = JSON.parse(event.data);
     } catch (error) {
@@ -1533,7 +1549,8 @@ function replayFailure(row) {
         change
       );
     }
-  };
+  }
+  connect();
 })();
 </script>
 </body>

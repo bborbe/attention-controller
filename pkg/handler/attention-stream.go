@@ -57,12 +57,19 @@ type attentionStreamEvent struct {
 // outlives any one request, and the directory cannot change under it. An empty
 // vaultDir yields an empty name, so a host with no vault renders no task link on
 // either surface.
+//
+// metrics is injected rather than reached for, so a spec can build the counters
+// on its own registry and read them back — and so the running service registers
+// them on the one registry /metrics already serves. It is handed to the shared
+// renderer and not held by the handler, because the renderer is the only place
+// a render happens.
 func NewAttentionStreamHandler(
 	store pkg.AttentionStore,
 	notifier pkg.AttentionChangeNotifier,
 	provenance pkg.ProvenanceResolver,
 	speakEnabled bool,
 	vaultDir string,
+	metrics pkg.Metrics,
 ) http.Handler {
 	// The same template the page parses, so `attention-row` renders from one
 	// definition rather than from a copy kept in step by hand.
@@ -80,7 +87,7 @@ func NewAttentionStreamHandler(
 	// `createHTTPServer`), so every stream in the process shares this one. That
 	// is the whole point: `render` takes no client input, so building it per
 	// connection would recompute an identical result once per client.
-	handler.board = &boardRenderer{render: handler.render}
+	handler.board = &boardRenderer{render: handler.render, metrics: metrics}
 	return handler
 }
 
@@ -143,8 +150,17 @@ func (r *boardRefresh) wait(ctx context.Context) error {
 // change already been rendered for?" rather than merely "is the cache warm?" —
 // and a wake carrying a later generation still renders, because a read taken
 // before that write cannot cover it.
+//
+// It reports what it did through the injected counters: every completed render
+// moves attention_board_renders_total by one and adds the rows it produced to
+// attention_board_rows_rendered_total, while a render that returned an error
+// reports nothing at all.
 type boardRenderer struct {
 	render func(ctx context.Context) (map[string]string, error)
+	// metrics is the counters the shared render path reports through; held by
+	// the renderer and not the handler, so the increment cannot be reached from
+	// a per-client path.
+	metrics pkg.Metrics
 
 	mu                 sync.Mutex
 	seq                uint64
@@ -218,6 +234,8 @@ func (b *boardRenderer) run(ctx context.Context, refresh *boardRefresh, generati
 	defer b.mu.Unlock()
 	refresh.err = err
 	if err == nil {
+		b.metrics.BoardRendersTotalCounterInc()
+		b.metrics.BoardRowsRenderedTotalCounterAdd(len(rendered))
 		b.seq++
 		b.current = &boardSnapshot{seq: b.seq, rendered: rendered}
 		// ⚠️ Stamped with the generation this render was FOR, never with the

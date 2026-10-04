@@ -23,9 +23,11 @@ import (
 	libtime "github.com/bborbe/time"
 	"github.com/golang/glog"
 	"github.com/gorilla/mux"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/bborbe/attention-controller/pkg"
+	"github.com/bborbe/attention-controller/pkg/boardmetrics"
 	"github.com/bborbe/attention-controller/pkg/buildidentity"
 	"github.com/bborbe/attention-controller/pkg/factory"
 )
@@ -114,9 +116,14 @@ func (a *application) Run(ctx context.Context, sentryClient libsentry.Client) er
 	notifier := pkg.NewAttentionChangeNotifier()
 	store := pkg.NewNotifyingAttentionStore(rawStore, notifier)
 
+	// Built once per process and injected, so the two counters are registered on
+	// the default registry — the one /metrics serves — exactly once. A second
+	// registration of the same collector panics.
+	boardMetrics := boardmetrics.NewMetrics(prometheus.DefaultRegisterer)
+
 	return service.Run(
 		ctx,
-		a.createHTTPServer(sentryClient, db, store, notifier),
+		a.createHTTPServer(sentryClient, db, store, notifier, boardMetrics),
 	)
 
 }
@@ -287,6 +294,7 @@ func (a *application) createHTTPServer(
 	db libkv.DB,
 	store pkg.AttentionStore,
 	notifier pkg.AttentionChangeNotifier,
+	boardMetrics pkg.Metrics,
 ) run.Func {
 	return func(ctx context.Context) error {
 		ctx, cancel := context.WithCancel(ctx)
@@ -351,6 +359,7 @@ func (a *application) createHTTPServer(
 				provenance,
 				a.TTSURL != "",
 				a.VaultDir,
+				boardMetrics,
 			))
 
 		// Business routes live under /api/1.0/, never in the admin block above.
