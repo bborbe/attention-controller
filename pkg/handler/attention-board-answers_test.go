@@ -122,7 +122,7 @@ var _ = Describe("Board answers over HTTP", func() {
 			rec := push(body)
 			Expect(rec.Code).To(Equal(http.StatusBadRequest))
 
-			items, err := store.History(ctx)
+			items, err := store.History(ctx, 0, 0)
 			Expect(err).To(BeNil())
 			Expect(items).To(BeEmpty())
 		})
