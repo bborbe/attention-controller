@@ -123,12 +123,19 @@ func CreateAttentionPageHandler(
 // different vault name — or from none at all — would be the same card rendering
 // differently depending on whether it arrived by load or by stream, which is
 // exactly the drift this handler exists to prevent.
+//
+// metrics is threaded through so the renderer reports through the one
+// process-wide instance, which is built once in `main` on the registry /metrics
+// already serves. It is passed rather than constructed here for the same reason
+// the notifier is: `pkg/factory` is pure plumbing, and a second instance would
+// be a second registration of the same collector.
 func CreateAttentionStreamHandler(
 	store pkg.AttentionStore,
 	notifier pkg.AttentionChangeNotifier,
 	provenance pkg.ProvenanceResolver,
 	speakEnabled bool,
 	vaultDir string,
+	metrics pkg.Metrics,
 ) http.Handler {
 	return handler.NewAttentionStreamHandler(
 		store,
@@ -136,6 +143,7 @@ func CreateAttentionStreamHandler(
 		provenance,
 		speakEnabled,
 		vaultDir,
+		metrics,
 	)
 }
 
