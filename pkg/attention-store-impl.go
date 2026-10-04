@@ -1102,19 +1102,26 @@ func (a *attentionStore) readItems(ctx context.Context) ([]storedItem, error) {
 //     `updateExistingIfLive` then updates that item's key in place, so a blind
 //     delete would remove an item a live producer has just refreshed.
 //
-// Both are re-read here against the live value. The liveness check does file
-// I/O, but only for the dead subset — the whole scan still runs outside every
-// transaction, which is what the split was for.
+// The STATE is re-read here against the live value, inside the transaction. The
+// LIVENESS is re-read from a snapshot taken just before that transaction opens
+// — see the ⚠️ below for what that does and does not close. The liveness check
+// does file I/O, but only for the dead subset — the whole scan still runs
+// outside every transaction, which is what the split was for.
 //
 // ⚠️ The liveness re-check takes its OWN source rather than the one the
 // classification used. A source answers from the snapshot it took, so reusing
 // the read's would answer "is this producer live now?" with the value from
 // before the classification — which can never differ from the verdict that put
 // the item here, making the re-check a no-op. A fresh source lists the registry
-// again, so a session resumed between the classification and this prune is seen
-// as live and its item is kept. The source is resolved BEFORE the transaction
-// opens, so the writer lock is never held across a registry listing; a read
-// that prunes nothing still returns above and lists nothing extra.
+// again, so a session resumed between the classification and that listing is
+// seen as live and its item is kept.
+//
+// ⚠️ The window it closes is classification → prune. The window it leaves open
+// is resolve → lock-acquire: a session resumed after the listing but before the
+// write is still pruned. Stated rather than implied, because the snapshot is
+// fresher, not live. The source is resolved BEFORE the transaction opens, so the
+// writer lock is never held across a registry listing; a read that prunes
+// nothing still returns above and lists nothing extra.
 func (a *attentionStore) pruneDead(ctx context.Context, keys []string) error {
 	if len(keys) == 0 {
 		return nil
