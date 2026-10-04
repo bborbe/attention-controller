@@ -1040,8 +1040,10 @@ func hasProductionTouchingMarker(content []byte) bool {
 //
 // ⚠️ It is an index rather than a lookup because the join is the expensive
 // half. The vault holds over 8,000 task files and each candidate must be read
-// to see which session it records, so the whole vault is read once at
-// construction and every page load is a map hit.
+// to see which session it records, so the whole vault is read once and every
+// page load is a map hit. The index is rebuilt at most once per
+// taskIndexRefreshWindow, so a task file written while the process runs
+// resolves on a later lookup without a restart.
 type TaskIndex interface {
 	// Lookup returns the task recorded for sessionID. ok is false when the
 	// session anchors no task: an unnamed or unknown session, a vault that was
@@ -1078,6 +1080,13 @@ type Task struct {
 	ProductionTouching bool
 }
 
+// taskIndexRefreshWindow is how long a built index is served before the vault is
+// read again. It bounds the re-read so a task file written while the process
+// runs resolves on a later lookup without a restart, while a page load stays a
+// map hit on the common path. The window is short enough that a task created
+// seconds ago is visible on the next board refresh.
+const taskIndexRefreshWindow = libtime.Duration(2 * time.Second)
+
 // NewTaskIndex builds the session -> task index from vaultDir's task files.
 //
 // It fails soft in every direction: an empty vaultDir, a vault that does not
@@ -1086,52 +1095,67 @@ type Task struct {
 // tasks and never an error. An empty vaultDir is the ordinary case for a host
 // with no vault configured, not a fault.
 //
+// The index is not frozen at construction: Lookup rebuilds it at most once per
+// taskIndexRefreshWindow, so a task file written after this call resolves
+// without a restart. The clock is injected so that window is testable.
+//
 // The goal rung is built before the task walk, because each indexed task
 // carries the goal it names and the topic that lists it: both maps must exist
 // before the first task file is read.
-func NewTaskIndex(ctx context.Context, vaultDir string) TaskIndex {
+func NewTaskIndex(
+	ctx context.Context,
+	vaultDir string,
+	currentDateTimeGetter libtime.CurrentDateTimeGetter,
+) TaskIndex {
 	index := &taskIndex{
-		bySession:  map[string]taskEntry{},
-		goals:      map[string]struct{}{},
-		goalTopics: map[string]goalTopic{},
+		ctx:                   ctx,
+		vaultDir:              vaultDir,
+		currentDateTimeGetter: currentDateTimeGetter,
 	}
-	if vaultDir == "" {
-		return index
-	}
-	index.readGoalTitles(vaultDir)
-	index.readGoalTopics(ctx, vaultDir)
-	tasksDir := filepath.Join(vaultDir, taskDirName)
-	// os.ReadDir returns entries sorted by filename, and the tie-break below
-	// depends on it: candidates are added in ascending path order, so the later
-	// candidate is the lexicographically greater path.
-	entries, err := os.ReadDir(tasksDir)
-	if err != nil {
-		glog.V(2).Infof("read vault tasks dir %s failed: %v", tasksDir, err)
-		return index
-	}
-	// Opened as an os.Root so every read is confined beneath the tasks
-	// directory: the file names come from the directory listing, and scoping the
-	// handle makes that confinement structural rather than an assumption about
-	// the names. Same pattern as the event-log read in readEvents.
-	root, err := os.OpenRoot(tasksDir)
-	if err != nil {
-		glog.V(2).Infof("open vault tasks dir %s failed: %v", tasksDir, err)
-		return index
-	}
-	defer root.Close()
-	for _, entry := range entries {
-		select {
-		case <-ctx.Done():
-			glog.V(3).Infof("task index build cancelled")
-			return index
-		default:
-		}
-		index.addFile(root, entry)
-	}
+	// The boot build is installed unconditionally, even when ctx is already
+	// cancelled or the task walk read nothing: there is no previous index to
+	// preserve, and the fail-soft contract is that a cancelled or empty boot
+	// holds what it read and no more rather than failing. Every later rebuild is
+	// installed only when it completed AND actually read `25 Tasks/` — see
+	// refreshIfStale.
+	fresh, _ := index.build(ctx)
+	index.install(fresh)
 	return index
 }
 
 type taskIndex struct {
+	// ctx is the build context every rebuild runs under. Lookup carries no
+	// context of its own — the interface takes only a session id — so the
+	// construction context is retained and threaded into each rebuild, which is
+	// what lets a cancelled rebuild stop at the same points the boot build does.
+	ctx context.Context
+	// vaultDir is the vault the index reads. It is fixed for the process's life;
+	// a rebuild re-reads the same directory rather than being re-pointed.
+	vaultDir string
+	// currentDateTimeGetter stamps each published index and measures the refresh
+	// window. Injected, never time.Now(), so the bound is testable.
+	currentDateTimeGetter libtime.CurrentDateTimeGetter
+	// mu guards the fields below. It is an RWMutex because Lookup is a map hit on
+	// the common path and many renders read it concurrently, while only a
+	// rebuild's swap takes the write side.
+	mu sync.RWMutex
+	// refreshing is the token of the rebuild currently in flight, or nil when none
+	// is, so a burst of concurrent lookups that all observe a lapsed window does
+	// not multiply one full-vault read by the number of renders.
+	//
+	// ⚠️ A token rather than a bool, mirroring provenanceResolver.refreshing, for
+	// the same reason: only the goroutine that set the token clears it, so a
+	// rebuild that finishes cannot reopen the single-flight window while another
+	// rebuild — started after the first claimed the token — is still reading the
+	// vault. The token is claimed in the SAME critical section that observes the
+	// window lapsed, so a caller descheduled between a separate stale check and
+	// the claim cannot start a second rebuild.
+	refreshing chan struct{}
+	// rebuilds counts the rebuilds that actually started, so a test can assert
+	// the single-flight property directly. Guarded by mu.
+	rebuilds int
+	// builtAt is the clock reading at which the serving index was published.
+	builtAt   libtime.DateTime
 	bySession map[string]taskEntry
 	// goals is the set of titles the vault holds as goal files under
 	// `24 Goals/`. It is the existence guard a task's `goals:` entry must pass
@@ -1151,16 +1175,211 @@ type taskEntry struct {
 	terminal bool
 }
 
+// build reads the vault into a fresh index and reports whether the task walk
+// actually read `25 Tasks/`. Nothing on the receiver is mutated: the fresh index
+// carries its own maps, so a build that is discarded — because it was cancelled
+// or because the task walk could not read its directory — leaves the serving
+// index untouched.
+//
+// ⚠️ The boolean is the task-walk half alone, and deliberately not a conjunct
+// over the goal and topic rungs. Those two degrade to "no goal" and "no topic"
+// by design — a vault with no `24 Goals/` is a legal state that must still
+// resolve its tasks — so refusing an install on their failure would refuse a
+// perfectly good task walk. Only an unreadable `25 Tasks/` means the rebuild
+// learned nothing about the population the index exists to serve.
+//
+// ⚠️ An empty vaultDir reports true: there is no directory to read and no
+// previous index holding entries it could lose, so a rebuild over it is a
+// no-op rather than a failed read.
+func (t *taskIndex) build(ctx context.Context) (*taskIndex, bool) {
+	fresh := &taskIndex{
+		bySession:  map[string]taskEntry{},
+		goals:      map[string]struct{}{},
+		goalTopics: map[string]goalTopic{},
+	}
+	if t.vaultDir == "" {
+		return fresh, true
+	}
+	fresh.readGoalTitles(t.vaultDir)
+	fresh.readGoalTopics(ctx, t.vaultDir)
+	return fresh, fresh.readTasks(ctx, t.vaultDir)
+}
+
+// install swaps a freshly built index's maps in as the serving index and stamps
+// it at the current clock reading. It takes the write lock, so a reader sees
+// either the whole previous index or the whole new one, never a half-built one.
+func (t *taskIndex) install(fresh *taskIndex) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.bySession = fresh.bySession
+	t.goals = fresh.goals
+	t.goalTopics = fresh.goalTopics
+	t.builtAt = t.currentDateTimeGetter.Now()
+}
+
+// refreshIfStale rebuilds the index when the serving one is older than
+// taskIndexRefreshWindow, so a task file written after construction resolves on
+// a later lookup without a restart.
+//
+// ⚠️ Single-flight, mirroring provenanceResolver.hostState: the staleness check
+// and the token claim happen in ONE critical section, so however many concurrent
+// lookups observe the window lapsed, exactly one rebuild runs. Lookup is reached
+// once per item from the resolver's render loop, so without the guard a lapsed
+// window would start one full-vault rebuild per concurrent render — over 8,000
+// task files read synchronously inside each request. A caller that finds a
+// rebuild already in flight is served the index currently installed and returns,
+// rather than queueing behind the read; the winner performs the rebuild
+// synchronously, so a single Lookup issued after the window lapses still
+// resolves a task created since the last build.
+//
+// ⚠️ The rebuild happens OUTSIDE the lock and only the swap takes it. A rebuild
+// re-reads the whole vault and holding the write lock across it would block
+// every render on the board for the duration. The build therefore produces a
+// fresh, fully populated index and install swaps its maps in atomically, so a
+// reader sees either the old index or the new one.
+//
+// ⚠️ A rebuild is installed only when it both completed and actually read
+// `25 Tasks/`. The build's soft-failure rules mean a directory read that fails
+// yields no entries rather than an error, so an empty result is ambiguous — it
+// is what a genuinely empty vault produces AND what an unreadable `25 Tasks/`
+// produces — and installing the latter would replace a fully resolved index with
+// an empty one, losing every task that had resolved. Two signals separate them:
+// a cancelled build (the context is done) and a build whose task walk reported
+// it could not read the directory. Either one leaves the previous index serving.
+//
+// ⚠️ A failed `24 Goals/` or `23 Topics/` read is deliberately NOT such a
+// signal: those rungs degrade to no goal and no topic by design, and refusing
+// the install on them would block a perfectly good task walk — including the
+// ordinary case of a vault that has no `24 Goals/` at all.
+//
+// ⚠️ A refused install does not advance builtAt, so the window stays lapsed and
+// the next Lookup re-attempts the rebuild. That is deliberate: a healthy vault
+// whose read failed transiently re-attempts, succeeds and re-advances builtAt,
+// so no separate retry loop is needed. The cost is that a permanently unreadable
+// `25 Tasks/` re-runs the goal and topic rungs on every lookup, since the build
+// reaches them before the task walk fails (only an absent `24 Goals/`
+// short-circuits the topic rung). If that cost ever matters, bound it by
+// advancing builtAt on refusal instead — but that trades the retry away, so it
+// is not done here.
+func (t *taskIndex) refreshIfStale() {
+	now := t.currentDateTimeGetter.Now()
+
+	t.mu.Lock()
+	if now.Sub(t.builtAt) < taskIndexRefreshWindow {
+		t.mu.Unlock()
+		return
+	}
+	if t.refreshing != nil {
+		// A rebuild is already in flight. Serve the index currently installed
+		// instead of starting a second full-vault read alongside it.
+		t.mu.Unlock()
+		return
+	}
+	token := make(chan struct{})
+	t.refreshing = token
+	t.rebuilds++
+	t.mu.Unlock()
+
+	// Deferred rather than inlined after the build: a panic anywhere in the build
+	// must still clear the token, or the index stays pinned to a snapshot that
+	// will never be replaced.
+	defer t.finishRefresh(token)
+
+	fresh, tasksRead := t.build(t.ctx)
+	if t.ctx.Err() != nil {
+		glog.V(3).Infof("task index refresh cancelled, keeping previous index")
+		return
+	}
+	if !tasksRead {
+		glog.V(2).Infof(
+			"task index refresh could not read %s, keeping previous index",
+			filepath.Join(t.vaultDir, taskDirName),
+		)
+		return
+	}
+	t.install(fresh)
+}
+
+// finishRefresh clears the in-flight token, but only if it is still the one this
+// rebuild set. A rebuild that started afterwards overwrote it, and clearing it
+// here would reopen the single-flight window while that later rebuild is still
+// reading the vault — the amplification the token exists to prevent.
+func (t *taskIndex) finishRefresh(token chan struct{}) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.refreshing == token {
+		t.refreshing = nil
+	}
+}
+
+// RebuildCount returns how many rebuilds have actually started. It is the
+// observable the single-flight property is asserted against: a burst of
+// concurrent lookups past the window must leave this at exactly one.
+func (t *taskIndex) RebuildCount() int {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.rebuilds
+}
+
+// readTasks walks `<vault>/25 Tasks/` and indexes every task file that records
+// a session. It reports whether that directory was actually read: false when
+// either the listing or the os.Root handle could not be opened, which is the
+// signal a rebuild uses to refuse installing itself — see refreshIfStale.
+//
+// A directory that reads but holds no task file reports true: an empty vault is
+// a legal state, and an index that read it holds the honest answer rather than
+// a failed one.
+//
+// os.ReadDir returns entries sorted by filename, and the tie-break in add
+// depends on it: candidates are added in ascending path order, so the later
+// candidate is the lexicographically greater path.
+func (t *taskIndex) readTasks(ctx context.Context, vaultDir string) bool {
+	tasksDir := filepath.Join(vaultDir, taskDirName)
+	entries, err := os.ReadDir(tasksDir)
+	if err != nil {
+		glog.V(2).Infof("read vault tasks dir %s failed: %v", tasksDir, err)
+		return false
+	}
+	// Opened as an os.Root so every read is confined beneath the tasks
+	// directory: the file names come from the directory listing, and scoping the
+	// handle makes that confinement structural rather than an assumption about
+	// the names. Same pattern as the event-log read in readEvents.
+	root, err := os.OpenRoot(tasksDir)
+	if err != nil {
+		glog.V(2).Infof("open vault tasks dir %s failed: %v", tasksDir, err)
+		return false
+	}
+	defer root.Close()
+	for _, entry := range entries {
+		select {
+		case <-ctx.Done():
+			glog.V(3).Infof("task index build cancelled")
+			return true
+		default:
+		}
+		t.addFile(root, entry)
+	}
+	return true
+}
+
 // Lookup returns the task recorded for sessionID.
 //
 // An unknown session is an ordinary miss, and an empty sessionID is a miss
 // too: addFile never indexes a file under "", so there is nothing for it to
 // match.
+//
+// ⚠️ The common path is a map hit. The vault is re-read only when the serving
+// index is older than taskIndexRefreshWindow, so a task file written after
+// construction resolves on a later lookup without re-reading the vault on every
+// call.
 func (t *taskIndex) Lookup(sessionID string) (Task, bool) {
 	if t == nil {
 		return Task{}, false
 	}
+	t.refreshIfStale()
+	t.mu.RLock()
 	entry, ok := t.bySession[sessionID]
+	t.mu.RUnlock()
 	if !ok {
 		return Task{}, false
 	}

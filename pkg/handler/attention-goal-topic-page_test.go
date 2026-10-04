@@ -47,6 +47,12 @@ var _ = Describe("the goal and topic spans on the served page", func() {
 	var stateDir string
 	var sessionsDir string
 	var spawnDir string
+	// clock is frozen in BeforeEach and never advanced, so the task index's
+	// refresh window never lapses during a spec. That keeps the "reads the vault
+	// once" case deterministic: its two page loads must both be served from the
+	// index built at construction, and a wall clock that crossed the window
+	// between them would re-read the moved-away vault and lose the links.
+	var clock libtime.CurrentDateTime
 
 	// The served markup each link is asserted against, written as html/template
 	// actually emits it. ⚠️ Hand-written literals, never ones built with
@@ -96,6 +102,8 @@ var _ = Describe("the goal and topic spans on the served page", func() {
 		stateDir = GinkgoT().TempDir()
 		sessionsDir = GinkgoT().TempDir()
 		spawnDir = GinkgoT().TempDir()
+		clock = libtime.NewCurrentDateTime()
+		clock.SetNow(clock.Now())
 	})
 
 	AfterEach(func() {
@@ -177,7 +185,7 @@ var _ = Describe("the goal and topic spans on the served page", func() {
 
 	// buildPage is buildPageWith over an index built from the fixture vault.
 	buildPage := func() http.Handler {
-		return buildPageWith(pkg.NewTaskIndex(ctx, vault))
+		return buildPageWith(pkg.NewTaskIndex(ctx, vault, clock))
 	}
 
 	// writeBoardPolishVault writes a vault whose task names a goal a topic lists,
@@ -335,7 +343,7 @@ var _ = Describe("the goal and topic spans on the served page", func() {
 
 		// A counting index whose lookups delegate to the real one, so the count is
 		// of the lookups the PAGE made rather than of this spec's own call.
-		real := pkg.NewTaskIndex(ctx, vault)
+		real := pkg.NewTaskIndex(ctx, vault, clock)
 		index := &mocks.TaskIndex{}
 		index.LookupStub = real.Lookup
 		page := buildPageWith(index)
@@ -373,7 +381,7 @@ var _ = Describe("the goal and topic spans on the served page", func() {
 				sessionsDir,
 				spawnDir,
 				panes,
-				pkg.NewTaskIndex(ctx, ""),
+				pkg.NewTaskIndex(ctx, "", clock),
 				libtime.NewCurrentDateTime(),
 			),
 			false,

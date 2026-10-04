@@ -202,7 +202,7 @@ var _ = Describe("the Allow / Deny pair on the served page", func() {
 				sessionsDir,
 				spawn,
 				panes,
-				pkg.NewTaskIndex(ctx, vault),
+				pkg.NewTaskIndex(ctx, vault, clock),
 				clock,
 			),
 			false,
