@@ -72,8 +72,12 @@ func (n *notifyingAttentionStore) ReadBoard(ctx context.Context) (Items, error) 
 }
 
 // History delegates and never signals: it is a counting read.
-func (n *notifyingAttentionStore) History(ctx context.Context) (Items, error) {
-	return n.store.History(ctx)
+func (n *notifyingAttentionStore) History(
+	ctx context.Context,
+	limit int,
+	offset int,
+) (Items, error) {
+	return n.store.History(ctx, limit, offset)
 }
 
 // Answer delegates and signals on success.

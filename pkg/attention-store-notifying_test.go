@@ -124,7 +124,7 @@ var _ = Describe("Notifying attention store", func() {
 	It("does not signal after a history read", func() {
 		inner.HistoryReturns(pkg.Items{}, nil)
 
-		_, err := store.History(ctx)
+		_, err := store.History(ctx, 0, 0)
 
 		Expect(err).Should(BeNil())
 		Expect(changes).Should(BeEmpty())

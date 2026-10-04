@@ -50,15 +50,21 @@ type AttentionStore interface {
 	// its history is never rewritten.
 	ReadBoard(ctx context.Context) (Items, error)
 
-	// History returns every item regardless of state, for counting what
-	// resolved and what escalated rather than for rendering.
+	// History returns items newest-first, up to limit of them, skipping the
+	// first offset. It is the store's full history for counting what resolved
+	// and what escalated rather than for rendering.
 	//
 	// It is deliberately not Read: Read answers "what should an arm show now"
 	// and prunes dead askers as a side effect, which makes it blind to anything
 	// that has left the queue — and a pruning read cannot report a history,
 	// because the act of reading would delete part of what it reports. History
 	// never prunes, never filters on liveness and never filters on state.
-	History(ctx context.Context) (Items, error)
+	//
+	// ⚠️ limit <= 0 means unbounded, which is the compatibility path for a caller
+	// that needs the whole store rather than a page. offset < 0 is treated as 0.
+	// Both bounds exist because the unbounded form is what this endpoint used to
+	// do unconditionally, and it decoded all ~22,000 rows on every request.
+	History(ctx context.Context, limit int, offset int) (Items, error)
 
 	// SweepAnswered closes every answered item whose AnsweredAt is older than
 	// maxAge, returning how many it closed.
