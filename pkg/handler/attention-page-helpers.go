@@ -114,7 +114,19 @@ func newAttentionPageRow(
 	// session's mode (an absent record, an unreadable directory, an unparseable
 	// file, an unrecognised mode) leaves it false and renders no control, whose
 	// worst case is a missing control rather than a control on a tab worker's gate.
-	row.Decide = item.AnswerMechanism == pkg.PermissionAnswerMechanism && provenance.Headless
+	//
+	// ⚠️ The pair is additionally withheld when the item's task declares a
+	// production-touching step. Such a park is irreversible, and a one-click board
+	// approval of it is the harm the exclusion exists to prevent. The fact is read
+	// from the task file the resolver already opens — no second read and no new
+	// scan — and it fails **open**, the opposite polarity to the Headless term
+	// beside it: an absent, unreadable or unparsable task file and an absent marker
+	// all leave it false, which renders the pair. The worst case of that direction
+	// is a pair on a park whose task did not declare one, never a missing pair on a
+	// park that did.
+	row.Decide = item.AnswerMechanism == pkg.PermissionAnswerMechanism &&
+		provenance.Headless &&
+		!provenance.ProductionTouching
 	if item.State == pkg.AnsweredState {
 		// The board renders the record of what was answered so the operator can
 		// see the answer standing in their name. `answered_by` is a caller

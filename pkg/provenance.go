@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -103,6 +104,25 @@ type Provenance struct {
 	// answering control. The opposite default would put a board control on a tab
 	// worker's gate — the permission laundering this field exists to remove.
 	Headless bool
+	// ProductionTouching reports whether the vault task this item's session is
+	// anchored to declares a production-touching step — the operator's authored
+	// `- [ ] ⚠️ production-touching — <command>` marker on one of the task's own
+	// subtask lines. When true the board withholds the Allow / Deny pair, because
+	// such a park is irreversible and a one-click board approval of it is the harm
+	// the exclusion exists to prevent.
+	//
+	// ⚠️ It is a control gate, not a line fact, and it is deliberately NOT a
+	// member of Resolved() — the same rule Headless follows. Resolved() gates
+	// whether the provenance div renders at all, and its members are the values
+	// that div draws; a boolean that draws nothing would put a non-drawing value
+	// in the line's gate.
+	//
+	// ⚠️ Fail-OPEN, the opposite polarity to Headless: an absent, unreadable or
+	// unparsable task file, a task file whose session does not match, and an
+	// absent marker all leave this false, and false renders the pair. The worst
+	// case of that direction is a pair on a park whose task did not declare one —
+	// never a missing pair on a park that did.
+	ProductionTouching bool
 }
 
 // Resolved reports whether anything about this item's origin could be told.
@@ -491,6 +511,7 @@ func (r *provenanceResolver) Resolve(ctx context.Context, items Items) Provenanc
 			provenance.GoalPath = task.GoalPath
 			provenance.TopicName = task.TopicName
 			provenance.TopicPath = task.TopicPath
+			provenance.ProductionTouching = task.ProductionTouching
 			resolved[item.ItemID] = provenance
 		}
 		// ⚠️ The name is independent of the pane and the task, so this runs on
@@ -973,6 +994,42 @@ const (
 	topicGoalsHeading = "## Goals"
 )
 
+// productionTouchingMarker matches the operator's authored production-touching
+// marker on a task's own subtask line, e.g.
+// `- [ ] ⚠️ production-touching — `make install“.
+//
+// ⚠️ List-item form only, never a bare substring. Task files discuss the phrase
+// in ordinary prose — an `# Impact`, a `# Success Criteria` or a `# Progress`
+// entry, or a non-checkbox bullet — and a substring match fires on all of it,
+// removing a control the operator needs. Only the checkbox marker counts.
+//
+// The parts, in order:
+//   - `(?m)^` — the start of any line, so one Match over the whole file finds
+//     the marker on any line;
+//   - `\s*-\s*` — a list item, indented or not (the vault indents subtasks);
+//   - `\[[ x/]\]` — a task checkbox in every state the vault writes: open
+//     (` `), checked (`x`) and in-progress (`/`);
+//   - `(?:⚠️?)?` — the warning glyph, optional as a whole. ⚠️ The outer group
+//     is what makes the glyph optional: the glyph is two code points (U+26A0
+//     and the variation selector U+FE0F), so a bare `⚠️?` would make only the
+//     selector optional and require the base glyph, failing a marker written
+//     without it;
+//   - `\s*production-touching\s*—` — the phrase and the em-dash (U+2014)
+//     separator, each required.
+var productionTouchingMarker = regexp.MustCompile(
+	`(?m)^\s*-\s*\[[ x/]\]\s*(?:⚠️?)?\s*production-touching\s*—`,
+)
+
+// hasProductionTouchingMarker reports whether content carries the operator's
+// production-touching marker on any line. It scans content the caller already
+// holds in memory during the task-index build, so it opens no file and reads
+// no directory. Every input it cannot match — including content that never
+// reached it because the file read failed — resolves to false, the fail-open
+// direction.
+func hasProductionTouchingMarker(content []byte) bool {
+	return productionTouchingMarker.Match(content)
+}
+
 //counterfeiter:generate -o ../mocks/task-index.go --fake-name TaskIndex . TaskIndex
 
 // TaskIndex resolves the vault task a session is anchored to.
@@ -1015,6 +1072,12 @@ type Task struct {
 	// TopicPath is the topic file's path relative to the vault root, e.g.
 	// `23 Topics/Attention Board Polish.md`. Empty exactly when TopicName is.
 	TopicPath string
+	// ProductionTouching reports whether this task's own file declares a
+	// production-touching step — the operator's authored
+	// `- [ ] ⚠️ production-touching — <command>` marker on one of the task's
+	// subtask lines. It rides the same read that produces Name and Path; no
+	// second file is opened for it.
+	ProductionTouching bool
 }
 
 // taskIndexRefreshWindow is how long a built index is served before the vault is
@@ -1299,6 +1362,10 @@ func (t *taskIndex) addFile(root *os.Root, entry os.DirEntry) {
 		Name: strings.TrimSuffix(entry.Name(), ".md"),
 		Path: filepath.Join(taskDirName, entry.Name()),
 	}
+	// The production-touching fact rides the same read: the whole file is already
+	// in memory here, so the marker costs no second ReadFile and no directory
+	// scan.
+	task.ProductionTouching = hasProductionTouchingMarker(content)
 	// The goal and the topic ride with the task: both derive from this file's
 	// `goals:` list, so they are resolved here, once, rather than at page load.
 	goalName, goalPath := firstGoal(content, t.goals)

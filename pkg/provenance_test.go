@@ -842,6 +842,124 @@ var _ = Describe("ProvenanceResolver", func() {
 		Expect(provenance.TaskPath).To(BeEmpty())
 	})
 
+	It("resolves the production-touching fact from the task's own marker", func() {
+		vault := GinkgoT().TempDir()
+		writeVaultTask(vault, "Deploy Task.md",
+			"---\nclaude_session_id: session-pt\n---\n\n"+
+				"- [ ] ⚠️ production-touching — `make install`\n")
+
+		provenance := withVault(vault).Resolve(ctx, pkg.Items{
+			sessionItem("item-pt", "producer-pt", "key-pt", "session-pt"),
+		})[pkg.ItemID("item-pt")]
+
+		// Positive control: the task resolved, so the boolean below is read from
+		// a task that was actually found rather than from a miss.
+		Expect(provenance.TaskName).To(Equal("Deploy Task"))
+		Expect(provenance.ProductionTouching).To(BeTrue())
+	})
+
+	It("resolves not production-touching when the phrase appears only in prose", func() {
+		// ⚠️ The false positive the list-item form exists to avoid. Every prose
+		// shape the vault writes the phrase in is here, and none of them is the
+		// marker: the phrase in a checkbox bullet that is not the marker, the
+		// phrase mid-sentence in a paragraph, and the phrase in a non-checkbox
+		// bullet. A substring match fires on all three and removes a control the
+		// operator needs.
+		vault := GinkgoT().TempDir()
+		writeVaultTask(vault, "Prose Task.md",
+			"---\nclaude_session_id: session-pt-prose\n---\n\n"+
+				"# Success Criteria\n\n"+
+				"- [ ] SC2: a production-touching park renders the Allow / Deny pair\n\n"+
+				"# Progress\n\n"+
+				"The production-touching marker is authored by the operator, so the board "+
+				"reads the declaration rather than guessing from the command.\n\n"+
+				"- The production-touching marker is authored by the operator\n")
+
+		provenance := withVault(vault).Resolve(ctx, pkg.Items{
+			sessionItem("item-pt-prose", "producer-pt-prose", "key-pt-prose", "session-pt-prose"),
+		})[pkg.ItemID("item-pt-prose")]
+
+		Expect(provenance.TaskName).To(Equal("Prose Task"))
+		Expect(provenance.ProductionTouching).To(BeFalse())
+	})
+
+	It("resolves production-touching for a marker on a checked box", func() {
+		vault := GinkgoT().TempDir()
+		writeVaultTask(vault, "Checked Task.md",
+			"---\nclaude_session_id: session-pt-checked\n---\n\n"+
+				"- [x] ⚠️ production-touching — `make install`\n")
+
+		provenance := withVault(vault).Resolve(ctx, pkg.Items{
+			sessionItem(
+				"item-pt-checked",
+				"producer-pt-checked",
+				"key-pt-checked",
+				"session-pt-checked",
+			),
+		})[pkg.ItemID("item-pt-checked")]
+
+		Expect(provenance.TaskName).To(Equal("Checked Task"))
+		Expect(provenance.ProductionTouching).To(BeTrue())
+	})
+
+	It("resolves production-touching for a marker on a slash box", func() {
+		vault := GinkgoT().TempDir()
+		writeVaultTask(vault, "Slash Task.md",
+			"---\nclaude_session_id: session-pt-slash\n---\n\n"+
+				"- [/] ⚠️ production-touching — `make install`\n")
+
+		provenance := withVault(vault).Resolve(ctx, pkg.Items{
+			sessionItem("item-pt-slash", "producer-pt-slash", "key-pt-slash", "session-pt-slash"),
+		})[pkg.ItemID("item-pt-slash")]
+
+		Expect(provenance.TaskName).To(Equal("Slash Task"))
+		Expect(provenance.ProductionTouching).To(BeTrue())
+	})
+
+	It("resolves production-touching for a marker written without the warning glyph", func() {
+		// ⚠️ The case the `(?:⚠️?)?` outer group exists for. The glyph is two
+		// code points, so a bare `⚠️?` would still require the base glyph and
+		// silently fail this spelling.
+		vault := GinkgoT().TempDir()
+		writeVaultTask(vault, "Glyphless Task.md",
+			"---\nclaude_session_id: session-pt-glyphless\n---\n\n"+
+				"- [ ] production-touching — `make install`\n")
+
+		provenance := withVault(vault).Resolve(ctx, pkg.Items{
+			sessionItem(
+				"item-pt-glyphless",
+				"producer-pt-glyphless",
+				"key-pt-glyphless",
+				"session-pt-glyphless",
+			),
+		})[pkg.ItemID("item-pt-glyphless")]
+
+		Expect(provenance.TaskName).To(Equal("Glyphless Task"))
+		Expect(provenance.ProductionTouching).To(BeTrue())
+	})
+
+	It("resolves not production-touching when the session resolves no task", func() {
+		// The vault holds a marker, but for a different session. The fail-open
+		// direction: no task for this session leaves the fact false, and false
+		// renders the pair.
+		vault := GinkgoT().TempDir()
+		writeVaultTask(vault, "Other Task.md",
+			"---\nclaude_session_id: session-pt-other\n---\n\n"+
+				"- [ ] ⚠️ production-touching — `make install`\n")
+		writeEvents(
+			"producer-pt-none",
+			eventLine("key-pt-none", "session-pt-none", "burn", "/w/pt", "", ""),
+		)
+
+		provenance := withVault(vault).Resolve(ctx, pkg.Items{
+			sessionItem("item-pt-none", "producer-pt-none", "key-pt-none", "session-pt-none"),
+		})[pkg.ItemID("item-pt-none")]
+
+		// Positive control: the item's event-log provenance still resolved.
+		Expect(provenance.Host).To(Equal("burn"))
+		Expect(provenance.ProductionTouching).To(BeFalse())
+	})
+
 	It("resolves the goal and the topic a task's goals list names", func() {
 		vault := GinkgoT().TempDir()
 		writeVaultTask(
@@ -1204,6 +1322,14 @@ var _ = Describe("ProvenanceResolver", func() {
 		// The gate the page's provenance line hangs on. A boolean draws nothing,
 		// so a headless-only card must draw no line rather than an empty one.
 		Expect((pkg.Provenance{Headless: true}).Resolved()).To(BeFalse())
+	})
+
+	It("reports unresolved when ProductionTouching is the only set field", func() {
+		// ⚠️ The same rule as the headless case above, and the evidence that the
+		// production-touching boolean stayed out of Resolved(). It is a control
+		// gate, not a line fact: it draws nothing, so it must not put a
+		// non-drawing value in the line's gate.
+		Expect((pkg.Provenance{ProductionTouching: true}).Resolved()).To(BeFalse())
 	})
 })
 
