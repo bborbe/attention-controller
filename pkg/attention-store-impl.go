@@ -370,9 +370,12 @@ func (a *attentionStore) classifyForRead(
 // taken: the item's STATE (Answer and Close take no liveness gate, so an item
 // can legitimately be answered while still open) and the producer's LIVENESS
 // (which is not monotonic — a refreshed heartbeat or a resumed session flips it
-// back). `pruneDead` re-reads both against the live value inside its own
+// back). `pruneDead` re-reads the STATE against the live value inside its own
 // transaction, which is the repo's own rule: a compare-and-set belongs inside
-// the transaction, never as a separate read then write.
+// the transaction, never as a separate read then write. Its LIVENESS re-check
+// is the documented exception — it takes a fresh snapshot resolved just before
+// the transaction opens, so the writer lock is never held across a registry
+// listing. The residual window is therefore resolve → lock-acquire, not zero.
 func (a *attentionStore) read(ctx context.Context, includeAnswered bool) (Items, error) {
 	// ⚠️ The open-only read scans the open-only index, so it never decodes the
 	// answered items classifyForRead would discard. ReadBoard keeps the live
@@ -1139,8 +1142,12 @@ func (a *attentionStore) pruneDead(ctx context.Context, keys []string) error {
 	return nil
 }
 
-// stillDead re-checks one key the read classified dead, against the value that
-// is live now rather than the snapshot the disposition came from.
+// stillDead re-checks one key the read classified dead, against a snapshot taken
+// after the disposition rather than the one it came from — fresher, not live.
+// The window it closes is classification → prune; the window it leaves open is
+// resolve → lock-acquire, so a session resumed inside that second window is
+// still pruned. Named rather than implied: the earlier wording claimed "the
+// value that is live now", which the snapshot does not give.
 //
 // It is a method rather than an inline branch for the same reason
 // classifyForRead is one: the state check and the liveness check together
