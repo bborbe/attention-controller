@@ -674,6 +674,16 @@ func (a *attentionStore) removeAttemptEntry(ctx context.Context, tx libkv.Tx, ke
 // its entry is LEFT for the rebuild to clear rather than guessed at — a wrong
 // key removes nothing and reports success, which is the silent-drift shape this
 // file is built to avoid.
+//
+// ⚠️ That branch is DEFENSIVE rather than reachable, and saying so is better
+// than testing it. `removeItem`'s only caller is `pruneDead`, which asks
+// `stillDead` first — and `stillDead` returns false for a key that is not found
+// ("another read pruned it first"), so a missing item never reaches here through
+// any public path. Reaching it in a spec would mean fabricating index drift by
+// writing a bucket entry directly, which would pin a contrived state rather than
+// the contract. It is kept because `removeItem` is this file's deletion
+// primitive: a future caller that does not pre-filter would otherwise strand the
+// entry silently, which is the failure this whole comment exists to name.
 func (a *attentionStore) removeIndexEntry(
 	ctx context.Context,
 	tx libkv.Tx,
