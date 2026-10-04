@@ -21,11 +21,22 @@ import (
 	libtime "github.com/bborbe/time"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/bborbe/attention-controller/mocks"
 	"github.com/bborbe/attention-controller/pkg"
+	"github.com/bborbe/attention-controller/pkg/boardmetrics"
 	"github.com/bborbe/attention-controller/pkg/handler"
 )
+
+// testBoardMetrics returns the board counters on a private registry, so each
+// handler built in these specs registers its own collectors. ⚠️ Never
+// prometheus.DefaultRegisterer here: MustRegister panics on a second
+// registration of the same collector, so a registry shared between specs would
+// panic as soon as a second handler was built.
+func testBoardMetrics() pkg.Metrics {
+	return boardmetrics.NewMetrics(prometheus.NewRegistry())
+}
 
 // The live channel is the one handler here that does not return: it holds the
 // connection open and writes as the store changes. These specs therefore drive
@@ -85,6 +96,7 @@ var _ = Describe("AttentionStreamHandler", func() {
 			provenance,
 			false,
 			vaultDir,
+			testBoardMetrics(),
 		))
 	})
 
@@ -332,6 +344,7 @@ var _ = Describe("AttentionStreamHandler under a write deadline", func() {
 			&mocks.ProvenanceResolver{},
 			false,
 			"",
+			testBoardMetrics(),
 		))
 		server.Config.WriteTimeout = 1 * time.Second
 		server.Start()
@@ -451,6 +464,7 @@ var _ = Describe("AttentionStreamHandler render fan-out", func() {
 			&mocks.ProvenanceResolver{},
 			false,
 			filepath.Join(GinkgoT().TempDir(), "Personal"),
+			testBoardMetrics(),
 		))
 	})
 
