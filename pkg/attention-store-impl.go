@@ -318,6 +318,16 @@ func (a *attentionStore) classifyForRead(
 	if item.State != OpenState {
 		return readDisposition{}, nil
 	}
+	if isExpired(&item, a.currentDateTimeGetter.Now()) {
+		// ⚠️ Checked BEFORE liveness, and the order is load-bearing. An expired
+		// item is moot whoever is still alive, and an `owner:` item is never
+		// liveness-pruned at all — so this branch is the only thing bounding the
+		// survivor the marker exists to keep. Without it the marker trades
+		// "gates vanish before they are answered" for "gates never vanish".
+		glog.V(2).
+			Infof("removing item %s: expires_at %s has passed", item.ItemID, item.ExpiresAt.Time())
+		return readDisposition{remove: true}, nil
+	}
 	live, err := a.isProducerLiveWith(ctx, &item, liveness)
 	if err != nil {
 		return readDisposition{}, errors.Wrap(ctx, err, "check producer liveness failed")
@@ -337,6 +347,25 @@ func (a *attentionStore) classifyForRead(
 	// The producer reported a condition rather than asking a question.
 	// The operator can still act on it, so it stays open.
 	return readDisposition{keep: true}, nil
+}
+
+// isExpired reports whether the producer's own deadline has passed.
+//
+// ⚠️ An item with no `expires_at` does NOT expire, and that is the schema's
+// default rather than an oversight: a lost ask costs work stalled silently, so
+// persistence is what an unanswered item gets unless its producer declares a
+// deadline — the schema's "a gate on an action that becomes moot at a known
+// time". Reading an absent field as an expired one would reintroduce exactly
+// the lost ask this read path exists to prevent.
+//
+// ⚠️ The comparison is `!now.Before(deadline)`, not `now.After(deadline)`: an
+// item whose deadline is exactly now has expired, and the two spellings differ
+// on that instant.
+func isExpired(item *Item, now libtime.DateTime) bool {
+	if item.ExpiresAt == nil {
+		return false
+	}
+	return !now.Time().Before(item.ExpiresAt.Time())
 }
 
 // read is the shared body of Read and ReadBoard; includeAnswered is their only
@@ -1779,11 +1808,12 @@ func (a *attentionStore) isProducerLiveWith(
 		// prunes an operator gate the operator can still answer — the defect this
 		// model exists to fix, one layer in. So this model probes NOTHING.
 		//
-		// ⚠️ `expires_at` is NOT the bound either, and must not be described as
-		// one: nothing in this repo compares it to the current time — the field
-		// is written at push and never read. An unanswered `owner:` item
-		// therefore lives until something else closes it. That is the honest
-		// statement, and the enforcement gap is a separate defect.
+		// ⚠️ The bound on this model is `expires_at`, enforced in
+		// `classifyForRead` — and checked BEFORE this probe, so an `owner:` item
+		// past its declared deadline is removed however alive its owner reads.
+		// An item declaring no deadline is unbounded, which is the schema's
+		// default: persistence is what an unanswered ask gets unless its
+		// producer says otherwise.
 		return true, nil
 	case HeartbeatLivenessModel:
 		return a.isHeartbeatFresh(value), nil
