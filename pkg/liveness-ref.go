@@ -31,10 +31,11 @@ const (
 	// posts an operator gate and then ends its turn. The item's survival is the
 	// owner's, not the producer's, and its answer routes to the owner.
 	//
-	// It is a third MODEL and only the second PROBE: it resolves against the
-	// same session registry SessionLivenessModel reads, and differs only in
-	// whose survival is tested. See [[Attention Item Schema]] § How liveness is
-	// checked.
+	// ⚠️ It is a third MODEL and NOT a second probe: it resolves against
+	// nothing. The registry deletes an entry on exit, so a never-registered
+	// owner and an exited one are indistinguishable, and reading either as gone
+	// prunes the gate this model exists to keep. See [[Attention Item Schema]]
+	// § How liveness is checked.
 	OwnerLivenessModel LivenessModel = "owner"
 )
 

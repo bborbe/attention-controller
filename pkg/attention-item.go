@@ -37,8 +37,8 @@ func (p ProducerID) String() string {
 //
 //	session:<id>     a long-lived producer whose absence is meaningful
 //	owner:<id>       a producer that is supposed to exit, whose question is the
-//	                 owner's to answer — resolved against the SAME registry as
-//	                 session:, differing only in whose survival is tested
+//	                 owner's to answer — never pruned on liveness, because an
+//	                 owner's absence cannot be read
 //	heartbeat:<path> a short-lived producer that exits by design
 type LivenessRef string
 
