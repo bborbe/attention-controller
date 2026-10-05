@@ -29,9 +29,17 @@ import (
 // marker that fixes "gates vanish before they are answered" would trade it for
 // "gates never vanish" — the skim-training surface the marker exists to avoid.
 //
-// Every spec below uses an `owner:` ref on purpose. Its liveness probe is a
-// constant `true`, so the deadline is the only variable and a removal cannot be
-// read as a liveness prune wearing the expiry's name.
+// ⚠️ THE ASSERTION THAT MATTERS IS ON THE STORE, NOT ON THE BOARD. The first
+// version of these specs asserted only that `ReadBoard` no longer returned the
+// item, and it passed while the row was still there: `pruneDead` re-checks
+// liveness before deleting, and an `owner:` ref reads as live forever, so the
+// key was skipped and the item was merely HIDDEN. A dedup re-push would then
+// have resurrected it. Every removal spec below therefore asserts `store.Get`
+// as well — a board that hides a row is not a row that is gone.
+//
+// Every removal spec uses an `owner:` ref on purpose. That model's liveness
+// probe is a constant `true`, so a removal cannot be read as a liveness prune
+// wearing the expiry's name — which is exactly the confusion the defect hid in.
 
 var _ = Describe("expires_at bound", func() {
 	var ctx context.Context
@@ -53,11 +61,18 @@ var _ = Describe("expires_at bound", func() {
 		return store, db
 	}
 
-	push := func(store pkg.AttentionStore, expiresAt *libtime.DateTime, dedupKey string) {
-		_, err := store.Push(ctx, pkg.PushRequest{
+	// push posts one open ask and returns it, so a spec can assert on the row
+	// rather than only on what a read chose to render.
+	push := func(
+		store pkg.AttentionStore,
+		ref pkg.LivenessRef,
+		expiresAt *libtime.DateTime,
+		dedupKey string,
+	) *pkg.Item {
+		item, err := store.Push(ctx, pkg.PushRequest{
 			ProducerID:      pkg.ProducerID("worker-1"),
 			ProducerKind:    pkg.SessionProducerKind,
-			LivenessRef:     pkg.LivenessRef("owner:operator-1"),
+			LivenessRef:     ref,
 			DedupKey:        pkg.DedupKey(dedupKey),
 			InterruptClass:  "pick",
 			Payload:         "which way?",
@@ -65,6 +80,7 @@ var _ = Describe("expires_at bound", func() {
 			ExpiresAt:       expiresAt,
 		})
 		Expect(err).To(BeNil())
+		return item
 	}
 
 	// at builds a deadline offset from now, so a spec states which side of the
@@ -77,11 +93,16 @@ var _ = Describe("expires_at bound", func() {
 	It("removes an item whose expires_at has passed", func() {
 		store, db := newStore()
 
-		push(store, at(-stdtime.Hour), "expired")
+		item := push(store, pkg.LivenessRef("owner:operator-1"), at(-stdtime.Hour), "expired")
 
 		items, err := store.ReadBoard(ctx)
 		Expect(err).To(BeNil())
 		Expect(items).To(BeEmpty(), "an item past its own declared deadline must go")
+
+		_, err = store.Get(ctx, item.ItemID)
+		Expect(err).To(MatchError(ContainSubstring("not found")),
+			"the row must be DELETED, not merely hidden from the board — "+
+				"a surviving row is resurrected by the next dedup re-push")
 
 		Expect(db.Close()).To(BeNil())
 	})
@@ -92,11 +113,15 @@ var _ = Describe("expires_at bound", func() {
 		// half, "removed" cannot be told apart from "removed for another reason".
 		store, db := newStore()
 
-		push(store, at(stdtime.Hour), "not-yet")
+		item := push(store, pkg.LivenessRef("owner:operator-1"), at(stdtime.Hour), "not-yet")
 
 		items, err := store.ReadBoard(ctx)
 		Expect(err).To(BeNil())
 		Expect(items).To(HaveLen(1), "a deadline still ahead of the clock bounds nothing yet")
+
+		got, err := store.Get(ctx, item.ItemID)
+		Expect(err).To(BeNil())
+		Expect(got.ExpiresAt).NotTo(BeNil(), "the deadline must round-trip")
 
 		Expect(db.Close()).To(BeNil())
 	})
@@ -108,11 +133,69 @@ var _ = Describe("expires_at bound", func() {
 		// the timer is opt-in.
 		store, db := newStore()
 
-		push(store, nil, "no-deadline")
+		item := push(store, pkg.LivenessRef("owner:operator-1"), nil, "no-deadline")
 
 		items, err := store.ReadBoard(ctx)
 		Expect(err).To(BeNil())
 		Expect(items).To(HaveLen(1), "an absent expires_at must not be read as an expired one")
+
+		_, err = store.Get(ctx, item.ItemID)
+		Expect(err).To(BeNil())
+
+		Expect(db.Close()).To(BeNil())
+	})
+
+	It("keeps an answered item whose expires_at has passed", func() {
+		// History is never rewritten. The answered branch returns before the
+		// state check, so a deadline cannot reach a resolution the operator has
+		// already recorded — the same rule that keeps `pruneDead` from
+		// destroying an answer it raced.
+		store, db := newStore()
+
+		item := push(
+			store,
+			pkg.LivenessRef("owner:operator-1"),
+			at(-stdtime.Hour),
+			"answered-expired",
+		)
+
+		_, err := store.Answer(ctx, item.ItemID, "attention-board", "", "", &pkg.Answer{
+			Kind:  pkg.OptionAnswerKind,
+			Value: "which way?",
+		}, nil, nil)
+		Expect(err).To(BeNil())
+
+		_, err = store.ReadBoard(ctx)
+		Expect(err).To(BeNil())
+
+		got, err := store.Get(ctx, item.ItemID)
+		Expect(err).To(BeNil(), "an answered item's history is never rewritten by expiry")
+		Expect(got.State).To(Equal(pkg.AnsweredState))
+
+		Expect(db.Close()).To(BeNil())
+	})
+
+	It("removes a session item whose expires_at has passed", func() {
+		// Coverage of the other models the field now reaches. ⚠️ This spec does
+		// NOT discriminate on its own: with an empty registry a `session:` ref
+		// reads as not-live, so the item would be pruned by liveness with or
+		// without the deadline. The `owner:` specs above are the ones that pin
+		// expiry as the cause; this one pins only that a `session:` item
+		// carrying a past deadline does not survive.
+		store, db := newStore()
+
+		item := push(
+			store,
+			pkg.LivenessRef("session:worker-1"),
+			at(-stdtime.Hour),
+			"session-expired",
+		)
+
+		_, err := store.ReadBoard(ctx)
+		Expect(err).To(BeNil())
+
+		_, err = store.Get(ctx, item.ItemID)
+		Expect(err).To(MatchError(ContainSubstring("not found")))
 
 		Expect(db.Close()).To(BeNil())
 	})

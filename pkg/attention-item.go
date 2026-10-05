@@ -260,7 +260,32 @@ func (i Item) Validate(ctx context.Context) error {
 		validation.Name("Answers", validation.HasValidationFunc(i.validateAnswers)),
 		validation.Name("State", i.State),
 		validation.Name("CreatedAt", i.CreatedAt),
+		validation.Name("ExpiresAt", validation.HasValidationFunc(i.validateExpiresAt)),
 	}.Validate(ctx)
+}
+
+// validateExpiresAt refuses the zero instant. The field is optional, so absent
+// is legal; what is refused is a deadline that is not one — the value a producer
+// reaches by sending `0001-01-01T00:00:00Z`, or by serialising an
+// uninitialised one.
+//
+// ⚠️ It matters only because the read path now enforces the field. Before that,
+// a zero `expires_at` was inert and harmless; now it means "expire on the very
+// next read", so a producer meaning "no deadline" would instead get one that
+// fires immediately — and the symptom would look like a store that swallowed
+// the card, which is the failure mode this whole area exists to remove.
+func (i Item) validateExpiresAt(ctx context.Context) error {
+	if i.ExpiresAt == nil {
+		return nil
+	}
+	if i.ExpiresAt.Time().IsZero() {
+		return errors.Wrapf(
+			ctx,
+			validation.Error,
+			"expires_at must be a real instant or absent, got the zero time",
+		)
+	}
+	return nil
 }
 
 // validateOptions enforces the schema's message-only rule for `options`. The

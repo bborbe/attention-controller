@@ -310,6 +310,7 @@ func (a *attentionStore) classifyForRead(
 	item Item,
 	includeAnswered bool,
 	liveness sessionLiveness,
+	now libtime.DateTime,
 ) (readDisposition, error) {
 	if item.State == AnsweredState && includeAnswered {
 		// Rendered as a dimmed record. Never liveness-tested and never pruned.
@@ -318,7 +319,7 @@ func (a *attentionStore) classifyForRead(
 	if item.State != OpenState {
 		return readDisposition{}, nil
 	}
-	if isExpired(&item, a.currentDateTimeGetter.Now()) {
+	if isExpired(&item, now) {
 		// ⚠️ Checked BEFORE liveness, and the order is load-bearing. An expired
 		// item is moot whoever is still alive, and an `owner:` item is never
 		// liveness-pruned at all — so this branch is the only thing bounding the
@@ -432,10 +433,16 @@ func (a *attentionStore) read(ctx context.Context, includeAnswered bool) (Items,
 	// twice — once here, once there.
 	liveness := newReadSessionLiveness(a.sessionLivenessChecker)
 
+	// ⚠️ One `now` for the whole scan, not one per item. The getter is cheap — a
+	// vDSO call with no lock — so this is not a cost argument: it is that every
+	// item in a read should be judged against the SAME instant, or two items
+	// written together can straddle a deadline inside a single scan.
+	now := a.currentDateTimeGetter.Now()
+
 	kept := make(Items, 0, len(items))
 	dead := make([]string, 0, len(items))
 	for _, stored := range items {
-		disposition, err := a.classifyForRead(ctx, stored.item, includeAnswered, liveness)
+		disposition, err := a.classifyForRead(ctx, stored.item, includeAnswered, liveness, now)
 		if err != nil {
 			return nil, errors.Wrap(ctx, err, "classify item failed")
 		}
@@ -1163,7 +1170,7 @@ func (a *attentionStore) pruneDead(ctx context.Context, keys []string) error {
 	liveness.resolveNow(ctx)
 	err := a.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
 		for _, key := range keys {
-			remove, err := a.stillDead(ctx, tx, key, liveness)
+			remove, err := a.stillRemovable(ctx, tx, key, liveness)
 			if err != nil {
 				return err
 			}
@@ -1182,18 +1189,24 @@ func (a *attentionStore) pruneDead(ctx context.Context, keys []string) error {
 	return nil
 }
 
-// stillDead re-checks one key the read classified dead, against a snapshot taken
-// after the disposition rather than the one it came from — fresher, not live.
-// The window it closes is classification → prune; the window it leaves open is
-// resolve → lock-acquire, so a session resumed inside that second window is
-// still pruned. Named rather than implied: the earlier wording claimed "the
-// value that is live now", which the snapshot does not give.
+// stillRemovable re-checks one key the read classified for removal, against a
+// snapshot taken after the disposition rather than the one it came from —
+// fresher, not live. The window it closes is classification → prune; the window
+// it leaves open is resolve → lock-acquire, so a session resumed inside that
+// second window is still pruned. Named rather than implied: the earlier wording
+// claimed "the value that is live now", which the snapshot does not give.
+//
+// ⚠️ It is named for what it answers — "should this still be removed?" — rather
+// than for liveness, because removal now has two independent causes and only one
+// of them is death. A name that said `Dead` would read as a promise that the
+// liveness check below decides, and it does not.
 //
 // It is a method rather than an inline branch for the same reason
-// classifyForRead is one: the state check and the liveness check together
-// exceed the complexity budget the linter allows the prune loop, and the
-// not-found case is easier to read stated once here than as a nested continue.
-func (a *attentionStore) stillDead(
+// classifyForRead is one: the state check, the expiry check and the liveness
+// check together exceed the complexity budget the linter allows the prune loop,
+// and the not-found case is easier to read stated once here than as a nested
+// continue.
+func (a *attentionStore) stillRemovable(
 	ctx context.Context,
 	tx libkv.Tx,
 	key string,
@@ -1213,6 +1226,21 @@ func (a *attentionStore) stillDead(
 	// prune destroying a resolution the operator just recorded.
 	if item.State != OpenState {
 		return false, nil
+	}
+	// ⚠️ Expiry is re-checked FIRST, and the re-check is not redundant with the
+	// classification. `updateExistingIfLive` rewrites an open row in place on a
+	// dedup re-push — `ExpiresAt` included — so the deadline the scan saw is not
+	// necessarily the one standing now.
+	//
+	// ⚠️ And it must NOT sit behind the liveness re-check below. That re-check
+	// exists because LIVENESS IS NOT MONOTONIC; expiry is monotonic. For an
+	// `owner:` ref `isProducerLiveWith` returns a constant `true`, so an expired
+	// owner item left behind the liveness check is hidden from the board while
+	// its row survives — and the next dedup re-push of the same key resurrects
+	// it, because `updateExistingIfLive` matches the row that was never deleted.
+	// A board that hides a row is not a row that is gone.
+	if isExpired(item, a.currentDateTimeGetter.Now()) {
+		return true, nil
 	}
 	live, err := a.isProducerLiveWith(ctx, item, liveness)
 	if err != nil {
@@ -1311,16 +1339,28 @@ func (a *attentionStore) collectHistoryPage(
 		if string(it.Item().Key()) == historyIndexMarkerKey {
 			continue
 		}
+		item, err := decodeHistoryIndexEntry(ctx, it.Item())
+		if err != nil {
+			return nil, err
+		}
+		// ⚠️ An expired OPEN item is skipped, and it is filtered BEFORE the offset
+		// so it never occupies a page slot. This is History's one narrowing:
+		// "filters on nothing" holds for answered and closed items — their history
+		// is never rewritten — while a moot open item is neither what resolved nor
+		// what escalated, the population this endpoint exists to count.
+		//
+		// ⚠️ It also means the page is decoded before the offset is applied, where
+		// the offset used to skip without decoding at all. That cost is what buys
+		// the filter: expiry cannot be read off the index key.
+		if item.State == OpenState && isExpired(&item, a.currentDateTimeGetter.Now()) {
+			continue
+		}
 		if skipped < offset {
 			skipped++
 			continue
 		}
 		if limit > 0 && len(items) >= limit {
 			break
-		}
-		item, err := decodeHistoryIndexEntry(ctx, it.Item())
-		if err != nil {
-			return nil, err
 		}
 		items = append(items, item)
 	}
