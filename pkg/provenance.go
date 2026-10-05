@@ -617,12 +617,14 @@ const (
 // sessionIDFromItem recovers the session an item belongs to, or "" when the
 // item names none.
 //
-// Both liveness models are handled because both are legal and the store uses
-// them: `session:<id>` names the session directly, and `heartbeat:<path>`
-// names a file the watcher maintains whose base name is the session id. An
-// item on neither model — a cron job, a dark-factory run, an agent — yields
-// "", which is the honest answer: those producers have no session to look up,
-// so the name-keyed join cannot apply to them.
+// All three liveness models are handled because all three are legal:
+// `session:<id>` names the session directly, `owner:<id>` names the session the
+// answer belongs to — a worker's operator gate resolves its OWNER's pane and
+// name rather than falling through to the exited worker's id — and
+// `heartbeat:<path>` names a file the watcher maintains whose base name is the
+// session id. An item on none of them — a cron job, a dark-factory run, an
+// agent — yields "", which is the honest answer: those producers have no session
+// to look up, so the name-keyed join cannot apply to them.
 //
 // A `session:`-prefixed ProducerID is accepted as a last resort, because the
 // resolver must still work on items pushed before this fallback existed and on
