@@ -326,8 +326,12 @@ func (a *attentionStore) classifyForRead(
 		return readDisposition{keep: true}, nil
 	}
 	if isAsked(&item) {
+		// ⚠️ Name the REF, not the producer. For an `owner:` item the producer is
+		// exactly what was NOT tested, so logging ProducerID would point a reader
+		// at the exited worker rather than the dead owner — the one line
+		// explaining a vanished operator gate naming the wrong party.
 		glog.V(2).
-			Infof("removing item %s: producer %s asked and is gone", item.ItemID, item.ProducerID)
+			Infof("removing item %s: %s asked and its liveness subject is gone", item.ItemID, item.LivenessRef)
 		return readDisposition{remove: true}, nil
 	}
 	// The producer reported a condition rather than asking a question.
@@ -1767,6 +1771,20 @@ func (a *attentionStore) isProducerLiveWith(
 	switch model {
 	case SessionLivenessModel:
 		return liveness.IsLive(ctx, value), nil
+	case OwnerLivenessModel:
+		// ⚠️ Always live, deliberately — a decision, not an oversight. The owner
+		// is a subject whose ABSENCE CANNOT BE READ: the session registry deletes
+		// an entry on exit, so a human owner who was never registered and an
+		// owner that has exited produce the same signal. Reading either as gone
+		// prunes an operator gate the operator can still answer — the defect this
+		// model exists to fix, one layer in. So this model probes NOTHING.
+		//
+		// ⚠️ `expires_at` is NOT the bound either, and must not be described as
+		// one: nothing in this repo compares it to the current time — the field
+		// is written at push and never read. An unanswered `owner:` item
+		// therefore lives until something else closes it. That is the honest
+		// statement, and the enforcement gap is a separate defect.
+		return true, nil
 	case HeartbeatLivenessModel:
 		return a.isHeartbeatFresh(value), nil
 	default:

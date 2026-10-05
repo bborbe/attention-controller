@@ -13,9 +13,10 @@ import (
 	"github.com/bborbe/validation"
 )
 
-// LivenessModel is which of the two liveness models a ref uses. The two exist
-// because the same on-disk fact — "the producer is not running" — means
-// opposite things for the two classes.
+// LivenessModel is which liveness model a ref uses. There are three models but
+// only two probes: the models exist because the same on-disk fact — "the
+// producer is not running" — means opposite things for the classes, while the
+// probe that answers it does not change with the class.
 type LivenessModel string
 
 const (
@@ -25,6 +26,17 @@ const (
 	// HeartbeatLivenessModel is a short-lived producer that exits by design. A
 	// stale heartbeat means the producer is gone, and its *report* stays.
 	HeartbeatLivenessModel LivenessModel = "heartbeat"
+	// OwnerLivenessModel is a producer that is *supposed* to exit, whose
+	// question is the operator's to answer rather than its own — a worker that
+	// posts an operator gate and then ends its turn. The item's survival is the
+	// owner's, not the producer's, and its answer routes to the owner.
+	//
+	// ⚠️ It is a third MODEL and NOT a second probe: it resolves against
+	// nothing. The registry deletes an entry on exit, so a never-registered
+	// owner and an exited one are indistinguishable, and reading either as gone
+	// prunes the gate this model exists to keep. See [[Attention Item Schema]]
+	// § How liveness is checked.
+	OwnerLivenessModel LivenessModel = "owner"
 )
 
 // LivenessModels is a collection of LivenessModel.
@@ -34,6 +46,7 @@ type LivenessModels []LivenessModel
 var AvailableLivenessModels = LivenessModels{
 	SessionLivenessModel,
 	HeartbeatLivenessModel,
+	OwnerLivenessModel,
 }
 
 // String returns the liveness model as a string.
@@ -55,8 +68,8 @@ func (l LivenessModels) Contains(livenessModel LivenessModel) bool {
 }
 
 // Parse splits a liveness ref into its model and its value. The ref is written
-// `<model>:<value>` — `session:<id>` or `heartbeat:<path>`. A ref that is not
-// one of the two models, or that carries no value, is rejected.
+// `<model>:<value>` — `session:<id>`, `owner:<id>` or `heartbeat:<path>`. A ref
+// that is not one of the three models, or that carries no value, is rejected.
 func (l LivenessRef) Parse(ctx context.Context) (LivenessModel, string, error) {
 	model, value, found := strings.Cut(l.String(), ":")
 	if !found {

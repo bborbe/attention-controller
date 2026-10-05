@@ -589,6 +589,11 @@ func (r *provenanceResolver) sessionNameFor(
 const (
 	// sessionLivenessPrefix marks a `session:<id>` ref.
 	sessionLivenessPrefix = "session:"
+	// ownerLivenessPrefix marks an `owner:<id>` ref — a producer that is
+	// supposed to exit, whose item survives while the OWNER lives. The value is
+	// a session id exactly as `session:`'s is, so the identity path recovers it
+	// the same way.
+	ownerLivenessPrefix = "owner:"
 	// heartbeatLivenessPrefix marks a `heartbeat:<path>` ref whose final path
 	// segment is the session id.
 	heartbeatLivenessPrefix = "heartbeat:"
@@ -612,12 +617,14 @@ const (
 // sessionIDFromItem recovers the session an item belongs to, or "" when the
 // item names none.
 //
-// Both liveness models are handled because both are legal and the store uses
-// them: `session:<id>` names the session directly, and `heartbeat:<path>`
-// names a file the watcher maintains whose base name is the session id. An
-// item on neither model — a cron job, a dark-factory run, an agent — yields
-// "", which is the honest answer: those producers have no session to look up,
-// so the name-keyed join cannot apply to them.
+// All three liveness models are handled because all three are legal:
+// `session:<id>` names the session directly, `owner:<id>` names the session the
+// answer belongs to — a worker's operator gate resolves its OWNER's pane and
+// name rather than falling through to the exited worker's id — and
+// `heartbeat:<path>` names a file the watcher maintains whose base name is the
+// session id. An item on none of them — a cron job, a dark-factory run, an
+// agent — yields "", which is the honest answer: those producers have no session
+// to look up, so the name-keyed join cannot apply to them.
 //
 // A `session:`-prefixed ProducerID is accepted as a last resort, because the
 // resolver must still work on items pushed before this fallback existed and on
@@ -626,6 +633,14 @@ const (
 func sessionIDFromItem(item Item) string {
 	if ref := string(item.LivenessRef); ref != "" {
 		if id, ok := strings.CutPrefix(ref, sessionLivenessPrefix); ok {
+			return strings.TrimSpace(id)
+		}
+		// An `owner:<id>` ref carries a session id exactly as `session:` does,
+		// so it resolves the same way. Without this the ref falls through to
+		// ProducerID, and for a worker-posted operator gate that names the
+		// EXITED worker — so the card resolves no pane and claims none, while
+		// the store itself resolves the owner fine.
+		if id, ok := strings.CutPrefix(ref, ownerLivenessPrefix); ok {
 			return strings.TrimSpace(id)
 		}
 		if path, ok := strings.CutPrefix(ref, heartbeatLivenessPrefix); ok {
