@@ -326,8 +326,12 @@ func (a *attentionStore) classifyForRead(
 		return readDisposition{keep: true}, nil
 	}
 	if isAsked(&item) {
+		// ⚠️ Name the REF, not the producer. For an `owner:` item the producer is
+		// exactly what was NOT tested, so logging ProducerID would point a reader
+		// at the exited worker rather than the dead owner — the one line
+		// explaining a vanished operator gate naming the wrong party.
 		glog.V(2).
-			Infof("removing item %s: producer %s asked and is gone", item.ItemID, item.ProducerID)
+			Infof("removing item %s: %s asked and its liveness subject is gone", item.ItemID, item.LivenessRef)
 		return readDisposition{remove: true}, nil
 	}
 	// The producer reported a condition rather than asking a question.
@@ -1768,12 +1772,16 @@ func (a *attentionStore) isProducerLiveWith(
 	case SessionLivenessModel:
 		return liveness.IsLive(ctx, value), nil
 	case OwnerLivenessModel:
-		// Same probe, different subject: an item declaring an owner survives
-		// while its OWNER lives, not while its producer does — so a worker's
-		// operator gate outlives the worker that posted it, and is still
-		// removed when the owner is gone rather than never. See
-		// [[Attention Item Schema]] § How liveness is checked.
-		return liveness.IsLive(ctx, value), nil
+		// ⚠️ Always live, deliberately — and this is a decision, not an
+		// oversight. The owner is a subject whose ABSENCE CANNOT BE READ: the
+		// session registry deletes an entry on exit, so a human owner who was
+		// never registered and an owner that has exited produce the same signal.
+		// Reading either as gone prunes an operator gate the operator can still
+		// answer — the defect this model exists to fix, one layer in. So an
+		// `owner:` item is bounded by its `expires_at` rather than by a probe:
+		// absence is not evidence here, and the producer's own deadline is the
+		// bound that is. See [[Attention Item Schema]] § How liveness is checked.
+		return true, nil
 	case HeartbeatLivenessModel:
 		return a.isHeartbeatFresh(value), nil
 	default:

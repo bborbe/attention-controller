@@ -31,10 +31,14 @@ func (p ProducerID) String() string {
 	return string(p)
 }
 
-// LivenessRef is how to tell whether this producer is still alive. Exactly two
-// models exist, and the producer declares which one its item uses:
+// LivenessRef is how to tell whether the item's survival subject is still
+// alive. Three models exist and only two probes, and the producer declares
+// which model its item uses:
 //
-//	session:<id>    a long-lived producer whose absence is meaningful
+//	session:<id>     a long-lived producer whose absence is meaningful
+//	owner:<id>       a producer that is supposed to exit, whose question is the
+//	                 owner's to answer — resolved against the SAME registry as
+//	                 session:, differing only in whose survival is tested
 //	heartbeat:<path> a short-lived producer that exits by design
 type LivenessRef string
 

@@ -56,8 +56,8 @@ var (
 	// place — they sit on closed items and are the schema page's counterexamples.
 	ErrInvalidSessionID = stderrors.New("invalid session id")
 
-	// ErrInvalidLivenessRef is returned when a liveness ref is neither of the
-	// two models, or carries no value.
+	// ErrInvalidLivenessRef is returned when a liveness ref is not one of the
+	// three models, or carries no value.
 	ErrInvalidLivenessRef = stderrors.New("invalid liveness ref")
 )
 

@@ -589,6 +589,11 @@ func (r *provenanceResolver) sessionNameFor(
 const (
 	// sessionLivenessPrefix marks a `session:<id>` ref.
 	sessionLivenessPrefix = "session:"
+	// ownerLivenessPrefix marks an `owner:<id>` ref — a producer that is
+	// supposed to exit, whose item survives while the OWNER lives. The value is
+	// a session id exactly as `session:`'s is, so the identity path recovers it
+	// the same way.
+	ownerLivenessPrefix = "owner:"
 	// heartbeatLivenessPrefix marks a `heartbeat:<path>` ref whose final path
 	// segment is the session id.
 	heartbeatLivenessPrefix = "heartbeat:"
@@ -626,6 +631,14 @@ const (
 func sessionIDFromItem(item Item) string {
 	if ref := string(item.LivenessRef); ref != "" {
 		if id, ok := strings.CutPrefix(ref, sessionLivenessPrefix); ok {
+			return strings.TrimSpace(id)
+		}
+		// An `owner:<id>` ref carries a session id exactly as `session:` does,
+		// so it resolves the same way. Without this the ref falls through to
+		// ProducerID, and for a worker-posted operator gate that names the
+		// EXITED worker — so the card resolves no pane and claims none, while
+		// the store itself resolves the owner fine.
+		if id, ok := strings.CutPrefix(ref, ownerLivenessPrefix); ok {
 			return strings.TrimSpace(id)
 		}
 		if path, ok := strings.CutPrefix(ref, heartbeatLivenessPrefix); ok {

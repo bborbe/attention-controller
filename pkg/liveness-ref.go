@@ -67,8 +67,8 @@ func (l LivenessModels) Contains(livenessModel LivenessModel) bool {
 }
 
 // Parse splits a liveness ref into its model and its value. The ref is written
-// `<model>:<value>` — `session:<id>` or `heartbeat:<path>`. A ref that is not
-// one of the two models, or that carries no value, is rejected.
+// `<model>:<value>` — `session:<id>`, `owner:<id>` or `heartbeat:<path>`. A ref
+// that is not one of the three models, or that carries no value, is rejected.
 func (l LivenessRef) Parse(ctx context.Context) (LivenessModel, string, error) {
 	model, value, found := strings.Cut(l.String(), ":")
 	if !found {
