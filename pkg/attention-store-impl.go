@@ -1767,6 +1767,13 @@ func (a *attentionStore) isProducerLiveWith(
 	switch model {
 	case SessionLivenessModel:
 		return liveness.IsLive(ctx, value), nil
+	case OwnerLivenessModel:
+		// Same probe, different subject: an item declaring an owner survives
+		// while its OWNER lives, not while its producer does — so a worker's
+		// operator gate outlives the worker that posted it, and is still
+		// removed when the owner is gone rather than never. See
+		// [[Attention Item Schema]] § How liveness is checked.
+		return liveness.IsLive(ctx, value), nil
 	case HeartbeatLivenessModel:
 		return a.isHeartbeatFresh(value), nil
 	default:
