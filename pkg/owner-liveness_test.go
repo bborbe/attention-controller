@@ -27,8 +27,13 @@ import (
 // and it failed in the silent direction: a clean board and no gate.
 //
 // `owner:<id>` is the model that fixes it, and its one rule is the thing these
-// specs pin: an `owner:` item is bounded by its `expires_at`, NEVER by a
-// liveness probe.
+// specs pin: an `owner:` item is NEVER pruned by a liveness probe.
+//
+// ⚠️ `expires_at` is NOT the bound either, and must not be described as one:
+// nothing in this repo compares it to the current time, so the field is written
+// at push and never read. These specs therefore assert survival only — they do
+// not cover a lifetime bound, because none exists to cover. That enforcement
+// gap is a separate defect.
 //
 // ⚠️ The reason is not a preference, and it is why the obvious implementation
 // is wrong. The session registry deletes an entry when a session exits, so
