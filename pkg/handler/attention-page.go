@@ -1602,14 +1602,14 @@ function replayFailure(row) {
 {{else if .NoJump}}<button type="button" class="jump-corner" disabled aria-label="Jump to session" title="Jump to session"><svg class="jump-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.75 3.25h8.5a1.5 1.5 0 0 1 1.5 1.5v6.5a1.5 1.5 0 0 1-1.5 1.5h-8.5a1.5 1.5 0 0 1-1.5-1.5v-6.5a1.5 1.5 0 0 1 1.5-1.5z"/><path d="M5.75 6.5 7.5 8.25 5.75 10"/><path d="M9 10h1.75"/></svg></button>
 {{end}}{{if .Info}}<button type="button" class="info-toggle" data-info-toggle aria-expanded="false" aria-label="Card information">i</button>
 {{end}}{{if or .TaskURL .GoalURL .TopicURL .Provenance.SessionName}}<div class="provenance">{{if .TaskURL}}<span class="task"><a href="{{ .TaskURL }}">{{ .Provenance.TaskName }}</a></span>{{end}}{{if .GoalURL}}<span class="goal"><a href="{{ .GoalURL }}">{{ .Provenance.GoalName }}</a></span>{{end}}{{if .TopicURL}}<span class="topic"><a href="{{ .TopicURL }}">{{ .Provenance.TopicName }}</a></span>{{end}}{{if .Provenance.SessionName}}<span class="session-name">{{ .Provenance.SessionName }}</span>{{end}}</div>
-{{end}}{{if not .Message}}<div class="payload">{{ .Item.Payload }}</div>
-{{end}}{{if .Item.Context}}<div class="context">{{ .Item.Context }}</div>
-{{end}}{{if .Dimmed}}<div class="record"><div class="record-question">{{ .Item.Payload }}</div><div class="record-answer">answered: {{ .Record }}</div></div>
+{{end}}{{if not .Message}}<div class="payload">{{ cardtext .Item.Payload }}</div>
+{{end}}{{if .Item.Context}}<div class="context">{{ cardtext .Item.Context }}</div>
+{{end}}{{if .Dimmed}}<div class="record"><div class="record-question">{{ cardtext .Item.Payload }}</div><div class="record-answer">answered: {{ .Record }}</div></div>
 {{else if .Message}}<form class="answer" data-multi="{{ .Tabs }}">
 {{if .Tabs}}<div class="tabs">{{range .Questions}}<button type="button" class="tab{{if .Active}} active{{end}}" data-tab="{{ .Tab }}">{{ .Tab }}</button>{{end}}</div>
-<div class="card-title">{{ .Item.Payload }}</div>
+<div class="card-title">{{ cardtext .Item.Payload }}</div>
 {{end}}{{range .Questions}}{{$question := .}}<div class="panel" data-question="{{ $question.Tab }}" data-multi-pick="{{ $question.Multi }}"{{if not $question.Active}} hidden{{end}}>
-<div class="question">{{ $question.Payload }}{{if $question.Hint}} <span class="hint">({{ $question.Hint }})</span>{{end}}</div>
+<div class="question">{{ cardtext $question.Payload }}{{if $question.Hint}} <span class="hint">({{ $question.Hint }})</span>{{end}}</div>
 {{if $question.Options}}<div class="options">
 {{range $question.Options}}<label class="option"><input type="{{ if $question.Multi }}checkbox{{ else }}radio{{ end }}" name="{{ $question.Name }}" value="{{ .Label }}" data-option="{{ .Label }}"><span class="option-body"><span class="option-label">{{ .Label }}{{if .Recommended}} <span class="recommended">(Recommended)</span>{{end}}</span>{{if .Description}}<span class="option-desc">{{ .Description }}</span>{{end}}</span></label>
 {{end}}</div>
@@ -1908,8 +1908,7 @@ const (
 // handler so the handler stays a pure renderer: the value is read once at
 // startup, from the binary, and a handler that re-read it per request would be
 // re-deriving a constant while making the page's footer untestable.
-func NewAttentionPageHandler(
-	store pkg.AttentionStore,
+func NewAttentionPageHandler(store pkg.AttentionStore,
 	provenance pkg.ProvenanceResolver,
 	speakEnabled bool,
 	vaultDir string,
@@ -1918,7 +1917,7 @@ func NewAttentionPageHandler(
 	// Parsed once at construction rather than per request: the template is a
 	// compile-time constant, so a parse failure is a programming error, and
 	// template.Must makes it a startup failure rather than a per-request one.
-	page := template.Must(template.New("attention-page").Parse(attentionPageTemplate))
+	page := newAttentionPageTemplate()
 	return libhttp.NewJSONErrorHandler(
 		libhttp.WithErrorFunc(
 			func(ctx context.Context, resp http.ResponseWriter, req *http.Request) error {

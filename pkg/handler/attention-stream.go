@@ -72,8 +72,11 @@ func NewAttentionStreamHandler(
 	metrics pkg.Metrics,
 ) http.Handler {
 	// The same template the page parses, so `attention-row` renders from one
-	// definition rather than from a copy kept in step by hand.
-	rows := template.Must(template.New("attention-page").Parse(attentionPageTemplate))
+	// definition rather than from a copy kept in step by hand. Parsed through
+	// the shared constructor rather than here: the funcs the template calls have
+	// to be registered on both paths, and a second `Parse` call is a second
+	// place for them to drift.
+	rows := newAttentionPageTemplate()
 	handler := &attentionStreamHandler{
 		store:        store,
 		notifier:     notifier,
