@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.48.0
 
 - feat: add the `attention_board_page_requests_total` Prometheus counter, incremented once per request that reaches the per-client board page handler. `attention_board_renders_total` could not serve this: it is incremented only inside the shared SSE renderer, so a client loading the page moved nothing and a cold-render latency window could not prove its own quiet. The new counter is wired through `pkg.Metrics`, implemented in `pkg/boardmetrics`, and threaded via `factory.CreateAttentionPageHandler` from the process-wide instance `main` builds on the registry `/metrics` serves, so it appears on the deployed metrics endpoint beside the existing two. It is incremented before the store read, so a request that fails to render still counts — the question is whether a client asked, not whether the render succeeded.
 
