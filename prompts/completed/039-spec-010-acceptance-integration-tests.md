@@ -1,8 +1,12 @@
 ---
-status: approved
+status: completed
 spec: [010-bearer-token-auth]
+execution_id: attention-controller-bearer-auth-exec-039-spec-010-acceptance-integration-tests
+dark-factory-version: v0.196.0
 created: "2026-10-06T11:40:19Z"
 queued: "2026-10-06T12:06:55Z"
+started: "2026-10-06T12:19:54Z"
+completed: "2026-10-06T12:24:32Z"
 branch: dark-factory/bearer-token-auth
 ---
 
