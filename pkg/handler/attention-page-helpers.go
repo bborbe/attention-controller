@@ -11,9 +11,10 @@
 // The template itself still lives in attention-page.go rather than here, because
 // a live sibling branch edits its JavaScript and moving it would collide. ⚠️ The
 // stylesheet is the one part of the document that HAS moved: it is concatenated
-// back into the template at the point it was cut from, so the SERVED bytes are
-// unchanged, but the template's source is no longer byte-identical to what it
-// was — which is what this note used to claim.
+// back into the template at the point it was cut from, so the SEAM is unchanged —
+// but the block's contents were edited in the same change, and the template's
+// source is no longer byte-identical either. An earlier version of this note said
+// the served bytes were unchanged, which was wrong on both counts.
 package handler
 
 import (

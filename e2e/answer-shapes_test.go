@@ -165,10 +165,14 @@ var _ = Describe("an answer given on the rendered board", func() {
 	// types text WITHOUT picking first, so it passes on a board that drops the
 	// pick.
 	//
-	// ⚠️ The stored answer is `text` on BOTH the broken and the fixed build —
-	// collectAnswers discards the pick at attention-page.go:701-703 either way —
-	// so a case asserting only the stored answer is green on the unfixed board.
-	// The discriminating assertions are the rendered ones, and they come first.
+	// ⚠️ The stored answer is `text` on BOTH the broken and the fixed build, so a
+	// case asserting only the stored answer is green on the unfixed board. The
+	// discriminating assertions are the rendered ones, and they come first.
+	//
+	// ⚠️ Line citations in this file are against MASTER, not against this branch.
+	// On master collectAnswers discards the pick at attention-page.go:701-703; on
+	// this branch the function sits at :310-342 and the two discard points are
+	// :320 (the data-other skip) and :325-327 (the text-first early-out).
 	It("checks Other and clears the pick when text is typed after one", func() {
 		itemID := pushCard(pkg.PushRequest{
 			DedupKey:        "shape-pick-then-type",
@@ -188,17 +192,23 @@ var _ = Describe("an answer given on the rendered board", func() {
 		).To(Succeed())
 
 		// Other is a member of the group, not a field beside it.
-		Eventually(func() (int, error) {
-			return page.Locator(rowSelector(itemID) + " .options input[data-other]:visible").Count()
-		}).Should(Equal(1))
+		Expect(
+			page.Locator(rowSelector(itemID) + " .options input[data-other]:visible").Count(),
+		).To(Equal(1))
 		// The pick made first is released, and Other carries the selection.
-		Eventually(func() (bool, error) {
-			return page.Locator(rowSelector(itemID) + ` input[data-option="Anna"]:visible`).
-				IsChecked()
-		}).Should(BeFalse())
-		Eventually(func() (bool, error) {
-			return page.Locator(rowSelector(itemID) + " input[data-other]:visible").IsChecked()
-		}).Should(BeTrue())
+		//
+		// ⚠️ Plain Expect, never Eventually, for all three: the `input` listener
+		// runs in the same task as the Fill above, so the state has already
+		// settled and Eventually buys no tolerance. It costs something though —
+		// around a NEGATIVE assertion it passes on a control that was briefly
+		// checked and then released, which is exactly the defect being asserted
+		// against.
+		Expect(
+			page.Locator(rowSelector(itemID) + ` input[data-option="Anna"]:visible`).IsChecked(),
+		).To(BeFalse())
+		Expect(
+			page.Locator(rowSelector(itemID) + " input[data-other]:visible").IsChecked(),
+		).To(BeTrue())
 
 		click(page, itemID, "button.next")
 
@@ -240,13 +250,12 @@ var _ = Describe("an answer given on the rendered board", func() {
 		click(page, itemID, ".option-other .option-label")
 
 		// The click neither checks Other nor releases the picks already made.
-		Eventually(func() (bool, error) {
-			return page.Locator(rowSelector(itemID) + " input[data-other]:visible").IsChecked()
-		}).Should(BeFalse())
-		Eventually(func() (bool, error) {
-			return page.Locator(rowSelector(itemID) + ` input[data-option="Cheese"]:visible`).
-				IsChecked()
-		}).Should(BeTrue())
+		Expect(
+			page.Locator(rowSelector(itemID) + " input[data-other]:visible").IsChecked(),
+		).To(BeFalse())
+		Expect(
+			page.Locator(rowSelector(itemID) + ` input[data-option="Cheese"]:visible`).IsChecked(),
+		).To(BeTrue())
 
 		click(page, itemID, "button.next")
 
@@ -258,9 +267,14 @@ var _ = Describe("an answer given on the rendered board", func() {
 
 	// The caption on a single-pick card, where a missed guard is destructive
 	// rather than merely wrong: a radio group releases the previous selection the
-	// moment another is checked, and nothing restores it. This is the case a
-	// control-keyed guard fails — the caption click never reaches the guard, the
-	// label's own activation checks Other, and the pick made first is gone.
+	// moment another is checked, and nothing restores it.
+	//
+	// ⚠️ What this case does NOT do is discriminate against a control-keyed guard.
+	// It was written believing it would, and running it against that guard showed
+	// otherwise: label activation dispatches a SECOND, forwarded click whose
+	// target is the control, so the older guard caught the caption path too. What
+	// it does discriminate against is a guard that is absent or wrong — with the
+	// listener made inert this case fails, and that is the regression it pins.
 	It("refuses a click on the Other caption without releasing the earlier pick", func() {
 		itemID := pushCard(pkg.PushRequest{
 			DedupKey:        "shape-caption-single",
@@ -274,14 +288,53 @@ var _ = Describe("an answer given on the rendered board", func() {
 		click(page, itemID, ".option-other .option-label")
 
 		// The caption click neither checks Other nor releases the pick already
-		// made — the second of which is the half a control-keyed guard loses.
-		Eventually(func() (bool, error) {
-			return page.Locator(rowSelector(itemID) + " input[data-other]:visible").IsChecked()
-		}).Should(BeFalse())
-		Eventually(func() (bool, error) {
-			return page.Locator(rowSelector(itemID) + ` input[data-option="Anna"]:visible`).
-				IsChecked()
-		}).Should(BeTrue())
+		// made.
+		Expect(
+			page.Locator(rowSelector(itemID) + " input[data-other]:visible").IsChecked(),
+		).To(BeFalse())
+		Expect(
+			page.Locator(rowSelector(itemID) + ` input[data-option="Anna"]:visible`).IsChecked(),
+		).To(BeTrue())
+	})
+
+	// The keyboard path to the same control, which a review raised as a possible
+	// hole and explicitly did not verify. Arrow-key navigation inside a radio
+	// group moves the selection, and whether the browser also fires a `click` for
+	// it decides whether a click-only guard covers this at all — so the question
+	// is asked here rather than assumed. On a single-pick card a move onto Other
+	// would release the earlier pick with nothing to restore it.
+	It("refuses a keyboard move onto the Other control on a single-pick card", func() {
+		itemID := pushCard(pkg.PushRequest{
+			DedupKey:        "shape-keyboard-single",
+			Payload:         "e2e: a name",
+			AnswerMechanism: pkg.MessageAnswerMechanism,
+			Options:         options("Anna", "Bob"),
+		})
+		page = newPage("")
+
+		pick(page, itemID, "Anna")
+		Expect(
+			page.Locator(rowSelector(itemID) + ` input[data-option="Anna"]:visible`).Focus(),
+		).To(Succeed())
+		// Anna -> Bob -> Other, the Other control being last in the group.
+		Expect(page.Keyboard().Press("ArrowRight")).To(Succeed())
+		Expect(page.Keyboard().Press("ArrowRight")).To(Succeed())
+
+		Expect(
+			page.Locator(rowSelector(itemID) + " input[data-other]:visible").IsChecked(),
+		).To(BeFalse())
+		// ⚠️ Anna is asserted UNCHECKED, and that is the point rather than a
+		// regression: the first press legitimately moves the selection to Bob, so
+		// Anna releasing is the group working. What must not happen is the
+		// selection landing on Other — a control whose empty field sends nothing.
+		// The second press is refused there, and the selection rests on Bob rather
+		// than vanishing, which is why Bob is the positive assertion.
+		Expect(
+			page.Locator(rowSelector(itemID) + ` input[data-option="Anna"]:visible`).IsChecked(),
+		).To(BeFalse())
+		Expect(
+			page.Locator(rowSelector(itemID) + ` input[data-option="Bob"]:visible`).IsChecked(),
+		).To(BeTrue())
 	})
 
 	It("stores a multi-tab card as one entry per answered question, keyed by question", func() {
