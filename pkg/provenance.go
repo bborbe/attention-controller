@@ -5,7 +5,7 @@
 package pkg
 
 import (
-	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -198,10 +198,14 @@ type ProvenanceResolver interface {
 	Resolve(ctx context.Context, items Items) Provenances
 }
 
-// NewProvenanceResolver creates a resolver reading the event logs under
-// stateDir, the session registry under sessionsDir, the supervisor's spawn
-// ledger under spawnDir, panes from the lister, and the vault tasks from the
-// index.
+// NewProvenanceResolver creates a resolver reading the producers' event logs
+// through eventLogs, the session registry under sessionsDir, the supervisor's
+// spawn ledger under spawnDir, panes from the lister, and the vault tasks from
+// the index.
+//
+// ⚠️ The event logs are read through the injected reader rather than a bare
+// state directory, so the read path's cost is observable: the reader is asked
+// only for the bytes appended since the resolver's last read of that producer.
 //
 // ⚠️ The index is built by the caller, once, and handed in — it is never built
 // here and never inside Resolve. The live vault holds over 8,000 task files, so
@@ -209,7 +213,7 @@ type ProvenanceResolver interface {
 // refresh, on a page the SSE stream serves continuously. A nil index is legal
 // and resolves no task, which is what a host with no configured vault gets.
 func NewProvenanceResolver(
-	stateDir string,
+	eventLogs EventLogReader,
 	sessionsDir string,
 	spawnDir string,
 	panes PaneLister,
@@ -217,12 +221,13 @@ func NewProvenanceResolver(
 	currentDateTimeGetter libtime.CurrentDateTimeGetter,
 ) ProvenanceResolver {
 	return &provenanceResolver{
-		stateDir:              stateDir,
+		eventLogs:             eventLogs,
 		sessionsDir:           sessionsDir,
 		spawnDir:              spawnDir,
 		panes:                 panes,
 		tasks:                 tasks,
 		currentDateTimeGetter: currentDateTimeGetter,
+		producerLogs:          map[ProducerID]*producerEventLog{},
 	}
 }
 
@@ -236,12 +241,25 @@ func NewProvenanceResolver(
 const provenanceCacheWindow = libtime.Duration(2 * time.Second)
 
 type provenanceResolver struct {
-	stateDir              string
+	eventLogs             EventLogReader
 	sessionsDir           string
 	spawnDir              string
 	panes                 PaneLister
 	tasks                 TaskIndex
 	currentDateTimeGetter libtime.CurrentDateTimeGetter
+	// eventsMu guards producerLogs, the per-producer incremental read state.
+	//
+	// ⚠️ It is held across the read itself, and that is deliberate rather than
+	// an oversight. The read it guards is a local file read bounded by the
+	// bytes appended since the last render — not the pane listing, a subprocess
+	// with its own multi-second timeout — so holding the lock costs a bounded
+	// read rather than a blocking call. Releasing it would let two concurrent
+	// renders read the same bytes from the same base offset and merge them
+	// twice, which is precisely the state this field exists to serialize.
+	eventsMu sync.Mutex
+	// producerLogs is the byte offset and decoded events the resolver has
+	// already consumed for each producer's event log.
+	producerLogs map[ProducerID]*producerEventLog
 	// mu guards the cached snapshot and the refresh flag below. ⚠️ It is NOT
 	// held across the refresh itself — see hostState.
 	mu sync.Mutex
@@ -458,8 +476,10 @@ func (r *provenanceResolver) Resolve(ctx context.Context, items Items) Provenanc
 	// times.
 	byProducer := make(map[ProducerID]map[string]eventRecord)
 	for _, item := range items {
-		// readEvents below can scan a large log, so the loop honours
-		// cancellation rather than relying on the per-item work being cheap.
+		// readEvents below reads only the bytes appended since the last render,
+		// but a producer that has just written a large tail still hands the
+		// decode real work, so the loop honours cancellation rather than
+		// relying on the per-item work being cheap.
 		select {
 		case <-ctx.Done():
 			glog.V(3).Infof("provenance resolution cancelled")
@@ -776,84 +796,156 @@ func (r *provenanceResolver) readEventsForProducer(
 	return r.readEvents(ctx, ProducerID(bare))
 }
 
-// readEvents indexes a producer's event log by the item id each line carries.
+// producerEventLog is the resolver's accumulated state for one producer's
+// event log: how many bytes of it have been consumed, and the records those
+// bytes decoded to.
+//
+// ⚠️ offset only ever advances by READING the file, never by waiting for a
+// notification or a timer. That is what preserves the freshness guarantee: a
+// just-appended line is visible to the very next render, because the render
+// stats the file and reads whatever lies beyond the offset.
+type producerEventLog struct {
+	offset int64
+	events map[string]eventRecord
+}
+
+// readEvents indexes a producer's event log by the item id each line carries,
+// reading only the bytes appended since the last render.
 //
 // The log is append-only and holds every event for that session — opens,
 // closes, idle transitions — so a later line may describe the same item as an
 // earlier one. The line that carries provenance wins: a close event records
 // only `closed_by` and would otherwise overwrite the open event's host and cwd
 // with empties.
+//
+// ⚠️ A render over an unchanged log reads NOTHING: the size is unchanged and
+// the accumulated events are returned as they stand. Only the bytes beyond the
+// remembered offset are read and decoded, so the work is proportional to what
+// was appended rather than to the whole log.
 func (r *provenanceResolver) readEvents(
 	ctx context.Context,
 	producerID ProducerID,
 ) map[string]eventRecord {
-	events := map[string]eventRecord{}
-	if r.stateDir == "" {
-		return events
+	// A nil reader resolves no event, mirroring how a nil task index resolves
+	// no task. A host with no event-log source is a legal configuration.
+	if r.eventLogs == nil {
+		return map[string]eventRecord{}
 	}
-	// Opened as an os.Root so every read is confined beneath the state dir. The
-	// producer id is producer-supplied and validated only by NotEmptyString, so
-	// a crafted id containing path separators would otherwise walk out of the
-	// directory; scoping the handle makes the confinement structural rather
-	// than an assumption about the id. Same pattern as the session registry
-	// read in session-liveness-checker.go.
-	root, err := os.OpenRoot(r.stateDir)
-	if err != nil {
-		// Absent state dir is the ordinary case for a store with no Claude Code
-		// beside it, not an error worth reporting per item.
-		glog.V(3).Infof("open attention state dir %s failed: %v", r.stateDir, err)
-		return events
-	}
-	defer root.Close()
 
-	name := string(producerID) + ".events.jsonl"
-	file, err := root.Open(name)
-	if err != nil {
-		// Absent log is the ordinary case for a producer that never wrote one,
-		// not an error worth reporting per item.
-		glog.V(3).Infof("open event log %s failed: %v", filepath.Join(r.stateDir, name), err)
-		return events
-	}
-	defer file.Close()
+	r.eventsMu.Lock()
+	defer r.eventsMu.Unlock()
 
-	scanner := bufio.NewScanner(file)
-	// Event lines carry a transcript path and a detail string, so the default
-	// 64KB token limit is too small; a line that overflows would silently drop
-	// the item's provenance.
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		// A page load reads one log per open item's producer, and a log is
-		// append-only and unbounded, so a client that has gone away must stop
-		// the scan rather than let it run to the end of the file.
+	log, ok := r.producerLogs[producerID]
+	if !ok {
+		log = &producerEventLog{events: map[string]eventRecord{}}
+		r.producerLogs[producerID] = log
+	}
+
+	size, ok := r.eventLogs.Size(producerID)
+	if !ok {
+		// An absent log is the ordinary case for a producer that never wrote
+		// one. It must not erase what the log yielded before: a log that
+		// vanished is not the same as a log that says the item is gone.
+		return log.events
+	}
+	if size == log.offset {
+		// Nothing was appended since the last read. This is the whole point of
+		// the change: a render over an unchanged log reads no bytes at all.
+		return log.events
+	}
+
+	base := log.offset
+	accumulated := log.events
+	if size < log.offset {
+		// The log shrank: it was truncated or replaced, so the remembered
+		// offset points into a file that no longer exists in that shape.
+		// Re-read it from the start rather than misread it from the middle.
+		accumulated = map[string]eventRecord{}
+		base = 0
+	}
+
+	data, err := r.eventLogs.ReadFrom(ctx, producerID, base)
+	if err != nil {
+		// Fail soft: an unreadable log proves nothing, so the accumulated
+		// events come back unchanged rather than being discarded.
+		glog.V(3).Infof("read event log for producer %s failed: %v", producerID, err)
+		return log.events
+	}
+
+	merged, consumed, ok := r.mergeEventBytes(ctx, producerID, accumulated, data)
+	if !ok {
+		// Cancelled mid-decode. Nothing is published and the offset does not
+		// move, so the next render re-reads the same bytes and merges them
+		// idempotently.
+		return log.events
+	}
+
+	// ⚠️ Publish a FRESH map, never mutate one already returned. Resolve reads
+	// the returned map OUTSIDE this lock, so a map that has been handed out
+	// must be immutable; copy-on-write is what keeps that true. The no-change
+	// paths above return the existing map, which is never written again.
+	log.events = merged
+	// ⚠️ Advanced by the bytes actually consumed — the index of the last
+	// newline plus one, added to the base — never by the file size. A torn
+	// final line lies beyond the last newline and must not be counted against
+	// the offset, or its remainder would be lost when the line completes.
+	log.offset = base + int64(consumed)
+	return merged
+}
+
+// mergeEventBytes decodes the complete lines in data and merges them into
+// accumulated, returning the merged map, the number of bytes consumed and
+// whether the decode ran to completion.
+//
+// ⚠️ Only complete lines are consumed. Everything up to and including the LAST
+// newline is complete; anything after it is a torn final line — a write caught
+// mid-line — and is left unconsumed so the next read sees it whole.
+func (r *provenanceResolver) mergeEventBytes(
+	ctx context.Context,
+	producerID ProducerID,
+	accumulated map[string]eventRecord,
+	data []byte,
+) (map[string]eventRecord, int, bool) {
+	lastNewline := bytes.LastIndexByte(data, '\n')
+	if lastNewline < 0 {
+		// No complete line in the tail: consume nothing and leave the offset
+		// where it was.
+		return accumulated, 0, true
+	}
+
+	merged := make(map[string]eventRecord, len(accumulated))
+	for itemID, record := range accumulated {
+		merged[itemID] = record
+	}
+
+	for _, line := range strings.Split(string(data[:lastNewline+1]), "\n") {
+		// A client that has gone away must stop the decode rather than let it
+		// run to the end of a large tail.
 		select {
 		case <-ctx.Done():
 			glog.V(3).Infof("event log scan cancelled for producer %s", producerID)
-			return events
+			return accumulated, 0, false
 		default:
 		}
-		line := strings.TrimSpace(scanner.Text())
+		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
 		var record eventRecord
 		if err := json.Unmarshal([]byte(line), &record); err != nil {
-			glog.V(3).
-				Infof("parse event line in %s failed: %v", filepath.Join(r.stateDir, name), err)
+			glog.V(3).Infof("parse event line for producer %s failed: %v", producerID, err)
 			continue
 		}
 		if record.ItemID == "" {
 			continue
 		}
-		previous, seen := events[record.ItemID]
+		previous, seen := merged[record.ItemID]
 		if seen && (previous.Host != "" || previous.Cwd != "" || previous.Pane != "") {
 			continue
 		}
-		events[record.ItemID] = record
+		merged[record.ItemID] = record
 	}
-	if err := scanner.Err(); err != nil {
-		glog.V(3).Infof("read event log %s failed: %v", filepath.Join(r.stateDir, name), err)
-	}
-	return events
+	return merged, lastNewline + 1, true
 }
 
 // sessionNames reads the session registry as `session id -> the name it holds
@@ -1056,14 +1148,18 @@ func hasProductionTouchingMarker(content []byte) bool {
 // ⚠️ It is an index rather than a lookup because the join is the expensive
 // half. The vault holds over 8,000 task files and each candidate must be read
 // to see which session it records, so the whole vault is read once and every
-// page load is a map hit. The index is rebuilt at most once per
-// taskIndexRefreshWindow, so a task file written while the process runs
-// resolves on a later lookup without a restart.
+// page load is a map hit. The index is kept current by a watcher on the task
+// directory, which calls Rebuild on every change, so a task file written while
+// the process runs resolves on a later lookup without a restart.
 type TaskIndex interface {
 	// Lookup returns the task recorded for sessionID. ok is false when the
 	// session anchors no task: an unnamed or unknown session, a vault that was
 	// not configured, or one that could not be read.
 	Lookup(sessionID string) (Task, bool)
+	// Rebuild re-reads the vault and installs the fresh index when the task walk
+	// read `25 Tasks/`. A cancelled rebuild or an unreadable `25 Tasks/` leaves
+	// the previous index serving.
+	Rebuild(ctx context.Context)
 }
 
 // Task is the vault task a session is anchored to, plus the rung above it.
@@ -1095,12 +1191,15 @@ type Task struct {
 	ProductionTouching bool
 }
 
-// taskIndexRefreshWindow is how long a built index is served before the vault is
-// read again. It bounds the re-read so a task file written while the process
-// runs resolves on a later lookup without a restart, while a page load stays a
-// map hit on the common path. The window is short enough that a task created
-// seconds ago is visible on the next board refresh.
-const taskIndexRefreshWindow = libtime.Duration(2 * time.Second)
+// taskIndexBackstopWindow is the safety net under the task-directory watcher.
+// The watcher is what keeps the index current: it rebuilds on every change to
+// `25 Tasks/`, so a task file written while the process runs resolves on a later
+// lookup without a restart. This window picks up a change a watcher event did
+// not deliver — a dropped inotify event, or a write that landed before the watch
+// was established — so the index converges rather than staying stale. It is
+// deliberately slow, because the common path is a map hit and a rebuild here is
+// the exception rather than the mechanism.
+const taskIndexBackstopWindow = libtime.Duration(5 * time.Minute)
 
 // NewTaskIndex builds the session -> task index from vaultDir's task files.
 //
@@ -1110,9 +1209,11 @@ const taskIndexRefreshWindow = libtime.Duration(2 * time.Second)
 // tasks and never an error. An empty vaultDir is the ordinary case for a host
 // with no vault configured, not a fault.
 //
-// The index is not frozen at construction: Lookup rebuilds it at most once per
-// taskIndexRefreshWindow, so a task file written after this call resolves
-// without a restart. The clock is injected so that window is testable.
+// The index is not frozen at construction: a watcher on the task directory calls
+// Rebuild on every change, and Lookup falls back to a rebuild once the serving
+// index is older than taskIndexBackstopWindow. Either way a task file written
+// after this call resolves without a restart. The clock is injected so the
+// backstop is testable.
 //
 // The goal rung is built before the task walk, because each indexed task
 // carries the goal it names and the topic that lists it: both maps must exist
@@ -1132,17 +1233,19 @@ func NewTaskIndex(
 	// preserve, and the fail-soft contract is that a cancelled or empty boot
 	// holds what it read and no more rather than failing. Every later rebuild is
 	// installed only when it completed AND actually read `25 Tasks/` — see
-	// refreshIfStale.
+	// Rebuild.
 	fresh, _ := index.build(ctx)
 	index.install(fresh)
 	return index
 }
 
 type taskIndex struct {
-	// ctx is the build context every rebuild runs under. Lookup carries no
-	// context of its own — the interface takes only a session id — so the
-	// construction context is retained and threaded into each rebuild, which is
-	// what lets a cancelled rebuild stop at the same points the boot build does.
+	// ctx is the build context a backstop rebuild runs under. Lookup carries no
+	// context of its own, so when it finds the serving index past
+	// taskIndexBackstopWindow it passes this construction context to Rebuild —
+	// the same context the boot build ran under, which is what lets a cancelled
+	// backstop rebuild stop at the same points the boot build does. A watcher
+	// rebuild passes the watcher's run context instead.
 	ctx context.Context
 	// vaultDir is the vault the index reads. It is fixed for the process's life;
 	// a rebuild re-reads the same directory rather than being re-pointed.
@@ -1232,20 +1335,21 @@ func (t *taskIndex) install(fresh *taskIndex) {
 	t.builtAt = t.currentDateTimeGetter.Now()
 }
 
-// refreshIfStale rebuilds the index when the serving one is older than
-// taskIndexRefreshWindow, so a task file written after construction resolves on
-// a later lookup without a restart.
+// Rebuild re-reads the vault and installs the fresh index when the task walk read
+// `25 Tasks/`. It is the explicit entry point the watcher drives, and the
+// backstop Lookup falls back to when the serving index outlives
+// taskIndexBackstopWindow.
 //
-// ⚠️ Single-flight, mirroring provenanceResolver.hostState: the staleness check
-// and the token claim happen in ONE critical section, so however many concurrent
-// lookups observe the window lapsed, exactly one rebuild runs. Lookup is reached
-// once per item from the resolver's render loop, so without the guard a lapsed
-// window would start one full-vault rebuild per concurrent render — over 8,000
-// task files read synchronously inside each request. A caller that finds a
-// rebuild already in flight is served the index currently installed and returns,
-// rather than queueing behind the read; the winner performs the rebuild
-// synchronously, so a single Lookup issued after the window lapses still
-// resolves a task created since the last build.
+// ⚠️ Single-flight, mirroring provenanceResolver.hostState: the token is claimed
+// in ONE critical section, so however many callers arrive at once — a burst of
+// watcher events, or a render loop whose backstop window has lapsed — exactly one
+// rebuild runs. Lookup is reached once per item from the resolver's render loop,
+// so without the guard a lapsed window would start one full-vault rebuild per
+// concurrent render — over 8,000 task files read synchronously inside each
+// request. A caller that finds a rebuild already in flight is served the index
+// currently installed and returns, rather than queueing behind the read; the
+// winner performs the rebuild synchronously, so a single Lookup issued after the
+// window lapses still resolves a task created since the last build.
 //
 // ⚠️ The rebuild happens OUTSIDE the lock and only the swap takes it. A rebuild
 // re-reads the whole vault and holding the write lock across it would block
@@ -1267,47 +1371,68 @@ func (t *taskIndex) install(fresh *taskIndex) {
 // the install on them would block a perfectly good task walk — including the
 // ordinary case of a vault that has no `24 Goals/` at all.
 //
-// ⚠️ A refused install does not advance builtAt, so the window stays lapsed and
-// the next Lookup re-attempts the rebuild. That is deliberate: a healthy vault
-// whose read failed transiently re-attempts, succeeds and re-advances builtAt,
-// so no separate retry loop is needed. The cost is that a permanently unreadable
-// `25 Tasks/` re-runs the goal and topic rungs on every lookup, since the build
-// reaches them before the task walk fails (only an absent `24 Goals/`
-// short-circuits the topic rung). If that cost ever matters, bound it by
-// advancing builtAt on refusal instead — but that trades the retry away, so it
-// is not done here.
-func (t *taskIndex) refreshIfStale() {
-	now := t.currentDateTimeGetter.Now()
+// ⚠️ A refused install does not advance builtAt, so the backstop window stays
+// lapsed and the next Lookup re-attempts the rebuild — and a refused watcher
+// rebuild leaves the next event free to re-attempt too. That is deliberate: a
+// healthy vault whose read failed transiently re-attempts, succeeds and
+// re-advances builtAt, so no separate retry loop is needed. The cost is that a
+// permanently unreadable `25 Tasks/` re-runs the goal and topic rungs on every
+// lookup, since the build reaches them before the task walk fails (only an
+// absent `24 Goals/` short-circuits the topic rung). If that cost ever matters,
+// bound it by advancing builtAt on refusal instead — but that trades the retry
+// away, so it is not done here.
+func (t *taskIndex) Rebuild(ctx context.Context) {
+	if token, ok := t.claimRebuild(false); ok {
+		t.rebuild(ctx, token)
+	}
+}
 
+// claimRebuild claims the single-flight token, reporting false when a rebuild is
+// already in flight or — when onlyIfLapsed is set — when the serving index is
+// still inside taskIndexBackstopWindow.
+//
+// ⚠️ The window check and the claim are in the SAME critical section, and that
+// atomicity is load-bearing for the backstop. A caller that observed a lapsed
+// window, was descheduled, and reached the claim only after the winner had
+// installed and cleared the token would otherwise start a second full-vault read
+// — exactly the amplification the token exists to prevent. Checking the window
+// inside the claim is what stops it: the winner's install advances builtAt, so
+// the straggler's (already read) clock reading no longer exceeds the window and
+// it declines. This is why the backstop cannot simply check the clock and then
+// call Rebuild, which has no window check of its own.
+func (t *taskIndex) claimRebuild(onlyIfLapsed bool) (chan struct{}, bool) {
+	now := t.currentDateTimeGetter.Now()
 	t.mu.Lock()
-	if now.Sub(t.builtAt) < taskIndexRefreshWindow {
-		t.mu.Unlock()
-		return
+	defer t.mu.Unlock()
+	if onlyIfLapsed && now.Sub(t.builtAt) < taskIndexBackstopWindow {
+		return nil, false
 	}
 	if t.refreshing != nil {
 		// A rebuild is already in flight. Serve the index currently installed
 		// instead of starting a second full-vault read alongside it.
-		t.mu.Unlock()
-		return
+		return nil, false
 	}
 	token := make(chan struct{})
 	t.refreshing = token
 	t.rebuilds++
-	t.mu.Unlock()
+	return token, true
+}
 
+// rebuild runs one rebuild under a token already claimed by claimRebuild.
+func (t *taskIndex) rebuild(ctx context.Context, token chan struct{}) {
 	// Deferred rather than inlined after the build: a panic anywhere in the build
 	// must still clear the token, or the index stays pinned to a snapshot that
 	// will never be replaced.
 	defer t.finishRefresh(token)
 
-	fresh, tasksRead := t.build(t.ctx)
-	if t.ctx.Err() != nil {
-		glog.V(3).Infof("task index refresh cancelled, keeping previous index")
+	fresh, tasksRead := t.build(ctx)
+	if ctx.Err() != nil {
+		glog.V(3).Infof("task index rebuild cancelled, keeping previous index")
 		return
 	}
 	if !tasksRead {
 		glog.V(2).Infof(
-			"task index refresh could not read %s, keeping previous index",
+			"task index rebuild could not read %s, keeping previous index",
 			filepath.Join(t.vaultDir, taskDirName),
 		)
 		return
@@ -1339,7 +1464,7 @@ func (t *taskIndex) RebuildCount() int {
 // readTasks walks `<vault>/25 Tasks/` and indexes every task file that records
 // a session. It reports whether that directory was actually read: false when
 // either the listing or the os.Root handle could not be opened, which is the
-// signal a rebuild uses to refuse installing itself — see refreshIfStale.
+// signal a rebuild uses to refuse installing itself — see Rebuild.
 //
 // A directory that reads but holds no task file reports true: an empty vault is
 // a legal state, and an index that read it holds the honest answer rather than
@@ -1377,6 +1502,21 @@ func (t *taskIndex) readTasks(ctx context.Context, vaultDir string) bool {
 	return true
 }
 
+// rebuildIfBackstopLapsed rebuilds the index when the serving one is older than
+// taskIndexBackstopWindow, so a task file written after construction resolves on
+// a later lookup even when no watcher event delivered it.
+//
+// ⚠️ The window check rides the claim rather than preceding it — see
+// claimRebuild. Checking the clock here and then calling Rebuild would let a
+// lookup that was descheduled between the two start a second full-vault read
+// after the winner had already finished, which is the amplification the token
+// exists to prevent.
+func (t *taskIndex) rebuildIfBackstopLapsed() {
+	if token, ok := t.claimRebuild(true); ok {
+		t.rebuild(t.ctx, token)
+	}
+}
+
 // Lookup returns the task recorded for sessionID.
 //
 // An unknown session is an ordinary miss, and an empty sessionID is a miss
@@ -1384,14 +1524,14 @@ func (t *taskIndex) readTasks(ctx context.Context, vaultDir string) bool {
 // match.
 //
 // ⚠️ The common path is a map hit. The vault is re-read only when the serving
-// index is older than taskIndexRefreshWindow, so a task file written after
-// construction resolves on a later lookup without re-reading the vault on every
-// call.
+// index is older than taskIndexBackstopWindow — the safety net under the watcher
+// that keeps the index current — so a task file written after construction
+// resolves on a later lookup without re-reading the vault on every call.
 func (t *taskIndex) Lookup(sessionID string) (Task, bool) {
 	if t == nil {
 		return Task{}, false
 	}
-	t.refreshIfStale()
+	t.rebuildIfBackstopLapsed()
 	t.mu.RLock()
 	entry, ok := t.bySession[sessionID]
 	t.mu.RUnlock()

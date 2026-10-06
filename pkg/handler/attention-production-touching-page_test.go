@@ -186,7 +186,7 @@ var _ = Describe("the production-touching marker on the served page", func() {
 		return handler.NewAttentionPageHandler(
 			store,
 			pkg.NewProvenanceResolver(
-				stateDir,
+				pkg.NewEventLogReader(stateDir),
 				sessionsDir,
 				spawnDir,
 				panes,

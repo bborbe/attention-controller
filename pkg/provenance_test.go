@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/bborbe/errors"
 	"github.com/bborbe/run"
@@ -117,7 +118,7 @@ var _ = Describe("ProvenanceResolver", func() {
 		// and the pane listing, so no task resolves and TaskName/TaskPath stay
 		// empty. The vault itself is covered by the TaskIndex specs.
 		resolver = pkg.NewProvenanceResolver(
-			stateDir,
+			pkg.NewEventLogReader(stateDir),
 			sessionsDir,
 			spawnDir,
 			paneLister,
@@ -384,7 +385,7 @@ var _ = Describe("ProvenanceResolver", func() {
 		// The standalone case: a store running for k8s agents, cron jobs or
 		// dark-factory runs has no Claude Code state directory at all.
 		unavailable := pkg.NewProvenanceResolver(
-			filepath.Join(stateDir, "does-not-exist"),
+			pkg.NewEventLogReader(filepath.Join(stateDir, "does-not-exist")),
 			filepath.Join(sessionsDir, "does-not-exist"),
 			spawnDir,
 			paneLister,
@@ -730,7 +731,7 @@ var _ = Describe("ProvenanceResolver", func() {
 	// thing its index can see.
 	withVault := func(vault string) pkg.ProvenanceResolver {
 		return pkg.NewProvenanceResolver(
-			stateDir,
+			pkg.NewEventLogReader(stateDir),
 			sessionsDir,
 			spawnDir,
 			paneLister,
@@ -808,7 +809,7 @@ var _ = Describe("ProvenanceResolver", func() {
 		// resolves exactly as it did before the index existed.
 		writeEvents("producer-nil", eventLine("key-nil", "session-nil", "burn", "/w/nil", "", ""))
 		nilIndex := pkg.NewProvenanceResolver(
-			stateDir,
+			pkg.NewEventLogReader(stateDir),
 			sessionsDir,
 			spawnDir,
 			paneLister,
@@ -1033,7 +1034,7 @@ var _ = Describe("ProvenanceResolver", func() {
 			eventLine("key-novault", "session-novault", "burn", "/w/nv", "", ""),
 		)
 		nilIndex := pkg.NewProvenanceResolver(
-			stateDir,
+			pkg.NewEventLogReader(stateDir),
 			sessionsDir,
 			spawnDir,
 			paneLister,
@@ -1140,7 +1141,7 @@ var _ = Describe("ProvenanceResolver", func() {
 
 	It("withholds every session name when the registry directory does not exist", func() {
 		unavailable := pkg.NewProvenanceResolver(
-			stateDir,
+			pkg.NewEventLogReader(stateDir),
 			filepath.Join(sessionsDir, "does-not-exist"),
 			spawnDir,
 			paneLister,
@@ -1258,7 +1259,7 @@ var _ = Describe("ProvenanceResolver", func() {
 			eventLine("key-nospawn", "session-nospawn", "burn", "/w/ns", "", ""),
 		)
 		unavailable := pkg.NewProvenanceResolver(
-			stateDir,
+			pkg.NewEventLogReader(stateDir),
 			sessionsDir,
 			filepath.Join(spawnDir, "does-not-exist"),
 			paneLister,
@@ -1727,10 +1728,10 @@ var _ = Describe("TaskIndex refresh", func() {
 		clock.SetNow(clock.Now())
 	})
 
-	// advanceClock moves the injected clock past the two-second refresh window,
+	// advanceClock moves the injected clock past the five-minute backstop window,
 	// so the next Lookup rebuilds the index from the vault.
 	advanceClock := func() {
-		clock.SetNow(clock.Now().Add(libtime.Duration(3 * 1e9)))
+		clock.SetNow(clock.Now().Add(libtime.Duration(6 * time.Minute)))
 	}
 
 	It("resolves a task written after the index was built, once the window lapses", func() {

@@ -203,7 +203,7 @@ var _ = Describe("the session name on the served page", func() {
 		return handler.NewAttentionPageHandler(
 			store,
 			pkg.NewProvenanceResolver(
-				stateDir,
+				pkg.NewEventLogReader(stateDir),
 				sessionsDir,
 				spawnDir,
 				panes,
