@@ -223,3 +223,14 @@ func CreateSentryAlertHandler(sentryClient libsentry.Client) http.Handler {
 func CreateHealthzHandler() http.Handler {
 	return handler.NewHealthzHandler()
 }
+
+// CreateBearerTokenHandler wraps next so that every request reaching it must
+// present the configured bearer token in the Authorization header.
+//
+// It is the enforcement seam of the second, cluster-reachable listener: that
+// listener registers its routes through the board's own business-route
+// function, so the route inventory cannot drift, and this middleware is what
+// makes reaching that inventory require the token.
+func CreateBearerTokenHandler(next http.Handler, token string) http.Handler {
+	return handler.NewBearerTokenHandler(next, token)
+}

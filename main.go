@@ -44,21 +44,21 @@ type application struct {
 	// reporting rather than failing startup. This repo has no deployed stage
 	// yet, so nothing here depends on the flag; a future deploy supplies
 	// SENTRY_DSN from its own secret.
-	SentryDSN         string `required:"false" arg:"sentry-dsn"          env:"SENTRY_DSN"          usage:"SentryDSN (empty disables error reporting)"                                                                                 display:"length"`
-	SentryProxy       string `required:"false" arg:"sentry-proxy"        env:"SENTRY_PROXY"        usage:"Sentry Proxy"`
-	Listen            string `required:"true"  arg:"listen"              env:"LISTEN"              usage:"address to listen to"`
-	DataDir           string `required:"true"  arg:"datadir"             env:"DATADIR"             usage:"data directory"`
-	HeartbeatWindow   string `required:"false" arg:"heartbeat-window"    env:"HEARTBEAT_WINDOW"    usage:"how stale a heartbeat:<path> mtime may be before the producer counts as finished"                                                            default:"15m"`
-	AnsweredMaxAge    string `required:"false" arg:"answered-max-age"    env:"ANSWERED_MAX_AGE"    usage:"how old an answered item may be before the store closes it; must stay well above the slowest consumer's poll interval"                       default:"1h"`
-	SessionsDir       string `required:"false" arg:"sessions-dir"        env:"SESSIONS_DIR"        usage:"directory holding the session registry used to resolve session:<id> liveness"`
-	AttentionStateDir string `required:"false" arg:"attention-state-dir" env:"ATTENTION_STATE_DIR" usage:"directory holding the producers' event logs the page resolves item provenance from"`
-	SpawnStateDir     string `required:"false" arg:"spawn-state-dir"     env:"SPAWN_STATE_DIR"     usage:"directory holding the supervisor's spawn ledger the page reads each session's headless/interactive mode from"`
+	SentryDSN         string `required:"false" arg:"sentry-dsn"             env:"SENTRY_DSN"             usage:"SentryDSN (empty disables error reporting)"                                                                                 display:"length"`
+	SentryProxy       string `required:"false" arg:"sentry-proxy"           env:"SENTRY_PROXY"           usage:"Sentry Proxy"`
+	Listen            string `required:"true"  arg:"listen"                 env:"LISTEN"                 usage:"address to listen to"`
+	DataDir           string `required:"true"  arg:"datadir"                env:"DATADIR"                usage:"data directory"`
+	HeartbeatWindow   string `required:"false" arg:"heartbeat-window"       env:"HEARTBEAT_WINDOW"       usage:"how stale a heartbeat:<path> mtime may be before the producer counts as finished"                                                            default:"15m"`
+	AnsweredMaxAge    string `required:"false" arg:"answered-max-age"       env:"ANSWERED_MAX_AGE"       usage:"how old an answered item may be before the store closes it; must stay well above the slowest consumer's poll interval"                       default:"1h"`
+	SessionsDir       string `required:"false" arg:"sessions-dir"           env:"SESSIONS_DIR"           usage:"directory holding the session registry used to resolve session:<id> liveness"`
+	AttentionStateDir string `required:"false" arg:"attention-state-dir"    env:"ATTENTION_STATE_DIR"    usage:"directory holding the producers' event logs the page resolves item provenance from"`
+	SpawnStateDir     string `required:"false" arg:"spawn-state-dir"        env:"SPAWN_STATE_DIR"        usage:"directory holding the supervisor's spawn ledger the page reads each session's headless/interactive mode from"`
 	// VaultDir is the directory holding the vault whose task files record the
 	// session each task belongs to. ⚠️ Deliberately without a `default:`, unlike
 	// SessionsDir and AttentionStateDir: an unset vault is a legitimate state,
 	// and defaulting it would point the board at a guessed path instead of
 	// simply rendering no task names.
-	VaultDir string `required:"false" arg:"vault-dir"           env:"VAULT_DIR"           usage:"directory holding the vault whose task files record the session each task belongs to (empty renders no task names)"`
+	VaultDir string `required:"false" arg:"vault-dir"              env:"VAULT_DIR"              usage:"directory holding the vault whose task files record the session each task belongs to (empty renders no task names)"`
 	// JumpListen is the address of the legacy pane-addressed jump listener.
 	//
 	// ⚠️ It is NOT the fleet-jump server's origin any more — that server is
@@ -72,7 +72,7 @@ type application struct {
 	// ⚠️ Empty disables the legacy listener entirely. That is the switch for the
 	// day the last consumer is re-pointed, and it is a configuration change
 	// rather than a code change on purpose.
-	JumpListen string `required:"false" arg:"jump-listen"         env:"JUMP_LISTEN"         usage:"address of the legacy pane-addressed jump listener (empty disables it)"                                                                      default:"127.0.0.1:1337"`
+	JumpListen string `required:"false" arg:"jump-listen"            env:"JUMP_LISTEN"            usage:"address of the legacy pane-addressed jump listener (empty disables it)"                                                                      default:"127.0.0.1:1337"`
 	// JumpTokenPath is the file holding the jump token the legacy pane-addressed
 	// route requires.
 	// Empty resolves to ~/.claude/secrets/jump-token, the same path
@@ -85,15 +85,35 @@ type application struct {
 	// rule, and the tag costs nothing but a less useful startup line. Both the
 	// local review funnel and the bot flagged the omission, and a tag that is
 	// correct for a credential-adjacent field is the cheaper default.
-	JumpTokenPath string `required:"false" arg:"jump-token-path"     env:"JUMP_TOKEN_PATH"     usage:"file holding the jump token the legacy pane-addressed jump route requires (empty resolves to ~/.claude/secrets/jump-token)" display:"length"`
+	JumpTokenPath string `required:"false" arg:"jump-token-path"        env:"JUMP_TOKEN_PATH"        usage:"file holding the jump token the legacy pane-addressed jump route requires (empty resolves to ~/.claude/secrets/jump-token)" display:"length"`
+	// AttentionStoreListen is the address of the second, cluster-reachable
+	// listener. It serves the business API only, and every request to it must
+	// carry the bearer token in AttentionStoreToken.
+	//
+	// ⚠️ Empty disables the listener entirely, which is a supported
+	// configuration rather than a degenerate one — the same switch jump-listen
+	// has, and the store then serves exactly as it does today. It is logged
+	// rather than silent, so a client that stops reaching the store is traceable
+	// to the setting that disabled it instead of to a bug.
+	AttentionStoreListen string `required:"false" arg:"attention-store-listen" env:"ATTENTION_STORE_LISTEN" usage:"address of the second listener serving the business API behind a bearer token (empty disables it)"`
+	// AttentionStoreToken is the bearer token every request to the second
+	// listener must present.
+	//
+	// ⚠️ A credential: never logged, never rendered. display:"length" makes
+	// argument.Parse()'s startup dump print this field's length rather than its
+	// value.
+	// ⚠️ Empty disables the second listener entirely — the store never serves
+	// the API unauthenticated on a non-loopback address. That is the
+	// fail-closed default, not a degenerate configuration.
+	AttentionStoreToken string `required:"false" arg:"attention-store-token"  env:"ATTENTION_STORE_TOKEN"  usage:"bearer token every request to the second listener must present (empty disables the listener)"                               display:"length"`
 	// TTSURL is the tts server's base URL. Optional: with no value the
 	// read-aloud route is not registered and the page renders no read-aloud
 	// control, so a host without a tts server serves the same page minus one
 	// control rather than one that always fails.
-	TTSURL          string            `required:"false" arg:"tts-url"             env:"TTS_URL"             usage:"base URL of the tts server the board's read-aloud control forwards to (empty disables it)"                                                   default:"http://127.0.0.1:12000"`
-	BuildGitVersion string            `required:"false" arg:"build-git-version"   env:"BUILD_GIT_VERSION"   usage:"Build Git version"                                                                                                                           default:"dev"`
-	BuildGitCommit  string            `required:"false" arg:"build-git-commit"    env:"BUILD_GIT_COMMIT"    usage:"Build Git commit hash"                                                                                                                       default:"none"`
-	BuildDate       *libtime.DateTime `required:"false" arg:"build-date"          env:"BUILD_DATE"          usage:"Build timestamp (RFC3339)"`
+	TTSURL          string            `required:"false" arg:"tts-url"                env:"TTS_URL"                usage:"base URL of the tts server the board's read-aloud control forwards to (empty disables it)"                                                   default:"http://127.0.0.1:12000"`
+	BuildGitVersion string            `required:"false" arg:"build-git-version"      env:"BUILD_GIT_VERSION"      usage:"Build Git version"                                                                                                                           default:"dev"`
+	BuildGitCommit  string            `required:"false" arg:"build-git-commit"       env:"BUILD_GIT_COMMIT"       usage:"Build Git commit hash"                                                                                                                       default:"none"`
+	BuildDate       *libtime.DateTime `required:"false" arg:"build-date"             env:"BUILD_DATE"             usage:"Build timestamp (RFC3339)"`
 }
 
 func (a *application) Run(ctx context.Context, sentryClient libsentry.Client) error {
@@ -378,8 +398,10 @@ func (a *application) createHTTPServer(
 		// under one context, so a failure in either takes the process down and
 		// launchd restarts both: a half-up state — board serving, jumps dead — is
 		// exactly the two-lifecycle problem the fold exists to remove.
-		// Four slots, not two: the answered sweep below is a third long-running
-		// function under the same context, and the task index watcher is a fourth.
+		// Five slots, not two: the legacy jump listener is a second long-running
+		// function under the same context, the bearer-token-gated business-API
+		// listener is a third, the task index watcher is a fourth, and the
+		// answered sweep is a fifth.
 		//
 		// ⚠️ It does NOT share the listeners' failure semantics, and saying so here
 		// matters because the difference is deliberate: the sweep returns nil on
@@ -390,12 +412,15 @@ func (a *application) createHTTPServer(
 		// slot is the same story: it returns nil on cancellation and logs-and-
 		// continues when it cannot watch at all, because an unwatchable vault
 		// costs a slower index and loses nothing.
-		runner := run.NewConcurrentRunner(4)
+		runner := run.NewConcurrentRunner(5)
 		defer runner.Close()
 
 		glog.V(2).Infof("starting http server listen on %s", a.Listen)
 		runner.Add(ctx, libhttp.NewServer(a.Listen, router).Run)
 		if err := a.addLegacyJumpListener(ctx, runner, jumpTokens, activator); err != nil {
+			return err
+		}
+		if err := a.addAttentionStoreAPIListener(ctx, runner, store); err != nil {
 			return err
 		}
 		runner.Add(ctx, watcher.Run)
@@ -658,5 +683,66 @@ func (a *application) addLegacyJumpListener(
 		Handler(factory.CreateLegacyJumpHandler(jumpTokens, activator))
 	glog.V(2).Infof("starting legacy jump server listen on %s", a.JumpListen)
 	runner.Add(ctx, libhttp.NewServer(a.JumpListen, legacyRouter).Run)
+	return nil
+}
+
+// createAttentionStoreAPIHandler builds the second, cluster-reachable listener's
+// handler.
+//
+// ⚠️ The bearer check applies to every route it registers: reaching the business
+// API on this listener requires the token. The routes come from
+// registerAttentionAPIRoutes — the same function the board's own router calls —
+// so the two listeners cannot drift on the route inventory or on its
+// load-bearing ordering.
+//
+// ⚠️ The check is applied with router.Use rather than by wrapping the returned
+// router. gorilla/mux's Use middleware runs only for a route that matched, so a
+// request to a path this listener does not serve (`/`, `/metrics`, `/healthz`,
+// `/readiness`) falls through to mux's not-found handler and answers 404.
+// Wrapping the whole router would answer 401 for `/` instead, which would mean
+// this listener advertised a board it does not serve.
+func (a *application) createAttentionStoreAPIHandler(
+	store pkg.AttentionStore,
+	token string,
+) http.Handler {
+	router := mux.NewRouter()
+	router.Use(func(next http.Handler) http.Handler {
+		return factory.CreateBearerTokenHandler(next, token)
+	})
+	registerAttentionAPIRoutes(router, store, a.TTSURL)
+	return router
+}
+
+// addAttentionStoreAPIListener registers the second, cluster-reachable listener
+// serving the business API behind a bearer token.
+//
+// ⚠️ An empty address or an empty token disables the listener, and both are
+// supported configurations rather than degenerate ones: the store then serves
+// exactly as it does today. The disable is logged rather than silent, so a
+// client that stops reaching the store is traceable to the setting that disabled
+// it instead of to a bug.
+//
+// ⚠️ The check is fail-closed: an unset token never falls back to serving the
+// API unauthenticated on a non-loopback address. Both checks return before any
+// runner.Add, so neither an unconfigured host nor a host with no token binds
+// anything.
+func (a *application) addAttentionStoreAPIListener(
+	ctx context.Context,
+	runner run.ConcurrentRunner,
+	store pkg.AttentionStore,
+) error {
+	if a.AttentionStoreListen == "" {
+		glog.Warningf("attention store api listener disabled (attention-store-listen is empty)")
+		return nil
+	}
+	if a.AttentionStoreToken == "" {
+		glog.Warningf("attention store api listener disabled (attention-store-token is empty)")
+		return nil
+	}
+	glog.V(2).Infof("starting attention store api server listen on %s", a.AttentionStoreListen)
+	runner.Add(ctx, libhttp.NewServer(
+		a.AttentionStoreListen,
+		a.createAttentionStoreAPIHandler(store, a.AttentionStoreToken),
+	).Run)
 	return nil
 }
