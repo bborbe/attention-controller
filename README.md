@@ -82,6 +82,7 @@ make precommit
 | `/setloglevel/{level}` | Dynamic log level adjustment |
 | `/testloglevel` | Test logging at all levels |
 | `/sentryalert` | Test Sentry integration |
+| `/debug/pprof/` | Go runtime profiles — CPU (`?seconds=N`), heap, goroutine, cmdline, trace. ⚠️ Unauthenticated, and mounted **only when the listen address is loopback**: `/cmdline` publishes the process argv, which can carry `-attention-store-token`. A non-loopback bind logs and skips the registration. |
 
 ## Development Commands
 

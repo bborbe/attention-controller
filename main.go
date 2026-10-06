@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -310,6 +311,61 @@ func (a *application) createPaneActivator(panes pkg.PaneLister) pkg.PaneActivato
 	return pkg.NewWeztermPaneActivator(panes)
 }
 
+// isLoopbackListen reports whether a `host:port` listen address binds to a
+// loopback interface. It is the gate on mounting the pprof endpoints.
+//
+// ⚠️ An empty host (":18080") is NOT loopback — it binds every interface — and
+// `net.SplitHostPort` returns it as "", so it is refused explicitly rather than
+// read as "unspecified, therefore local". A malformed or unresolvable address is
+// likewise false: the caller's failure mode for "cannot prove loopback" is to
+// withhold the debug surface, not to expose it.
+//
+// ⚠️ The name `localhost` is RESOLVED rather than trusted. A hosts file or
+// resolver mapping it to a routable address would otherwise make this report
+// loopback while `libhttp.NewServer` binds publicly — publishing argv, which is
+// the exact failure this gate exists to prevent. The lookup is affordable
+// because registration happens once per process, not per request.
+func isLoopbackListen(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil || host == "" {
+		return false
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		resolved, resolveErr := net.ResolveIPAddr("ip", host)
+		if resolveErr != nil {
+			return false
+		}
+		ip = resolved.IP
+	}
+	return ip.IsLoopback()
+}
+
+// registerPprofIfLoopback mounts the pprof endpoints on router when listen is a
+// loopback address, and reports whether it did.
+//
+// ⚠️ It is a named function rather than an inline `if` at the call site so the
+// gate and the registration can be exercised together against a real router.
+// The failure this guards is silent in both directions — a gate that wrongly
+// reports "not loopback" disables profiling in production with only a log line,
+// and a registration that silently no-ops looks identical to a working one
+// until someone tries to take a profile.
+func registerPprofIfLoopback(router *mux.Router, listen string) bool {
+	if !isLoopbackListen(listen) {
+		glog.Warningf(
+			"pprof endpoints NOT mounted: listen address %q is not loopback, and /debug/pprof/cmdline would publish this process's argv (which can carry -attention-store-token) to every interface bound",
+			listen,
+		)
+		return false
+	}
+	// Logged on the mounted branch too, so both halves of the gate are
+	// diagnosable from default-verbosity logs — the skip already logs, and a
+	// silent success reads identically to a registration that never ran.
+	glog.Infof("pprof endpoints mounted on loopback listen address %q", listen)
+	libhttp.RegisterPprof(router)
+	return true
+}
+
 func (a *application) createHTTPServer(
 	sentryClient libsentry.Client,
 	db libkv.DB,
@@ -358,6 +414,23 @@ func (a *application) createHTTPServer(
 		buildIdentity := buildidentity.Read()
 
 		router := mux.NewRouter()
+		// pprof is mounted first, ahead of every business route. Gorilla mux
+		// matches in registration order and these are PathPrefix routes: the `/`
+		// page route below is an exact Path and so would not shadow them, but
+		// registering the debug block first removes the question rather than
+		// relying on that distinction holding as routes are added.
+		//
+		// ⚠️ Mounted ONLY on a loopback listen address. The endpoints are
+		// unauthenticated, and `/cmdline` publishes this process's argv — and
+		// `AttentionStoreToken` is declared `arg:"attention-store-token"`
+		// alongside its env backing, so a plist passing the bearer token on argv
+		// would publish it to whoever can reach the listener. Loopback binding is
+		// what makes the debug surface acceptable, so an address that is not
+		// loopback does not get it: it logs and skips rather than silently
+		// widening the exposure. A non-loopback deployment can still take a
+		// profile, but has to build an instrumented instance to do it — the cost
+		// this gate accepts in exchange for never publishing argv.
+		registerPprofIfLoopback(router, a.Listen)
 		registerAdminRoutes(ctx, router, db, cancel, sentryClient)
 		// The Jump button's target: a path on this board, answered in-process.
 		// Registered ahead of the page's own route, and GET/HEAD only, because a
