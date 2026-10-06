@@ -1442,21 +1442,43 @@ func (a *attentionStore) Answer(
 			}
 			return errors.Wrap(ctx, err, "get item failed")
 		}
-		// The compare-and-set itself: succeed only from open. The three failure
-		// modes are distinct and a caller can tell them apart.
+		// The compare-and-set itself. It succeeds from open, and from answered
+		// on a `permission` item only when the write is an ARM answer — see the
+		// AnsweredState arm. The failure modes are distinct and a caller can
+		// tell them apart.
 		switch item.State {
 		case OpenState:
 			// proceed
 		case AnsweredState:
-			// Lost the race. The schema says the loser reads back and reports;
-			// it must not retry and must not route its own answer anyway.
-			return errors.Wrapf(
-				ctx,
-				ErrAlreadyAnswered,
-				"item %s was already answered by %s",
-				itemID,
-				item.AnsweredBy,
-			)
+			// ⚠️ A `permission` item accepts a second answer when that answer is
+			// an ARM answer; no other class does. `resolved_by` is the
+			// discriminator — the arm sources it from its own
+			// CLAUDE_CODE_SESSION_ID, the board never sends it.
+			//
+			// The relaxation is scoped to this class because a permission gate
+			// is answered from two surfaces and both writes must land. The board
+			// records the operator's Allow / Deny, which is the one answering
+			// surface a headless worker has — it has no pane to press — and the
+			// arm then writes the same verdict carrying a resolver, which is
+			// what the release path reads. Refusing the second write as
+			// already-answered bricked the gate: the operator's click looked
+			// like success, the session stayed frozen, and the park ran out to
+			// its timeout with no path left to answer it.
+			//
+			// `message` and `ack` keep the first-write-wins rule untouched: for
+			// them the second write is still rejected as already-answered rather
+			// than routed a second time to `producer_id`.
+			if item.AnswerMechanism != PermissionAnswerMechanism || resolvedBy == "" {
+				// Lost the race. The schema says the loser reads back and reports;
+				// it must not retry and must not route its own answer anyway.
+				return errors.Wrapf(
+					ctx,
+					ErrAlreadyAnswered,
+					"item %s was already answered by %s",
+					itemID,
+					item.AnsweredBy,
+				)
+			}
 		default:
 			// `closed → answered` is not a row of the schema's table — illegal
 			// from every state, not merely from this one.
