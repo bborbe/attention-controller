@@ -364,9 +364,20 @@ func (a *application) createHTTPServer(
 		// registering the debug block first removes the question rather than
 		// relying on that distinction holding as routes are added.
 		//
-		// ⚠️ It serves `a.Listen`, which is loopback — the same exposure as the
-		// board itself. It is mounted so a profile can be taken in place, on the
-		// running service, instead of requiring a hand-built second instance.
+		// ⚠️ These endpoints are unauthenticated, and they are NEW exposure on
+		// this listener rather than the surface the board already had:
+		// `/debug/pprof/heap`, `/goroutine`, `/cmdline` and a `?seconds=N`
+		// profile capture are reachable by anyone who can reach `a.Listen`.
+		// That address is operator-configurable (`-listen` / `LISTEN`, no
+		// default tag) and the launchd deployment binds it to loopback, but
+		// nothing here enforces that — so the exposure is the operator's
+		// setting, not a property of this code.
+		//
+		// Registration is deliberately unconditional, so a profile can be taken
+		// in place on the running service instead of requiring a hand-built
+		// second instance. If this binary is ever bound to a non-loopback
+		// address, gate this call on the listen address being loopback — or on
+		// an explicit flag — before doing so.
 		libhttp.RegisterPprof(router)
 		registerAdminRoutes(ctx, router, db, cancel, sentryClient)
 		// The Jump button's target: a path on this board, answered in-process.
