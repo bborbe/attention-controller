@@ -161,6 +161,53 @@ var _ = Describe("an answer given on the rendered board", func() {
 		Expect(string(item.Answer.Value)).To(Equal("Zoe"))
 	})
 
+	// The pick-then-type sequence, which had no coverage at all: the case above
+	// types text WITHOUT picking first, so it passes on a board that drops the
+	// pick.
+	//
+	// ⚠️ The stored answer is `text` on BOTH the broken and the fixed build —
+	// collectAnswers discards the pick at attention-page.go:701-703 either way —
+	// so a case asserting only the stored answer is green on the unfixed board.
+	// The discriminating assertions are the rendered ones, and they come first.
+	It("checks Other and clears the pick when text is typed after one", func() {
+		itemID := pushCard(pkg.PushRequest{
+			DedupKey:        "shape-pick-then-type",
+			Payload:         "e2e: a name",
+			AnswerMechanism: pkg.MessageAnswerMechanism,
+			Options:         options("Anna", "Bob"),
+		})
+		page = newPage("")
+
+		pick(page, itemID, "Anna")
+		Expect(
+			page.Locator(rowSelector(itemID) + ` input[data-option="Anna"]:visible`).IsChecked(),
+		).To(BeTrue())
+
+		Expect(
+			page.Locator(rowSelector(itemID) + " input[name=text]:visible").Fill("Zoe"),
+		).To(Succeed())
+
+		// Other is a member of the group, not a field beside it.
+		Eventually(func() (int, error) {
+			return page.Locator(rowSelector(itemID) + " .options input[data-other]:visible").Count()
+		}).Should(Equal(1))
+		// The pick made first is released, and Other carries the selection.
+		Eventually(func() (bool, error) {
+			return page.Locator(rowSelector(itemID) + ` input[data-option="Anna"]:visible`).
+				IsChecked()
+		}).Should(BeFalse())
+		Eventually(func() (bool, error) {
+			return page.Locator(rowSelector(itemID) + " input[data-other]:visible").IsChecked()
+		}).Should(BeTrue())
+
+		click(page, itemID, "button.next")
+
+		item := answeredItem(itemID)
+		Expect(item.Answer).NotTo(BeNil())
+		Expect(item.Answer.Kind).To(Equal(pkg.TextAnswerKind))
+		Expect(string(item.Answer.Value)).To(Equal("Zoe"))
+	})
+
 	It("stores a multi-tab card as one entry per answered question, keyed by question", func() {
 		itemID := pushCard(pkg.PushRequest{
 			DedupKey:        "shape-tabs",
