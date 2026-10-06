@@ -2,12 +2,18 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// Package-level note: these are the page's pure derivations — an item into the
-// row it renders as, and a task or pane reference into the URL it links to.
-// They are split from attention-page.go, which keeps the document itself, only
-// because that file crossed revive's 2000-line file-length limit; the template
-// deliberately stays there, byte-identical, because a live sibling branch edits
-// its JavaScript.
+// Package-level note: this file holds what attention-page.go cannot carry — the
+// page's pure derivations (an item into the row it renders as, and a task or pane
+// reference into the URL it links to), plus the board's stylesheet as
+// attentionPageStyles. Both are here for one reason: attention-page.go crossed
+// revive's 2000-line file-length limit.
+//
+// The template itself still lives in attention-page.go rather than here, because
+// a live sibling branch edits its JavaScript and moving it would collide. ⚠️ The
+// stylesheet is the one part of the document that HAS moved: it is concatenated
+// back into the template at the point it was cut from, so the SERVED bytes are
+// unchanged, but the template's source is no longer byte-identical to what it
+// was — which is what this note used to claim.
 package handler
 
 import (
