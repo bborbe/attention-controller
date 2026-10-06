@@ -1,7 +1,13 @@
 ---
-status: draft
+status: completed
 spec: [009-incremental-provenance-reads]
+summary: Added pkg/safety-net-rescan_test.go pinning the backstop rescan, the incremental event tail, and the watcher's cancel/fail-soft lifecycle
+execution_id: attention-controller-incremental-reads-exec-035-spec-009-safety-net-rescan
+dark-factory-version: v0.196.0
 created: "2026-10-06T07:50:00Z"
+queued: "2026-10-06T08:46:22Z"
+started: "2026-10-06T08:46:24Z"
+completed: "2026-10-06T08:55:59Z"
 branch: dark-factory/incremental-provenance-reads
 ---
 
