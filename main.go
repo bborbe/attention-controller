@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -310,6 +311,51 @@ func (a *application) createPaneActivator(panes pkg.PaneLister) pkg.PaneActivato
 	return pkg.NewWeztermPaneActivator(panes)
 }
 
+// isLoopbackListen reports whether a `host:port` listen address binds to a
+// loopback interface. It is the gate on mounting the pprof endpoints.
+//
+// ⚠️ An empty host (":18080") is NOT loopback — it binds every interface — and
+// `net.SplitHostPort` returns it as "", so it must fall through to false rather
+// than be read as "unspecified, therefore local". A malformed address is
+// likewise false: the caller's failure mode for "cannot prove loopback" is to
+// withhold the debug surface, not to expose it.
+//
+// ⚠️ `localhost` is accepted without a DNS lookup. The name resolves to loopback
+// by convention, and resolving it here would put the network on the path of
+// every startup — including the ones where the resolver is what is broken.
+func isLoopbackListen(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// registerPprofIfLoopback mounts the pprof endpoints on router when listen is a
+// loopback address, and reports whether it did.
+//
+// ⚠️ It is a named function rather than an inline `if` at the call site so the
+// gate and the registration can be exercised together against a real router.
+// The failure this guards is silent in both directions — a gate that wrongly
+// reports "not loopback" disables profiling in production with only a log line,
+// and a registration that silently no-ops looks identical to a working one
+// until someone tries to take a profile.
+func registerPprofIfLoopback(router *mux.Router, listen string) bool {
+	if !isLoopbackListen(listen) {
+		glog.Warningf(
+			"pprof endpoints NOT mounted: listen address %q is not loopback, and /debug/pprof/cmdline would publish this process's argv (which can carry -attention-store-token) to every interface bound",
+			listen,
+		)
+		return false
+	}
+	libhttp.RegisterPprof(router)
+	return true
+}
+
 func (a *application) createHTTPServer(
 	sentryClient libsentry.Client,
 	db libkv.DB,
@@ -364,27 +410,17 @@ func (a *application) createHTTPServer(
 		// registering the debug block first removes the question rather than
 		// relying on that distinction holding as routes are added.
 		//
-		// ⚠️ These endpoints are unauthenticated, and they are NEW exposure on
-		// this listener rather than the surface the board already had:
-		// `/debug/pprof/heap`, `/goroutine`, `/cmdline` and a `?seconds=N`
-		// profile capture are reachable by anyone who can reach `a.Listen`.
-		// That address is operator-configurable (`-listen` / `LISTEN`, no
-		// default tag) and the launchd deployment binds it to loopback, but
-		// nothing here enforces that — so the exposure is the operator's
-		// setting, not a property of this code.
-		//
-		// ⚠️ `/cmdline` is the sharpest of them: `AttentionStoreToken` is
-		// declared `arg:"attention-store-token"` as well as env-backed, so a
-		// launchd plist that passes the bearer token as an argv flag publishes
-		// it to anyone who can reach this listener. That is the concrete reason
-		// to make the loopback gate below a real check rather than a note.
-		//
-		// Registration is deliberately unconditional, so a profile can be taken
-		// in place on the running service instead of requiring a hand-built
-		// second instance. If this binary is ever bound to a non-loopback
-		// address, gate this call on the listen address being loopback — or on
-		// an explicit flag — before doing so.
-		libhttp.RegisterPprof(router)
+		// ⚠️ Mounted ONLY on a loopback listen address. The endpoints are
+		// unauthenticated, and `/cmdline` publishes this process's argv — and
+		// `AttentionStoreToken` is declared `arg:"attention-store-token"`
+		// alongside its env backing, so a plist passing the bearer token on argv
+		// would publish it to whoever can reach the listener. Loopback binding is
+		// what makes the debug surface acceptable, so an address that is not
+		// loopback does not get it: it logs and skips rather than silently
+		// widening the exposure. A non-loopback deployment can still take a
+		// profile, but has to build an instrumented instance to do it — the cost
+		// this gate accepts in exchange for never publishing argv.
+		registerPprofIfLoopback(router, a.Listen)
 		registerAdminRoutes(ctx, router, db, cancel, sentryClient)
 		// The Jump button's target: a path on this board, answered in-process.
 		// Registered ahead of the page's own route, and GET/HEAD only, because a

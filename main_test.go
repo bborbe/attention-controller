@@ -15,9 +15,11 @@ import (
 	"github.com/bborbe/argument/v2"
 	libboltkv "github.com/bborbe/boltkv"
 	"github.com/bborbe/errors"
+	libhttp "github.com/bborbe/http"
 	libkv "github.com/bborbe/kv"
 	"github.com/bborbe/run"
 	libtime "github.com/bborbe/time"
+	"github.com/gorilla/mux"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -315,5 +317,64 @@ var _ = Describe("attention store token configuration", func() {
 		out := buf.String()
 		Expect(out).To(ContainSubstring("AttentionStoreToken length 12"))
 		Expect(out).NotTo(ContainSubstring("s3cret-token"))
+	})
+})
+
+var _ = Describe("isLoopbackListen", func() {
+	DescribeTable("classifies the listen address",
+		func(addr string, expected bool) {
+			Expect(isLoopbackListen(addr)).To(Equal(expected))
+		},
+		Entry("IPv4 loopback", "127.0.0.1:18080", true),
+		Entry("IPv6 loopback", "[::1]:18080", true),
+		Entry("localhost by name", "localhost:18080", true),
+		Entry("every interface, empty host", ":18080", false),
+		Entry("every interface, zero address", "0.0.0.0:18080", false),
+		Entry("every interface, IPv6", "[::]:18080", false),
+		Entry("a routable address", "192.168.178.38:18080", false),
+		Entry("malformed, no port", "not-an-address", false),
+	)
+})
+
+var _ = Describe("registerPprofIfLoopback", func() {
+	It("mounts the pprof endpoints on a loopback address", func() {
+		// ⚠️ The positive assertion. Without it, a registration that silently
+		// no-ops — an upstream `RegisterPprof` changing shape, or this call
+		// drifting to another router — passes every test while publishing no
+		// endpoint, which is indistinguishable from working until someone tries
+		// to take a profile.
+		router := mux.NewRouter()
+		Expect(registerPprofIfLoopback(router, "127.0.0.1:18080")).To(BeTrue())
+
+		req := httptest.NewRequest(http.MethodGet, "/debug/pprof/", nil)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusOK))
+	})
+
+	It("withholds the pprof endpoints on a non-loopback address", func() {
+		router := mux.NewRouter()
+		Expect(registerPprofIfLoopback(router, ":8080")).To(BeFalse())
+
+		req := httptest.NewRequest(http.MethodGet, "/debug/pprof/", nil)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusNotFound))
+	})
+
+	It("leaves a sibling route reachable when mounted ahead of it", func() {
+		// ⚠️ The ordering claim, asserted rather than reasoned about: the debug
+		// block is registered FIRST on the board router, and it is a PathPrefix,
+		// so this proves it does not swallow a route registered after it.
+		router := mux.NewRouter()
+		Expect(registerPprofIfLoopback(router, "127.0.0.1:18080")).To(BeTrue())
+		router.Path("/healthz").Methods(http.MethodGet).Handler(libhttp.NewPrintHandler("OK"))
+
+		for _, path := range []string{"/debug/pprof/", "/healthz"} {
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			Expect(rec.Code).To(Equal(http.StatusOK), path)
+		}
 	})
 })

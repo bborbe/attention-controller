@@ -82,7 +82,7 @@ make precommit
 | `/setloglevel/{level}` | Dynamic log level adjustment |
 | `/testloglevel` | Test logging at all levels |
 | `/sentryalert` | Test Sentry integration |
-| `/debug/pprof/` | Go runtime profiles — CPU (`?seconds=N`), heap, goroutine, cmdline, trace. ⚠️ Unauthenticated, and reachable by anyone who can reach the listen address: it is bound to loopback by the launchd deployment, but by configuration rather than by code. Mounted so a profile can be taken in place on the running service. |
+| `/debug/pprof/` | Go runtime profiles — CPU (`?seconds=N`), heap, goroutine, cmdline, trace. ⚠️ Unauthenticated, and mounted **only when the listen address is loopback**: `/cmdline` publishes the process argv, which can carry `-attention-store-token`. A non-loopback bind logs and skips the registration. |
 
 ## Development Commands
 
