@@ -346,10 +346,21 @@ var _ = Describe("registerPprofIfLoopback", func() {
 		router := mux.NewRouter()
 		Expect(registerPprofIfLoopback(router, "127.0.0.1:18080")).To(BeTrue())
 
-		req := httptest.NewRequest(http.MethodGet, "/debug/pprof/", nil)
-		rec := httptest.NewRecorder()
-		router.ServeHTTP(rec, req)
-		Expect(rec.Code).To(Equal(http.StatusOK))
+		// ⚠️ `/cmdline` is asserted explicitly because README and CHANGELOG name
+		// it as the endpoint that publishes argv — the claim the whole loopback
+		// gate rests on — so an upstream `RegisterPprof` dropping it would
+		// otherwise leave the documentation asserting a surface nothing checks.
+		for _, path := range []string{
+			"/debug/pprof/",
+			"/debug/pprof/cmdline",
+			"/debug/pprof/heap",
+			"/debug/pprof/goroutine",
+		} {
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			Expect(rec.Code).To(Equal(http.StatusOK), path)
+		}
 	})
 
 	It("withholds the pprof endpoints on a non-loopback address", func() {

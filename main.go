@@ -315,24 +315,30 @@ func (a *application) createPaneActivator(panes pkg.PaneLister) pkg.PaneActivato
 // loopback interface. It is the gate on mounting the pprof endpoints.
 //
 // ⚠️ An empty host (":18080") is NOT loopback — it binds every interface — and
-// `net.SplitHostPort` returns it as "", so it must fall through to false rather
-// than be read as "unspecified, therefore local". A malformed address is
+// `net.SplitHostPort` returns it as "", so it is refused explicitly rather than
+// read as "unspecified, therefore local". A malformed or unresolvable address is
 // likewise false: the caller's failure mode for "cannot prove loopback" is to
 // withhold the debug surface, not to expose it.
 //
-// ⚠️ `localhost` is accepted without a DNS lookup. The name resolves to loopback
-// by convention, and resolving it here would put the network on the path of
-// every startup — including the ones where the resolver is what is broken.
+// ⚠️ The name `localhost` is RESOLVED rather than trusted. A hosts file or
+// resolver mapping it to a routable address would otherwise make this report
+// loopback while `libhttp.NewServer` binds publicly — publishing argv, which is
+// the exact failure this gate exists to prevent. The lookup is affordable
+// because registration happens once per process, not per request.
 func isLoopbackListen(addr string) bool {
 	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
+	if err != nil || host == "" {
 		return false
 	}
-	if host == "localhost" {
-		return true
-	}
 	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	if ip == nil {
+		resolved, resolveErr := net.ResolveIPAddr("ip", host)
+		if resolveErr != nil {
+			return false
+		}
+		ip = resolved.IP
+	}
+	return ip.IsLoopback()
 }
 
 // registerPprofIfLoopback mounts the pprof endpoints on router when listen is a
@@ -352,6 +358,10 @@ func registerPprofIfLoopback(router *mux.Router, listen string) bool {
 		)
 		return false
 	}
+	// Logged on the mounted branch too, so both halves of the gate are
+	// diagnosable from default-verbosity logs — the skip already logs, and a
+	// silent success reads identically to a registration that never ran.
+	glog.Infof("pprof endpoints mounted on loopback listen address %q", listen)
 	libhttp.RegisterPprof(router)
 	return true
 }
