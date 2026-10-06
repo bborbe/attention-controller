@@ -29,21 +29,31 @@ var _ = Describe("renderCardText", func() {
 		func(input string, expected string) {
 			Expect(string(renderCardText(input))).To(Equal(expected))
 		},
-		Entry("a markdown link, as an anchor carrying only the label",
+		Entry(
+			"a markdown link, as an anchor carrying only the label",
 			`[pane 87](http://127.0.0.1:1337/jump?pane=87&t=x)`,
-			`<a href="http://127.0.0.1:1337/jump?pane=87&amp;t=x">pane 87</a>`),
-		Entry("a bare https url, autolinked with the url as its own text",
+			`<a href="http://127.0.0.1:1337/jump?pane=87&amp;t=x" target="_blank" rel="noopener noreferrer">pane 87</a>`,
+		),
+		Entry(
+			"a bare https url, autolinked with the url as its own text",
 			`see https://example.com/x`,
-			`see <a href="https://example.com/x">https://example.com/x</a>`),
-		Entry("a bare http url, autolinked",
+			`see <a href="https://example.com/x" target="_blank" rel="noopener noreferrer">https://example.com/x</a>`,
+		),
+		Entry(
+			"a bare http url, autolinked",
 			`go to http://127.0.0.1:18080/ now`,
-			`go to <a href="http://127.0.0.1:18080/">http://127.0.0.1:18080/</a> now`),
-		Entry("a url inside prose parens, which must not swallow the closing paren",
+			`go to <a href="http://127.0.0.1:18080/" target="_blank" rel="noopener noreferrer">http://127.0.0.1:18080/</a> now`,
+		),
+		Entry(
+			"a url inside prose parens, which must not swallow the closing paren",
 			`see (https://example.com) for details`,
-			`see (<a href="https://example.com">https://example.com</a>) for details`),
-		Entry("an obsidian link, which the board's own navigation needs",
+			`see (<a href="https://example.com" target="_blank" rel="noopener noreferrer">https://example.com</a>) for details`,
+		),
+		Entry(
+			"an obsidian link, which the board's own navigation needs",
 			`[task](obsidian://open?vault=Personal&file=25%20Tasks%2FFoo)`,
-			`<a href="obsidian://open?vault=Personal&amp;file=25%20Tasks%2FFoo">task</a>`),
+			`<a href="obsidian://open?vault=Personal&amp;file=25%20Tasks%2FFoo" target="_blank" rel="noopener noreferrer">task</a>`,
+		),
 		Entry("a javascript link, refused by the scheme allowlist and left as text",
 			`[x](javascript:alert(1))`,
 			`[x](javascript:alert(1))`),
@@ -59,12 +69,16 @@ var _ = Describe("renderCardText", func() {
 		Entry("a payload cut mid-link: no anchor and no autolinked fragment",
 			`[pane 88](http://127.0.0.1:1337/`,
 			`[pane 88](http://127.0.0.1:1337/`),
-		Entry("html inside a label, escaped",
+		Entry(
+			"html inside a label, escaped",
 			`[<b>x</b>](https://example.com)`,
-			`<a href="https://example.com">&lt;b&gt;x&lt;/b&gt;</a>`),
-		Entry("a quote in a url, escaped so it cannot leave the attribute",
+			`<a href="https://example.com" target="_blank" rel="noopener noreferrer">&lt;b&gt;x&lt;/b&gt;</a>`,
+		),
+		Entry(
+			"a quote in a url, escaped so it cannot leave the attribute",
 			`[x](https://example.com/"onmouseover=evil)`,
-			`<a href="https://example.com/&#34;onmouseover=evil">x</a>`),
+			`<a href="https://example.com/&#34;onmouseover=evil" target="_blank" rel="noopener noreferrer">x</a>`,
+		),
 		Entry("an empty body",
 			``,
 			``),
@@ -80,7 +94,7 @@ var _ = Describe("renderCardText", func() {
 		// got pkg.Payload`, raised at render time, which turns every board page
 		// into a 500 while every unit test on a plain string still passes.
 		Expect(string(renderCardText(pkg.Payload(`[x](https://example.com)`)))).
-			To(Equal(`<a href="https://example.com">x</a>`))
+			To(Equal(`<a href="https://example.com" target="_blank" rel="noopener noreferrer">x</a>`))
 		Expect(string(renderCardText(pkg.ItemContext(`plain context`)))).
 			To(Equal(`plain context`))
 	})
@@ -106,7 +120,8 @@ var _ = Describe("renderCardText", func() {
 		got := string(renderCardText(body))
 
 		Expect(got).To(ContainSubstring(
-			`<a href="http://127.0.0.1:1337/jump?pane=87&amp;t=abc">pane 87</a>`))
+			`<a href="http://127.0.0.1:1337/jump?pane=87&amp;t=abc" target="_blank" rel="noopener noreferrer">pane 87</a>`,
+		))
 		Expect(got).To(ContainSubstring(`[pane 88](http://127.0.0.1:1337/`))
 		Expect(strings.Count(got, "<a ")).To(Equal(1),
 			"only the whole link may become an anchor")
