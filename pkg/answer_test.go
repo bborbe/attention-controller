@@ -369,6 +369,39 @@ var _ = Describe("Board answers", func() {
 			Expect(got.Decision).To(Equal(pkg.AllowDecision))
 		})
 
+		It("refuses the board's write when the arm answered first", func() {
+			item, err := store.Push(ctx, permissionRequest())
+			Expect(err).To(BeNil())
+
+			// The arm answers first, carrying the resolver.
+			_, err = store.Answer(
+				ctx,
+				item.ItemID,
+				"attention-answer.py",
+				"session-a",
+				pkg.AllowDecision,
+				nil,
+				nil,
+				nil,
+			)
+			Expect(err).To(BeNil())
+
+			// The board's later click carries no resolver, so the relaxation does
+			// not reach it: it is refused rather than merged, and the operator's
+			// verdict is dropped. The two orders are deliberately asymmetric —
+			// the arm is the surface that can release the gate, so it wins.
+			_, err = store.Answer(
+				ctx, item.ItemID, "attention-board", "", pkg.DenyDecision, nil, nil, nil,
+			)
+			Expect(err).NotTo(BeNil())
+			Expect(errors.Is(err, pkg.ErrAlreadyAnswered)).To(BeTrue())
+
+			got, err := store.Get(ctx, item.ItemID)
+			Expect(err).To(BeNil())
+			Expect(got.Decision).To(Equal(pkg.AllowDecision))
+			Expect(got.ResolvedBy).To(Equal("session-a"))
+		})
+
 		It("keeps first-write-wins on a message item", func() {
 			item, err := store.Push(ctx, messageRequest())
 			Expect(err).To(BeNil())
