@@ -223,7 +223,8 @@ var _ = Describe("AttentionPageHandler", func() {
 		// The href carries `&amp;` because that is what renderCardText emits: the
 		// value is trusted template.HTML, so html/template does not re-escape it.
 		Expect(body).To(ContainSubstring(
-			`<a href="http://127.0.0.1:1337/jump?pane=87&amp;t=x">pane 87</a>`))
+			`<a href="http://127.0.0.1:1337/jump?pane=87&amp;t=x" target="_blank" rel="noopener noreferrer">pane 87</a>`,
+		))
 		Expect(body).NotTo(ContainSubstring("[pane 87]("))
 	})
 

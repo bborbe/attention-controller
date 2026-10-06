@@ -13,6 +13,15 @@ import (
 	"unicode/utf8"
 )
 
+// cardAnchorAttrs is what every anchor this file authors carries after its href.
+//
+// ⚠️ `target="_blank"` on its own is a tabnabbing hole: the opened page gets a
+// live `window.opener` and can navigate the board out from under the operator —
+// which is the exact harm the new tab exists to prevent. `rel="noopener
+// noreferrer"` is what closes it, and it is not decoration. `noreferrer` also
+// keeps the board's URL out of the target's referrer.
+const cardAnchorAttrs = ` target="_blank" rel="noopener noreferrer"`
+
 // cardLinkSchemes is the closed set of URL schemes a card body may link to.
 //
 // ⚠️ This is an allowlist, not a denylist, and it is the whole security
@@ -192,7 +201,7 @@ func cardLinkAt(text string, i int) (string, int, bool) {
 		// operator can still read what the card tried to do.
 		return html.EscapeString(text[i+loc[0] : i+loc[1]]), loc[1], true
 	}
-	return `<a href="` + html.EscapeString(rawURL) + `">` +
+	return `<a href="` + html.EscapeString(rawURL) + `"` + cardAnchorAttrs + `>` +
 		html.EscapeString(label) + `</a>`, loc[1], true
 }
 
@@ -220,6 +229,6 @@ func cardBareURLAt(text string, i int) (string, int, bool) {
 	if i >= 2 && text[i-2:i] == "](" {
 		return html.EscapeString(rawURL), loc[1], true
 	}
-	return `<a href="` + html.EscapeString(rawURL) + `">` +
+	return `<a href="` + html.EscapeString(rawURL) + `"` + cardAnchorAttrs + `>` +
 		html.EscapeString(rawURL) + `</a>`, loc[1], true
 }
