@@ -1905,9 +1905,9 @@ var _ = Describe("TaskIndex refresh", func() {
 		writeVaultTask(vault, "Conc.md", "---\nclaude_session_id: session-conc\n---\n")
 		index := pkg.NewTaskIndex(ctx, vault, clock)
 
-		counter, ok := index.(interface{ RebuildCount() int })
-		Expect(ok).To(BeTrue(), "the task index must expose its rebuild count")
-		Expect(counter.RebuildCount()).To(Equal(0), "the boot build is not a rebuild")
+		counter, ok := index.(interface{ RefreshCount() int })
+		Expect(ok).To(BeTrue(), "the task index must expose its refresh count")
+		Expect(counter.RefreshCount()).To(Equal(0), "the boot build is not a rebuild")
 
 		// Written after the boot build, so a lookup that resolves it proves the
 		// winner's rebuild was installed rather than merely started.
@@ -1931,7 +1931,7 @@ var _ = Describe("TaskIndex refresh", func() {
 		}
 		Expect(run.CancelOnFirstErrorWait(ctx, funcs...)).To(BeNil())
 
-		Expect(counter.RebuildCount()).To(Equal(1),
+		Expect(counter.RefreshCount()).To(Equal(1),
 			"concurrent lookups past the window started more than one rebuild")
 		for i := 0; i < workers; i++ {
 			Expect(oks[i]).To(BeTrue(),
@@ -1943,7 +1943,7 @@ var _ = Describe("TaskIndex refresh", func() {
 		task, ok := index.Lookup("session-late")
 		Expect(ok).To(BeTrue())
 		Expect(task.Name).To(Equal("Late"))
-		Expect(counter.RebuildCount()).To(Equal(1),
+		Expect(counter.RefreshCount()).To(Equal(1),
 			"a later lookup inside the fresh window must not rebuild again")
 	})
 })

@@ -67,9 +67,9 @@ var _ = Describe("TaskIndex incremental apply", func() {
 	}
 
 	rebuildCount := func(index TaskIndex) int {
-		counter, ok := index.(interface{ RebuildCount() int })
-		Expect(ok).To(BeTrue(), "the task index must expose its rebuild count")
-		return counter.RebuildCount()
+		counter, ok := index.(interface{ RefreshCount() int })
+		Expect(ok).To(BeTrue(), "the task index must expose its refresh count")
+		return counter.RefreshCount()
 	}
 
 	BeforeEach(func() {
@@ -265,5 +265,37 @@ var _ = Describe("TaskIndex incremental apply", func() {
 		Expect(task.GoalName).To(Equal("Late Goal"),
 			"a reconcile must re-resolve the goal rung for a task file it did not re-read")
 		Expect(task.GoalPath).To(Equal("24 Goals/Late Goal.md"))
+	})
+
+	It("survives a reconcile overlapping an incremental apply", func() {
+		// ⚠️ The two writers touch the SAME serving maps: ApplyPaths mutates them
+		// in place under the write lock, and a reconcile reads them to diff its
+		// listing against. A reconcile that keeps the map header past the unlock
+		// instead of copying it is a concurrent map read and map write — a Go
+		// runtime fatal error that takes the process down, not a stale value — and
+		// only an overlapping run reaches it. Run this spec under `-race`.
+		index := NewTaskIndex(ctx, vault, clock)
+
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			for i := 0; i < 40; i++ {
+				index.Reconcile(ctx)
+			}
+		}()
+
+		for i := 0; i < 40; i++ {
+			name := fmt.Sprintf("Concurrent %02d.md", i)
+			writeTask(name, fmt.Sprintf("session-c%02d", i))
+			index.ApplyPaths(ctx, []string{"25 Tasks/" + name})
+		}
+
+		Eventually(done, "30s").Should(BeClosed())
+
+		// The last apply must still be visible: an install from a reconcile that
+		// snapshotted before it would have discarded it.
+		task, ok := index.Lookup("session-c39")
+		Expect(ok).To(BeTrue())
+		Expect(task.Name).To(Equal("Concurrent 39"))
 	})
 })

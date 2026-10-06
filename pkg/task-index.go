@@ -103,10 +103,10 @@ const taskIndexBackstopWindow = libtime.Duration(5 * time.Minute)
 // with no vault configured, not a fault.
 //
 // The index is not frozen at construction: a watcher on the task directory calls
-// Rebuild on every change, and Lookup falls back to a rebuild once the serving
-// index is older than taskIndexBackstopWindow. Either way a task file written
-// after this call resolves without a restart. The clock is injected so the
-// backstop is testable.
+// ApplyPaths on every change, and Lookup falls back to a Reconcile once the
+// serving index is older than taskIndexBackstopWindow. Either way a task file
+// written after this call resolves without a restart. The clock is injected so
+// the backstop is testable.
 //
 // The goal rung is built before the task walk, because each indexed task
 // carries the goal it names and the topic that lists it: both maps must exist
@@ -124,21 +124,21 @@ func NewTaskIndex(
 	// The boot build is installed unconditionally, even when ctx is already
 	// cancelled or the task walk read nothing: there is no previous index to
 	// preserve, and the fail-soft contract is that a cancelled or empty boot
-	// holds what it read and no more rather than failing. Every later rebuild is
+	// holds what it read and no more rather than failing. Every later reconcile is
 	// installed only when it completed AND actually read `25 Tasks/` — see
-	// Rebuild.
+	// reconcileAndInstall.
 	fresh, _ := index.build(ctx)
 	index.install(fresh)
 	return index
 }
 
 type taskIndex struct {
-	// ctx is the build context a backstop rebuild runs under. Lookup carries no
+	// ctx is the build context a backstop reconcile runs under. Lookup carries no
 	// context of its own, so when it finds the serving index past
-	// taskIndexBackstopWindow it passes this construction context to Rebuild —
+	// taskIndexBackstopWindow it passes this construction context to Reconcile —
 	// the same context the boot build ran under, which is what lets a cancelled
-	// backstop rebuild stop at the same points the boot build does. A watcher
-	// rebuild passes the watcher's run context instead.
+	// backstop reconcile stop at the same points the boot build does. The
+	// watcher's own reconcile passes the watcher's run context instead.
 	ctx context.Context
 	// vaultDir is the vault the index reads. It is fixed for the process's life;
 	// a rebuild re-reads the same directory rather than being re-pointed.
@@ -164,7 +164,7 @@ type taskIndex struct {
 	refreshing chan struct{}
 	// rebuilds counts the rebuilds that actually started, so a test can assert
 	// the single-flight property directly. Guarded by mu.
-	rebuilds int
+	refreshes int
 	// builtAt is the clock reading at which the serving index was published.
 	builtAt   libtime.DateTime
 	bySession map[string]taskEntry
@@ -183,6 +183,15 @@ type taskIndex struct {
 	// against: a file whose stamp is unchanged is reused rather than re-read,
 	// which is what keeps the safety net off the full-vault read path.
 	fileStamps map[string]fileStamp
+	// appliedSeq counts the incremental updates applied to the serving index. A
+	// reconcile snapshots it and refuses to install when it has moved, so an
+	// update landing mid-walk is never overwritten by the older listing that
+	// walk was building. Guarded by mu.
+	appliedSeq int64
+	// baseSeq is the appliedSeq the snapshot a fresh index was reconciled from
+	// was taken at. It is meaningful only on an index returned by reconcile;
+	// install compares it against the serving appliedSeq. Guarded by mu.
+	baseSeq int64
 	// goals is the set of titles the vault holds as goal files under
 	// `24 Goals/`. It is the existence guard a task's `goals:` entry must pass
 	// before it resolves: the title comes from frontmatter, so it is never
@@ -225,6 +234,13 @@ type taskCandidate struct {
 // value: it is only ever compared for equality against another stamp, never
 // arithmetic, so the domain's time types would add a conversion without adding
 // a meaning.
+//
+// ⚠️ Size plus modification time is a heuristic, and the case it misses is named
+// rather than implied: a same-size edit landing inside one filesystem timestamp
+// tick reuses the stale entry. The tick is coarse enough for that to be possible
+// and fine enough that the window is tiny, and the failure self-corrects at the
+// next edit or reconcile — but it is why this pair is a hint that a file is
+// unchanged, never a proof that its content is current.
 type fileStamp struct {
 	size        int64
 	modTimeNano int64
@@ -266,9 +282,23 @@ func (t *taskIndex) build(ctx context.Context) (*taskIndex, bool) {
 // install swaps a freshly built index's maps in as the serving index and stamps
 // it at the current clock reading. It takes the write lock, so a reader sees
 // either the whole previous index or the whole new one, never a half-built one.
-func (t *taskIndex) install(fresh *taskIndex) {
+//
+// ⚠️ It reports false, and changes nothing, when an incremental update has been
+// applied since the snapshot this index was reconciled from. A reconcile
+// snapshots the index, walks the directory, and installs the result; an apply
+// landing during that walk would otherwise be discarded by the install, leaving
+// the task mis-resolved until the next backstop window — the staleness window
+// the index's own criteria forbid. The check and the swap share one critical
+// section, so an apply cannot slip between them either.
+//
+// ⚠️ A boot build installs unconditionally in practice: its fresh index carries
+// baseSeq 0 and nothing has been applied yet, so the sequences agree.
+func (t *taskIndex) install(fresh *taskIndex) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if fresh.baseSeq != t.appliedSeq {
+		return false
+	}
 	t.bySession = fresh.bySession
 	t.byPath = fresh.byPath
 	t.bySessionPaths = fresh.bySessionPaths
@@ -276,54 +306,30 @@ func (t *taskIndex) install(fresh *taskIndex) {
 	t.goals = fresh.goals
 	t.goalTopics = fresh.goalTopics
 	t.builtAt = t.currentDateTimeGetter.Now()
+	return true
 }
 
-// Rebuild re-reads the vault and installs the fresh index when the task walk read
-// `25 Tasks/`. It is the explicit entry point the watcher drives, and the
-// backstop Lookup falls back to when the serving index outlives
-// taskIndexBackstopWindow.
+// ApplyPaths re-reads exactly the named task files and updates the serving
+// index in place. It is the ordinary path the watcher drives on a vault change.
 //
-// ⚠️ Single-flight, mirroring provenanceResolver.hostState: the token is claimed
-// in ONE critical section, so however many callers arrive at once — a burst of
-// watcher events, or a render loop whose backstop window has lapsed — exactly one
-// rebuild runs. Lookup is reached once per item from the resolver's render loop,
-// so without the guard a lapsed window would start one full-vault rebuild per
-// concurrent render — over 8,000 task files read synchronously inside each
-// request. A caller that finds a rebuild already in flight is served the index
-// currently installed and returns, rather than queueing behind the read; the
-// winner performs the rebuild synchronously, so a single Lookup issued after the
-// window lapses still resolves a task created since the last build.
+// ⚠️ It is where the cost moved to. One task-file write costs one file open and
+// that file's own bytes; the wholesale rebuild this replaces spent 6,057 opens
+// and 61 MB to learn the same fact.
 //
-// ⚠️ The rebuild happens OUTSIDE the lock and only the swap takes it. A rebuild
-// re-reads the whole vault and holding the write lock across it would block
-// every render on the board for the duration. The build therefore produces a
-// fresh, fully populated index and install swaps its maps in atomically, so a
-// reader sees either the old index or the new one.
+// ⚠️ Every read happens BEFORE the lock is taken, and only the map update takes
+// it. A burst can name hundreds of task files, and holding the write lock across
+// their reads would block every render on the board for the duration — the same
+// rule the boot build follows.
 //
-// ⚠️ A rebuild is installed only when it both completed and actually read
-// `25 Tasks/`. The build's soft-failure rules mean a directory read that fails
-// yields no entries rather than an error, so an empty result is ambiguous — it
-// is what a genuinely empty vault produces AND what an unreadable `25 Tasks/`
-// produces — and installing the latter would replace a fully resolved index with
-// an empty one, losing every task that had resolved. Two signals separate them:
-// a cancelled build (the context is done) and a build whose task walk reported
-// it could not read the directory. Either one leaves the previous index serving.
+// ⚠️ It mutates the serving maps rather than swapping in fresh ones, which is
+// what makes a single change cheap. The cost is that a concurrent reader must
+// never hold a reference to those maps across the lock: `reconcile` takes a real
+// copy of them, not the map header, for exactly this reason. Mutating a map that
+// another goroutine is reading is a fatal runtime error, not a stale read.
 //
-// ⚠️ A failed `24 Goals/` or `23 Topics/` read is deliberately NOT such a
-// signal: those rungs degrade to no goal and no topic by design, and refusing
-// the install on them would block a perfectly good task walk — including the
-// ordinary case of a vault that has no `24 Goals/` at all.
-//
-// ⚠️ A refused install does not advance builtAt, so the backstop window stays
-// lapsed and the next Lookup re-attempts the rebuild — and a refused watcher
-// rebuild leaves the next event free to re-attempt too. That is deliberate: a
-// healthy vault whose read failed transiently re-attempts, succeeds and
-// re-advances builtAt, so no separate retry loop is needed. The cost is that a
-// permanently unreadable `25 Tasks/` re-runs the goal and topic rungs on every
-// lookup, since the build reaches them before the task walk fails (only an
-// absent `24 Goals/` short-circuits the topic rung). If that cost ever matters,
-// bound it by advancing builtAt on refusal instead — but that trades the retry
-// away, so it is not done here.
+// ⚠️ A path that is not a `.md` file directly under `25 Tasks/` is skipped, and
+// a path whose file is gone removes its entry — a delete or a rename arrives as
+// an event naming a file that no longer opens.
 func (t *taskIndex) ApplyPaths(ctx context.Context, paths []string) {
 	if t == nil || len(paths) == 0 {
 		return
@@ -365,6 +371,14 @@ func (t *taskIndex) ApplyPaths(ctx context.Context, paths []string) {
 			continue
 		}
 		rel := filepath.Join(taskDirName, name)
+		// ⚠️ The stamp is taken BEFORE the content is read, and the order is
+		// load-bearing. Read-then-stat can store one version's bytes under
+		// another version's stamp — a write landing between the two — and a later
+		// reconcile then finds the stamp unchanged and REUSES the stale entry,
+		// permanently, because nothing makes that pair disagree again. Stat-then-
+		// read can only store older bytes under an older stamp, which the next
+		// reconcile re-reads.
+		stamp, stamped := rootStat(root, name)
 		content, readErr := taskFileReader(root, name)
 		if readErr != nil {
 			// The file was removed between the event and this read, which is the
@@ -374,12 +388,13 @@ func (t *taskIndex) ApplyPaths(ctx context.Context, paths []string) {
 			pending = append(pending, pendingApply{path: rel, name: name, removed: true})
 			continue
 		}
-		entry := pendingApply{path: rel, name: name, content: content}
-		if info, statErr := root.Stat(name); statErr == nil {
-			entry.stamp = fileStamp{size: info.Size(), modTimeNano: info.ModTime().UnixNano()}
-			entry.stamped = true
-		}
-		pending = append(pending, entry)
+		pending = append(pending, pendingApply{
+			path:    rel,
+			name:    name,
+			content: content,
+			stamp:   stamp,
+			stamped: stamped,
+		})
 	}
 
 	t.mu.Lock()
@@ -394,28 +409,41 @@ func (t *taskIndex) ApplyPaths(ctx context.Context, paths []string) {
 		}
 		t.indexContent(entry.path, entry.name, entry.content)
 	}
+	// ⚠️ The sequence is what stops a reconcile from installing an older listing
+	// over this update. A reconcile snapshots the index, walks the directory, and
+	// installs the result; an apply landing in between would be silently
+	// discarded, leaving the task mis-resolved until the next window. The apply
+	// bumps this, and the install refuses when it moved — see reconcileAndInstall.
+	t.appliedSeq++
 	// ⚠️ builtAt advances here, on the same reasoning install uses: the serving
 	// index now reflects the vault, so the Lookup backstop should not fire on the
 	// next render. A dropped event is the watcher's own reconcile to catch, not
 	// the render path's — a listing walk on the render path would put a stat of
 	// every task file in front of a page load.
+	//
+	// ⚠️ It advances even when nothing was indexed — a burst naming only
+	// non-task paths, or removals of files that were never indexed. That
+	// postpones the backstop by one window for no gain, which is the accepted
+	// direction: the alternative is a per-path notion of "did anything change",
+	// and the cost of being wrong that way is a stale index rather than a late
+	// reconcile. The watcher's own ticker is unaffected either way.
 	t.builtAt = t.currentDateTimeGetter.Now()
 }
 
-// claimRebuild claims the single-flight token, reporting false when a rebuild is
+// claimRefresh claims the single-flight token, reporting false when a refresh is
 // already in flight or — when onlyIfLapsed is set — when the serving index is
 // still inside taskIndexBackstopWindow.
 //
 // ⚠️ The window check and the claim are in the SAME critical section, and that
 // atomicity is load-bearing for the backstop. A caller that observed a lapsed
 // window, was descheduled, and reached the claim only after the winner had
-// installed and cleared the token would otherwise start a second full-vault read
-// — exactly the amplification the token exists to prevent. Checking the window
-// inside the claim is what stops it: the winner's install advances builtAt, so
-// the straggler's (already read) clock reading no longer exceeds the window and
-// it declines. This is why the backstop cannot simply check the clock and then
-// call Rebuild, which has no window check of its own.
-func (t *taskIndex) claimRebuild(onlyIfLapsed bool) (chan struct{}, bool) {
+// installed and cleared the token would otherwise start a second walk over the
+// vault — exactly the amplification the token exists to prevent. Checking the
+// window inside the claim is what stops it: the winner's install advances
+// builtAt, so the straggler's (already read) clock reading no longer exceeds the
+// window and it declines. This is why the backstop cannot simply check the clock
+// and then call Reconcile, which has no window check of its own.
+func (t *taskIndex) claimRefresh(onlyIfLapsed bool) (chan struct{}, bool) {
 	now := t.currentDateTimeGetter.Now()
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -429,7 +457,7 @@ func (t *taskIndex) claimRebuild(onlyIfLapsed bool) (chan struct{}, bool) {
 	}
 	token := make(chan struct{})
 	t.refreshing = token
-	t.rebuilds++
+	t.refreshes++
 	return token, true
 }
 
@@ -454,7 +482,7 @@ func (t *taskIndex) Reconcile(ctx context.Context) {
 	if t == nil || t.vaultDir == "" {
 		return
 	}
-	if token, ok := t.claimRebuild(false); ok {
+	if token, ok := t.claimRefresh(false); ok {
 		t.reconcileAndInstall(ctx, token)
 	}
 }
@@ -479,7 +507,11 @@ func (t *taskIndex) reconcileAndInstall(ctx context.Context, token chan struct{}
 		)
 		return
 	}
-	t.install(fresh)
+	if !t.install(fresh) {
+		glog.V(3).Infof(
+			"task index reconcile superseded by an incremental update, keeping previous index",
+		)
+	}
 }
 
 // reconcile builds a fresh index from the task directory's listing, reusing the
@@ -514,12 +546,27 @@ func (t *taskIndex) reconcile(ctx context.Context) (*taskIndex, bool) {
 	}
 	defer root.Close()
 
-	// The serving index is copied out under the read lock, so the walk below
-	// never holds a lock across a stat or a read — a reader sees either the
-	// whole previous index or, once install swaps, the whole new one.
+	// ⚠️ This is a real COPY of the two maps, not a reference to them, and the
+	// distinction is fatal rather than cosmetic. ApplyPaths mutates these maps in
+	// place under the write lock; keeping the map header past the unlock and then
+	// reading it is a concurrent map read and map write — a Go runtime fatal
+	// error, not a stale value. The copy costs one pass over ~5,800 entries, once
+	// per backstop window, which is nothing against the 61 MB the rebuild this
+	// replaced would have spent.
+	//
+	// The sequence is read in the same critical section as the copy, so the pair
+	// describes one instant: install refuses when the serving sequence has moved
+	// past it.
 	t.mu.RLock()
-	previous := t.byPath
-	previousStamps := t.fileStamps
+	previous := make(map[string]taskCandidate, len(t.byPath))
+	for path, candidate := range t.byPath {
+		previous[path] = candidate
+	}
+	previousStamps := make(map[string]fileStamp, len(t.fileStamps))
+	for path, stamp := range t.fileStamps {
+		previousStamps[path] = stamp
+	}
+	fresh.baseSeq = t.appliedSeq
 	t.mu.RUnlock()
 
 	for _, entry := range entries {
@@ -606,27 +653,27 @@ func (t *taskIndex) finishRefresh(token chan struct{}) {
 	}
 }
 
-// RebuildCount returns how many rebuilds have actually started. It is the
+// RefreshCount returns how many rebuilds have actually started. It is the
 // observable the single-flight property is asserted against: a burst of
 // concurrent lookups past the window must leave this at exactly one.
-func (t *taskIndex) RebuildCount() int {
+func (t *taskIndex) RefreshCount() int {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	return t.rebuilds
+	return t.refreshes
 }
 
 // readTasks walks `<vault>/25 Tasks/` and indexes every task file that records
 // a session. It reports whether that directory was actually read: false when
 // either the listing or the os.Root handle could not be opened, which is the
-// signal a rebuild uses to refuse installing itself — see Rebuild.
+// signal a reconcile uses to refuse installing itself — see reconcileAndInstall.
 //
 // A directory that reads but holds no task file reports true: an empty vault is
 // a legal state, and an index that read it holds the honest answer rather than
 // a failed one.
 //
-// os.ReadDir returns entries sorted by filename, and the tie-break in add
-// depends on it: candidates are added in ascending path order, so the later
-// candidate is the lexicographically greater path.
+// os.ReadDir returns entries sorted by filename, and the tie-break in
+// recomputeSession depends on it: candidates are visited in ascending path
+// order, so the later candidate is the lexicographically greater path.
 func (t *taskIndex) readTasks(ctx context.Context, vaultDir string) bool {
 	tasksDir := filepath.Join(vaultDir, taskDirName)
 	entries, err := os.ReadDir(tasksDir)
@@ -667,11 +714,11 @@ func (t *taskIndex) readTasks(ctx context.Context, vaultDir string) bool {
 // render path is not where it belongs.
 //
 // ⚠️ The window check rides the claim rather than preceding it — see
-// claimRebuild. Checking the clock here and then reconciling would let a lookup
+// claimRefresh. Checking the clock here and then reconciling would let a lookup
 // that was descheduled between the two start a second walk after the winner had
 // already finished, which is the amplification the token exists to prevent.
 func (t *taskIndex) reconcileIfBackstopLapsed() {
-	if token, ok := t.claimRebuild(true); ok {
+	if token, ok := t.claimRefresh(true); ok {
 		t.reconcileAndInstall(t.ctx, token)
 	}
 }
@@ -741,6 +788,21 @@ var taskFileReader = func(root *os.Root, name string) ([]byte, error) {
 // reconcile reads as "changed" and re-reads rather than skipping.
 func stampOf(entry os.DirEntry) (fileStamp, bool) {
 	info, err := entry.Info()
+	if err != nil {
+		return fileStamp{}, false
+	}
+	return fileStamp{size: info.Size(), modTimeNano: info.ModTime().UnixNano()}, true
+}
+
+// rootStat stamps one task file by name from the tasks-directory root.
+//
+// ⚠️ It is a stat, not an open: a path that cannot be stamped is reported false
+// and the caller records no stamp for it, which makes the next reconcile re-read
+// that file rather than trust a stamp nobody wrote. It is deliberately separate
+// from the content read so ApplyPaths can stamp BEFORE reading — see there for
+// why the order matters.
+func rootStat(root *os.Root, name string) (fileStamp, bool) {
+	info, err := root.Stat(name)
 	if err != nil {
 		return fileStamp{}, false
 	}

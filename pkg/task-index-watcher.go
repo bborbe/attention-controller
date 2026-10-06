@@ -142,12 +142,13 @@ func (w *taskIndexWatcher) Run(ctx context.Context) error {
 // vault-relative paths, reporting false when the event channel was closed
 // underneath the loop.
 //
-// ⚠️ Draining is what makes one burst cost one pass. A burst — an obsidian-git
-// autocommit, a `git checkout` — names the same file more than once and names
-// thousands of files; applying the drained list once opens each changed file
-// once, where applying per event would open it as many times as the burst named
-// it. The list is collected while draining rather than after, because the
-// channel is being emptied either way.
+// ⚠️ Draining is what makes one burst cost one pass, and the dedupe is what
+// makes that literally true. A burst — an obsidian-git autocommit, a
+// `git checkout` — names the same file more than once and names thousands of
+// files; without the dedupe the drained list still carries the repeats, and
+// ApplyPaths reads a file once per time the burst named it. The list is
+// collected while draining rather than after, because the channel is being
+// emptied either way.
 //
 // ⚠️ The paths are made relative to the watched vault here, at the one place the
 // watcher's absolute event names are known, so ApplyPaths can compare them
@@ -158,18 +159,28 @@ func (w *taskIndexWatcher) changedPaths(
 	first fsnotify.Event,
 	events chan fsnotify.Event,
 ) ([]string, bool) {
+	seen := map[string]struct{}{}
 	paths := make([]string, 0, 1)
-	if rel, err := filepath.Rel(w.vaultDir, first.Name); err == nil {
+	append := func(name string) {
+		rel, err := filepath.Rel(w.vaultDir, name)
+		if err != nil {
+			// Not under the vault, so not a task file: dropped rather than
+			// passed on for ApplyPaths to re-reject.
+			return
+		}
+		if _, ok := seen[rel]; ok {
+			return
+		}
+		seen[rel] = struct{}{}
 		paths = append(paths, rel)
 	}
+	append(first.Name)
 	for len(events) > 0 {
 		queued, ok := <-events
 		if !ok {
 			return nil, false
 		}
-		if rel, err := filepath.Rel(w.vaultDir, queued.Name); err == nil {
-			paths = append(paths, rel)
-		}
+		append(queued.Name)
 	}
 	return paths, true
 }
