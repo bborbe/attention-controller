@@ -1041,6 +1041,34 @@ var _ = Describe("AttentionPageHandler", func() {
 			Expect(block).NotTo(ContainSubstring(`type="checkbox"`))
 		})
 
+		// The Other control is a member of the option group only when there IS a
+		// group. A question declaring no options keeps the bare field it has always
+		// had, and must render no pick at all: one there would offer the operator a
+		// choice the question never declared.
+		//
+		// ⚠️ This is the only positive no-options case in the repo, and the reason
+		// the suite needed one. The two other `class="other"` assertions are both
+		// negative — attention-page_test.go's ack block and
+		// attention-board-page_test.go's dimmed record — so before this case a
+		// build that started rendering a pick on the no-options path failed
+		// nothing.
+		It(
+			"renders the bare Other field and no pick when the question declares no options",
+			func() {
+				item, err := store.Push(
+					ctx,
+					pushRequest("producer-no-options", "gate-no-options", "deploy prod?"),
+				)
+				Expect(err).To(BeNil())
+
+				block := rowOf(get("GET").Body.String(), item.ItemID)
+
+				Expect(block).To(ContainSubstring(`class="other"`))
+				Expect(block).NotTo(ContainSubstring(`type="radio"`))
+				Expect(block).NotTo(ContainSubstring(`type="checkbox"`))
+			},
+		)
+
 		It("renders the cardinality hint and marks the recommended option", func() {
 			item, err := store.Push(
 				ctx,
