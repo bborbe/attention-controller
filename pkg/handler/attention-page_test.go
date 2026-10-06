@@ -201,23 +201,51 @@ var _ = Describe("AttentionPageHandler", func() {
 		Expect(body).To(ContainSubstring("&lt;script&gt;"))
 	})
 
-	It("serves a stream reconnect for the failure EventSource will not retry", func() {
-		// ⚠️ EventSource re-establishes a network drop by itself but fails the
-		// connection for GOOD on a non-200 status or a body whose content type is
-		// not text/event-stream — and the stream handler returns exactly that shape
-		// when the baseline render fails, because it sets the header only after the
-		// render succeeds. A page with no reconnect of its own was therefore
-		// stranded for good: the not-tracking state was shown and no frame was ever
-		// coming to clear it. The recovery itself is asserted end-to-end in the e2e
-		// suite; this pins that the wiring the browser needs is actually served.
+	It("renders a markdown link in a card body as an anchor on the served page", func() {
+		// ⚠️ This asserts through the handler rather than through renderCardText,
+		// because a body reaches the page through one of FIVE `{{ cardtext … }}`
+		// interpolations. A unit test on the function passes whichever of the five
+		// is wired, so reverting any one of them leaves the other four green while
+		// that card's body renders raw — the same regression class this change
+		// already hit once, on the stream handler's separate template parse.
+		_, err := store.Push(
+			ctx,
+			pushRequest(
+				"link fixture",
+				"gate-link",
+				`see [pane 87](http://127.0.0.1:1337/jump?pane=87&t=x) now`,
+			),
+		)
+		Expect(err).To(BeNil())
+
 		body := get("GET").Body.String()
 
-		Expect(body).To(ContainSubstring("function connect()"))
-		Expect(body).To(ContainSubstring("source.readyState !== EventSource.CLOSED"))
-		// Bounded, so a server that stays down is retried at a ceiling rather than
-		// in a tight loop.
-		Expect(body).To(ContainSubstring("Math.min(reconnectDelayMs * 2, 30000)"))
+		// The href carries `&amp;` because that is what renderCardText emits: the
+		// value is trusted template.HTML, so html/template does not re-escape it.
+		Expect(body).To(ContainSubstring(
+			`<a href="http://127.0.0.1:1337/jump?pane=87&amp;t=x">pane 87</a>`))
+		Expect(body).NotTo(ContainSubstring("[pane 87]("))
 	})
+
+	It(
+		"serves a stream reconnect for the failure EventSource will not retry",
+		func() { // ⚠️ EventSource re-establishes a network drop by itself but fails the
+			// connection for GOOD on a non-200 status or a body whose content type is
+			// not text/event-stream — and the stream handler returns exactly that shape
+			// when the baseline render fails, because it sets the header only after the
+			// render succeeds. A page with no reconnect of its own was therefore
+			// stranded for good: the not-tracking state was shown and no frame was ever
+			// coming to clear it. The recovery itself is asserted end-to-end in the e2e
+			// suite; this pins that the wiring the browser needs is actually served.
+			body := get("GET").Body.String()
+
+			Expect(body).To(ContainSubstring("function connect()"))
+			Expect(body).To(ContainSubstring("source.readyState !== EventSource.CLOSED"))
+			// Bounded, so a server that stays down is retried at a ceiling rather than
+			// in a tight loop.
+			Expect(body).To(ContainSubstring("Math.min(reconnectDelayMs * 2, 30000)"))
+		},
+	)
 
 	It("omits closed items while keeping open ones", func() {
 		open, err := store.Push(ctx, pushRequest("producer-open", "gate-open", "still open"))

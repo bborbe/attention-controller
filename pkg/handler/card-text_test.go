@@ -85,6 +85,13 @@ var _ = Describe("renderCardText", func() {
 			To(Equal(`plain context`))
 	})
 
+	It("renders nothing for a value that is not string-kinded", func() {
+		// The boundary fails closed. fmt.Sprint would have put this struct's own
+		// field on the operator's card.
+		Expect(string(renderCardText(struct{ Secret string }{Secret: "leak"}))).To(Equal(""))
+		Expect(string(renderCardText(42))).To(Equal(""))
+	})
+
 	It("keeps a multi-byte rune whole", func() {
 		Expect(string(renderCardText("café — naïve"))).To(Equal("café — naïve"))
 	})
