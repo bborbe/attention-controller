@@ -1,8 +1,13 @@
 ---
-status: approved
+status: completed
 spec: [010-bearer-token-auth]
+summary: Added the second bearer-token-gated business-API listener to main.go, configured by AttentionStoreListen/AttentionStoreToken, wired through the shared registerAttentionAPIRoutes inventory, with runner capacity raised to 5 and three new Ginkgo spec blocks.
+execution_id: attention-controller-bearer-auth-exec-038-spec-010-second-listener-wiring
+dark-factory-version: v0.196.0
 created: "2026-10-06T11:40:19Z"
 queued: "2026-10-06T12:06:55Z"
+started: "2026-10-06T12:12:43Z"
+completed: "2026-10-06T12:19:52Z"
 branch: dark-factory/bearer-token-auth
 ---
 

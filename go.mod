@@ -3,6 +3,7 @@ module github.com/bborbe/attention-controller
 go 1.27.1
 
 require (
+	github.com/bborbe/argument/v2 v2.13.2
 	github.com/bborbe/boltkv v1.15.5
 	github.com/bborbe/collection v1.20.27
 	github.com/bborbe/errors v1.6.1
@@ -28,7 +29,6 @@ require (
 
 require (
 	github.com/Masterminds/semver/v3 v3.5.0 // indirect
-	github.com/bborbe/argument/v2 v2.13.2 // indirect
 	github.com/bborbe/math v1.4.8 // indirect
 	github.com/bborbe/parse v1.11.4 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
