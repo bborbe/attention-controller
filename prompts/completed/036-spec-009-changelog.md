@@ -1,7 +1,13 @@
 ---
-status: draft
+status: completed
 spec: [009-incremental-provenance-reads]
+summary: 'Added an ## Unreleased section to CHANGELOG.md with two perf: bullets recording the incremental event-log byte-offset tail and the fsnotify-backed task-index watcher, and make precommit passed'
+execution_id: attention-controller-incremental-reads-exec-036-spec-009-changelog
+dark-factory-version: v0.196.0
 created: "2026-10-06T07:55:00Z"
+queued: "2026-10-06T08:57:54Z"
+started: "2026-10-06T08:57:56Z"
+completed: "2026-10-06T09:01:38Z"
 branch: dark-factory/incremental-provenance-reads
 ---
 
