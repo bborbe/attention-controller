@@ -90,7 +90,13 @@ var _ = Describe("expires_at bound", func() {
 		return &d
 	}
 
-	It("removes an item whose expires_at has passed", func() {
+	It("removes an item whose expires_at has passed, while its producer still reads live", func() {
+		// ⚠️ This spec IS the "live producer, past deadline" case the ordering
+		// claim needs, and it is the only shape that can pin it. `owner:` is the
+		// one model whose probe returns a constant `true`, so the producer reads
+		// live at the instant the item is removed — expiry is the sole cause. A
+		// `session:` ref cannot show this: with an empty registry it reads as
+		// not-live, and liveness would prune the item whether or not expiry did.
 		store, db := newStore()
 
 		item := push(store, pkg.LivenessRef("owner:operator-1"), at(-stdtime.Hour), "expired")
@@ -198,5 +204,71 @@ var _ = Describe("expires_at bound", func() {
 		Expect(err).To(MatchError(ContainSubstring("not found")))
 
 		Expect(db.Close()).To(BeNil())
+	})
+
+	It("narrows History on an expired open item, and only on that", func() {
+		store, db := newStore()
+
+		expiredOpen := push(
+			store, pkg.LivenessRef("owner:operator-1"), at(-stdtime.Hour), "history-expired-open",
+		)
+		resolved := push(
+			store, pkg.LivenessRef("owner:operator-1"), at(-stdtime.Hour), "history-answered",
+		)
+		_, err := store.Answer(ctx, resolved.ItemID, "attention-board", "", "", &pkg.Answer{
+			Kind:  pkg.OptionAnswerKind,
+			Value: "which way?",
+		}, nil, nil)
+		Expect(err).To(BeNil())
+
+		// ⚠️ History is read WITHOUT a board read first, deliberately: the board
+		// would delete the expired row, and this spec would then be asserting the
+		// prune rather than the filter.
+		items, err := store.History(ctx, 10, 0)
+		Expect(err).To(BeNil())
+
+		ids := make([]pkg.ItemID, 0, len(items))
+		for _, item := range items {
+			ids = append(ids, item.ItemID)
+		}
+		Expect(ids).NotTo(ContainElement(expiredOpen.ItemID),
+			"an expired OPEN item is neither what resolved nor what escalated")
+		Expect(ids).To(ContainElement(resolved.ItemID),
+			"an answered item's history is never rewritten, however stale its deadline")
+
+		Expect(db.Close()).To(BeNil())
+	})
+
+	It("refuses a zero expires_at at the push gate", func() {
+		// ⚠️ The request gate is the one that matters, and the reason is the
+		// dedup RE-push: `Item.Validate` runs only on the fresh-item path, while
+		// a re-push onto an existing open key goes through `updateExistingIfLive`,
+		// which never validates. A guard on `Item` alone therefore leaves the
+		// zero instant reachable — and a row carrying it is deleted on the next
+		// read, which is the "the store swallowed the card" symptom the guard
+		// exists to prevent.
+		// ⚠️ The Go ZERO time, not the Unix epoch. `IsZero` is true only for
+		// 0001-01-01T00:00:00Z, which is what a producer reaches by serialising an
+		// uninitialised field — the case the guard is for. 1970 is a real instant
+		// and is deliberately left alone: it is in the past, so it expires, and
+		// that is the producer's own choice rather than a missing value.
+		zero := libtime.NewDateTime(1, stdtime.January, 1, 0, 0, 0, 0, stdtime.UTC)
+		request := pkg.PushRequest{
+			ProducerID:      pkg.ProducerID("worker-1"),
+			ProducerKind:    pkg.SessionProducerKind,
+			LivenessRef:     pkg.LivenessRef("owner:operator-1"),
+			DedupKey:        pkg.DedupKey("zero-deadline"),
+			InterruptClass:  "pick",
+			Payload:         "which way?",
+			AnswerMechanism: pkg.MessageAnswerMechanism,
+			ExpiresAt:       &zero,
+		}
+
+		Expect(request.Validate(ctx)).NotTo(BeNil(),
+			"a zero instant is not a deadline — it expires on the very next read")
+
+		request.ExpiresAt = nil
+		Expect(request.Validate(ctx)).To(BeNil(),
+			"an absent deadline stays legal — persistence is the schema's default")
 	})
 })

@@ -88,7 +88,7 @@ var attentionOpenIndexBucketName = libkv.NewBucketName("attention-open-index")
 const openIndexMarkerKey = "!"
 
 // attentionHistoryIndexBucketName is the bucket `History` scans. It holds a copy
-// of every item — History never filters on state or liveness — keyed by
+// of every item — History never filters on state or liveness — its one narrowing is an expired OPEN item, which is neither what resolved nor what escalated — keyed by
 // `created_at|item_id` rather than by the item id, so a cursor reads it
 // NEWEST-FIRST and a page costs the page rather than the store.
 //
@@ -654,7 +654,7 @@ func (a *attentionStore) reconcileIndexes(
 		return err
 	}
 	// ⚠️ History is the one index whose predicate is constant — every item belongs
-	// whatever its state, because History never filters — and it is also the one
+	// whatever its state, because History narrows only on expiry — an expired OPEN item, which is neither what resolved nor what escalated — and it is also the one
 	// index whose key can MOVE, because that key is derived from CreatedAt.
 	//
 	// ⚠️ An earlier version of this comment claimed CreatedAt "is written once and
@@ -1260,7 +1260,8 @@ func (a *attentionStore) stillRemovable(
 // filters to open items and removes dead askers as a side effect, which makes
 // it blind to everything that has left the queue — and it cannot report a
 // history at all, because the act of reading would delete part of what it
-// reports. History filters on nothing and prunes nothing. An answered or closed
+// reports. History prunes nothing, and narrows on exactly one thing: an expired
+// OPEN item, which is neither what resolved nor what escalated. An answered or closed
 // item is exactly what a caller counting resolutions needs, and removing it
 // would rewrite the history the schema says is never rewritten.
 //

@@ -37,8 +37,10 @@ const (
 //
 // It exists for counting, not rendering: the read path returns only open items
 // and prunes dead askers, so it cannot say how many items a manager resolved
-// or the operator was asked about. This handler never filters and never
-// prunes, which is what makes a resolved-versus-escalated split countable.
+// or the operator was asked about. This handler never prunes, and narrows on
+// exactly one thing — an expired OPEN item, which is neither what resolved nor
+// what escalated — which is what makes a resolved-versus-escalated split
+// countable.
 //
 // ⚠️ Pagination bounds the RESPONSE, and it does not change what the endpoint
 // means: every row is still reachable, and a consumer that counts must walk the

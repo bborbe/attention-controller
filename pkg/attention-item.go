@@ -264,6 +264,11 @@ func (i Item) Validate(ctx context.Context) error {
 	}.Validate(ctx)
 }
 
+// validateExpiresAt applies the shared deadline rule to a stored item.
+func (i Item) validateExpiresAt(ctx context.Context) error {
+	return validateExpiresAt(ctx, i.ExpiresAt)
+}
+
 // validateExpiresAt refuses the zero instant. The field is optional, so absent
 // is legal; what is refused is a deadline that is not one — the value a producer
 // reaches by sending `0001-01-01T00:00:00Z`, or by serialising an
@@ -274,11 +279,20 @@ func (i Item) Validate(ctx context.Context) error {
 // next read", so a producer meaning "no deadline" would instead get one that
 // fires immediately — and the symptom would look like a store that swallowed
 // the card, which is the failure mode this whole area exists to remove.
-func (i Item) validateExpiresAt(ctx context.Context) error {
-	if i.ExpiresAt == nil {
+//
+// ⚠️ It is a package function rather than a method on either type because BOTH
+// write paths must refuse it, and shipping it on `Item` alone left the guard
+// half-armed. `Item.Validate` runs only from `newItem`, the fresh-item path; a
+// re-push against an existing open dedup key goes through
+// `updateExistingIfLive`, which never validates. So a producer re-pushing a zero
+// instant onto a key it already holds stored it unchecked — the exact symptom
+// this rule exists to prevent. `PushRequest.Validate` is the gate the HTTP push
+// path calls, so both types delegate here and neither can drift.
+func validateExpiresAt(ctx context.Context, expiresAt *libtime.DateTime) error {
+	if expiresAt == nil {
 		return nil
 	}
-	if i.ExpiresAt.Time().IsZero() {
+	if expiresAt.Time().IsZero() {
 		return errors.Wrapf(
 			ctx,
 			validation.Error,
