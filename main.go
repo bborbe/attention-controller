@@ -373,6 +373,12 @@ func (a *application) createHTTPServer(
 		// nothing here enforces that — so the exposure is the operator's
 		// setting, not a property of this code.
 		//
+		// ⚠️ `/cmdline` is the sharpest of them: `AttentionStoreToken` is
+		// declared `arg:"attention-store-token"` as well as env-backed, so a
+		// launchd plist that passes the bearer token as an argv flag publishes
+		// it to anyone who can reach this listener. That is the concrete reason
+		// to make the loopback gate below a real check rather than a note.
+		//
 		// Registration is deliberately unconditional, so a profile can be taken
 		// in place on the running service instead of requiring a hand-built
 		// second instance. If this binary is ever bound to a non-loopback

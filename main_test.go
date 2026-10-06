@@ -283,6 +283,21 @@ var _ = Describe("createAttentionStoreAPIHandler", func() {
 		httpHandler.ServeHTTP(rec, req)
 		Expect(rec.Code).To(Equal(http.StatusNotFound))
 	})
+
+	It("does not serve the pprof endpoints even to an authenticated caller", func() {
+		// ⚠️ The inverse of the board's own registration. `RegisterPprof` is
+		// mounted on the board router in `createHTTPServer`, NOT in
+		// `registerAttentionAPIRoutes`, and that one-line difference is the
+		// regression this placement is vulnerable to: moving the call into the
+		// shared route table would silently publish the profile endpoints on
+		// this cluster-reachable, bearer-gated listener. Asserted WITH the
+		// header for the same reason as the metrics probe above.
+		req := httptest.NewRequest(http.MethodGet, "/debug/pprof/", nil)
+		req.Header.Set("Authorization", "Bearer s3cret-token")
+		rec := httptest.NewRecorder()
+		httpHandler.ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusNotFound))
+	})
 })
 
 var _ = Describe("attention store token configuration", func() {
