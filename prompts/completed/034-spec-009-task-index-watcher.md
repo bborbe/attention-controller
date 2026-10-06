@@ -1,7 +1,13 @@
 ---
-status: draft
+status: completed
 spec: [009-incremental-provenance-reads]
+summary: Replaced the task index's two-second timer rebuild with an fsnotify watcher on the vault's task directory plus a five-minute backstop window.
+execution_id: attention-controller-incremental-reads-exec-034-spec-009-task-index-watcher
+dark-factory-version: v0.196.0
 created: "2026-10-06T07:45:00Z"
+queued: "2026-10-06T08:20:23Z"
+started: "2026-10-06T08:20:25Z"
+completed: "2026-10-06T08:44:05Z"
 branch: dark-factory/incremental-provenance-reads
 ---
 

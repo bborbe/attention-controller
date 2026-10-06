@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/bborbe/errors"
 	"github.com/bborbe/run"
@@ -1727,10 +1728,10 @@ var _ = Describe("TaskIndex refresh", func() {
 		clock.SetNow(clock.Now())
 	})
 
-	// advanceClock moves the injected clock past the two-second refresh window,
+	// advanceClock moves the injected clock past the five-minute backstop window,
 	// so the next Lookup rebuilds the index from the vault.
 	advanceClock := func() {
-		clock.SetNow(clock.Now().Add(libtime.Duration(3 * 1e9)))
+		clock.SetNow(clock.Now().Add(libtime.Duration(6 * time.Minute)))
 	}
 
 	It("resolves a task written after the index was built, once the window lapses", func() {

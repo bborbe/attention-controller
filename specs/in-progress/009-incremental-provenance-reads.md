@@ -1,8 +1,9 @@
 ---
-status: prompted
+status: verifying
 approved: "2026-10-06T07:13:03Z"
 generating: "2026-10-06T07:15:23Z"
 prompted: "2026-10-06T07:36:19Z"
+verifying: "2026-10-06T08:17:18Z"
 branch: dark-factory/incremental-provenance-reads
 ---
 

@@ -1148,14 +1148,18 @@ func hasProductionTouchingMarker(content []byte) bool {
 // ⚠️ It is an index rather than a lookup because the join is the expensive
 // half. The vault holds over 8,000 task files and each candidate must be read
 // to see which session it records, so the whole vault is read once and every
-// page load is a map hit. The index is rebuilt at most once per
-// taskIndexRefreshWindow, so a task file written while the process runs
-// resolves on a later lookup without a restart.
+// page load is a map hit. The index is kept current by a watcher on the task
+// directory, which calls Rebuild on every change, so a task file written while
+// the process runs resolves on a later lookup without a restart.
 type TaskIndex interface {
 	// Lookup returns the task recorded for sessionID. ok is false when the
 	// session anchors no task: an unnamed or unknown session, a vault that was
 	// not configured, or one that could not be read.
 	Lookup(sessionID string) (Task, bool)
+	// Rebuild re-reads the vault and installs the fresh index when the task walk
+	// read `25 Tasks/`. A cancelled rebuild or an unreadable `25 Tasks/` leaves
+	// the previous index serving.
+	Rebuild(ctx context.Context)
 }
 
 // Task is the vault task a session is anchored to, plus the rung above it.
@@ -1187,12 +1191,15 @@ type Task struct {
 	ProductionTouching bool
 }
 
-// taskIndexRefreshWindow is how long a built index is served before the vault is
-// read again. It bounds the re-read so a task file written while the process
-// runs resolves on a later lookup without a restart, while a page load stays a
-// map hit on the common path. The window is short enough that a task created
-// seconds ago is visible on the next board refresh.
-const taskIndexRefreshWindow = libtime.Duration(2 * time.Second)
+// taskIndexBackstopWindow is the safety net under the task-directory watcher.
+// The watcher is what keeps the index current: it rebuilds on every change to
+// `25 Tasks/`, so a task file written while the process runs resolves on a later
+// lookup without a restart. This window picks up a change a watcher event did
+// not deliver — a dropped inotify event, or a write that landed before the watch
+// was established — so the index converges rather than staying stale. It is
+// deliberately slow, because the common path is a map hit and a rebuild here is
+// the exception rather than the mechanism.
+const taskIndexBackstopWindow = libtime.Duration(5 * time.Minute)
 
 // NewTaskIndex builds the session -> task index from vaultDir's task files.
 //
@@ -1202,9 +1209,11 @@ const taskIndexRefreshWindow = libtime.Duration(2 * time.Second)
 // tasks and never an error. An empty vaultDir is the ordinary case for a host
 // with no vault configured, not a fault.
 //
-// The index is not frozen at construction: Lookup rebuilds it at most once per
-// taskIndexRefreshWindow, so a task file written after this call resolves
-// without a restart. The clock is injected so that window is testable.
+// The index is not frozen at construction: a watcher on the task directory calls
+// Rebuild on every change, and Lookup falls back to a rebuild once the serving
+// index is older than taskIndexBackstopWindow. Either way a task file written
+// after this call resolves without a restart. The clock is injected so the
+// backstop is testable.
 //
 // The goal rung is built before the task walk, because each indexed task
 // carries the goal it names and the topic that lists it: both maps must exist
@@ -1224,17 +1233,19 @@ func NewTaskIndex(
 	// preserve, and the fail-soft contract is that a cancelled or empty boot
 	// holds what it read and no more rather than failing. Every later rebuild is
 	// installed only when it completed AND actually read `25 Tasks/` — see
-	// refreshIfStale.
+	// Rebuild.
 	fresh, _ := index.build(ctx)
 	index.install(fresh)
 	return index
 }
 
 type taskIndex struct {
-	// ctx is the build context every rebuild runs under. Lookup carries no
-	// context of its own — the interface takes only a session id — so the
-	// construction context is retained and threaded into each rebuild, which is
-	// what lets a cancelled rebuild stop at the same points the boot build does.
+	// ctx is the build context a backstop rebuild runs under. Lookup carries no
+	// context of its own, so when it finds the serving index past
+	// taskIndexBackstopWindow it passes this construction context to Rebuild —
+	// the same context the boot build ran under, which is what lets a cancelled
+	// backstop rebuild stop at the same points the boot build does. A watcher
+	// rebuild passes the watcher's run context instead.
 	ctx context.Context
 	// vaultDir is the vault the index reads. It is fixed for the process's life;
 	// a rebuild re-reads the same directory rather than being re-pointed.
@@ -1324,20 +1335,21 @@ func (t *taskIndex) install(fresh *taskIndex) {
 	t.builtAt = t.currentDateTimeGetter.Now()
 }
 
-// refreshIfStale rebuilds the index when the serving one is older than
-// taskIndexRefreshWindow, so a task file written after construction resolves on
-// a later lookup without a restart.
+// Rebuild re-reads the vault and installs the fresh index when the task walk read
+// `25 Tasks/`. It is the explicit entry point the watcher drives, and the
+// backstop Lookup falls back to when the serving index outlives
+// taskIndexBackstopWindow.
 //
-// ⚠️ Single-flight, mirroring provenanceResolver.hostState: the staleness check
-// and the token claim happen in ONE critical section, so however many concurrent
-// lookups observe the window lapsed, exactly one rebuild runs. Lookup is reached
-// once per item from the resolver's render loop, so without the guard a lapsed
-// window would start one full-vault rebuild per concurrent render — over 8,000
-// task files read synchronously inside each request. A caller that finds a
-// rebuild already in flight is served the index currently installed and returns,
-// rather than queueing behind the read; the winner performs the rebuild
-// synchronously, so a single Lookup issued after the window lapses still
-// resolves a task created since the last build.
+// ⚠️ Single-flight, mirroring provenanceResolver.hostState: the token is claimed
+// in ONE critical section, so however many callers arrive at once — a burst of
+// watcher events, or a render loop whose backstop window has lapsed — exactly one
+// rebuild runs. Lookup is reached once per item from the resolver's render loop,
+// so without the guard a lapsed window would start one full-vault rebuild per
+// concurrent render — over 8,000 task files read synchronously inside each
+// request. A caller that finds a rebuild already in flight is served the index
+// currently installed and returns, rather than queueing behind the read; the
+// winner performs the rebuild synchronously, so a single Lookup issued after the
+// window lapses still resolves a task created since the last build.
 //
 // ⚠️ The rebuild happens OUTSIDE the lock and only the swap takes it. A rebuild
 // re-reads the whole vault and holding the write lock across it would block
@@ -1359,47 +1371,68 @@ func (t *taskIndex) install(fresh *taskIndex) {
 // the install on them would block a perfectly good task walk — including the
 // ordinary case of a vault that has no `24 Goals/` at all.
 //
-// ⚠️ A refused install does not advance builtAt, so the window stays lapsed and
-// the next Lookup re-attempts the rebuild. That is deliberate: a healthy vault
-// whose read failed transiently re-attempts, succeeds and re-advances builtAt,
-// so no separate retry loop is needed. The cost is that a permanently unreadable
-// `25 Tasks/` re-runs the goal and topic rungs on every lookup, since the build
-// reaches them before the task walk fails (only an absent `24 Goals/`
-// short-circuits the topic rung). If that cost ever matters, bound it by
-// advancing builtAt on refusal instead — but that trades the retry away, so it
-// is not done here.
-func (t *taskIndex) refreshIfStale() {
-	now := t.currentDateTimeGetter.Now()
+// ⚠️ A refused install does not advance builtAt, so the backstop window stays
+// lapsed and the next Lookup re-attempts the rebuild — and a refused watcher
+// rebuild leaves the next event free to re-attempt too. That is deliberate: a
+// healthy vault whose read failed transiently re-attempts, succeeds and
+// re-advances builtAt, so no separate retry loop is needed. The cost is that a
+// permanently unreadable `25 Tasks/` re-runs the goal and topic rungs on every
+// lookup, since the build reaches them before the task walk fails (only an
+// absent `24 Goals/` short-circuits the topic rung). If that cost ever matters,
+// bound it by advancing builtAt on refusal instead — but that trades the retry
+// away, so it is not done here.
+func (t *taskIndex) Rebuild(ctx context.Context) {
+	if token, ok := t.claimRebuild(false); ok {
+		t.rebuild(ctx, token)
+	}
+}
 
+// claimRebuild claims the single-flight token, reporting false when a rebuild is
+// already in flight or — when onlyIfLapsed is set — when the serving index is
+// still inside taskIndexBackstopWindow.
+//
+// ⚠️ The window check and the claim are in the SAME critical section, and that
+// atomicity is load-bearing for the backstop. A caller that observed a lapsed
+// window, was descheduled, and reached the claim only after the winner had
+// installed and cleared the token would otherwise start a second full-vault read
+// — exactly the amplification the token exists to prevent. Checking the window
+// inside the claim is what stops it: the winner's install advances builtAt, so
+// the straggler's (already read) clock reading no longer exceeds the window and
+// it declines. This is why the backstop cannot simply check the clock and then
+// call Rebuild, which has no window check of its own.
+func (t *taskIndex) claimRebuild(onlyIfLapsed bool) (chan struct{}, bool) {
+	now := t.currentDateTimeGetter.Now()
 	t.mu.Lock()
-	if now.Sub(t.builtAt) < taskIndexRefreshWindow {
-		t.mu.Unlock()
-		return
+	defer t.mu.Unlock()
+	if onlyIfLapsed && now.Sub(t.builtAt) < taskIndexBackstopWindow {
+		return nil, false
 	}
 	if t.refreshing != nil {
 		// A rebuild is already in flight. Serve the index currently installed
 		// instead of starting a second full-vault read alongside it.
-		t.mu.Unlock()
-		return
+		return nil, false
 	}
 	token := make(chan struct{})
 	t.refreshing = token
 	t.rebuilds++
-	t.mu.Unlock()
+	return token, true
+}
 
+// rebuild runs one rebuild under a token already claimed by claimRebuild.
+func (t *taskIndex) rebuild(ctx context.Context, token chan struct{}) {
 	// Deferred rather than inlined after the build: a panic anywhere in the build
 	// must still clear the token, or the index stays pinned to a snapshot that
 	// will never be replaced.
 	defer t.finishRefresh(token)
 
-	fresh, tasksRead := t.build(t.ctx)
-	if t.ctx.Err() != nil {
-		glog.V(3).Infof("task index refresh cancelled, keeping previous index")
+	fresh, tasksRead := t.build(ctx)
+	if ctx.Err() != nil {
+		glog.V(3).Infof("task index rebuild cancelled, keeping previous index")
 		return
 	}
 	if !tasksRead {
 		glog.V(2).Infof(
-			"task index refresh could not read %s, keeping previous index",
+			"task index rebuild could not read %s, keeping previous index",
 			filepath.Join(t.vaultDir, taskDirName),
 		)
 		return
@@ -1431,7 +1464,7 @@ func (t *taskIndex) RebuildCount() int {
 // readTasks walks `<vault>/25 Tasks/` and indexes every task file that records
 // a session. It reports whether that directory was actually read: false when
 // either the listing or the os.Root handle could not be opened, which is the
-// signal a rebuild uses to refuse installing itself — see refreshIfStale.
+// signal a rebuild uses to refuse installing itself — see Rebuild.
 //
 // A directory that reads but holds no task file reports true: an empty vault is
 // a legal state, and an index that read it holds the honest answer rather than
@@ -1469,6 +1502,21 @@ func (t *taskIndex) readTasks(ctx context.Context, vaultDir string) bool {
 	return true
 }
 
+// rebuildIfBackstopLapsed rebuilds the index when the serving one is older than
+// taskIndexBackstopWindow, so a task file written after construction resolves on
+// a later lookup even when no watcher event delivered it.
+//
+// ⚠️ The window check rides the claim rather than preceding it — see
+// claimRebuild. Checking the clock here and then calling Rebuild would let a
+// lookup that was descheduled between the two start a second full-vault read
+// after the winner had already finished, which is the amplification the token
+// exists to prevent.
+func (t *taskIndex) rebuildIfBackstopLapsed() {
+	if token, ok := t.claimRebuild(true); ok {
+		t.rebuild(t.ctx, token)
+	}
+}
+
 // Lookup returns the task recorded for sessionID.
 //
 // An unknown session is an ordinary miss, and an empty sessionID is a miss
@@ -1476,14 +1524,14 @@ func (t *taskIndex) readTasks(ctx context.Context, vaultDir string) bool {
 // match.
 //
 // ⚠️ The common path is a map hit. The vault is re-read only when the serving
-// index is older than taskIndexRefreshWindow, so a task file written after
-// construction resolves on a later lookup without re-reading the vault on every
-// call.
+// index is older than taskIndexBackstopWindow — the safety net under the watcher
+// that keeps the index current — so a task file written after construction
+// resolves on a later lookup without re-reading the vault on every call.
 func (t *taskIndex) Lookup(sessionID string) (Task, bool) {
 	if t == nil {
 		return Task{}, false
 	}
-	t.refreshIfStale()
+	t.rebuildIfBackstopLapsed()
 	t.mu.RLock()
 	entry, ok := t.bySession[sessionID]
 	t.mu.RUnlock()
