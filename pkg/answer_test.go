@@ -306,6 +306,46 @@ var _ = Describe("Board answers", func() {
 			Expect(got.ResolvedBy).To(Equal("session-a"))
 		})
 
+		It("does not let the arm's write overwrite the operator's verdict", func() {
+			item, err := store.Push(ctx, permissionRequest())
+			Expect(err).To(BeNil())
+
+			// The operator denies on the board.
+			_, err = store.Answer(
+				ctx, item.ItemID, "attention-board", "", pkg.DenyDecision, nil, nil, nil,
+			)
+			Expect(err).To(BeNil())
+
+			// The arm attaches the resolver and carries NO decision — the field is
+			// optional on the request body, so this is a shape the endpoint accepts.
+			// It must not erase the denial.
+			arm, err := store.Answer(
+				ctx, item.ItemID, "attention-answer.py", "session-a", "", nil, nil, nil,
+			)
+			Expect(err).To(BeNil())
+			Expect(arm.ResolvedBy).To(Equal("session-a"))
+			Expect(arm.Decision).To(Equal(pkg.DenyDecision))
+
+			// Nor may a later arm write flip it: the verdict on a permission item
+			// is the operator's, and the arm's write exists to attach the resolver.
+			flipped, err := store.Answer(
+				ctx,
+				item.ItemID,
+				"attention-answer.py",
+				"session-b",
+				pkg.AllowDecision,
+				nil,
+				nil,
+				nil,
+			)
+			Expect(err).To(BeNil())
+			Expect(flipped.Decision).To(Equal(pkg.DenyDecision))
+
+			got, err := store.Get(ctx, item.ItemID)
+			Expect(err).To(BeNil())
+			Expect(got.Decision).To(Equal(pkg.DenyDecision))
+		})
+
 		It("still refuses a second non-arm answer on a permission item", func() {
 			item, err := store.Push(ctx, permissionRequest())
 			Expect(err).To(BeNil())

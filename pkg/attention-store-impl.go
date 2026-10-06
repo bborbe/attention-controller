@@ -1496,7 +1496,18 @@ func (a *attentionStore) Answer(
 		// Stamped from the caller's declaration for the same reason, and never
 		// derived either: the arm is not a decision, so an empty decision stays
 		// empty rather than being inferred from the arm that supplied it.
-		item.Decision = decision
+		//
+		// ⚠️ A verdict already recorded on a `permission` item is the OPERATOR's
+		// and is not overwritten by the arm's second write. That write exists to
+		// attach the resolver the release path reads, and `decision` is optional
+		// on the request body — so without this guard an arm POSTing only
+		// `resolved_by` erased the operator's denial, and an arm POSTing the
+		// opposite verdict flipped an authorization gate's `deny` to `allow`.
+		// Every other path reaching here has an open item, whose Decision is
+		// empty, so the caller's value is taken exactly as before.
+		if item.Decision == "" {
+			item.Decision = decision
+		}
 		// The operator's actual answer, stamped from the caller for the same
 		// reason again: the arm is not an answer either, so a nil answer stays
 		// nil rather than being backfilled from the arm or the decision. It rides
