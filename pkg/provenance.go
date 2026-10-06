@@ -317,11 +317,21 @@ type hostState struct {
 // page, the jump, and every connected stream — queued behind it, while
 // /healthz and the API stayed fast because those never call Resolve.
 //
-// Single-flight is kept by the refreshing token instead: the first caller past
-// the window refreshes, and any caller arriving while it runs is served the
-// last good snapshot rather than queueing behind a subprocess. Only a cold
-// start — no snapshot to serve — lets more than one caller refresh, and that is
-// bounded by paneListingTimeout rather than by luck.
+// Single-flight is kept by the refreshing token instead, and the request path
+// never waits on the refresh at all: a caller past the window starts one
+// BEHIND itself, serves the snapshot already in hand, and returns. Only a cold
+// start — no snapshot to serve — reads synchronously, and that path is bounded
+// by paneListingTimeout rather than by luck.
+//
+// ⚠️ The price of that is staleness: a caller past the window is served a
+// snapshot up to one refresh cycle old, where the previous shape served it a
+// freshly-read one at the cost of the subprocess. Measured on the deployed
+// service, that cost was the whole page: a board page loaded after a quiet
+// period — always past the window — took a median 235 ms against 23 ms when
+// the snapshot was fresh, because it waited on `wezterm cli list` before it
+// could render. A pane listing a second or two old is better than a stalled
+// request, which is the trade the stale-serve branch already made for the
+// concurrent case.
 //
 // ⚠️ The per-producer event-log reads are deliberately NOT cached here. Those
 // describe individual items and change as items are posted, so a newly pushed
@@ -331,23 +341,52 @@ func (r *provenanceResolver) hostState(ctx context.Context) hostState {
 	now := r.currentDateTimeGetter.Now()
 
 	r.mu.Lock()
-	if r.cached != nil && now.Sub(r.cachedAt) < provenanceCacheWindow {
+	if r.cached != nil {
 		state := *r.cached
+		if now.Sub(r.cachedAt) >= provenanceCacheWindow && r.refreshing == nil {
+			// Past the window and nothing is in flight. Start a refresh BEHIND
+			// this request and serve what is already in hand; the caller never
+			// waits on it. This is the path a page loaded after a quiet period
+			// always takes, and it is the one the measured medians above are
+			// about.
+			//
+			// ⚠️ context.WithoutCancel, never ctx. The ctx handed in is the HTTP
+			// request's and is cancelled the moment the response is written,
+			// which is before a background refresh finishes — passing it through
+			// would cancel every refresh the page path starts. WithoutCancel
+			// keeps the values and drops the cancellation, and the read stays
+			// bounded by paneListingTimeout, which paneLister.List applies
+			// itself.
+			//
+			// ⚠️ Started only when r.refreshing == nil. That is what stops one
+			// stale window multiplying into one subprocess per caller — the
+			// property the refreshing token's own comment exists to protect, and
+			// the property the "reads the pane listing once for a whole page"
+			// spec depends on.
+			token := make(chan struct{})
+			r.refreshing = token
+			go r.refresh(context.WithoutCancel(ctx), token)
+		}
 		r.mu.Unlock()
 		return state
 	}
-	if r.refreshing != nil && r.cached != nil {
-		// A refresh is already running. Serve the last good snapshot instead of
-		// queueing behind a subprocess: a pane listing a second or two old is
-		// always better than a stalled request.
-		state := *r.cached
-		r.mu.Unlock()
-		return state
-	}
+
+	// Cold start: there is nothing to serve, so this path stays blocking and
+	// reads the snapshot itself. Every concurrent caller falls through here,
+	// which is the bounded exposure the refreshing field's comment records.
 	token := make(chan struct{})
 	r.refreshing = token
 	r.mu.Unlock()
 
+	// ⚠️ The plain ctx here, not WithoutCancel: this caller is waiting for the
+	// read, so its cancellation must end it.
+	return r.refresh(ctx, token)
+}
+
+// refresh reads one host snapshot and publishes it, clearing the single-flight
+// token on the way out whichever way it exits. It returns what it read so the
+// cold-start path can serve the same value without a second read.
+func (r *provenanceResolver) refresh(ctx context.Context, token chan struct{}) hostState {
 	// Deferred rather than inlined after the read: a panic in any of the three
 	// readers must still clear the token, or the resolver stays pinned to a
 	// snapshot that will never be replaced.
@@ -356,13 +395,13 @@ func (r *provenanceResolver) hostState(ctx context.Context) hostState {
 	state := r.readHostState(ctx)
 	r.mu.Lock()
 	r.cached = &state
-	// ⚠️ Stamped at publication, not at entry. `now` was read before the refresh,
-	// and a refresh can now take up to paneListingTimeout — so stamping it there
-	// would publish a snapshot already older than provenanceCacheWindow and the
-	// next sequential caller would refresh again for another full bound, leaving
-	// the cache giving zero relief in exactly the case it exists for. The window
-	// is measured from when the snapshot became available, which is the only
-	// reading that makes it a window.
+	// ⚠️ Stamped at publication, not at entry. The clock was read before the
+	// refresh, and a refresh can take up to paneListingTimeout — so stamping it
+	// there would publish a snapshot already older than provenanceCacheWindow
+	// and the next sequential caller would refresh again for another full bound,
+	// leaving the cache giving zero relief in exactly the case it exists for.
+	// The window is measured from when the snapshot became available, which is
+	// the only reading that makes it a window.
 	//
 	// ⚠️ It bounds the STAMP, not the content. A refresh that took the full
 	// paneListingTimeout is stamped at publication but began reading a bound

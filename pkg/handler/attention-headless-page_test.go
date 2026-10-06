@@ -337,18 +337,34 @@ var _ = Describe("the Allow / Deny pair on the served page", func() {
 			// read at render time, but it is served from that cache inside the
 			// window, so without this the second load would legitimately still see
 			// the pre-change ledger.
+			//
+			// ⚠️ And past the window the load serves the snapshot it already holds
+			// and refreshes BEHIND the request, so the control does not appear on
+			// this load either — it appears on a later one, once the background
+			// refresh has published. The stale load is asserted directly, and the
+			// control is asserted with Eventually over further loads.
 			writeSpawn("session-late", "headless")
 			clock.SetNow(clock.Now().Add(libtime.Duration(3 * 1e9)))
-			second := rowOf(get(page).Body.String(), item.ItemID)
-			Expect(second).To(ContainSubstring(item.Payload.String()))
-			Expect(second).To(ContainSubstring(`data-decision="allow"`))
+			stale := rowOf(get(page).Body.String(), item.ItemID)
+			// Positive control: the card rendered, so the zero below is a withheld
+			// control rather than a dropped row.
+			Expect(stale).To(ContainSubstring(item.Payload.String()))
+			Expect(strings.Count(stale, `data-decision=`)).To(Equal(0))
 
-			// And disappears again: the control is gone on the third load.
+			Eventually(func() string {
+				return rowOf(get(page).Body.String(), item.ItemID)
+			}, "2s").Should(ContainSubstring(`data-decision="allow"`))
+
+			// And disappears again: past the next window the load still serves the
+			// snapshot holding the control and refreshes behind it, so the control
+			// is gone on a later load rather than on that one.
 			Expect(os.Remove(filepath.Join(spawnDir, "session-late.json"))).To(BeNil())
 			clock.SetNow(clock.Now().Add(libtime.Duration(3 * 1e9)))
-			third := rowOf(get(page).Body.String(), item.ItemID)
-			Expect(third).To(ContainSubstring(item.Payload.String()))
-			Expect(strings.Count(third, `data-decision=`)).To(Equal(0))
+			Eventually(func() bool {
+				row := rowOf(get(page).Body.String(), item.ItemID)
+				return strings.Contains(row, item.Payload.String()) &&
+					strings.Count(row, `data-decision=`) == 0
+			}, "2s").Should(BeTrue())
 		},
 	)
 
