@@ -36,7 +36,7 @@ The board's provenance resolution is served from in-memory state that a filesyst
 - The event logs are written by hooks outside this repo and are append-only in practice; the controller only ever reads them. The tail therefore treats "the file shrank below the cursor" as the truncation signal rather than assuming it cannot happen.
 - A producer's log is a sequence of complete JSON lines; the last line may be torn mid-append while a render reads it.
 - `github.com/fsnotify/fsnotify` is acceptable as a new direct dependency — the repo has none today.
-- The vault task directory is the only input to the task index, so watching that one directory covers every change the index resolves.
+- The task index's inputs are the vault's `25 Tasks/`, `24 Goals/` and `23 Topics/`. Only `25 Tasks/` is watched: a change under it triggers a rebuild that re-reads all three rungs, so a task edit always converges immediately, while a change to `24 Goals/` or `23 Topics/` alone is picked up by the five-minute backstop rather than at once.
 - Watcher events can be missed (queue overflow, a directory replaced under the watch), so a slow safety-net rescan is required for correctness rather than as an optimisation.
 
 ## Acceptance Criteria

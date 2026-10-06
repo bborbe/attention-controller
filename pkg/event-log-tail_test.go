@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/bborbe/errors"
 	"github.com/bborbe/run"
 	libtime "github.com/bborbe/time"
 	. "github.com/onsi/ginkgo/v2"
@@ -43,6 +44,13 @@ type countingEventLogReader struct {
 	inner     pkg.EventLogReader
 	reads     int
 	bytesRead int
+
+	// readErr, when set, is returned by ReadFrom instead of reading the file.
+	// The read-error branch is driven through this seam rather than with a
+	// mode-000 file: a permission bit is not enforced when the suite runs as
+	// root, which is the same reason the task-index specs remove the directory
+	// instead of chmod'ing it.
+	readErr error
 }
 
 // Size delegates to the real reader without counting — a stat is not a read.
@@ -57,6 +65,9 @@ func (c *countingEventLogReader) ReadFrom(
 	offset int64,
 ) ([]byte, error) {
 	c.reads++
+	if c.readErr != nil {
+		return nil, c.readErr
+	}
 	data, err := c.inner.ReadFrom(ctx, producerID, offset)
 	c.bytesRead += len(data)
 	return data, err
@@ -292,18 +303,19 @@ var _ = Describe("Event log incremental read", func() {
 	})
 
 	// ⚠️ The only spec that drives ReadFrom's error branch rather than its
-	// absent-log branch: the log exists but cannot be read, so the render must
-	// fail soft — resolve nothing, neither panic nor return an error.
+	// absent-log branch: the log exists and stats fine, but reading it fails, so
+	// the render must fail soft — resolve nothing, neither panic nor return an
+	// error. The failure is injected through the reader rather than produced
+	// with a mode-000 file: a permission bit is not enforced when the suite runs
+	// as root, so a chmod-based spec would pass vacuously there.
 	It("fails soft when the event log cannot be read", func() {
 		writeEvents("producer-e", eventLine("key-e", "producer-e", "burn", "/w/e", "", "5"))
-		path := filepath.Join(stateDir, "producer-e.events.jsonl")
-		Expect(os.Chmod(path, 0o000)).To(BeNil())
-		DeferCleanup(func() { Expect(os.Chmod(path, 0o600)).To(BeNil()) })
+		counting.readErr = errors.New(ctx, "injected read failure")
 
 		items := pkg.Items{item("item-e", "producer-e", "key-e")}
 		Expect(func() { resolver.Resolve(ctx, items) }).NotTo(Panic())
-		// ⚠️ The stat still succeeds on a mode-000 file, so the read is
-		// attempted and its error is what fails soft — not the absent-log path.
+		// ⚠️ The stat still succeeds, so the read is attempted and its error is
+		// what fails soft — not the absent-log path.
 		Expect(counting.reads).To(Equal(1),
 			"the unreadable log must be read and its error handled, not skipped as absent")
 		Expect(resolver.Resolve(ctx, items)[pkg.ItemID("item-e")].Host).To(BeEmpty(),
@@ -381,5 +393,16 @@ var _ = Describe("Event log incremental read", func() {
 
 		Expect(run.CancelOnFirstErrorWait(ctx, funcs...)).To(BeNil())
 		Expect(resolver.Resolve(ctx, items)[pkg.ItemID("item-race")].Host).To(Equal("burn"))
+
+		// ⚠️ The boundary the freshness guarantee is really about, and the half
+		// this spec used to leave unpinned: the append raced renders that had
+		// already started. Whichever order the two occurred in, the appended line
+		// must be visible on the NEXT render — the offset advances by READING the
+		// file, never by waiting for a notification, so a render that began before
+		// the append cannot leave the line stranded behind a stale offset.
+		Expect(resolver.Resolve(ctx, pkg.Items{
+			item("item-race-2", "producer-race", "key-race-2"),
+		})[pkg.ItemID("item-race-2")].Host).To(Equal("burn"),
+			"a line appended during a concurrent render must resolve on the next render")
 	})
 })

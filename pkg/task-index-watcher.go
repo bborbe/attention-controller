@@ -67,11 +67,12 @@ type taskIndexWatcher struct {
 // ⚠️ The watcher is closed by defer, so a cancelled context leaves no inotify
 // watch behind — the watch lives and dies with the service's runner.
 //
-// ⚠️ There is deliberately no debounce or timer: one event rebuilds once. Task
-// files are written occasionally rather than in bursts, and the rebuild is
-// single-flight anyway, so a debounce would add a delay to the common case to
-// smooth a case that does not occur. The backstop bounds whatever a dropped
-// event leaves behind.
+// ⚠️ There is deliberately no debounce or timer, but every event already queued
+// is drained before a single rebuild. A rebuild reads the whole vault — 25
+// Tasks/, 24 Goals/ and 23 Topics/ — so rebuilding once per event turns a burst
+// into one full-vault read per file. A timer would add a delay to the common
+// single-file case to smooth a case the drain already handles. The backstop
+// bounds whatever a dropped event leaves behind.
 func (w *taskIndexWatcher) Run(ctx context.Context) error {
 	if w.vaultDir == "" {
 		return nil
@@ -103,6 +104,19 @@ func (w *taskIndexWatcher) Run(ctx context.Context) error {
 				return nil
 			}
 			glog.V(3).Infof("vault tasks dir changed: %s", event.Name)
+			// ⚠️ Drain the events already queued before rebuilding. One rebuild
+			// reads the whole vault (25 Tasks/, 24 Goals/ and 23 Topics/), so
+			// rebuilding once per event turns a burst — an obsidian-git
+			// autocommit, a `git checkout` — into one full-vault read per file.
+			// That is the pathology this change exists to remove, and it would be
+			// a regression against the two-second window it replaced. One rebuild
+			// after the drain observes every change the burst made; a change that
+			// lands mid-rebuild stays queued for the next pass.
+			for len(watcher.Events) > 0 {
+				if _, ok := <-watcher.Events; !ok {
+					return nil
+				}
+			}
 			w.index.Rebuild(ctx)
 		case watchErr, ok := <-watcher.Errors:
 			if !ok {
