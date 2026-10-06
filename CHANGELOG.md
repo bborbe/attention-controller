@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.41.1
 
 - fix: pass `--no-auto-start` to `wezterm cli list` and `activate-pane`, so a WezTerm GUI whose socket file vanished no longer makes every pane listing spawn a stray `wezterm-mux-server` that answers as the pane source and disables every jump button
 
