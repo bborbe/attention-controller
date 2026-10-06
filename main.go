@@ -358,6 +358,16 @@ func (a *application) createHTTPServer(
 		buildIdentity := buildidentity.Read()
 
 		router := mux.NewRouter()
+		// pprof is mounted first, ahead of every business route. Gorilla mux
+		// matches in registration order and these are PathPrefix routes: the `/`
+		// page route below is an exact Path and so would not shadow them, but
+		// registering the debug block first removes the question rather than
+		// relying on that distinction holding as routes are added.
+		//
+		// ⚠️ It serves `a.Listen`, which is loopback — the same exposure as the
+		// board itself. It is mounted so a profile can be taken in place, on the
+		// running service, instead of requiring a hand-built second instance.
+		libhttp.RegisterPprof(router)
 		registerAdminRoutes(ctx, router, db, cancel, sentryClient)
 		// The Jump button's target: a path on this board, answered in-process.
 		// Registered ahead of the page's own route, and GET/HEAD only, because a
