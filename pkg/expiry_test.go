@@ -14,6 +14,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/bborbe/attention-controller/mocks"
 	"github.com/bborbe/attention-controller/pkg"
 )
 
@@ -48,17 +49,21 @@ var _ = Describe("expires_at bound", func() {
 		ctx = context.Background()
 	})
 
-	newStore := func() (pkg.AttentionStore, libkv.DB) {
+	newStoreWith := func(checker pkg.SessionLivenessChecker) (pkg.AttentionStore, libkv.DB) {
 		db, err := libboltkv.OpenTemp(ctx)
 		Expect(err).To(BeNil())
 		store := pkg.NewAttentionStore(
 			db,
 			pkg.NewItemIDGenerator(),
-			pkg.NewSessionLivenessChecker(GinkgoT().TempDir()),
+			checker,
 			libtime.NewCurrentDateTime(),
 			libtime.Duration(15*60*1e9),
 		)
 		return store, db
+	}
+
+	newStore := func() (pkg.AttentionStore, libkv.DB) {
+		return newStoreWith(pkg.NewSessionLivenessChecker(GinkgoT().TempDir()))
 	}
 
 	// push posts one open ask and returns it, so a spec can assert on the row
@@ -270,5 +275,83 @@ var _ = Describe("expires_at bound", func() {
 		request.ExpiresAt = nil
 		Expect(request.Validate(ctx)).To(BeNil(),
 			"an absent deadline stays legal — persistence is the schema's default")
+	})
+
+	It("removes an item whose producer reads genuinely live", func() {
+		// ⚠️ The case the classifyForRead ordering actually changes, and the one no
+		// `owner:` spec can show. Before this change a LIVE producer's item was
+		// kept whatever its deadline; now the deadline removes it. A refactor that
+		// moved the expiry branch back below the liveness probe would still pass
+		// every other spec in this file — `owner:` returns a constant `true`, and
+		// `session:` against an empty registry reads as not-live — so this is the
+		// spec that pins the ordering rather than merely the outcome.
+		checker := &mocks.SessionLivenessChecker{}
+		checker.IsLiveReturns(true)
+		store, db := newStoreWith(checker)
+
+		item := push(store, pkg.LivenessRef("session:worker-1"), at(-stdtime.Hour), "live-expired")
+
+		items, err := store.ReadBoard(ctx)
+		Expect(err).To(BeNil())
+		Expect(items).To(BeEmpty(), "a live producer does not save an item past its deadline")
+
+		_, err = store.Get(ctx, item.ItemID)
+		Expect(err).To(MatchError(ContainSubstring("not found")))
+
+		Expect(db.Close()).To(BeNil())
+	})
+
+	It("lets a re-push re-arm the deadline the next read sees", func() {
+		// ⚠️ The reachable half of what `stillRemovable`'s expiry re-check exists
+		// for. `updateExistingIfLive` rewrites `ExpiresAt` in place on a re-push, so
+		// the deadline the classification saw is not necessarily the one standing
+		// when the prune runs — the verdict must be re-derived rather than carried.
+		// ⚠️ The INTERLEAVED case — a re-push landing between the classification and
+		// the prune transaction — is a race this single-threaded suite cannot
+		// reach. This spec pins the property that makes the re-check correct rather
+		// than the race it closes.
+		store, db := newStore()
+
+		item := push(store, pkg.LivenessRef("owner:operator-1"), at(-stdtime.Hour), "re-armed")
+
+		// No read in between, so nothing has classified — let alone deleted — the
+		// open row this re-push updates.
+		rearmed := push(store, pkg.LivenessRef("owner:operator-1"), at(stdtime.Hour), "re-armed")
+		Expect(rearmed.ItemID).To(Equal(item.ItemID),
+			"a re-push onto an open dedup key updates that row in place")
+
+		items, err := store.ReadBoard(ctx)
+		Expect(err).To(BeNil())
+		Expect(items).To(HaveLen(1), "the re-armed deadline is the one that decides")
+
+		got, err := store.Get(ctx, item.ItemID)
+		Expect(err).To(BeNil())
+		Expect(got.ExpiresAt).NotTo(BeNil())
+
+		Expect(db.Close()).To(BeNil())
+	})
+
+	It("refuses a zero expires_at end to end through Push", func() {
+		// ⚠️ Asserted through the STORE, not on the request type. The rule's stated
+		// purpose is covering the path that reaches `updateExistingIfLive`, and a
+		// unit assertion on `PushRequest.Validate` never touches it — the store
+		// must defend itself rather than rely on its caller having validated.
+		store, db := newStore()
+
+		zero := libtime.NewDateTime(1, stdtime.January, 1, 0, 0, 0, 0, stdtime.UTC)
+		_, err := store.Push(ctx, pkg.PushRequest{
+			ProducerID:      pkg.ProducerID("worker-1"),
+			ProducerKind:    pkg.SessionProducerKind,
+			LivenessRef:     pkg.LivenessRef("owner:operator-1"),
+			DedupKey:        pkg.DedupKey("zero-through-push"),
+			InterruptClass:  "pick",
+			Payload:         "which way?",
+			AnswerMechanism: pkg.MessageAnswerMechanism,
+			ExpiresAt:       &zero,
+		})
+		Expect(err).NotTo(BeNil(),
+			"the store must defend itself, not rely on its caller having validated")
+
+		Expect(db.Close()).To(BeNil())
 	})
 })

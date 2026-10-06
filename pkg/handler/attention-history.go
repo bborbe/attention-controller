@@ -42,9 +42,14 @@ const (
 // what escalated — which is what makes a resolved-versus-escalated split
 // countable.
 //
-// ⚠️ Pagination bounds the RESPONSE, and it does not change what the endpoint
-// means: every row is still reachable, and a consumer that counts must walk the
-// pages rather than read one. The response stays a bare JSON array — the REST
+// ⚠️ Pagination bounds the RESPONSE, and a consumer that counts must walk the
+// pages rather than read one — but ⚠️ **the walk is not stable while an item is
+// expiring.** The expiry narrowing is a wall-clock predicate, so a row can stop
+// being reachable partway through a paginated walk and every later row shifts
+// one position earlier; a slow multi-page walk can drop a row at no offset at
+// all. A consumer counting resolutions must walk faster than the expiry horizon
+// or pin a cutoff. That is the price of the narrowing, and it is stated here
+// rather than left to be discovered as a wrong count. The response stays a bare JSON array — the REST
 // guide records that a pagination envelope is not yet standardized and should not
 // be invented silently here, and three existing consumers parse the array.
 func NewAttentionHistoryHandler(store pkg.AttentionStore) http.Handler {

@@ -168,6 +168,16 @@ type attentionStore struct {
 }
 
 func (a *attentionStore) Push(ctx context.Context, request PushRequest) (*Item, error) {
+	// ⚠️ The store validates its own request rather than trusting the caller.
+	// The HTTP handler does call `PushRequest.Validate` today, so nothing is
+	// unguarded in production — but `Push` is an exported interface method, and a
+	// guard whose completeness rests on every future caller remembering is the
+	// half-armed shape this rule was added to close. `updateExistingIfLive`
+	// rewrites `ExpiresAt` in place with no validation of its own, so a dedup
+	// re-push is the path that needs it most, and it is reached from here.
+	if err := request.Validate(ctx); err != nil {
+		return nil, errors.Wrap(ctx, err, "validate push request failed")
+	}
 	var result *Item
 	err := a.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
 		updated, err := a.updateExistingIfLive(ctx, tx, request)
@@ -1168,9 +1178,13 @@ func (a *attentionStore) pruneDead(ctx context.Context, keys []string) error {
 	}
 	liveness := newReadSessionLiveness(a.sessionLivenessChecker)
 	liveness.resolveNow(ctx)
+	// ⚠️ One `now` for the whole batch, matching `read()`: every key in a single
+	// prune is judged against the same instant, so a deadline cannot fall between
+	// two keys of the same batch.
+	now := a.currentDateTimeGetter.Now()
 	err := a.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
 		for _, key := range keys {
-			remove, err := a.stillRemovable(ctx, tx, key, liveness)
+			remove, err := a.stillRemovable(ctx, tx, key, liveness, now)
 			if err != nil {
 				return err
 			}
@@ -1211,6 +1225,7 @@ func (a *attentionStore) stillRemovable(
 	tx libkv.Tx,
 	key string,
 	liveness sessionLiveness,
+	now libtime.DateTime,
 ) (bool, error) {
 	item, err := a.store.Get(ctx, tx, key)
 	if err != nil {
@@ -1239,7 +1254,7 @@ func (a *attentionStore) stillRemovable(
 	// its row survives — and the next dedup re-push of the same key resurrects
 	// it, because `updateExistingIfLive` matches the row that was never deleted.
 	// A board that hides a row is not a row that is gone.
-	if isExpired(item, a.currentDateTimeGetter.Now()) {
+	if isExpired(item, now) {
 		return true, nil
 	}
 	live, err := a.isProducerLiveWith(ctx, item, liveness)
@@ -1324,6 +1339,11 @@ func (a *attentionStore) collectHistoryPage(
 	}
 	it := bucket.IteratorReverse()
 	defer it.Close()
+	// ⚠️ One `now` for the whole walk, matching `read()`. History is a scan over
+	// the same field with the same straddle hazard, and it is the endpoint whose
+	// stated purpose is a stable count — a deadline crossed mid-walk would drop a
+	// row from a set the caller is counting.
+	now := a.currentDateTimeGetter.Now()
 	items := make(Items, 0)
 	skipped := 0
 	for it.Rewind(); it.Valid(); it.Next() {
@@ -1353,7 +1373,7 @@ func (a *attentionStore) collectHistoryPage(
 		// ⚠️ It also means the page is decoded before the offset is applied, where
 		// the offset used to skip without decoding at all. That cost is what buys
 		// the filter: expiry cannot be read off the index key.
-		if item.State == OpenState && isExpired(&item, a.currentDateTimeGetter.Now()) {
+		if item.State == OpenState && isExpired(&item, now) {
 			continue
 		}
 		if skipped < offset {
