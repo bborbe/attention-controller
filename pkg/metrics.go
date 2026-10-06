@@ -25,4 +25,12 @@ type Metrics interface {
 	// given number of rows, so the rows total is the render count multiplied
 	// by the board's size.
 	BoardRowsRenderedTotalCounterAdd(rows int)
+
+	// BoardPageRequestsTotalCounterInc records that one client asked for the
+	// board page. It is called from the per-client page path, so it moves once
+	// per request a client makes — which is exactly the reading
+	// BoardRendersTotalCounterInc cannot provide, because that one is
+	// incremented only inside the shared renderer and so does not move when a
+	// single client loads the page.
+	BoardPageRequestsTotalCounterInc()
 }

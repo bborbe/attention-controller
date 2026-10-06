@@ -373,7 +373,7 @@ func (a *application) createHTTPServer(
 		router.Path("/").
 			Methods(http.MethodGet, http.MethodHead).
 			Handler(factory.CreateAttentionPageHandler(
-				store, provenance, a.TTSURL != "", a.VaultDir, buildIdentity))
+				store, provenance, a.TTSURL != "", a.VaultDir, buildIdentity, boardMetrics))
 
 		// The board's live channel. It is registered here, ahead of the
 		// `/api/1.0/attention/{itemID}` route below, because gorilla mux matches

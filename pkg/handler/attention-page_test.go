@@ -18,9 +18,11 @@ import (
 	libtime "github.com/bborbe/time"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/bborbe/attention-controller/mocks"
 	"github.com/bborbe/attention-controller/pkg"
+	"github.com/bborbe/attention-controller/pkg/boardmetrics"
 	"github.com/bborbe/attention-controller/pkg/handler"
 )
 
@@ -31,6 +33,10 @@ var _ = Describe("AttentionPageHandler", func() {
 	var sessionLivenessChecker *mocks.SessionLivenessChecker
 	var provenance *mocks.ProvenanceResolver
 	var httpHandler http.Handler
+	// registry and metrics are hoisted so a spec can read the page-request
+	// counter back off the very registry the handler under test increments.
+	var registry *prometheus.Registry
+	var metrics pkg.Metrics
 	// vaultDir ends in a known name so the task link's expected href can be a
 	// hand-written literal. The directory itself need not exist: the handler only
 	// reads its base name, and the provenance is mocked.
@@ -69,12 +75,17 @@ var _ = Describe("AttentionPageHandler", func() {
 		// button — the fail-soft path, which is what a host with no fleet-jump
 		// server looks like. The button's own cases live in attention-jump_test.
 		vaultDir = filepath.Join(GinkgoT().TempDir(), "Personal")
+		// The real counters on a private registry, so the page-request spec below
+		// reads back the counter the handler under test actually incremented.
+		registry = prometheus.NewRegistry()
+		metrics = boardmetrics.NewMetrics(registry)
 		httpHandler = handler.NewAttentionPageHandler(
 			store,
 			provenance,
 			false,
 			vaultDir,
 			testBuildIdentity,
+			metrics,
 		)
 	})
 
@@ -181,6 +192,23 @@ var _ = Describe("AttentionPageHandler", func() {
 		Expect(
 			strings.Count(resp.Body.String(), `<p class="empty">Nothing needs attention.</p>`),
 		).To(Equal(1))
+	})
+
+	// ⚠️ Driven through the REAL handler with a real *http.Request and a real
+	// recorder, and read back off the registry the handler under test increments.
+	// Asserting that a mock's call count moved would not prove the handler
+	// increments on the request path — it would pass against a handler that
+	// incremented once at construction.
+	It("moves the page-request counter once per request through the real handler", func() {
+		first := httptest.NewRecorder()
+		httpHandler.ServeHTTP(first, httptest.NewRequest(http.MethodGet, "/", nil))
+		Expect(first.Code).To(Equal(http.StatusOK))
+		Expect(counterValue(registry, "attention_board_page_requests_total")).To(Equal(1.0))
+
+		second := httptest.NewRecorder()
+		httpHandler.ServeHTTP(second, httptest.NewRequest(http.MethodGet, "/", nil))
+		Expect(second.Code).To(Equal(http.StatusOK))
+		Expect(counterValue(registry, "attention_board_page_requests_total")).To(Equal(2.0))
 	})
 
 	It("escapes producer-supplied text instead of emitting it raw", func() {

@@ -13,7 +13,7 @@ import (
 )
 
 // NewMetrics creates the Prometheus-backed Metrics implementation and registers
-// both counters on the given registry.
+// its counters on the given registry.
 //
 // It panics if a collector of the same name is already registered there:
 // registration is a startup-time invariant, and a duplicate name means two
@@ -37,16 +37,22 @@ func NewMetrics(registry prometheus.Registerer) pkg.Metrics {
 		Name: "attention_board_rows_rendered_total",
 		Help: "Total number of board rows produced by the board's shared render path.",
 	})
-	registry.MustRegister(renders, rowsRendered)
+	pageRequests := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "attention_board_page_requests_total",
+		Help: "Total number of requests for the board page made by a client.",
+	})
+	registry.MustRegister(renders, rowsRendered, pageRequests)
 	return &boardMetrics{
 		renders:      renders,
 		rowsRendered: rowsRendered,
+		pageRequests: pageRequests,
 	}
 }
 
 type boardMetrics struct {
 	renders      prometheus.Counter
 	rowsRendered prometheus.Counter
+	pageRequests prometheus.Counter
 }
 
 // BoardRendersTotalCounterInc records that the shared renderer completed one
@@ -60,4 +66,10 @@ func (m *boardMetrics) BoardRendersTotalCounterInc() {
 func (m *boardMetrics) BoardRowsRenderedTotalCounterAdd(rows int) {
 	// prometheus.Counter.Add takes a float64, so the row count is converted.
 	m.rowsRendered.Add(float64(rows))
+}
+
+// BoardPageRequestsTotalCounterInc records that one client asked for the board
+// page.
+func (m *boardMetrics) BoardPageRequestsTotalCounterInc() {
+	m.pageRequests.Inc()
 }

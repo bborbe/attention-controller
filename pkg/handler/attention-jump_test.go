@@ -21,9 +21,11 @@ import (
 	"github.com/gorilla/mux"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/bborbe/attention-controller/mocks"
 	"github.com/bborbe/attention-controller/pkg"
+	"github.com/bborbe/attention-controller/pkg/boardmetrics"
 	"github.com/bborbe/attention-controller/pkg/handler"
 )
 
@@ -159,6 +161,7 @@ var _ = Describe("Attention jump handover", func() {
 				false,
 				"",
 				testBuildIdentity,
+				boardmetrics.NewMetrics(prometheus.NewRegistry()),
 			)
 		})
 

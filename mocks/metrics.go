@@ -8,6 +8,10 @@ import (
 )
 
 type Metrics struct {
+	BoardPageRequestsTotalCounterIncStub        func()
+	boardPageRequestsTotalCounterIncMutex       sync.RWMutex
+	boardPageRequestsTotalCounterIncArgsForCall []struct {
+	}
 	BoardRendersTotalCounterIncStub        func()
 	boardRendersTotalCounterIncMutex       sync.RWMutex
 	boardRendersTotalCounterIncArgsForCall []struct {
@@ -19,6 +23,30 @@ type Metrics struct {
 	}
 	invocations      map[string][][]interface{}
 	invocationsMutex sync.RWMutex
+}
+
+func (fake *Metrics) BoardPageRequestsTotalCounterInc() {
+	fake.boardPageRequestsTotalCounterIncMutex.Lock()
+	fake.boardPageRequestsTotalCounterIncArgsForCall = append(fake.boardPageRequestsTotalCounterIncArgsForCall, struct {
+	}{})
+	stub := fake.BoardPageRequestsTotalCounterIncStub
+	fake.recordInvocation("BoardPageRequestsTotalCounterInc", []interface{}{})
+	fake.boardPageRequestsTotalCounterIncMutex.Unlock()
+	if stub != nil {
+		fake.BoardPageRequestsTotalCounterIncStub()
+	}
+}
+
+func (fake *Metrics) BoardPageRequestsTotalCounterIncCallCount() int {
+	fake.boardPageRequestsTotalCounterIncMutex.RLock()
+	defer fake.boardPageRequestsTotalCounterIncMutex.RUnlock()
+	return len(fake.boardPageRequestsTotalCounterIncArgsForCall)
+}
+
+func (fake *Metrics) BoardPageRequestsTotalCounterIncCalls(stub func()) {
+	fake.boardPageRequestsTotalCounterIncMutex.Lock()
+	defer fake.boardPageRequestsTotalCounterIncMutex.Unlock()
+	fake.BoardPageRequestsTotalCounterIncStub = stub
 }
 
 func (fake *Metrics) BoardRendersTotalCounterInc() {

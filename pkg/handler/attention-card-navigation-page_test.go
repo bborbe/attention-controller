@@ -16,9 +16,11 @@ import (
 	libtime "github.com/bborbe/time"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/bborbe/attention-controller/mocks"
 	"github.com/bborbe/attention-controller/pkg"
+	"github.com/bborbe/attention-controller/pkg/boardmetrics"
 	"github.com/bborbe/attention-controller/pkg/handler"
 )
 
@@ -76,6 +78,7 @@ var _ = Describe("the card's navigation line on the served page", func() {
 			false,
 			vaultDir,
 			testBuildIdentity,
+			boardmetrics.NewMetrics(prometheus.NewRegistry()),
 		)
 	})
 
