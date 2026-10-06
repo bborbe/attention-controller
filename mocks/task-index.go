@@ -9,6 +9,12 @@ import (
 )
 
 type TaskIndex struct {
+	ApplyPathsStub        func(context.Context, []string)
+	applyPathsMutex       sync.RWMutex
+	applyPathsArgsForCall []struct {
+		arg1 context.Context
+		arg2 []string
+	}
 	LookupStub        func(string) (pkg.Task, bool)
 	lookupMutex       sync.RWMutex
 	lookupArgsForCall []struct {
@@ -22,13 +28,51 @@ type TaskIndex struct {
 		result1 pkg.Task
 		result2 bool
 	}
-	RebuildStub        func(context.Context)
-	rebuildMutex       sync.RWMutex
-	rebuildArgsForCall []struct {
+	ReconcileStub        func(context.Context)
+	reconcileMutex       sync.RWMutex
+	reconcileArgsForCall []struct {
 		arg1 context.Context
 	}
 	invocations      map[string][][]interface{}
 	invocationsMutex sync.RWMutex
+}
+
+func (fake *TaskIndex) ApplyPaths(arg1 context.Context, arg2 []string) {
+	var arg2Copy []string
+	if arg2 != nil {
+		arg2Copy = make([]string, len(arg2))
+		copy(arg2Copy, arg2)
+	}
+	fake.applyPathsMutex.Lock()
+	fake.applyPathsArgsForCall = append(fake.applyPathsArgsForCall, struct {
+		arg1 context.Context
+		arg2 []string
+	}{arg1, arg2Copy})
+	stub := fake.ApplyPathsStub
+	fake.recordInvocation("ApplyPaths", []interface{}{arg1, arg2Copy})
+	fake.applyPathsMutex.Unlock()
+	if stub != nil {
+		fake.ApplyPathsStub(arg1, arg2)
+	}
+}
+
+func (fake *TaskIndex) ApplyPathsCallCount() int {
+	fake.applyPathsMutex.RLock()
+	defer fake.applyPathsMutex.RUnlock()
+	return len(fake.applyPathsArgsForCall)
+}
+
+func (fake *TaskIndex) ApplyPathsCalls(stub func(context.Context, []string)) {
+	fake.applyPathsMutex.Lock()
+	defer fake.applyPathsMutex.Unlock()
+	fake.ApplyPathsStub = stub
+}
+
+func (fake *TaskIndex) ApplyPathsArgsForCall(i int) (context.Context, []string) {
+	fake.applyPathsMutex.RLock()
+	defer fake.applyPathsMutex.RUnlock()
+	argsForCall := fake.applyPathsArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2
 }
 
 func (fake *TaskIndex) Lookup(arg1 string) (pkg.Task, bool) {
@@ -95,35 +139,35 @@ func (fake *TaskIndex) LookupReturnsOnCall(i int, result1 pkg.Task, result2 bool
 	}{result1, result2}
 }
 
-func (fake *TaskIndex) Rebuild(arg1 context.Context) {
-	fake.rebuildMutex.Lock()
-	fake.rebuildArgsForCall = append(fake.rebuildArgsForCall, struct {
+func (fake *TaskIndex) Reconcile(arg1 context.Context) {
+	fake.reconcileMutex.Lock()
+	fake.reconcileArgsForCall = append(fake.reconcileArgsForCall, struct {
 		arg1 context.Context
 	}{arg1})
-	stub := fake.RebuildStub
-	fake.recordInvocation("Rebuild", []interface{}{arg1})
-	fake.rebuildMutex.Unlock()
+	stub := fake.ReconcileStub
+	fake.recordInvocation("Reconcile", []interface{}{arg1})
+	fake.reconcileMutex.Unlock()
 	if stub != nil {
-		fake.RebuildStub(arg1)
+		fake.ReconcileStub(arg1)
 	}
 }
 
-func (fake *TaskIndex) RebuildCallCount() int {
-	fake.rebuildMutex.RLock()
-	defer fake.rebuildMutex.RUnlock()
-	return len(fake.rebuildArgsForCall)
+func (fake *TaskIndex) ReconcileCallCount() int {
+	fake.reconcileMutex.RLock()
+	defer fake.reconcileMutex.RUnlock()
+	return len(fake.reconcileArgsForCall)
 }
 
-func (fake *TaskIndex) RebuildCalls(stub func(context.Context)) {
-	fake.rebuildMutex.Lock()
-	defer fake.rebuildMutex.Unlock()
-	fake.RebuildStub = stub
+func (fake *TaskIndex) ReconcileCalls(stub func(context.Context)) {
+	fake.reconcileMutex.Lock()
+	defer fake.reconcileMutex.Unlock()
+	fake.ReconcileStub = stub
 }
 
-func (fake *TaskIndex) RebuildArgsForCall(i int) context.Context {
-	fake.rebuildMutex.RLock()
-	defer fake.rebuildMutex.RUnlock()
-	argsForCall := fake.rebuildArgsForCall[i]
+func (fake *TaskIndex) ReconcileArgsForCall(i int) context.Context {
+	fake.reconcileMutex.RLock()
+	defer fake.reconcileMutex.RUnlock()
+	argsForCall := fake.reconcileArgsForCall[i]
 	return argsForCall.arg1
 }
 

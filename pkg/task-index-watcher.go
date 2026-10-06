@@ -7,24 +7,27 @@ package pkg
 import (
 	"context"
 	"path/filepath"
+	"time"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/golang/glog"
 )
 
 // TaskIndexWatcher keeps a TaskIndex current by watching the vault's task
-// directory and rebuilding on every change.
+// directory: it applies the files a change names, and reconciles on a slow
+// window for the changes no event delivered.
 //
 // ⚠️ It watches exactly ONE directory — `<vault>/25 Tasks/` — and adds nothing
 // else to the watch set. The index reads the goal and topic rungs too, but those
-// change rarely and the backstop covers them; widening the watch set would make
+// change rarely and the reconcile covers them; widening the watch set would make
 // the watcher's scope a thing that can drift away from the index it serves.
 type TaskIndexWatcher interface {
-	// Run watches the task directory until ctx is cancelled, rebuilding the
-	// index on every change. It returns nil when ctx is done, and also returns
-	// nil — rather than an error — when the watcher cannot be established at
-	// all, because a service that cannot watch its vault still serves and the
-	// index's backstop window keeps it converging.
+	// Run watches the task directory until ctx is cancelled, applying each
+	// change to the index and reconciling on taskIndexBackstopWindow. It returns
+	// nil when ctx is done, and also returns nil — rather than an error — when
+	// the watcher cannot be established at all, because a service that cannot
+	// watch its vault still serves and the index's backstop window keeps it
+	// converging.
 	Run(ctx context.Context) error
 }
 
@@ -56,7 +59,7 @@ type taskIndexWatcher struct {
 	vaultDir string
 }
 
-// Run watches `<vault>/25 Tasks/` and rebuilds the index on every change, until
+// Run watches `<vault>/25 Tasks/` and applies each change to the index, until
 // ctx is cancelled.
 //
 // ⚠️ Every failure here is fail-soft. A watcher that cannot be created or whose
@@ -67,12 +70,20 @@ type taskIndexWatcher struct {
 // ⚠️ The watcher is closed by defer, so a cancelled context leaves no inotify
 // watch behind — the watch lives and dies with the service's runner.
 //
-// ⚠️ There is deliberately no debounce or timer, but every event already queued
-// is drained before a single rebuild. A rebuild reads the whole vault — 25
-// Tasks/, 24 Goals/ and 23 Topics/ — so rebuilding once per event turns a burst
-// into one full-vault read per file. A timer would add a delay to the common
-// single-file case to smooth a case the drain already handles. The backstop
-// bounds whatever a dropped event leaves behind.
+// ⚠️ A change costs one file's bytes, not the vault's. The watcher hands
+// ApplyPaths the paths the event burst named, and that re-reads exactly those
+// files; the wholesale rebuild it replaced read 6,057 files and 61 MB to learn
+// the same fact, once per event. The burst is still drained first — a
+// `git checkout` or an obsidian-git autocommit names thousands of paths, and
+// applying them one event at a time would open the same file repeatedly — but
+// draining now coalesces the path list rather than the read.
+//
+// ⚠️ The ticker is the safety net, and it is the reason this loop has one at
+// all. ApplyPaths covers every change an event named; it cannot cover the event
+// that never arrived — a dropped inotify event, or a write that landed before
+// the watch was established. Reconcile covers exactly that case, at a directory
+// listing and one stat per entry rather than a read of every file, which is what
+// lets the net stay while the goal's "no timer-driven full vault rescan" holds.
 func (w *taskIndexWatcher) Run(ctx context.Context) error {
 	if w.vaultDir == "" {
 		return nil
@@ -93,10 +104,19 @@ func (w *taskIndexWatcher) Run(ctx context.Context) error {
 	}
 	glog.V(2).Infof("watching vault tasks dir %s", tasksDir)
 
+	// ⚠️ The window is the index's own backstop constant rather than a second
+	// one declared here: the watcher's safety net and Lookup's are the same
+	// window by design, and two constants that must agree is how they come not
+	// to. The conversion is libtime's nanosecond count to time's.
+	ticker := time.NewTicker(time.Duration(taskIndexBackstopWindow))
+	defer ticker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-ticker.C:
+			w.index.Reconcile(ctx)
 		case event, ok := <-watcher.Events:
 			if !ok {
 				// The watcher was closed underneath the loop; there is nothing
@@ -104,20 +124,11 @@ func (w *taskIndexWatcher) Run(ctx context.Context) error {
 				return nil
 			}
 			glog.V(3).Infof("vault tasks dir changed: %s", event.Name)
-			// ⚠️ Drain the events already queued before rebuilding. One rebuild
-			// reads the whole vault (25 Tasks/, 24 Goals/ and 23 Topics/), so
-			// rebuilding once per event turns a burst — an obsidian-git
-			// autocommit, a `git checkout` — into one full-vault read per file.
-			// That is the pathology this change exists to remove, and it would be
-			// a regression against the two-second window it replaced. One rebuild
-			// after the drain observes every change the burst made; a change that
-			// lands mid-rebuild stays queued for the next pass.
-			for len(watcher.Events) > 0 {
-				if _, ok := <-watcher.Events; !ok {
-					return nil
-				}
+			paths, drained := w.changedPaths(event, watcher.Events)
+			if !drained {
+				return nil
 			}
-			w.index.Rebuild(ctx)
+			w.index.ApplyPaths(ctx, paths)
 		case watchErr, ok := <-watcher.Errors:
 			if !ok {
 				return nil
@@ -125,4 +136,40 @@ func (w *taskIndexWatcher) Run(ctx context.Context) error {
 			glog.Warningf("task index watcher error: %v", watchErr)
 		}
 	}
+}
+
+// changedPaths drains the events already queued behind first and returns their
+// vault-relative paths, reporting false when the event channel was closed
+// underneath the loop.
+//
+// ⚠️ Draining is what makes one burst cost one pass. A burst — an obsidian-git
+// autocommit, a `git checkout` — names the same file more than once and names
+// thousands of files; applying the drained list once opens each changed file
+// once, where applying per event would open it as many times as the burst named
+// it. The list is collected while draining rather than after, because the
+// channel is being emptied either way.
+//
+// ⚠️ The paths are made relative to the watched vault here, at the one place the
+// watcher's absolute event names are known, so ApplyPaths can compare them
+// against the vault-relative task directory rather than resolving whatever a
+// caller hands it. A path that cannot be made relative is dropped rather than
+// passed on: it names something outside the vault, which is not a task file.
+func (w *taskIndexWatcher) changedPaths(
+	first fsnotify.Event,
+	events chan fsnotify.Event,
+) ([]string, bool) {
+	paths := make([]string, 0, 1)
+	if rel, err := filepath.Rel(w.vaultDir, first.Name); err == nil {
+		paths = append(paths, rel)
+	}
+	for len(events) > 0 {
+		queued, ok := <-events
+		if !ok {
+			return nil, false
+		}
+		if rel, err := filepath.Rel(w.vaultDir, queued.Name); err == nil {
+			paths = append(paths, rel)
+		}
+	}
+	return paths, true
 }
