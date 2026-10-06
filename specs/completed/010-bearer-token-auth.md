@@ -1,9 +1,10 @@
 ---
-status: verifying
+status: completed
 approved: "2026-10-06T11:30:32Z"
 generating: "2026-10-06T11:30:33Z"
 prompted: "2026-10-06T11:57:19Z"
 verifying: "2026-10-06T12:24:33Z"
+completed: "2026-10-06T12:34:17Z"
 branch: dark-factory/bearer-token-auth
 ---
 
