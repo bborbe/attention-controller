@@ -231,7 +231,11 @@ func (w *weztermPaneLister) List(ctx context.Context) (map[int]Pane, error) {
 	// the rule id instead, as this sentence does, is harmless; the marker is the
 	// thing that must not repeat. Both failures compile cleanly and fail only
 	// `make precommit`.
-	cmd := exec.CommandContext(ctx, binary, "cli", "list", "--format", "json")
+	// ⚠️ --no-auto-start: without it, a GUI whose socket file vanished makes
+	// every listing spawn a stray wezterm-mux-server, which then answers as the
+	// pane source and marks every recorded pane unroutable. Failing the listing
+	// instead renders panes absent, which is true.
+	cmd := exec.CommandContext(ctx, binary, "cli", "--no-auto-start", "list", "--format", "json")
 	// ⚠️ Set here rather than left to the default, and the spec below is why: see
 	// paneListingWaitDelay. Without it the deadline bounds the process and not the
 	// call, so a child that forks still parks the caller for as long as its
