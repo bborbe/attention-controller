@@ -170,7 +170,7 @@ var _ = Describe("the goal and topic spans on the served page", func() {
 		return handler.NewAttentionPageHandler(
 			store,
 			pkg.NewProvenanceResolver(
-				stateDir,
+				pkg.NewEventLogReader(stateDir),
 				sessionsDir,
 				spawnDir,
 				panes,
@@ -377,7 +377,7 @@ var _ = Describe("the goal and topic spans on the served page", func() {
 		page := handler.NewAttentionPageHandler(
 			store,
 			pkg.NewProvenanceResolver(
-				stateDir,
+				pkg.NewEventLogReader(stateDir),
 				sessionsDir,
 				spawnDir,
 				panes,

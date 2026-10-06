@@ -2,6 +2,7 @@
 package mocks
 
 import (
+	"context"
 	"sync"
 
 	"github.com/bborbe/attention-controller/pkg"
@@ -20,6 +21,11 @@ type TaskIndex struct {
 	lookupReturnsOnCall map[int]struct {
 		result1 pkg.Task
 		result2 bool
+	}
+	RebuildStub        func(context.Context)
+	rebuildMutex       sync.RWMutex
+	rebuildArgsForCall []struct {
+		arg1 context.Context
 	}
 	invocations      map[string][][]interface{}
 	invocationsMutex sync.RWMutex
@@ -87,6 +93,38 @@ func (fake *TaskIndex) LookupReturnsOnCall(i int, result1 pkg.Task, result2 bool
 		result1 pkg.Task
 		result2 bool
 	}{result1, result2}
+}
+
+func (fake *TaskIndex) Rebuild(arg1 context.Context) {
+	fake.rebuildMutex.Lock()
+	fake.rebuildArgsForCall = append(fake.rebuildArgsForCall, struct {
+		arg1 context.Context
+	}{arg1})
+	stub := fake.RebuildStub
+	fake.recordInvocation("Rebuild", []interface{}{arg1})
+	fake.rebuildMutex.Unlock()
+	if stub != nil {
+		fake.RebuildStub(arg1)
+	}
+}
+
+func (fake *TaskIndex) RebuildCallCount() int {
+	fake.rebuildMutex.RLock()
+	defer fake.rebuildMutex.RUnlock()
+	return len(fake.rebuildArgsForCall)
+}
+
+func (fake *TaskIndex) RebuildCalls(stub func(context.Context)) {
+	fake.rebuildMutex.Lock()
+	defer fake.rebuildMutex.Unlock()
+	fake.RebuildStub = stub
+}
+
+func (fake *TaskIndex) RebuildArgsForCall(i int) context.Context {
+	fake.rebuildMutex.RLock()
+	defer fake.rebuildMutex.RUnlock()
+	argsForCall := fake.rebuildArgsForCall[i]
+	return argsForCall.arg1
 }
 
 func (fake *TaskIndex) Invocations() map[string][][]interface{} {

@@ -185,6 +185,7 @@ func defaultSessionsDir(ctx context.Context) (string, error) {
 func (a *application) createProvenanceResolver(
 	ctx context.Context,
 	panes pkg.PaneLister,
+	tasks pkg.TaskIndex,
 ) pkg.ProvenanceResolver {
 	stateDir := a.AttentionStateDir
 	if stateDir == "" {
@@ -212,18 +213,18 @@ func (a *application) createProvenanceResolver(
 		}
 		spawnDir = resolved
 	}
-	// ⚠️ The task index is constructed here, once, and handed to the resolver —
-	// never built per page. The vault holds thousands of task files, and the page
-	// is served continuously by the SSE stream, so the whole vault must not be
-	// re-read on every render. It is not frozen at construction, though: Lookup
-	// rebuilds it on a bounded window (taskIndexRefreshWindow) so a task file
-	// written while the process runs still resolves, without a restart.
+	// ⚠️ The task index is built once in createHTTPServer and passed in here — it
+	// is never built per page, and never a second time for the watcher. The vault
+	// holds thousands of task files, and the page is served continuously by the
+	// SSE stream, so the whole vault must not be re-read on every render. The
+	// resolver and the watcher share ONE index, because two indexes would be two
+	// independent maps that could disagree about the same session.
 	return pkg.NewProvenanceResolver(
-		stateDir,
+		pkg.NewEventLogReader(stateDir),
 		sessionsDir,
 		spawnDir,
 		panes,
-		pkg.NewTaskIndex(ctx, a.VaultDir, libtime.NewCurrentDateTime()),
+		tasks,
 		libtime.NewCurrentDateTime(),
 	)
 }
@@ -310,7 +311,14 @@ func (a *application) createHTTPServer(
 		// be two subprocess paths whose failure semantics could drift — and the
 		// activator's correctness rests on resolving against the LIVE list.
 		panes := pkg.NewWeztermPaneLister(libtime.NewCurrentDateTime())
-		provenance := a.createProvenanceResolver(ctx, panes)
+		// ⚠️ One index, two consumers: the resolver reads it on every render and
+		// the watcher rebuilds it on every vault change. Built here rather than
+		// inside createProvenanceResolver so the watcher below can be handed the
+		// same instance — two indexes would be two independent maps that could
+		// disagree about the same session.
+		tasks := pkg.NewTaskIndex(ctx, a.VaultDir, libtime.NewCurrentDateTime())
+		watcher := pkg.NewTaskIndexWatcher(tasks, a.VaultDir)
+		provenance := a.createProvenanceResolver(ctx, panes, tasks)
 		jumpTokens := a.createJumpTokenReader(ctx)
 		activator := a.createPaneActivator(panes)
 
@@ -370,16 +378,19 @@ func (a *application) createHTTPServer(
 		// under one context, so a failure in either takes the process down and
 		// launchd restarts both: a half-up state — board serving, jumps dead — is
 		// exactly the two-lifecycle problem the fold exists to remove.
-		// Three slots, not two: the answered sweep below is a third long-running
-		// function under the same context.
+		// Four slots, not two: the answered sweep below is a third long-running
+		// function under the same context, and the task index watcher is a fourth.
 		//
 		// ⚠️ It does NOT share the listeners' failure semantics, and saying so here
 		// matters because the difference is deliberate: the sweep returns nil on
 		// cancellation and logs-and-continues on a failed sweep, because a sweep
 		// that fails costs decode work and loses nothing — taking the process down
 		// for it would drop the board over something the board survives. The third
-		// slot is for the goroutine, not for a shared failure path.
-		runner := run.NewConcurrentRunner(3)
+		// slot is for the goroutine, not for a shared failure path. The watcher's
+		// slot is the same story: it returns nil on cancellation and logs-and-
+		// continues when it cannot watch at all, because an unwatchable vault
+		// costs a slower index and loses nothing.
+		runner := run.NewConcurrentRunner(4)
 		defer runner.Close()
 
 		glog.V(2).Infof("starting http server listen on %s", a.Listen)
@@ -387,6 +398,7 @@ func (a *application) createHTTPServer(
 		if err := a.addLegacyJumpListener(ctx, runner, jumpTokens, activator); err != nil {
 			return err
 		}
+		runner.Add(ctx, watcher.Run)
 
 		// ⚠️ This sweep is what keeps the live index bounded. The index admits
 		// `answered` items — liveIndexWorthy is `State != ClosedState` — so an
