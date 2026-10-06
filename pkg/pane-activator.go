@@ -171,7 +171,7 @@ func (a *weztermPaneActivator) activatePane(ctx context.Context, pane string) er
 	// and `binary` is resolved by resolveWezterm from the fixed, compile-time
 	// weztermBinaryCandidates list via exec.LookPath, so neither a caller nor any
 	// request input can reach it. Same provenance as the pane lister's own call.
-	if err := exec.CommandContext(ctx, binary, "cli", "activate-pane", "--pane-id", pane).Run(); err != nil {
+	if err := exec.CommandContext(ctx, binary, "cli", "--no-auto-start", "activate-pane", "--pane-id", pane).Run(); err != nil {
 		glog.V(2).Infof("activate pane %s failed: %v", pane, err)
 		return errors.Wrap(ctx, err, "activate pane failed")
 	}
