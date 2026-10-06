@@ -255,4 +255,181 @@ var _ = Describe("Board answers", func() {
 			Expect(got.Answer.Value).To(Equal("the board"))
 		})
 	})
+
+	// ⚠️ The brick: a board click on a `permission` card consumed the item, so
+	// the arm's own answer — the one carrying `resolved_by`, which is what the
+	// release path reads — was refused as already-answered. The operator's click
+	// looked like success, the asking session stayed frozen, and the park ran out
+	// to its timeout with no path left to answer it.
+	//
+	// The compare-and-set therefore accepts a second answer on a `permission`
+	// item when that answer is an ARM answer, and on no other class.
+	Describe("a permission item answered on the board and then by an arm", func() {
+		permissionRequest := func() pkg.PushRequest {
+			request := messageRequest()
+			request.AnswerMechanism = pkg.PermissionAnswerMechanism
+			request.Options = nil
+			return request
+		}
+
+		It("accepts the arm answer that follows the board's", func() {
+			item, err := store.Push(ctx, permissionRequest())
+			Expect(err).To(BeNil())
+
+			// The board's own POST: `answered_by` is the arm's name, and
+			// `resolved_by` is absent because the board has no session of its own
+			// to source one from. This is the write that used to brick the gate.
+			board, err := store.Answer(
+				ctx, item.ItemID, "attention-board", "", pkg.AllowDecision, nil, nil, nil,
+			)
+			Expect(err).To(BeNil())
+			Expect(board.State).To(Equal(pkg.AnsweredState))
+			Expect(board.ResolvedBy).To(BeEmpty())
+
+			// The arm's answer, carrying the resolver the release path reads.
+			arm, err := store.Answer(
+				ctx,
+				item.ItemID,
+				"attention-answer.py",
+				"session-a",
+				pkg.AllowDecision,
+				nil,
+				nil,
+				nil,
+			)
+			Expect(err).To(BeNil())
+			Expect(arm.AnsweredBy).To(Equal("attention-answer.py"))
+			Expect(arm.ResolvedBy).To(Equal("session-a"))
+
+			got, err := store.Get(ctx, item.ItemID)
+			Expect(err).To(BeNil())
+			Expect(got.ResolvedBy).To(Equal("session-a"))
+		})
+
+		It("does not let the arm's write overwrite the operator's verdict", func() {
+			item, err := store.Push(ctx, permissionRequest())
+			Expect(err).To(BeNil())
+
+			// The operator denies on the board.
+			_, err = store.Answer(
+				ctx, item.ItemID, "attention-board", "", pkg.DenyDecision, nil, nil, nil,
+			)
+			Expect(err).To(BeNil())
+
+			// The arm attaches the resolver and carries NO decision — the field is
+			// optional on the request body, so this is a shape the endpoint accepts.
+			// It must not erase the denial.
+			arm, err := store.Answer(
+				ctx, item.ItemID, "attention-answer.py", "session-a", "", nil, nil, nil,
+			)
+			Expect(err).To(BeNil())
+			Expect(arm.ResolvedBy).To(Equal("session-a"))
+			Expect(arm.Decision).To(Equal(pkg.DenyDecision))
+
+			// Nor may a later arm write flip it: the verdict on a permission item
+			// is the operator's, and the arm's write exists to attach the resolver.
+			flipped, err := store.Answer(
+				ctx,
+				item.ItemID,
+				"attention-answer.py",
+				"session-b",
+				pkg.AllowDecision,
+				nil,
+				nil,
+				nil,
+			)
+			Expect(err).To(BeNil())
+			Expect(flipped.Decision).To(Equal(pkg.DenyDecision))
+
+			got, err := store.Get(ctx, item.ItemID)
+			Expect(err).To(BeNil())
+			Expect(got.Decision).To(Equal(pkg.DenyDecision))
+		})
+
+		It("still refuses a second non-arm answer on a permission item", func() {
+			item, err := store.Push(ctx, permissionRequest())
+			Expect(err).To(BeNil())
+
+			_, err = store.Answer(
+				ctx, item.ItemID, "attention-board", "", pkg.AllowDecision, nil, nil, nil,
+			)
+			Expect(err).To(BeNil())
+
+			// A second board answer carries no resolver, so it is not the arm
+			// answer the relaxation is scoped to.
+			_, err = store.Answer(
+				ctx, item.ItemID, "attention-board", "", pkg.DenyDecision, nil, nil, nil,
+			)
+			Expect(err).NotTo(BeNil())
+			Expect(errors.Is(err, pkg.ErrAlreadyAnswered)).To(BeTrue())
+
+			// The loser must not have overwritten the winner's verdict.
+			got, err := store.Get(ctx, item.ItemID)
+			Expect(err).To(BeNil())
+			Expect(got.Decision).To(Equal(pkg.AllowDecision))
+		})
+
+		It("refuses the board's write when the arm answered first", func() {
+			item, err := store.Push(ctx, permissionRequest())
+			Expect(err).To(BeNil())
+
+			// The arm answers first, carrying the resolver.
+			_, err = store.Answer(
+				ctx,
+				item.ItemID,
+				"attention-answer.py",
+				"session-a",
+				pkg.AllowDecision,
+				nil,
+				nil,
+				nil,
+			)
+			Expect(err).To(BeNil())
+
+			// The board's later click carries no resolver, so the relaxation does
+			// not reach it: it is refused rather than merged, and the operator's
+			// verdict is dropped. The two orders are deliberately asymmetric —
+			// the arm is the surface that can release the gate, so it wins.
+			_, err = store.Answer(
+				ctx, item.ItemID, "attention-board", "", pkg.DenyDecision, nil, nil, nil,
+			)
+			Expect(err).NotTo(BeNil())
+			Expect(errors.Is(err, pkg.ErrAlreadyAnswered)).To(BeTrue())
+
+			got, err := store.Get(ctx, item.ItemID)
+			Expect(err).To(BeNil())
+			Expect(got.Decision).To(Equal(pkg.AllowDecision))
+			Expect(got.ResolvedBy).To(Equal("session-a"))
+		})
+
+		It("keeps first-write-wins on a message item", func() {
+			item, err := store.Push(ctx, messageRequest())
+			Expect(err).To(BeNil())
+
+			_, err = store.Answer(ctx, item.ItemID, "attention-board", "", "", &pkg.Answer{
+				Kind:  pkg.OptionAnswerKind,
+				Value: "the board",
+			}, nil, nil)
+			Expect(err).To(BeNil())
+
+			// The second write here carries a resolver and is still refused: the
+			// relaxation is scoped to `permission`, so `message` keeps the
+			// compare-and-set that stops a duplicate routing to `producer_id`.
+			_, err = store.Answer(
+				ctx,
+				item.ItemID,
+				"attention-answer.py",
+				"session-a",
+				"",
+				&pkg.Answer{
+					Kind:  pkg.OptionAnswerKind,
+					Value: "the tab",
+				},
+				nil,
+				nil,
+			)
+			Expect(err).NotTo(BeNil())
+			Expect(errors.Is(err, pkg.ErrAlreadyAnswered)).To(BeTrue())
+		})
+	})
 })
