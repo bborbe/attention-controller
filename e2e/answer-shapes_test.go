@@ -337,6 +337,50 @@ var _ = Describe("an answer given on the rendered board", func() {
 		).To(BeTrue())
 	})
 
+	// The mirror order, which a review found uncovered: type FIRST, then pick a
+	// named option. Typing checks Other and clears the other picks; picking one
+	// back releases Other but does not touch the field, and collectAnswers reads
+	// text ahead of any pick — so unless the text is cleared with the control, the
+	// board draws the option just clicked while the submission carries the text
+	// the operator had moved on from. Same defect, reached from the other side.
+	It("clears the typed text when a named option is picked after typing", func() {
+		itemID := pushCard(pkg.PushRequest{
+			DedupKey:        "shape-type-then-pick",
+			Payload:         "e2e: a name",
+			AnswerMechanism: pkg.MessageAnswerMechanism,
+			Options:         options("Anna", "Bob"),
+		})
+		page = newPage("")
+
+		Expect(
+			page.Locator(rowSelector(itemID) + " input[name=text]:visible").Fill("Zoe"),
+		).To(Succeed())
+		Expect(
+			page.Locator(rowSelector(itemID) + " input[data-other]:visible").IsChecked(),
+		).To(BeTrue())
+
+		pick(page, itemID, "Anna")
+
+		// The pick stands, and the text it displaced is gone — so what the board
+		// draws is what the submission will carry.
+		Expect(
+			page.Locator(rowSelector(itemID) + ` input[data-option="Anna"]:visible`).IsChecked(),
+		).To(BeTrue())
+		Expect(
+			page.Locator(rowSelector(itemID) + " input[data-other]:visible").IsChecked(),
+		).To(BeFalse())
+		Expect(
+			page.Locator(rowSelector(itemID) + " input[name=text]:visible").InputValue(),
+		).To(BeEmpty())
+
+		click(page, itemID, "button.next")
+
+		item := answeredItem(itemID)
+		Expect(item.Answer).NotTo(BeNil())
+		Expect(item.Answer.Kind).To(Equal(pkg.OptionAnswerKind))
+		Expect(string(item.Answer.Value)).To(Equal("Anna"))
+	})
+
 	It("stores a multi-tab card as one entry per answered question, keyed by question", func() {
 		itemID := pushCard(pkg.PushRequest{
 			DedupKey:        "shape-tabs",

@@ -254,11 +254,27 @@ document.addEventListener('click', function (event) {
   var target = event.target;
   if (!target || !target.closest) { return; }
   if (target.classList && target.classList.contains('other')) { return; }
-  var option = target.closest('.option-other');
-  if (!option) { return; }
-  event.preventDefault();
-  var field = option.querySelector('input.other');
-  if (field) { field.focus(); }
+  var panel = target.closest('.panel');
+  if (!panel) { return; }
+  var field = panel.querySelector('input.other');
+  var pick = panel.querySelector('input[data-other]');
+  if (target.closest('.option-other')) {
+    event.preventDefault();
+    if (field) { field.focus(); }
+    return;
+  }
+  /* ⚠️ The mirror order: text first, then a named option. Picking one releases
+     the Other control — the browser does that for a radio group, and the line
+     below does it for the checkbox — but neither touches the FIELD, and
+     collectAnswers reads text ahead of any pick. Left alone, the board would
+     draw the option just clicked while the submission carried the text the
+     operator had moved on from: the same shown-versus-sent defect, reached from
+     the other side. The text goes with the control, because the text WAS that
+     option's answer. */
+  if (target.closest('.option') && field && field.value) {
+    field.value = '';
+    if (pick) { pick.checked = false; }
+  }
 });
 /* Answer controls exist for message items only, and the form is intercepted so
    a failed answer is shown rather than swallowed into a reload: a bare catch
