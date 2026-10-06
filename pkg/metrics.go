@@ -6,9 +6,9 @@ package pkg
 
 //counterfeiter:generate -o ../mocks/metrics.go --fake-name Metrics . Metrics
 
-// Metrics counts what the board's shared render path does, so the fan-out
-// ratio can be read off the deployed binary's /metrics rather than only
-// proven by a spec.
+// Metrics counts what the board does — the shared renderer's work and the
+// per-client page requests — so the fan-out ratio and the request rate can be
+// read off the deployed binary's /metrics rather than only proven by a spec.
 //
 // It is injected rather than reached for: the handler's constructor takes
 // one, so a spec can build the counters on its own registry and read them
@@ -25,4 +25,12 @@ type Metrics interface {
 	// given number of rows, so the rows total is the render count multiplied
 	// by the board's size.
 	BoardRowsRenderedTotalCounterAdd(rows int)
+
+	// BoardPageRequestsTotalCounterInc records that one client asked for the
+	// board page. It is called from the per-client page path, so it moves once
+	// per request a client makes — which is exactly the reading
+	// BoardRendersTotalCounterInc cannot provide, because that one is
+	// incremented only inside the shared renderer and so does not move when a
+	// single client loads the page.
+	BoardPageRequestsTotalCounterInc()
 }

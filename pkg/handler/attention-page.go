@@ -1556,11 +1556,14 @@ const (
 // handler so the handler stays a pure renderer: the value is read once at
 // startup, from the binary, and a handler that re-read it per request would be
 // re-deriving a constant while making the page's footer untestable.
+//
+// metrics is the process-wide instance `main` builds on the registry /metrics serves.
 func NewAttentionPageHandler(store pkg.AttentionStore,
 	provenance pkg.ProvenanceResolver,
 	speakEnabled bool,
 	vaultDir string,
 	buildIdentity buildidentity.Identity,
+	metrics pkg.Metrics,
 ) http.Handler {
 	// Parsed once at construction rather than per request: the template is a
 	// compile-time constant, so a parse failure is a programming error, and
@@ -1569,6 +1572,8 @@ func NewAttentionPageHandler(store pkg.AttentionStore,
 	return libhttp.NewJSONErrorHandler(
 		libhttp.WithErrorFunc(
 			func(ctx context.Context, resp http.ResponseWriter, req *http.Request) error {
+				// ⚠️ Per request, before the store read: a failed render still counts.
+				metrics.BoardPageRequestsTotalCounterInc()
 				// ReadBoard, not Read: the board renders the answered items as
 				// dimmed records as well as the open ones. Read stays as it is
 				// for the JSON read API, whose consumers act on what they are

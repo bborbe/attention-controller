@@ -59,12 +59,27 @@ var _ = Describe("Metrics", func() {
 		Expect(counterValue(registry, "attention_board_rows_rendered_total")).To(Equal(7.0))
 	})
 
+	It("records page requests on the registry it was given", func() {
+		metrics.BoardPageRequestsTotalCounterInc()
+		metrics.BoardPageRequestsTotalCounterInc()
+		metrics.BoardPageRequestsTotalCounterInc()
+
+		Expect(counterValue(registry, "attention_board_page_requests_total")).To(Equal(3.0))
+	})
+
 	It("gives each counter a distinct non-empty description", func() {
 		rendersHelp := metricFamily(registry, "attention_board_renders_total").GetHelp()
 		rowsHelp := metricFamily(registry, "attention_board_rows_rendered_total").GetHelp()
+		pageRequestsHelp := metricFamily(
+			registry,
+			"attention_board_page_requests_total",
+		).GetHelp()
 
 		Expect(rendersHelp).ShouldNot(BeEmpty())
 		Expect(rowsHelp).ShouldNot(BeEmpty())
+		Expect(pageRequestsHelp).ShouldNot(BeEmpty())
 		Expect(rendersHelp).ShouldNot(Equal(rowsHelp))
+		Expect(rendersHelp).ShouldNot(Equal(pageRequestsHelp))
+		Expect(rowsHelp).ShouldNot(Equal(pageRequestsHelp))
 	})
 })

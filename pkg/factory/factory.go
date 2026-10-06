@@ -94,14 +94,29 @@ func CreateAttentionAttemptRecordHandler(store pkg.AttentionStore) http.Handler 
 // its footer can say which build is being read. It is passed rather than read
 // here for the same reason vaultDir is: it is a fact about the process, and
 // `pkg/factory` is pure plumbing that decides nothing.
+//
+// metrics is threaded through so the page reports its requests through the one
+// process-wide instance, which is built once in `main` on the registry /metrics
+// already serves. It is passed rather than constructed here for the same reason
+// the stream handler's is: `pkg/factory` is pure plumbing, and a second instance
+// would count every request on a private registry the deployed /metrics cannot
+// see.
 func CreateAttentionPageHandler(
 	store pkg.AttentionStore,
 	provenance pkg.ProvenanceResolver,
 	speakEnabled bool,
 	vaultDir string,
 	buildIdentity buildidentity.Identity,
+	metrics pkg.Metrics,
 ) http.Handler {
-	return handler.NewAttentionPageHandler(store, provenance, speakEnabled, vaultDir, buildIdentity)
+	return handler.NewAttentionPageHandler(
+		store,
+		provenance,
+		speakEnabled,
+		vaultDir,
+		buildIdentity,
+		metrics,
+	)
 }
 
 // CreateAttentionStreamHandler creates the board's live channel: the
