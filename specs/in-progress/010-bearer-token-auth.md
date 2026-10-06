@@ -1,8 +1,9 @@
 ---
-status: prompted
+status: verifying
 approved: "2026-10-06T11:30:32Z"
 generating: "2026-10-06T11:30:33Z"
 prompted: "2026-10-06T11:57:19Z"
+verifying: "2026-10-06T12:24:33Z"
 branch: dark-factory/bearer-token-auth
 ---
 
@@ -125,3 +126,19 @@ Rationale: prompt 1 establishes the configuration contract; prompt 2 is the enfo
 ## Do-Nothing Option
 
 The store stays loopback-only. That is a real option and it is what ships today — but it forecloses the goal this work exists to unblock: a cluster worker's question cannot reach the operator through the store at all. Doing nothing keeps the store safe by keeping it unreachable, which is the same statement as keeping it useless to a pod.
+
+## Verification Result
+
+**Verified:** 2026-10-06T12:34:06Z (HEAD 86d24ca)
+**Binary:** /tmp/ac-verify/attention-controller (built from HEAD 86d24ca)
+**Scenario:** no scenario file — manual AC walk against a locally-run binary (second listener 127.0.0.1:18081, board 127.0.0.1:18082, jump listener disabled; live launchd service on :18080/:1337 untouched)
+**Evidence:**
+- AC1: 9 core business routes + 2 read-aloud routes on the second listener → 401 unauthenticated (`curl -s -o /dev/null -w '%{http_code}'` per route)
+- AC2: authenticated probes → push 201, GETs 200, answer/escalate/close/attempt POST 200 (a build refusing all fails AC2; a build accepting all fails AC1)
+- AC3: missing header, `Authorization: Bearer` (no value) and wrong token → 401, three bodies byte-identical (sha256 782eeaa7f1915f6783146f8180751785584f0f24bd4e503165c7fc4a597da600)
+- AC4: `/`, `/metrics`, `/healthz`, `/readiness` on the second listener → 404 (unauthenticated and authenticated)
+- AC5: loopback listener `/`, `/healthz`, `/readiness`, `/metrics` → 200; loopback `/api/1.0/attention` unauthenticated → 200
+- AC6: empty ATTENTION_STORE_TOKEN → log `attention store api listener disabled (attention-store-token is empty)`; `lsof -nP -iTCP:18083 -sTCP:LISTEN` no rows
+- AC7: `grep -c '<test-token>' run.log` → 0; startup dump `AttentionStoreToken length 19`
+- AC8: `make precommit` exit 0 (`make test` exit 0)
+**Verdict:** PASS
