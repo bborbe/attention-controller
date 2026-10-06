@@ -111,443 +111,7 @@ const attentionPageTemplate = `<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <title>Attention</title>
-<style>
-/* Dark theme, matching the tts-mcp page this store's UI is modelled on — same
-   token names and values, so the two surfaces read as one family. The
-   color-scheme property is set so the scrollbar and any native control render
-   dark too; without it the page is dark but the chrome around it stays light. */
-:root {
-  color-scheme: dark;
-  --bg: #111418;
-  --panel: #1a1f26;
-  --border: #2a3038;
-  --text: #e8edf2;
-  --muted: #8b95a3;
-  --warn: #d08b5b;
-  /* The two green tokens are the only addition to the palette, and they exist
-     for one control: Submit answer is the forward move, so it reads as the
-     affirmative one beside a muted Dismiss. They are tokens rather than
-     literals so the pair stays one decision. */
-  --green: #8fd39a;
-  --green-bg: #2c4a37;
-  /* The corner band. The card's four corner controls occupy its rightmost
-     148px within its top 38px: the X at right: 12px, the read-aloud control at
-     right: 48px, the jump corner at right: 84px and the info toggle at
-     right: 120px, each 28px wide and 28px tall at top: 10px. A card's text
-     reserves that band on its own right so it wraps before the controls rather
-     than running through them. It mirrors the controls' geometry rather than
-     driving it, exactly as each control's own right offset does: moving a
-     control cannot move another, and this token cannot move one either. */
-  --corner-band: 148px;
-}
-* { box-sizing: border-box; }
-body {
-  margin: 0 auto;
-  max-width: 760px;
-  padding: 24px;
-  background: var(--bg);
-  color: var(--text);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-}
-h1 { font-size: 20px; margin: 0 0 16px; }
-ul.items { list-style: none; padding: 0; margin: 0; }
-/* The board's own view control, above the first card. It is a control on the
-   PAGE rather than on a card, which is why it appears in no row of the
-   schema's control-set table: it renders no item, writes no field and causes
-   no transition — it decides which of the rows the store already returned are
-   drawn. */
-.board-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 0 0 16px; }
-/* An answered item stays on the board as a dimmed record rather than
-   disappearing: the operator asked to see what they answered, and the record is
-   the only place the answer standing in their name is visible. It leaves when
-   the item is closed. */
-.item.dimmed {
-  opacity: .5;
-}
-.item.dimmed .record-question {
-  font-weight: 600;
-}
-.item.dimmed .record-answer {
-  margin-top: .25rem;
-}
-li.item {
-  position: relative;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 16px;
-  margin-bottom: 12px;
-}
-.producer {
-  color: var(--muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-  letter-spacing: 0.04em;
-}
-/* The corner X. It is the card's whole skip affordance, so it takes the
-   header's right edge and stays legible at a glance rather than reading as
-   one more control in the row. Anchored to the card, which is positioned, so
-   it lands in the corner of the card however tall the card grows — a tall
-   multi-question card puts its Dismiss button far below the fold, and the
-   corner is exactly what the operator asked for instead. */
-.corner-x {
-  position: absolute;
-  top: 10px;
-  right: 12px;
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  background: transparent;
-  color: var(--muted);
-  border: 1px solid transparent;
-  border-radius: 6px;
-  font-family: inherit;
-  font-size: 15px;
-  line-height: 1;
-  cursor: pointer;
-}
-.corner-x:hover { color: var(--text); border-color: var(--border); }
-.payload { font-size: 15px; line-height: 1.45; margin: 6px 0 8px; white-space: pre-wrap; }
-.provenance {
-  color: var(--muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-  margin: 0 0 6px;
-}
-/* One separator between spans, so the line reads as one sentence without the
-   template emitting trailing separators for values that were omitted. */
-.provenance span + span::before { content: " · "; }
-.provenance .unroutable { color: var(--warn); }
-/* The explanation a row carries when it has no jump control at all. Muted
-   rather than warned: a designed absence is not a fault, and colouring it like
-   one would put the board back where the operator could not tell the two
-   apart — the defect this line exists to remove.
-
-   ⚠️ Its own class rather than the control's, so a row that renders this and a
-   row that renders the control stay distinguishable in the DOM as well as on
-   screen: the two are the two arms of one condition, and reusing the control's
-   class would make "this row has a jump control" unanswerable by class.
-   ⚠️ AMENDED 2026-09-27: the two arms are no longer mutually exclusive. A row
-   that renders this explanation now also renders the corner control, present
-   but disabled, so the operator finds it in the same place on every card —
-   [[Attention Item Schema]] silence 20's resolution. The classes stay
-   distinct and the distinction still reads the same way in the DOM, but
-   "this row has a jump control" is now answered by a :not(:disabled) test on
-   the corner control rather than by the presence of the corner at all. */
-.jump-reason .no-jump { color: var(--muted); }
-.meta { color: var(--muted); font-size: 12px; }
-/* The info toggle and its panel. The control sits in the corner cluster's next
-   free slot: the corner X is pinned at right: 12px, the read-aloud control at
-   right: 48px and the jump corner at right: 84px, all 28px wide with an 8px gap,
-   so right: 120px places this control 8px to the jump corner's left and no
-   control's position depends on another's. It mirrors that geometry rather than
-   sharing a rule with it, so moving one control cannot move another. The
-   .info-panel span + span::before rule re-expresses the provenance line's
-   separator for the machine spans relocated here. */
-.info-toggle {
-  position: absolute;
-  top: 10px;
-  right: 120px;
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: transparent;
-  color: var(--muted);
-  border: 1px solid transparent;
-  border-radius: 6px;
-  font-family: inherit;
-  font-size: 15px;
-  line-height: 1;
-  cursor: pointer;
-}
-.info-toggle:hover { color: var(--text); border-color: var(--border); }
-.info-toggle[aria-expanded="true"] { color: var(--text); border-color: var(--border); }
-.info-panel {
-  color: var(--muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-  margin: 8px 0 0;
-}
-.info-panel span + span::before { content: " · "; }
-.info-panel .unroutable { color: var(--warn); }
-.empty { color: var(--muted); font-size: 14px; }
-/* The answer card, rendered for message items only. The context line carries
-   the background the producer declared, kept separate from the question so the
-   ask stays readable on its own at the top of the row. */
-.context { color: var(--muted); font-size: 13px; line-height: 1.45; margin: 0 0 8px; white-space: pre-wrap; }
-/* One tab per question of a multi-question item. The active tab is outlined
-   rather than filled, so the strip reads as a set of labels with one selected
-   rather than as a row of buttons competing with Submit answer. */
-.tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 20px; }
-.tab {
-  background: transparent;
-  color: var(--muted);
-  border: 1px solid transparent;
-  border-radius: 9px;
-  padding: 7px 15px;
-  font-size: 14px;
-  font-family: inherit;
-  cursor: pointer;
-}
-.tab:hover { color: var(--text); }
-.tab.active { color: var(--text); background: var(--bg); border-color: var(--muted); }
-/* A multi-question item's own payload: the card's title rather than a question,
-   so it is muted and the tabs carry the questions. */
-.card-title { color: var(--muted); font-size: 15px; line-height: 1.45; margin: 0 0 16px; white-space: pre-wrap; }
-/* The question line. The cardinality hint rides on it in the producer's own
-   wording, so the operator reads what the control will accept before using it. */
-.question { font-size: 17px; font-weight: 600; line-height: 1.4; margin: 0 0 20px; }
-.question .hint { font-weight: 400; color: var(--muted); }
-/* The card's text reserves the corner band on its right, so a block that
-   renders in the band wraps before the controls instead of painting through
-   them. li.item's own 16px padding already keeps text 16px clear of the
-   card's right edge, so a block needs the remaining 132px of the 148px band,
-   plus 4px of clearance so the two boxes do not merely touch — written as the
-   band minus 12px so the value follows the controls' geometry rather than
-   restating it.
-
-   It is scoped to the text blocks rather than to li.item, so the card's box,
-   its border, the corner controls and the info panel keep their full width,
-   and a block that renders below the band is not narrowed by a rule meant for
-   the band. ⚠️ It is margin-right rather than padding-right on purpose: a
-   block's bounding box is its border box, so padding-right would leave the box
-   spanning the band while only the text moved out of it, and a geometry check
-   comparing the ask's box against the controls' would still report an
-   intersection the layout does not have. */
-.provenance,
-.payload,
-.context,
-.card-title,
-.question,
-.record {
-  margin-right: calc(var(--corner-band) - 12px);
-}
-.options { display: flex; flex-direction: column; gap: 18px; margin: 0 0 22px; }
-.option { display: flex; align-items: flex-start; gap: 12px; cursor: pointer; }
-/* The control is aligned to the label's first line rather than to the row, so
-   the label and its muted cost line read as one block beside it. */
-.option input { flex: none; width: 16px; height: 16px; margin: 3px 0 0; accent-color: var(--muted); }
-.option-body { flex: 1 1 auto; min-width: 0; }
-.option-label { display: block; font-size: 15px; line-height: 1.4; }
-.option-label .recommended { color: var(--muted); }
-.option-desc { display: block; color: var(--muted); font-size: 14px; line-height: 1.45; margin-top: 4px; }
-.other {
-  width: 100%;
-  background: var(--bg);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  padding: 13px 15px;
-  font-size: 14px;
-  font-family: inherit;
-  margin: 0 0 20px;
-}
-.other::placeholder { color: var(--muted); }
-.actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
-.actions button {
-  font-family: inherit;
-  font-size: 14px;
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  padding: 9px 18px;
-  cursor: pointer;
-}
-/* Dismiss is the skip, so it is muted and Submit answer carries the colour:
-   the one forward move should be the one that reads as the affirmative. */
-.actions .dismiss { background: transparent; color: var(--muted); }
-.actions .dismiss:hover { color: var(--text); border-color: var(--muted); }
-.actions .next { background: var(--green-bg); color: var(--green); border-color: var(--green-bg); font-weight: 500; }
-.actions .next:hover { border-color: var(--green); }
-/* Read aloud is a utility, not a decision, so it does not sit in the actions
-   row beside the two controls that answer the card — it sits in the card's
-   top-right corner beside the X. That leaves the actions row carrying exactly
-   the two choices the card offers, which is what the row is for.
-   Its geometry mirrors the corner X deliberately rather than sharing a rule:
-   the X is pinned at right: 12px with a 28px width, so right: 48px places this
-   8px to its left, and neither control's position depends on the other's. */
-.speak {
-  position: absolute;
-  top: 10px;
-  right: 48px;
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: transparent;
-  color: var(--muted);
-  border: 1px solid transparent;
-  border-radius: 6px;
-  cursor: pointer;
-}
-.speak:hover { color: var(--text); border-color: var(--border); }
-/* The control is a toggle now, so its two states have to be told apart at a
-   glance. The Style Guide's rule is the reason: "a button that looks live and
-   does nothing is the failure the operator cannot debug from the page" — and
-   its inverse is the one that bites here, a control that looks idle while it
-   is the only thing on the page that can stop the audio. Only the colour and
-   the border move: the glyph, the size and the corner placement are untouched,
-   so "nothing else about the control changes" still holds. The green is the
-   palette's existing affirmative, the same token the actions row uses. */
-.speak[data-state="speaking"] { color: var(--green); border-color: var(--green); }
-.speak[data-state="speaking"]:hover { color: var(--green); border-color: var(--green); }
-/* The speaker glyph is inline SVG, not a font character: the page loads no web
-   fonts, so a glyph taken from the system font would vary by platform and
-   family. It inherits the button's own muted colour through currentColor, so it
-   adds no colour to the palette. The svg is aria-hidden and focusable="false"
-   so it contributes no second accessible name — and here that matters more than
-   it did beside a text label, because the control is icon-only: its aria-label
-   is the only name it has. */
-.speak .speak-icon { width: 15px; height: 15px; flex: none; }
-/* The jump handover's clickable half, in the corner beside the X and the
-   speaker. Icon-only for the same reason the speaker is, and in the corner for
-   the reason the X gives: a control anchored to the card lands in the same
-   place however tall the card grows, where the text button it replaces sat
-   below the payload and moved with the card's content — the operator's ask,
-   verbatim, 2026-09-27: "a button at the top next to the speaker symbol and
-   the X ... a small icon and it's always at the same place."
-   Its geometry mirrors the two controls to its right rather than sharing a
-   rule with either: the X is pinned at right: 12px and the speaker at
-   right: 48px, both 28px wide with an 8px gap, so right: 84px places this 8px
-   to the speaker's left and no control's position depends on another's. */
-.jump-corner {
-  position: absolute;
-  top: 10px;
-  right: 84px;
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: transparent;
-  color: var(--muted);
-  border: 1px solid transparent;
-  border-radius: 6px;
-  cursor: pointer;
-}
-.jump-corner:hover { color: var(--text); border-color: var(--border); }
-/* ⚠️ A disabled control must not look pressable — a button that looks live and
-   does nothing is the failure the operator cannot debug from the page. The
-   corner's value is that it is the same on every card, so a row with no
-   handover renders this control present-but-unavailable rather than absent.
-   ⚠️ It is the real disabled attribute and it carries NO data-jump, and both
-   halves are load-bearing: the page's jump handler is delegated at the
-   document, so a control that still dispatched would be matched by
-   closest('button[data-jump]'), fetch a null URL, and reach showJumpNote with
-   no .jump container to append into — a throw on a row that renders no
-   explanation div at all. */
-.jump-corner:disabled { cursor: default; opacity: 0.4; }
-.jump-corner:disabled:hover { color: var(--muted); border-color: transparent; }
-.jump-corner .jump-icon { width: 15px; height: 15px; flex: none; }
-/* The acknowledge control is the only action a report-only card carries, so it
-   takes the affirmative colour the message card gives Submit answer: on a card
-   that offers no other move, it is the forward one. */
-.actions .ack { background: var(--green-bg); color: var(--green); border-color: var(--green-bg); font-weight: 500; }
-.actions .ack:hover { border-color: var(--green); }
-/* The jump handover's copyable half: a command for the operator who wants to
-   paste it.
-   ⚠️ The clickable half left this div on 2026-09-27 — the button is the corner
-   control now — so the div carries the command alone and is EMPTY on a
-   message item, which has no command by design (jumpCommand returns "" for
-   MessageAnswerMechanism). It still renders whenever the row carries a
-   handover, and that is deliberate rather than incidental: this div is also
-   the outcome note's home, and showJumpNote resolves it with
-   row.querySelector('.jump') before appending, so a row that rendered the
-   corner control without this container would throw on the first click. An
-   empty div contributes no spacing. */
-.jump { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; color: var(--muted); font-size: 12px; margin: 8px 0 0; }
-.jump:empty { margin: 0; }
-.jump code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 2px 6px;
-  user-select: all;
-}
-/* The board's filter is a switch, not a button, because that is what it is: a
-   control with two states that stays where it is, rather than one that fires an
-   action and returns. The track carries the state in colour and the knob
-   carries it in position, so "on" is legible from the page itself and not only
-   from the label — a toggle whose state lives only in its wording is one the
-   operator cannot read back. The knob stays light in both states, as the
-   reference the operator supplied does; only the track changes colour, and it
-   takes the same affirmative pair the card's Submit answer uses rather than
-   adding one to the palette. */
-.board-filter {
-  display: inline-flex;
-  align-items: center;
-  gap: 9px;
-  background: transparent;
-  border: none;
-  padding: 0;
-  font-family: inherit;
-  font-size: 13px;
-  color: var(--text);
-  cursor: pointer;
-}
-.board-filter .switch { width: 44px; height: 24px; display: block; flex: none; }
-.board-filter .switch-track {
-  fill: var(--panel);
-  stroke: var(--border);
-  stroke-width: 2;
-  transition: fill 120ms ease, stroke 120ms ease;
-}
-.board-filter .switch-knob { fill: var(--text); transition: transform 120ms ease; }
-.board-filter:hover .switch-track { stroke: var(--muted); }
-/* Ordered after :hover deliberately. The two rules have equal specificity, so
-   source order is what stops the on-state colour being flattened on hover —
-   the state has to outrank the pointer, not the other way round. */
-.board-filter[aria-checked="true"] .switch-track {
-  fill: var(--green-bg);
-  stroke: var(--green);
-}
-.board-filter[aria-checked="true"] .switch-knob { transform: translateX(20px); }
-/* The focus ring outranks the state deliberately — the opposite precedence from
-   the hover rule above, and for the opposite reason. Hover is the pointer
-   passing over, which must not obscure what the control is set to; focus is the
-   keyboard's only affordance, and it has to be visible whatever the state is.
-   The fill still carries the state, so nothing is lost by the stroke change. */
-.board-filter:focus-visible .switch-track { stroke: var(--text); }
-/* The board's own health, beside the filter switch: the switch says which rows
-   are drawn, this says whether the rows still track the store. Warn colour and
-   no new token — a stream that has stopped is a fault, not a state the board
-   is designed to sit in. It is hidden in the served markup and shown only by
-   the stream's own onerror, so a healthy board and a quiet board render
-   nothing: a board that is merely quiet must still look quiet. */
-.stream-stale { color: var(--warn); font-size: 13px; }
-/* A control's outcome is shown, never swallowed into a reload — a silent catch
-   reports a code fault as a connection problem. The class is "note" rather than
-   "failed" because the read-aloud control reports success through it too (the
-   tts message id), and a success line rendered in a failure style would read as
-   an error. */
-.note { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
-.note.failed { color: var(--warn); }
-/* The board's own provenance. It is deliberately not a card and carries no
-   control: it describes the BUILD, not an item, so it sits below the list and
-   outside the row template the stream swaps. The separator rule is what makes
-   it read as a footer rather than as one more thing the store returned.
-   ⚠️ The monospace is on the values, not the line: a sha and a timestamp are
-   read character by character when they are read at all, while the labels
-   around them are prose. */
-.build-identity { color: var(--muted); font-size: 12px; margin: 24px 0 0; padding-top: 12px; border-top: 1px solid var(--border); }
-.build-identity .bi-value { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text); }
-/* An identity the binary does not carry is a fault in the deploy, not a normal
-   state, so it is warned rather than muted, the same treatment the board gives
-   a stream that has stopped tracking the store.
-   ⚠️ The class is "bi-absent", not "bi-unknown", and that is load-bearing rather
-   than a preference. The page carries a standing guard that no provenance field
-   renders an invented placeholder, and it asserts the document contains the
-   literal string "unknown" nowhere. A class name is part of the document, so
-   naming this one "unknown" reddens a guard about provenance from a footer that
-   has nothing to do with it — which is exactly what it did, once. */
-.build-identity .bi-absent { color: var(--warn); }
-</style>
+<style>` + attentionPageStyles + `</style>
 </head>
 <body>
 <h1>Attention</h1>
@@ -641,6 +205,77 @@ document.addEventListener('click', function (event) {
     panel.hidden = panel.getAttribute('data-question') !== tab.getAttribute('data-tab');
   });
 });
+/* Typing in Other selects the Other option and clears every other pick on that
+   card, so the state on screen is the state that will be sent. Both halves are
+   load-bearing. Selecting it is what makes the pick visible at all: without it
+   the field sits beside a still-filled radio that collectAnswers will discard
+   the moment text exists. Clearing the rest is what keeps a multi-pick card
+   honest — an answer is option OR text, so boxes left checked beside typed text
+   would read as picks that are never sent, which is the defect itself.
+   Emptying the field releases the pick rather than restoring an earlier one:
+   the answer reverts to unanswered, which is what the operator sees.
+   ⚠️ Delegated on the document for the tab strip's reason: a row re-render
+   replaces the field, and a listener bound to the replaced node goes silent
+   while the control still draws. */
+document.addEventListener('input', function (event) {
+  var field = event.target;
+  if (!field || !field.classList || !field.classList.contains('other')) { return; }
+  var panel = field.closest('.panel');
+  var pick = panel && panel.querySelector('input[data-other]');
+  if (!pick) { return; }
+  if (!field.value.trim()) { pick.checked = false; return; }
+  pick.checked = true;
+  panel.querySelectorAll('input:checked').forEach(function (input) {
+    if (input !== pick) { input.checked = false; }
+  });
+});
+/* The Other control's checked state is owned by the text field, never by a click
+   anywhere on the option. Two states a click could reach are ones the submission
+   would drop: checked with an empty field (collectAnswers skips the control's own
+   value, so nothing is sent), and unchecked with text still in the field (the
+   text is sent, so the control would read as released while the answer stands).
+   Either one is the shown-pick-versus-sent-pick defect this control exists to
+   remove — and on a single-pick card the click would additionally take the
+   operator's earlier pick with it, because a radio group releases the previous
+   selection the moment another is checked, with nothing to restore it.
+   ⚠️ preventDefault on the click, rather than a change handler that reverts: a
+   revert runs AFTER the browser has already toggled the control and, on a radio,
+   already released the previous pick — the damage is done and there is nothing
+   left to undo it with. Preventing the default means the toggle never happens.
+   ⚠️ The guard matches the enclosing .option-other, never the control's own
+   attribute. The option renders as a <label> wrapping BOTH the control and the
+   Other… caption, and the caption is the wide target an operator actually aims
+   at; a click there has the caption span as its target, so a guard testing only
+   data-other returns early and leaves the label's own activation to check the
+   control — the whole defect, on the larger half of the target.
+   ⚠️ The field itself is the one click that must pass through untouched:
+   preventDefault there would cancel the focus the field is about to take. */
+document.addEventListener('click', function (event) {
+  var target = event.target;
+  if (!target || !target.closest) { return; }
+  if (target.classList && target.classList.contains('other')) { return; }
+  var panel = target.closest('.panel');
+  if (!panel) { return; }
+  var field = panel.querySelector('input.other');
+  var pick = panel.querySelector('input[data-other]');
+  if (target.closest('.option-other')) {
+    event.preventDefault();
+    if (field) { field.focus(); }
+    return;
+  }
+  /* ⚠️ The mirror order: text first, then a named option. Picking one releases
+     the Other control — the browser does that for a radio group, and the line
+     below does it for the checkbox — but neither touches the FIELD, and
+     collectAnswers reads text ahead of any pick. Left alone, the board would
+     draw the option just clicked while the submission carried the text the
+     operator had moved on from: the same shown-versus-sent defect, reached from
+     the other side. The text goes with the control, because the text WAS that
+     option's answer. */
+  if (target.closest('.option') && field && field.value) {
+    field.value = '';
+    if (pick) { pick.checked = false; }
+  }
+});
 /* Answer controls exist for message items only, and the form is intercepted so
    a failed answer is shown rather than swallowed into a reload: a bare catch
    that reloads anyway reports a code fault as a connection problem.
@@ -694,6 +329,11 @@ function collectAnswers(form) {
     var question = panel.getAttribute('data-question') || '';
     var picks = [];
     panel.querySelectorAll('input:checked').forEach(function (input) {
+      /* The Other control is a group member so that picking it unchecks the
+         rest, but it carries no option: what it stands for is the text field's
+         value, read above. Counting it here would send a pick the operator
+         never made, and one the schema has no room for beside that text. */
+      if (input.hasAttribute('data-other')) { return; }
       picks.push(input.getAttribute('data-option') || '');
     });
     var other = panel.querySelector('input[name=text]');
@@ -1610,10 +1250,18 @@ function replayFailure(row) {
 <div class="card-title">{{ cardtext .Item.Payload }}</div>
 {{end}}{{range .Questions}}{{$question := .}}<div class="panel" data-question="{{ $question.Tab }}" data-multi-pick="{{ $question.Multi }}"{{if not $question.Active}} hidden{{end}}>
 <div class="question">{{ cardtext $question.Payload }}{{if $question.Hint}} <span class="hint">({{ $question.Hint }})</span>{{end}}</div>
+{{/* The Other control is a member of the option group when the question
+     declares options, and a bare field only when it declares none. An answer is
+     option OR text (pkg/answer.go), so a field sitting BESIDE the group could
+     only ever contradict it: the operator reads a filled radio as a live pick
+     while collectAnswers sends the text alone and drops the pick. Making it a
+     group member puts the shown state and the sent state on one control — the
+     input listener below is the other half, and data-other is what keeps the
+     control out of the collected picks. */}}
 {{if $question.Options}}<div class="options">
 {{range $question.Options}}<label class="option"><input type="{{ if $question.Multi }}checkbox{{ else }}radio{{ end }}" name="{{ $question.Name }}" value="{{ .Label }}" data-option="{{ .Label }}"><span class="option-body"><span class="option-label">{{ .Label }}{{if .Recommended}} <span class="recommended">(Recommended)</span>{{end}}</span>{{if .Description}}<span class="option-desc">{{ .Description }}</span>{{end}}</span></label>
-{{end}}</div>
-{{end}}<input class="other" type="text" name="text" placeholder="Other...">
+{{end}}<label class="option option-other"><input type="{{ if $question.Multi }}checkbox{{ else }}radio{{ end }}" name="{{ $question.Name }}" value="" data-other><span class="option-body"><span class="option-label">Other…</span><input class="other" type="text" name="text" placeholder="Type your answer"></span></label></div>
+{{else}}<input class="other" type="text" name="text" placeholder="Other...">{{end}}
 </div>
 {{end}}<div class="actions"><button type="submit" name="kind" value="skip" class="dismiss">✕ Dismiss</button><button type="submit" name="kind" value="send" class="next">✓ Submit answer</button></div>
 </form>
