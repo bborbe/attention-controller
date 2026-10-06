@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.45.0
 
 - feat: add `handler.NewBearerTokenHandler`, an HTTP middleware that admits a request only when it presents the configured token as `Authorization: Bearer <token>`, so the second, cluster-reachable listener can gate its business routes on the shared secret. A missing header, a malformed header and a wrong token are refused identically — same `401` status, same `{"error":{"code":"UNAUTHORIZED","message":"unauthorized"}}` body — libhttp's canonical `{error: {code, message, details}}` envelope, so a client needs no second parse path for this refusal — written through one `writeUnauthorized` helper — so the endpoint cannot be probed as an oracle for token validity. ⚠️ The comparison is `subtle.ConstantTimeCompare`, never `==`, because a byte-by-byte comparison leaks the token's prefix through timing. ⚠️ It fails closed: a handler built with an empty token refuses every request rather than admitting everyone, since the comparison alone treats an empty presented value as a match for an empty configured token. The token is a credential and is never logged — a refusal is logged by shape only (`token_present=%t`) — and never rendered. `factory.CreateBearerTokenHandler` is the pure-forwarding plumbing hook; wiring the middleware into the listener is a later change.
 
