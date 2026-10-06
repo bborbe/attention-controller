@@ -25,7 +25,16 @@ const bearerTokenPrefix = "Bearer "
 // because the three refusal shapes — missing header, malformed header and
 // wrong token — MUST be byte-identical. A body that varied by shape would
 // make the endpoint an oracle a caller could probe for token validity.
-const unauthorizedBody = `{"error":"unauthorized"}`
+//
+// ⚠️ The shape is libhttp's canonical `{error: {code, message, details}}`
+// envelope — the same shape every other handler in this service emits through
+// libhttp.WrapWithCode — not a bare string. A client must not need one parse
+// path for this refusal and a different one for every other error the service
+// returns. `code` is libhttp.ErrorCodeUnauthorized, concatenated from the
+// constant so the two cannot drift; `message` is the fixed word below and
+// names no detail about the expected value, so the body stays uniform across
+// all three refusal shapes.
+const unauthorizedBody = `{"error":{"code":"` + libhttp.ErrorCodeUnauthorized + `","message":"unauthorized"}}`
 
 // NewBearerTokenHandler gates a listener's routes behind a shared bearer
 // token.
