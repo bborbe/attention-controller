@@ -231,7 +231,13 @@ var _ = Describe("an answer given on the rendered board", func() {
 
 		pick(page, itemID, "Cheese")
 		pick(page, itemID, "Olives")
+		// Both targets, because they are not the same test. The caption is the
+		// wide one an operator actually aims at, and it is a click on the
+		// enclosing label rather than on the control — so a guard keyed to the
+		// control's own attribute passes the first click here and lets the second
+		// through.
 		click(page, itemID, "input[data-other]")
+		click(page, itemID, ".option-other .option-label")
 
 		// The click neither checks Other nor releases the picks already made.
 		Eventually(func() (bool, error) {
@@ -248,6 +254,34 @@ var _ = Describe("an answer given on the rendered board", func() {
 		Expect(item.Answer).NotTo(BeNil())
 		Expect(item.Answer.Kind).To(Equal(pkg.OptionAnswerKind))
 		Expect(item.Answer.Values).To(ConsistOf("Cheese", "Olives"))
+	})
+
+	// The caption on a single-pick card, where a missed guard is destructive
+	// rather than merely wrong: a radio group releases the previous selection the
+	// moment another is checked, and nothing restores it. This is the case a
+	// control-keyed guard fails — the caption click never reaches the guard, the
+	// label's own activation checks Other, and the pick made first is gone.
+	It("refuses a click on the Other caption without releasing the earlier pick", func() {
+		itemID := pushCard(pkg.PushRequest{
+			DedupKey:        "shape-caption-single",
+			Payload:         "e2e: a name",
+			AnswerMechanism: pkg.MessageAnswerMechanism,
+			Options:         options("Anna", "Bob"),
+		})
+		page = newPage("")
+
+		pick(page, itemID, "Anna")
+		click(page, itemID, ".option-other .option-label")
+
+		// The caption click neither checks Other nor releases the pick already
+		// made — the second of which is the half a control-keyed guard loses.
+		Eventually(func() (bool, error) {
+			return page.Locator(rowSelector(itemID) + " input[data-other]:visible").IsChecked()
+		}).Should(BeFalse())
+		Eventually(func() (bool, error) {
+			return page.Locator(rowSelector(itemID) + ` input[data-option="Anna"]:visible`).
+				IsChecked()
+		}).Should(BeTrue())
 	})
 
 	It("stores a multi-tab card as one entry per answered question, keyed by question", func() {

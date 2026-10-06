@@ -230,7 +230,7 @@ document.addEventListener('input', function (event) {
   });
 });
 /* The Other control's checked state is owned by the text field, never by a click
-   on the control itself. Two states a click could reach are ones the submission
+   anywhere on the option. Two states a click could reach are ones the submission
    would drop: checked with an empty field (collectAnswers skips the control's own
    value, so nothing is sent), and unchecked with text still in the field (the
    text is sent, so the control would read as released while the answer stands).
@@ -242,13 +242,22 @@ document.addEventListener('input', function (event) {
    revert runs AFTER the browser has already toggled the control and, on a radio,
    already released the previous pick — the damage is done and there is nothing
    left to undo it with. Preventing the default means the toggle never happens.
-   The field takes focus so the click is a way in rather than a dead end. */
+   ⚠️ The guard matches the enclosing .option-other, never the control's own
+   attribute. The option renders as a <label> wrapping BOTH the control and the
+   Other… caption, and the caption is the wide target an operator actually aims
+   at; a click there has the caption span as its target, so a guard testing only
+   data-other returns early and leaves the label's own activation to check the
+   control — the whole defect, on the larger half of the target.
+   ⚠️ The field itself is the one click that must pass through untouched:
+   preventDefault there would cancel the focus the field is about to take. */
 document.addEventListener('click', function (event) {
-  var pick = event.target;
-  if (!pick || !pick.hasAttribute || !pick.hasAttribute('data-other')) { return; }
+  var target = event.target;
+  if (!target || !target.closest) { return; }
+  if (target.classList && target.classList.contains('other')) { return; }
+  var option = target.closest('.option-other');
+  if (!option) { return; }
   event.preventDefault();
-  var panel = pick.closest('.panel');
-  var field = panel && panel.querySelector('input.other');
+  var field = option.querySelector('input.other');
   if (field) { field.focus(); }
 });
 /* Answer controls exist for message items only, and the form is intercepted so
