@@ -198,7 +198,7 @@ var _ = Describe("the Allow / Deny pair on the served page", func() {
 		return handler.NewAttentionPageHandler(
 			store,
 			pkg.NewProvenanceResolver(
-				stateDir,
+				pkg.NewEventLogReader(stateDir),
 				sessionsDir,
 				spawn,
 				panes,

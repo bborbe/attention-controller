@@ -219,7 +219,7 @@ func (a *application) createProvenanceResolver(
 	// rebuilds it on a bounded window (taskIndexRefreshWindow) so a task file
 	// written while the process runs still resolves, without a restart.
 	return pkg.NewProvenanceResolver(
-		stateDir,
+		pkg.NewEventLogReader(stateDir),
 		sessionsDir,
 		spawnDir,
 		panes,

@@ -5,7 +5,7 @@
 package pkg
 
 import (
-	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -198,10 +198,14 @@ type ProvenanceResolver interface {
 	Resolve(ctx context.Context, items Items) Provenances
 }
 
-// NewProvenanceResolver creates a resolver reading the event logs under
-// stateDir, the session registry under sessionsDir, the supervisor's spawn
-// ledger under spawnDir, panes from the lister, and the vault tasks from the
-// index.
+// NewProvenanceResolver creates a resolver reading the producers' event logs
+// through eventLogs, the session registry under sessionsDir, the supervisor's
+// spawn ledger under spawnDir, panes from the lister, and the vault tasks from
+// the index.
+//
+// ⚠️ The event logs are read through the injected reader rather than a bare
+// state directory, so the read path's cost is observable: the reader is asked
+// only for the bytes appended since the resolver's last read of that producer.
 //
 // ⚠️ The index is built by the caller, once, and handed in — it is never built
 // here and never inside Resolve. The live vault holds over 8,000 task files, so
@@ -209,7 +213,7 @@ type ProvenanceResolver interface {
 // refresh, on a page the SSE stream serves continuously. A nil index is legal
 // and resolves no task, which is what a host with no configured vault gets.
 func NewProvenanceResolver(
-	stateDir string,
+	eventLogs EventLogReader,
 	sessionsDir string,
 	spawnDir string,
 	panes PaneLister,
@@ -217,12 +221,13 @@ func NewProvenanceResolver(
 	currentDateTimeGetter libtime.CurrentDateTimeGetter,
 ) ProvenanceResolver {
 	return &provenanceResolver{
-		stateDir:              stateDir,
+		eventLogs:             eventLogs,
 		sessionsDir:           sessionsDir,
 		spawnDir:              spawnDir,
 		panes:                 panes,
 		tasks:                 tasks,
 		currentDateTimeGetter: currentDateTimeGetter,
+		producerLogs:          map[ProducerID]*producerEventLog{},
 	}
 }
 
@@ -236,12 +241,25 @@ func NewProvenanceResolver(
 const provenanceCacheWindow = libtime.Duration(2 * time.Second)
 
 type provenanceResolver struct {
-	stateDir              string
+	eventLogs             EventLogReader
 	sessionsDir           string
 	spawnDir              string
 	panes                 PaneLister
 	tasks                 TaskIndex
 	currentDateTimeGetter libtime.CurrentDateTimeGetter
+	// eventsMu guards producerLogs, the per-producer incremental read state.
+	//
+	// ⚠️ It is held across the read itself, and that is deliberate rather than
+	// an oversight. The read it guards is a local file read bounded by the
+	// bytes appended since the last render — not the pane listing, a subprocess
+	// with its own multi-second timeout — so holding the lock costs a bounded
+	// read rather than a blocking call. Releasing it would let two concurrent
+	// renders read the same bytes from the same base offset and merge them
+	// twice, which is precisely the state this field exists to serialize.
+	eventsMu sync.Mutex
+	// producerLogs is the byte offset and decoded events the resolver has
+	// already consumed for each producer's event log.
+	producerLogs map[ProducerID]*producerEventLog
 	// mu guards the cached snapshot and the refresh flag below. ⚠️ It is NOT
 	// held across the refresh itself — see hostState.
 	mu sync.Mutex
@@ -458,8 +476,10 @@ func (r *provenanceResolver) Resolve(ctx context.Context, items Items) Provenanc
 	// times.
 	byProducer := make(map[ProducerID]map[string]eventRecord)
 	for _, item := range items {
-		// readEvents below can scan a large log, so the loop honours
-		// cancellation rather than relying on the per-item work being cheap.
+		// readEvents below reads only the bytes appended since the last render,
+		// but a producer that has just written a large tail still hands the
+		// decode real work, so the loop honours cancellation rather than
+		// relying on the per-item work being cheap.
 		select {
 		case <-ctx.Done():
 			glog.V(3).Infof("provenance resolution cancelled")
@@ -776,84 +796,156 @@ func (r *provenanceResolver) readEventsForProducer(
 	return r.readEvents(ctx, ProducerID(bare))
 }
 
-// readEvents indexes a producer's event log by the item id each line carries.
+// producerEventLog is the resolver's accumulated state for one producer's
+// event log: how many bytes of it have been consumed, and the records those
+// bytes decoded to.
+//
+// ⚠️ offset only ever advances by READING the file, never by waiting for a
+// notification or a timer. That is what preserves the freshness guarantee: a
+// just-appended line is visible to the very next render, because the render
+// stats the file and reads whatever lies beyond the offset.
+type producerEventLog struct {
+	offset int64
+	events map[string]eventRecord
+}
+
+// readEvents indexes a producer's event log by the item id each line carries,
+// reading only the bytes appended since the last render.
 //
 // The log is append-only and holds every event for that session — opens,
 // closes, idle transitions — so a later line may describe the same item as an
 // earlier one. The line that carries provenance wins: a close event records
 // only `closed_by` and would otherwise overwrite the open event's host and cwd
 // with empties.
+//
+// ⚠️ A render over an unchanged log reads NOTHING: the size is unchanged and
+// the accumulated events are returned as they stand. Only the bytes beyond the
+// remembered offset are read and decoded, so the work is proportional to what
+// was appended rather than to the whole log.
 func (r *provenanceResolver) readEvents(
 	ctx context.Context,
 	producerID ProducerID,
 ) map[string]eventRecord {
-	events := map[string]eventRecord{}
-	if r.stateDir == "" {
-		return events
+	// A nil reader resolves no event, mirroring how a nil task index resolves
+	// no task. A host with no event-log source is a legal configuration.
+	if r.eventLogs == nil {
+		return map[string]eventRecord{}
 	}
-	// Opened as an os.Root so every read is confined beneath the state dir. The
-	// producer id is producer-supplied and validated only by NotEmptyString, so
-	// a crafted id containing path separators would otherwise walk out of the
-	// directory; scoping the handle makes the confinement structural rather
-	// than an assumption about the id. Same pattern as the session registry
-	// read in session-liveness-checker.go.
-	root, err := os.OpenRoot(r.stateDir)
-	if err != nil {
-		// Absent state dir is the ordinary case for a store with no Claude Code
-		// beside it, not an error worth reporting per item.
-		glog.V(3).Infof("open attention state dir %s failed: %v", r.stateDir, err)
-		return events
-	}
-	defer root.Close()
 
-	name := string(producerID) + ".events.jsonl"
-	file, err := root.Open(name)
-	if err != nil {
-		// Absent log is the ordinary case for a producer that never wrote one,
-		// not an error worth reporting per item.
-		glog.V(3).Infof("open event log %s failed: %v", filepath.Join(r.stateDir, name), err)
-		return events
-	}
-	defer file.Close()
+	r.eventsMu.Lock()
+	defer r.eventsMu.Unlock()
 
-	scanner := bufio.NewScanner(file)
-	// Event lines carry a transcript path and a detail string, so the default
-	// 64KB token limit is too small; a line that overflows would silently drop
-	// the item's provenance.
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		// A page load reads one log per open item's producer, and a log is
-		// append-only and unbounded, so a client that has gone away must stop
-		// the scan rather than let it run to the end of the file.
+	log, ok := r.producerLogs[producerID]
+	if !ok {
+		log = &producerEventLog{events: map[string]eventRecord{}}
+		r.producerLogs[producerID] = log
+	}
+
+	size, ok := r.eventLogs.Size(producerID)
+	if !ok {
+		// An absent log is the ordinary case for a producer that never wrote
+		// one. It must not erase what the log yielded before: a log that
+		// vanished is not the same as a log that says the item is gone.
+		return log.events
+	}
+	if size == log.offset {
+		// Nothing was appended since the last read. This is the whole point of
+		// the change: a render over an unchanged log reads no bytes at all.
+		return log.events
+	}
+
+	base := log.offset
+	accumulated := log.events
+	if size < log.offset {
+		// The log shrank: it was truncated or replaced, so the remembered
+		// offset points into a file that no longer exists in that shape.
+		// Re-read it from the start rather than misread it from the middle.
+		accumulated = map[string]eventRecord{}
+		base = 0
+	}
+
+	data, err := r.eventLogs.ReadFrom(ctx, producerID, base)
+	if err != nil {
+		// Fail soft: an unreadable log proves nothing, so the accumulated
+		// events come back unchanged rather than being discarded.
+		glog.V(3).Infof("read event log for producer %s failed: %v", producerID, err)
+		return log.events
+	}
+
+	merged, consumed, ok := r.mergeEventBytes(ctx, producerID, accumulated, data)
+	if !ok {
+		// Cancelled mid-decode. Nothing is published and the offset does not
+		// move, so the next render re-reads the same bytes and merges them
+		// idempotently.
+		return log.events
+	}
+
+	// ⚠️ Publish a FRESH map, never mutate one already returned. Resolve reads
+	// the returned map OUTSIDE this lock, so a map that has been handed out
+	// must be immutable; copy-on-write is what keeps that true. The no-change
+	// paths above return the existing map, which is never written again.
+	log.events = merged
+	// ⚠️ Advanced by the bytes actually consumed — the index of the last
+	// newline plus one, added to the base — never by the file size. A torn
+	// final line lies beyond the last newline and must not be counted against
+	// the offset, or its remainder would be lost when the line completes.
+	log.offset = base + int64(consumed)
+	return merged
+}
+
+// mergeEventBytes decodes the complete lines in data and merges them into
+// accumulated, returning the merged map, the number of bytes consumed and
+// whether the decode ran to completion.
+//
+// ⚠️ Only complete lines are consumed. Everything up to and including the LAST
+// newline is complete; anything after it is a torn final line — a write caught
+// mid-line — and is left unconsumed so the next read sees it whole.
+func (r *provenanceResolver) mergeEventBytes(
+	ctx context.Context,
+	producerID ProducerID,
+	accumulated map[string]eventRecord,
+	data []byte,
+) (map[string]eventRecord, int, bool) {
+	lastNewline := bytes.LastIndexByte(data, '\n')
+	if lastNewline < 0 {
+		// No complete line in the tail: consume nothing and leave the offset
+		// where it was.
+		return accumulated, 0, true
+	}
+
+	merged := make(map[string]eventRecord, len(accumulated))
+	for itemID, record := range accumulated {
+		merged[itemID] = record
+	}
+
+	for _, line := range strings.Split(string(data[:lastNewline+1]), "\n") {
+		// A client that has gone away must stop the decode rather than let it
+		// run to the end of a large tail.
 		select {
 		case <-ctx.Done():
 			glog.V(3).Infof("event log scan cancelled for producer %s", producerID)
-			return events
+			return accumulated, 0, false
 		default:
 		}
-		line := strings.TrimSpace(scanner.Text())
+		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
 		var record eventRecord
 		if err := json.Unmarshal([]byte(line), &record); err != nil {
-			glog.V(3).
-				Infof("parse event line in %s failed: %v", filepath.Join(r.stateDir, name), err)
+			glog.V(3).Infof("parse event line for producer %s failed: %v", producerID, err)
 			continue
 		}
 		if record.ItemID == "" {
 			continue
 		}
-		previous, seen := events[record.ItemID]
+		previous, seen := merged[record.ItemID]
 		if seen && (previous.Host != "" || previous.Cwd != "" || previous.Pane != "") {
 			continue
 		}
-		events[record.ItemID] = record
+		merged[record.ItemID] = record
 	}
-	if err := scanner.Err(); err != nil {
-		glog.V(3).Infof("read event log %s failed: %v", filepath.Join(r.stateDir, name), err)
-	}
-	return events
+	return merged, lastNewline + 1, true
 }
 
 // sessionNames reads the session registry as `session id -> the name it holds
