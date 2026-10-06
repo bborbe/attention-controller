@@ -266,7 +266,22 @@ func (p PushRequest) Validate(ctx context.Context) error {
 		),
 		validation.Name("Questions", validation.HasValidationFunc(p.validateQuestions)),
 		validation.Name("AnswerMechanism", p.AnswerMechanism),
+		validation.Name("ExpiresAt", validation.HasValidationFunc(p.validateExpiresAt)),
 	}.Validate(ctx)
+}
+
+// validateExpiresAt applies the shared deadline rule to a push request.
+//
+// ⚠️ This half is the one that covers a dedup RE-push, and leaving it out is how
+// the guard first shipped half-armed. `Item.Validate` runs only on the
+// fresh-item path; a re-push onto an existing open key goes through
+// `updateExistingIfLive`, which never validates. Without this rule a producer
+// re-pushing `expires_at: 0001-01-01T00:00:00Z` onto a key it already holds
+// stores a zero instant unchecked, and that row is deleted on the next read.
+// The rule itself lives in one place so the request gate and the stored item
+// cannot disagree about what a deadline is.
+func (p PushRequest) validateExpiresAt(ctx context.Context) error {
+	return validateExpiresAt(ctx, p.ExpiresAt)
 }
 
 // validateOptions enforces the schema's message-only rule for `options`, at push

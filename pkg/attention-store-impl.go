@@ -88,7 +88,7 @@ var attentionOpenIndexBucketName = libkv.NewBucketName("attention-open-index")
 const openIndexMarkerKey = "!"
 
 // attentionHistoryIndexBucketName is the bucket `History` scans. It holds a copy
-// of every item — History never filters on state or liveness — keyed by
+// of every item — History never filters on state or liveness — its one narrowing is an expired OPEN item, which is neither what resolved nor what escalated — keyed by
 // `created_at|item_id` rather than by the item id, so a cursor reads it
 // NEWEST-FIRST and a page costs the page rather than the store.
 //
@@ -168,6 +168,16 @@ type attentionStore struct {
 }
 
 func (a *attentionStore) Push(ctx context.Context, request PushRequest) (*Item, error) {
+	// ⚠️ The store validates its own request rather than trusting the caller.
+	// The HTTP handler does call `PushRequest.Validate` today, so nothing is
+	// unguarded in production — but `Push` is an exported interface method, and a
+	// guard whose completeness rests on every future caller remembering is the
+	// half-armed shape this rule was added to close. `updateExistingIfLive`
+	// rewrites `ExpiresAt` in place with no validation of its own, so a dedup
+	// re-push is the path that needs it most, and it is reached from here.
+	if err := request.Validate(ctx); err != nil {
+		return nil, errors.Wrap(ctx, err, "validate push request failed")
+	}
 	var result *Item
 	err := a.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
 		updated, err := a.updateExistingIfLive(ctx, tx, request)
@@ -310,6 +320,7 @@ func (a *attentionStore) classifyForRead(
 	item Item,
 	includeAnswered bool,
 	liveness sessionLiveness,
+	now libtime.DateTime,
 ) (readDisposition, error) {
 	if item.State == AnsweredState && includeAnswered {
 		// Rendered as a dimmed record. Never liveness-tested and never pruned.
@@ -317,6 +328,16 @@ func (a *attentionStore) classifyForRead(
 	}
 	if item.State != OpenState {
 		return readDisposition{}, nil
+	}
+	if isExpired(&item, now) {
+		// ⚠️ Checked BEFORE liveness, and the order is load-bearing. An expired
+		// item is moot whoever is still alive, and an `owner:` item is never
+		// liveness-pruned at all — so this branch is the only thing bounding the
+		// survivor the marker exists to keep. Without it the marker trades
+		// "gates vanish before they are answered" for "gates never vanish".
+		glog.V(2).
+			Infof("removing item %s: expires_at %s has passed", item.ItemID, item.ExpiresAt.Time())
+		return readDisposition{remove: true}, nil
 	}
 	live, err := a.isProducerLiveWith(ctx, &item, liveness)
 	if err != nil {
@@ -337,6 +358,25 @@ func (a *attentionStore) classifyForRead(
 	// The producer reported a condition rather than asking a question.
 	// The operator can still act on it, so it stays open.
 	return readDisposition{keep: true}, nil
+}
+
+// isExpired reports whether the producer's own deadline has passed.
+//
+// ⚠️ An item with no `expires_at` does NOT expire, and that is the schema's
+// default rather than an oversight: a lost ask costs work stalled silently, so
+// persistence is what an unanswered item gets unless its producer declares a
+// deadline — the schema's "a gate on an action that becomes moot at a known
+// time". Reading an absent field as an expired one would reintroduce exactly
+// the lost ask this read path exists to prevent.
+//
+// ⚠️ The comparison is `!now.Before(deadline)`, not `now.After(deadline)`: an
+// item whose deadline is exactly now has expired, and the two spellings differ
+// on that instant.
+func isExpired(item *Item, now libtime.DateTime) bool {
+	if item.ExpiresAt == nil {
+		return false
+	}
+	return !now.Time().Before(item.ExpiresAt.Time())
 }
 
 // read is the shared body of Read and ReadBoard; includeAnswered is their only
@@ -403,10 +443,16 @@ func (a *attentionStore) read(ctx context.Context, includeAnswered bool) (Items,
 	// twice — once here, once there.
 	liveness := newReadSessionLiveness(a.sessionLivenessChecker)
 
+	// ⚠️ One `now` for the whole scan, not one per item. The getter is cheap — a
+	// vDSO call with no lock — so this is not a cost argument: it is that every
+	// item in a read should be judged against the SAME instant, or two items
+	// written together can straddle a deadline inside a single scan.
+	now := a.currentDateTimeGetter.Now()
+
 	kept := make(Items, 0, len(items))
 	dead := make([]string, 0, len(items))
 	for _, stored := range items {
-		disposition, err := a.classifyForRead(ctx, stored.item, includeAnswered, liveness)
+		disposition, err := a.classifyForRead(ctx, stored.item, includeAnswered, liveness, now)
 		if err != nil {
 			return nil, errors.Wrap(ctx, err, "classify item failed")
 		}
@@ -618,7 +664,7 @@ func (a *attentionStore) reconcileIndexes(
 		return err
 	}
 	// ⚠️ History is the one index whose predicate is constant — every item belongs
-	// whatever its state, because History never filters — and it is also the one
+	// whatever its state, because History narrows only on expiry — an expired OPEN item, which is neither what resolved nor what escalated — and it is also the one
 	// index whose key can MOVE, because that key is derived from CreatedAt.
 	//
 	// ⚠️ An earlier version of this comment claimed CreatedAt "is written once and
@@ -1132,9 +1178,13 @@ func (a *attentionStore) pruneDead(ctx context.Context, keys []string) error {
 	}
 	liveness := newReadSessionLiveness(a.sessionLivenessChecker)
 	liveness.resolveNow(ctx)
+	// ⚠️ One `now` for the whole batch, matching `read()`: every key in a single
+	// prune is judged against the same instant, so a deadline cannot fall between
+	// two keys of the same batch.
+	now := a.currentDateTimeGetter.Now()
 	err := a.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
 		for _, key := range keys {
-			remove, err := a.stillDead(ctx, tx, key, liveness)
+			remove, err := a.stillRemovable(ctx, tx, key, liveness, now)
 			if err != nil {
 				return err
 			}
@@ -1153,22 +1203,29 @@ func (a *attentionStore) pruneDead(ctx context.Context, keys []string) error {
 	return nil
 }
 
-// stillDead re-checks one key the read classified dead, against a snapshot taken
-// after the disposition rather than the one it came from — fresher, not live.
-// The window it closes is classification → prune; the window it leaves open is
-// resolve → lock-acquire, so a session resumed inside that second window is
-// still pruned. Named rather than implied: the earlier wording claimed "the
-// value that is live now", which the snapshot does not give.
+// stillRemovable re-checks one key the read classified for removal, against a
+// snapshot taken after the disposition rather than the one it came from —
+// fresher, not live. The window it closes is classification → prune; the window
+// it leaves open is resolve → lock-acquire, so a session resumed inside that
+// second window is still pruned. Named rather than implied: the earlier wording
+// claimed "the value that is live now", which the snapshot does not give.
+//
+// ⚠️ It is named for what it answers — "should this still be removed?" — rather
+// than for liveness, because removal now has two independent causes and only one
+// of them is death. A name that said `Dead` would read as a promise that the
+// liveness check below decides, and it does not.
 //
 // It is a method rather than an inline branch for the same reason
-// classifyForRead is one: the state check and the liveness check together
-// exceed the complexity budget the linter allows the prune loop, and the
-// not-found case is easier to read stated once here than as a nested continue.
-func (a *attentionStore) stillDead(
+// classifyForRead is one: the state check, the expiry check and the liveness
+// check together exceed the complexity budget the linter allows the prune loop,
+// and the not-found case is easier to read stated once here than as a nested
+// continue.
+func (a *attentionStore) stillRemovable(
 	ctx context.Context,
 	tx libkv.Tx,
 	key string,
 	liveness sessionLiveness,
+	now libtime.DateTime,
 ) (bool, error) {
 	item, err := a.store.Get(ctx, tx, key)
 	if err != nil {
@@ -1184,6 +1241,21 @@ func (a *attentionStore) stillDead(
 	// prune destroying a resolution the operator just recorded.
 	if item.State != OpenState {
 		return false, nil
+	}
+	// ⚠️ Expiry is re-checked FIRST, and the re-check is not redundant with the
+	// classification. `updateExistingIfLive` rewrites an open row in place on a
+	// dedup re-push — `ExpiresAt` included — so the deadline the scan saw is not
+	// necessarily the one standing now.
+	//
+	// ⚠️ And it must NOT sit behind the liveness re-check below. That re-check
+	// exists because LIVENESS IS NOT MONOTONIC; expiry is monotonic. For an
+	// `owner:` ref `isProducerLiveWith` returns a constant `true`, so an expired
+	// owner item left behind the liveness check is hidden from the board while
+	// its row survives — and the next dedup re-push of the same key resurrects
+	// it, because `updateExistingIfLive` matches the row that was never deleted.
+	// A board that hides a row is not a row that is gone.
+	if isExpired(item, now) {
+		return true, nil
 	}
 	live, err := a.isProducerLiveWith(ctx, item, liveness)
 	if err != nil {
@@ -1203,7 +1275,8 @@ func (a *attentionStore) stillDead(
 // filters to open items and removes dead askers as a side effect, which makes
 // it blind to everything that has left the queue — and it cannot report a
 // history at all, because the act of reading would delete part of what it
-// reports. History filters on nothing and prunes nothing. An answered or closed
+// reports. History prunes nothing, and narrows on exactly one thing: an expired
+// OPEN item, which is neither what resolved nor what escalated. An answered or closed
 // item is exactly what a caller counting resolutions needs, and removing it
 // would rewrite the history the schema says is never rewritten.
 //
@@ -1266,6 +1339,11 @@ func (a *attentionStore) collectHistoryPage(
 	}
 	it := bucket.IteratorReverse()
 	defer it.Close()
+	// ⚠️ One `now` for the whole walk, matching `read()`. History is a scan over
+	// the same field with the same straddle hazard, and it is the endpoint whose
+	// stated purpose is a stable count — a deadline crossed mid-walk would drop a
+	// row from a set the caller is counting.
+	now := a.currentDateTimeGetter.Now()
 	items := make(Items, 0)
 	skipped := 0
 	for it.Rewind(); it.Valid(); it.Next() {
@@ -1282,16 +1360,28 @@ func (a *attentionStore) collectHistoryPage(
 		if string(it.Item().Key()) == historyIndexMarkerKey {
 			continue
 		}
+		item, err := decodeHistoryIndexEntry(ctx, it.Item())
+		if err != nil {
+			return nil, err
+		}
+		// ⚠️ An expired OPEN item is skipped, and it is filtered BEFORE the offset
+		// so it never occupies a page slot. This is History's one narrowing:
+		// "filters on nothing" holds for answered and closed items — their history
+		// is never rewritten — while a moot open item is neither what resolved nor
+		// what escalated, the population this endpoint exists to count.
+		//
+		// ⚠️ It also means the page is decoded before the offset is applied, where
+		// the offset used to skip without decoding at all. That cost is what buys
+		// the filter: expiry cannot be read off the index key.
+		if item.State == OpenState && isExpired(&item, now) {
+			continue
+		}
 		if skipped < offset {
 			skipped++
 			continue
 		}
 		if limit > 0 && len(items) >= limit {
 			break
-		}
-		item, err := decodeHistoryIndexEntry(ctx, it.Item())
-		if err != nil {
-			return nil, err
 		}
 		items = append(items, item)
 	}
@@ -1779,11 +1869,12 @@ func (a *attentionStore) isProducerLiveWith(
 		// prunes an operator gate the operator can still answer — the defect this
 		// model exists to fix, one layer in. So this model probes NOTHING.
 		//
-		// ⚠️ `expires_at` is NOT the bound either, and must not be described as
-		// one: nothing in this repo compares it to the current time — the field
-		// is written at push and never read. An unanswered `owner:` item
-		// therefore lives until something else closes it. That is the honest
-		// statement, and the enforcement gap is a separate defect.
+		// ⚠️ The bound on this model is `expires_at`, enforced in
+		// `classifyForRead` — and checked BEFORE this probe, so an `owner:` item
+		// past its declared deadline is removed however alive its owner reads.
+		// An item declaring no deadline is unbounded, which is the schema's
+		// default: persistence is what an unanswered ask gets unless its
+		// producer says otherwise.
 		return true, nil
 	case HeartbeatLivenessModel:
 		return a.isHeartbeatFresh(value), nil
