@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.44.0
 
 - feat: open a card body's links in a new tab, so following one no longer navigates the board out from under the operator. Every anchor `renderCardText` authors now carries `target="_blank" rel="noopener noreferrer"` — both the markdown-link branch and the bare-URL autolink. ⚠️ **The `rel` is not decoration.** `target="_blank"` on its own leaves the opened page a live `window.opener` that can navigate the board away, which is the exact harm the new tab exists to prevent; `noreferrer` additionally keeps the board's URL out of the target's referrer. ⚠️ **Scoped to anchors rendered from card body text.** The provenance line's task, goal and topic anchors are `template.URL` interpolations rather than `cardtext` output, and are deliberately unchanged — clicking a card's own task link is the board's navigation, not a jump out of it. Two spec files assert both surfaces, and the change was applied to the provenance literals by mistake first; they were reverted, which is what the `rel`/scope note here exists to keep from recurring.
 
