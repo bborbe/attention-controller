@@ -170,9 +170,12 @@ var _ = Describe("an answer given on the rendered board", func() {
 	// discriminating assertions are the rendered ones, and they come first.
 	//
 	// ⚠️ Line citations in this file are against MASTER, not against this branch.
-	// On master collectAnswers discards the pick at attention-page.go:701-703; on
-	// this branch the function sits at :310-342 and the two discard points are
-	// :320 (the data-other skip) and :325-327 (the text-first early-out).
+	// On master collectAnswers discards the pick at attention-page.go:701-703. On
+	// this branch the function has MOVED — it sits below the two delegated
+	// listeners, which this work grows — so it is named rather than numbered here:
+	// the `data-other` skip and the text-first early-out inside collectAnswers.
+	// ⚠️ A branch line number in this file is stale the moment a listener above it
+	// gains a line, which is exactly what happened once already.
 	It("checks Other and clears the pick when text is typed after one", func() {
 		itemID := pushCard(pkg.PushRequest{
 			DedupKey:        "shape-pick-then-type",
@@ -241,11 +244,15 @@ var _ = Describe("an answer given on the rendered board", func() {
 
 		pick(page, itemID, "Cheese")
 		pick(page, itemID, "Olives")
-		// Both targets, because they are not the same test. The caption is the
-		// wide one an operator actually aims at, and it is a click on the
-		// enclosing label rather than on the control — so a guard keyed to the
-		// control's own attribute passes the first click here and lets the second
-		// through.
+		// Both targets, because they are not the same test: the caption is the
+		// wide one an operator actually aims at, and a click there is a click on
+		// the enclosing label rather than on the control.
+		// ⚠️ NOT because the two guards differ — an earlier version of this
+		// comment claimed a control-keyed guard would let the caption through, and
+		// the caption case below records the opposite as measured: label
+		// activation forwards a click whose target IS the control, so the narrow
+		// guard caught it too. Clicking both is about covering the target the
+		// operator reaches for, not about two guards.
 		click(page, itemID, "input[data-other]")
 		click(page, itemID, ".option-other .option-label")
 
@@ -379,6 +386,43 @@ var _ = Describe("an answer given on the rendered board", func() {
 		Expect(item.Answer).NotTo(BeNil())
 		Expect(item.Answer.Kind).To(Equal(pkg.OptionAnswerKind))
 		Expect(string(item.Answer.Value)).To(Equal("Anna"))
+	})
+
+	// The one path where the answer REVERTS rather than switching: emptying the
+	// field releases the Other pick, which is the only way back to an unanswered
+	// card. Every other case types or types-then-picks; none of them empties.
+	It("releases the Other pick when the field is emptied", func() {
+		itemID := pushCard(pkg.PushRequest{
+			DedupKey:        "shape-empty-field",
+			Payload:         "e2e: a name",
+			AnswerMechanism: pkg.MessageAnswerMechanism,
+			Options:         options("Anna", "Bob"),
+		})
+		page = newPage("")
+
+		Expect(
+			page.Locator(rowSelector(itemID) + " input[name=text]:visible").Fill("Zoe"),
+		).To(Succeed())
+		Expect(
+			page.Locator(rowSelector(itemID) + " input[data-other]:visible").IsChecked(),
+		).To(BeTrue())
+
+		Expect(
+			page.Locator(rowSelector(itemID) + " input[name=text]:visible").Fill(""),
+		).To(Succeed())
+
+		// Released, and nothing takes its place — the card is unanswered again.
+		Expect(
+			page.Locator(rowSelector(itemID) + " input[data-other]:visible").IsChecked(),
+		).To(BeFalse())
+		Expect(
+			page.Locator(rowSelector(itemID) + ` input[data-option="Anna"]:visible`).IsChecked(),
+		).To(BeFalse())
+
+		// And the submission refuses rather than sending an empty answer: no
+		// request goes out, so the item never leaves the open state.
+		click(page, itemID, "button.next")
+		Expect(storedItem(itemID).State).To(Equal(pkg.OpenState))
 	})
 
 	It("stores a multi-tab card as one entry per answered question, keyed by question", func() {
