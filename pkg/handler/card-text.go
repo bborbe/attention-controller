@@ -112,12 +112,16 @@ func cardTextString(value any) string {
 //
 //   - A markdown link whose scheme is not allowlisted renders as its own
 //     escaped text — no anchor. The scheme is checked, never inherited.
-//   - A bare URL is autolinked only when it is *not* preceded by `](`. That
-//     conjunct is what stops a payload the producer cut mid-link
+//   - A bare URL is autolinked only when the two bytes before it are not `](`.
+//     That lookbehind is what stops a payload the producer cut mid-link
 //     (`[pane 88](http://127.0.0.1:1337/`) from rendering a clickable
 //     half-link: the URL is real and the link syntax is broken, so linking it
-//     would point the operator at a 404 while looking correct. An unclosed
-//     `](` suppresses the anchor *and* the autolink.
+//     would point the operator at a 404 while looking correct. ⚠️ It is a fixed
+//     two-byte test, not a parse — `[label] (url)`, with a space between them,
+//     still autolinks its URL. That is the right call, since that form is not
+//     valid link syntax and the URL is genuinely bare, and it does not weaken
+//     the case the rule exists for: the producer cuts at end-of-string, so the
+//     two bytes before a cut URL are always `](`.
 //   - Nothing else is markup. A body carrying `<script>` renders the literal
 //     text, escaped.
 //
@@ -195,12 +199,13 @@ func cardLinkAt(text string, i int) (string, int, bool) {
 // cardBareURLAt returns the markup for a bare http(s) URL starting at text[i]
 // and the number of bytes it consumes. ok is false when none starts there.
 //
-// ⚠️ A URL immediately preceded by `](` is emitted as text, never as an anchor.
-// That conjunct is what stops a payload the producer cut mid-link
-// (`[pane 88](http://127.0.0.1:1337/`) from rendering a clickable half-link: the
-// URL is real and the link syntax is broken, so linking it would point the
-// operator at a 404 while looking correct. An unclosed `](` suppresses the
-// anchor *and* the autolink.
+// ⚠️ A URL whose two immediately preceding bytes are `](` is emitted as text,
+// never as an anchor. That lookbehind is what stops a payload the producer cut
+// mid-link (`[pane 88](http://127.0.0.1:1337/`) from rendering a clickable
+// half-link: the URL is real and the link syntax is broken, so linking it would
+// point the operator at a 404 while looking correct. It is a fixed two-byte
+// test rather than a parse, so `[label] (url)` — a space between them — still
+// autolinks its URL; see renderCardText for why that is correct.
 //
 // The first-byte guard keeps the loop linear, for the reason given on cardLinkAt.
 func cardBareURLAt(text string, i int) (string, int, bool) {
