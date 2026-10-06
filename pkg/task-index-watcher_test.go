@@ -100,9 +100,9 @@ var _ = Describe("TaskIndexWatcher", func() {
 		writeVaultTask(vault, "Steady.md", "---\nclaude_session_id: session-steady\n---\n")
 		index := pkg.NewTaskIndex(ctx, vault, clock)
 
-		counter, ok := index.(interface{ RebuildCount() int })
-		Expect(ok).To(BeTrue(), "the task index must expose its rebuild count")
-		Expect(counter.RebuildCount()).To(Equal(0), "the boot build is not a rebuild")
+		counter, ok := index.(interface{ RefreshCount() int })
+		Expect(ok).To(BeTrue(), "the task index must expose its refresh count")
+		Expect(counter.RefreshCount()).To(Equal(0), "the boot build is not a rebuild")
 
 		// Many renders with the clock unadvanced: the common path is a map hit and
 		// rebuilds nothing.
@@ -111,7 +111,7 @@ var _ = Describe("TaskIndexWatcher", func() {
 			Expect(ok).To(BeTrue())
 			Expect(task.Name).To(Equal("Steady"))
 		}
-		Expect(counter.RebuildCount()).To(Equal(0),
+		Expect(counter.RefreshCount()).To(Equal(0),
 			"a render inside the backstop window must not rebuild")
 	})
 
@@ -120,8 +120,8 @@ var _ = Describe("TaskIndexWatcher", func() {
 		writeVaultTask(vault, "Steady.md", "---\nclaude_session_id: session-steady\n---\n")
 		index := pkg.NewTaskIndex(ctx, vault, clock)
 
-		counter, ok := index.(interface{ RebuildCount() int })
-		Expect(ok).To(BeTrue(), "the task index must expose its rebuild count")
+		counter, ok := index.(interface{ RefreshCount() int })
+		Expect(ok).To(BeTrue(), "the task index must expose its refresh count")
 
 		// ⚠️ More than the two-second window this change replaces, less than the
 		// five-minute backstop. The lower bound is load-bearing: an advance under
@@ -131,7 +131,7 @@ var _ = Describe("TaskIndexWatcher", func() {
 		task, ok := index.Lookup("session-steady")
 		Expect(ok).To(BeTrue())
 		Expect(task.Name).To(Equal("Steady"))
-		Expect(counter.RebuildCount()).To(Equal(0),
+		Expect(counter.RefreshCount()).To(Equal(0),
 			"a lookup inside the backstop window must not rebuild")
 	})
 })
