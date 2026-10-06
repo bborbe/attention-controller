@@ -208,6 +208,48 @@ var _ = Describe("an answer given on the rendered board", func() {
 		Expect(string(item.Answer.Value)).To(Equal("Zoe"))
 	})
 
+	// The multi-pick twin of the case above, and the one path a click reaches
+	// that typing never does. On a multi-pick card the Other control is a
+	// checkbox, so the operator can check it WITHOUT firing the `input` listener
+	// — a click on a checkbox fires `input`, but its target is the control, not
+	// the text field, so the listener's class guard returns early. collectAnswers
+	// skips the control's own value, so a checked Other with an empty field would
+	// read as a pick on screen and be dropped by the submission: the same defect
+	// this change removes, one layer down. The control is click-inert instead —
+	// the click is prevented and the field takes focus — which also matters on a
+	// single-pick card, where the click would otherwise release the earlier pick
+	// with nothing to restore it.
+	It("refuses a click on Other with no text and keeps the picks already made", func() {
+		itemID := pushCard(pkg.PushRequest{
+			DedupKey:          "shape-multi-other-click",
+			Payload:           "e2e: pick toppings",
+			AnswerMechanism:   pkg.MessageAnswerMechanism,
+			AnswerCardinality: pkg.MultipleAnswerCardinality,
+			Options:           options("Cheese", "Ham", "Olives"),
+		})
+		page = newPage("")
+
+		pick(page, itemID, "Cheese")
+		pick(page, itemID, "Olives")
+		click(page, itemID, "input[data-other]")
+
+		// The click neither checks Other nor releases the picks already made.
+		Eventually(func() (bool, error) {
+			return page.Locator(rowSelector(itemID) + " input[data-other]:visible").IsChecked()
+		}).Should(BeFalse())
+		Eventually(func() (bool, error) {
+			return page.Locator(rowSelector(itemID) + ` input[data-option="Cheese"]:visible`).
+				IsChecked()
+		}).Should(BeTrue())
+
+		click(page, itemID, "button.next")
+
+		item := answeredItem(itemID)
+		Expect(item.Answer).NotTo(BeNil())
+		Expect(item.Answer.Kind).To(Equal(pkg.OptionAnswerKind))
+		Expect(item.Answer.Values).To(ConsistOf("Cheese", "Olives"))
+	})
+
 	It("stores a multi-tab card as one entry per answered question, keyed by question", func() {
 		itemID := pushCard(pkg.PushRequest{
 			DedupKey:        "shape-tabs",

@@ -229,6 +229,28 @@ document.addEventListener('input', function (event) {
     if (input !== pick) { input.checked = false; }
   });
 });
+/* The Other control's checked state is owned by the text field, never by a click
+   on the control itself. Two states a click could reach are ones the submission
+   would drop: checked with an empty field (collectAnswers skips the control's own
+   value, so nothing is sent), and unchecked with text still in the field (the
+   text is sent, so the control would read as released while the answer stands).
+   Either one is the shown-pick-versus-sent-pick defect this control exists to
+   remove — and on a single-pick card the click would additionally take the
+   operator's earlier pick with it, because a radio group releases the previous
+   selection the moment another is checked, with nothing to restore it.
+   ⚠️ preventDefault on the click, rather than a change handler that reverts: a
+   revert runs AFTER the browser has already toggled the control and, on a radio,
+   already released the previous pick — the damage is done and there is nothing
+   left to undo it with. Preventing the default means the toggle never happens.
+   The field takes focus so the click is a way in rather than a dead end. */
+document.addEventListener('click', function (event) {
+  var pick = event.target;
+  if (!pick || !pick.hasAttribute || !pick.hasAttribute('data-other')) { return; }
+  event.preventDefault();
+  var panel = pick.closest('.panel');
+  var field = panel && panel.querySelector('input.other');
+  if (field) { field.focus(); }
+});
 /* Answer controls exist for message items only, and the form is intercepted so
    a failed answer is shown rather than swallowed into a reload: a bare catch
    that reloads anyway reports a code fault as a connection problem.

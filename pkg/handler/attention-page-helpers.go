@@ -513,7 +513,13 @@ type attentionPageQuestion struct {
 // attention-page.go for the reason this file exists at all: that file sits at
 // revive's 2000-line file-length limit, and the template is one raw string that
 // cannot shed part of itself. The block is concatenated back into the document at
-// the point it was cut from, so the served bytes are unchanged.
+// the point it was cut from, so it still lands where it was cut from.
+//
+// ⚠️ That is a claim about the CONCATENATION POINT, not about the bytes. The same
+// change that moved this block also edited it — `.option input` narrowed to
+// `.option > input`, and a new `.option .other` margin rule added — so the served
+// CSS is not byte-identical to the previous release, and an earlier version of
+// this comment said it was.
 //
 // ⚠️ It is a separate const rather than a file behind //go:embed on purpose: the
 // html/template engine strips CSS comments from the served page, and an embed
