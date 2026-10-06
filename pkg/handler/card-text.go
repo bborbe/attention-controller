@@ -39,9 +39,14 @@ var (
 	cardMarkdownLink = regexp.MustCompile(`\[([^\]]*)\]\(([^()\s]*)\)`)
 
 	// cardBareURL matches a bare http(s) URL. Deliberately excludes the
-	// characters that end a sentence around a URL (`<`, `>`, quotes, parens) so
-	// a URL wrapped in prose is autolinked without swallowing the prose.
-	cardBareURL = regexp.MustCompile(`https?://[^\s<>"']+`)
+	// characters that end a sentence around a URL — `<`, `>`, quotes, and the
+	// parens — so a URL wrapped in prose is autolinked without swallowing the
+	// prose. ⚠️ `)` is in that set and is the one that matters: without it
+	// `see (https://example.com)` links to `https://example.com)` and the
+	// anchor points at a URL that does not exist. The cost is a URL whose own
+	// path carries a paren is cut at it, which is the rarer case on this board
+	// and the safer failure.
+	cardBareURL = regexp.MustCompile(`https?://[^\s<>"'()]+`)
 )
 
 // cardScheme returns the scheme of a URL, lowercased, or "" when the value
