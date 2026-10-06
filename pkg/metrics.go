@@ -6,9 +6,9 @@ package pkg
 
 //counterfeiter:generate -o ../mocks/metrics.go --fake-name Metrics . Metrics
 
-// Metrics counts what the board's shared render path does, so the fan-out
-// ratio can be read off the deployed binary's /metrics rather than only
-// proven by a spec.
+// Metrics counts what the board does — the shared renderer's work and the
+// per-client page requests — so the fan-out ratio and the request rate can be
+// read off the deployed binary's /metrics rather than only proven by a spec.
 //
 // It is injected rather than reached for: the handler's constructor takes
 // one, so a spec can build the counters on its own registry and read them
