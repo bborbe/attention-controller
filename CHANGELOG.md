@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.48.1
 
 - test: move the `TaskIndex` specs and their `writeVaultFile` / `writeVaultTask` fixtures out of `pkg/provenance_test.go` into `pkg/task-index_test.go`, changing nothing else. `pkg/provenance_test.go` had reached 1,979 of revive's 2,000-line limit, so the next spec added to it would fail `make lint` — the move gives it headroom rather than leaving it one spec away from a build break. Verified as a pure move: all 614 relocated lines appear verbatim in the new file and the spec count is unchanged at 66.
 
