@@ -10,11 +10,30 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/bborbe/collection"
 	"github.com/bborbe/errors"
+	libtime "github.com/bborbe/time"
 	"github.com/golang/glog"
 )
+
+// sessionRegistryCacheWindow is how long one listing of the session registry
+// is reused before the next caller re-reads it.
+//
+// Measured on the deployed board 2026-10-07 with /debug/pprof/profile (45 s
+// under live poll load): the registry read path was 35.33 % of the process's
+// CPU — the single largest application frame — because every read request took
+// a fresh listing, and each listing is roughly 41 openat+read+close triples
+// over `~/.claude/sessions`. The clients that drive it poll every 2 s, while
+// the registry itself changes only when a session starts or exits, so nearly
+// every one of those listings re-read bytes that had not moved.
+//
+// ⚠️ The window is NOT a correctness budget. `readSessionLiveness` re-lists
+// fresh on a miss before it answers "gone", so a stale window can only ever
+// delay a prune, never cause one.
+const sessionRegistryCacheWindow = libtime.Duration(1 * time.Second)
 
 //counterfeiter:generate -o ../mocks/session-liveness-checker.go --fake-name SessionLivenessChecker . SessionLivenessChecker
 
@@ -35,11 +54,32 @@ type SessionLivenessChecker interface {
 // NewSessionLivenessChecker creates a checker reading the given registry
 // directory.
 func NewSessionLivenessChecker(sessionsDir string) SessionLivenessChecker {
-	return &sessionLivenessChecker{sessionsDir: sessionsDir}
+	return NewSessionLivenessCheckerWithClock(sessionsDir, libtime.NewCurrentDateTime())
+}
+
+// NewSessionLivenessCheckerWithClock creates a checker reading the given
+// registry directory and measuring its cache window against the given clock.
+func NewSessionLivenessCheckerWithClock(
+	sessionsDir string,
+	now libtime.CurrentDateTimeGetter,
+) SessionLivenessChecker {
+	return &sessionLivenessChecker{sessionsDir: sessionsDir, now: now}
 }
 
 type sessionLivenessChecker struct {
 	sessionsDir string
+	now         libtime.CurrentDateTimeGetter
+	// mu guards the cached listing below. ⚠️ Unlike the sibling cache in
+	// provenanceResolver it IS held across the listing itself — see
+	// LiveSessions for why.
+	mu sync.Mutex
+	// cached is the last listing, cachedReadable whether it could be read at
+	// all, and cachedAt the clock reading at which it was taken. haveCached
+	// separates "no listing yet" from a listing of an empty registry.
+	cached         SessionIDs
+	cachedReadable bool
+	cachedAt       libtime.DateTime
+	haveCached     bool
 }
 
 // sessionRegistryEntry is one `<pid>.json` in the session registry. Three
@@ -81,6 +121,15 @@ type sessionSnapshotter interface {
 	LiveSessions(ctx context.Context) (SessionIDs, bool)
 }
 
+// sessionFreshLister is the uncached half of the one-listing capability: it
+// lists the registry without consulting the cache. It is separate from
+// sessionSnapshotter for the same reason that interface is separate from
+// SessionLivenessChecker — a fake that implements only the cached listing
+// must keep working, and must not silently satisfy this one.
+type sessionFreshLister interface {
+	LiveSessionsFresh(ctx context.Context) (SessionIDs, bool)
+}
+
 // IsLive reports whether any registry entry carries this session id. The
 // registry is authoritative: an entry is deleted on exit, so presence means
 // live and absence means gone.
@@ -96,18 +145,72 @@ func (s *sessionLivenessChecker) IsLive(ctx context.Context, sessionID string) b
 		// reads as live, and the failure is logged rather than acted on.
 		return true
 	}
-	return ids.Contains(sessionID)
+	if ids.Contains(sessionID) {
+		return true
+	}
+	// The listing above may be a cached one up to sessionRegistryCacheWindow
+	// old, and a session that registered inside that window is absent from it.
+	// Answering "gone" from a stale listing is the one wrong answer this cache
+	// could produce, so a miss re-lists fresh before it commits to it.
+	fresh, freshReadable := s.LiveSessionsFresh(ctx)
+	if !freshReadable {
+		return true
+	}
+	return fresh.Contains(sessionID)
 }
 
-// LiveSessions lists every session id the registry holds, in one pass. It is
-// the ONLY place Readdirnames is called on the registry, so a read of the store
-// pays one listing rather than one per item.
+// LiveSessions lists every session id the registry holds, serving a listing
+// taken within sessionRegistryCacheWindow when one is held and re-listing
+// otherwise.
+//
+// ⚠️ The mutex IS held across the listing, and that is the one place this file
+// departs from the sibling cache in provenanceResolver. The listing is a
+// bounded local directory walk — no subprocess, no network — so holding the
+// lock costs a bounded read, and it is what stops N concurrent pollers turning
+// one stale window into N simultaneous listings: the stampede this cache exists
+// to remove. provenanceResolver releases its lock across its refresh because
+// that refresh runs a subprocess with a multi-second timeout.
+func (s *sessionLivenessChecker) LiveSessions(ctx context.Context) (SessionIDs, bool) {
+	now := s.now.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.haveCached && now.Sub(s.cachedAt) < sessionRegistryCacheWindow {
+		return s.cached, s.cachedReadable
+	}
+	ids, readable := s.list(ctx)
+	s.cached = ids
+	s.cachedReadable = readable
+	// ⚠️ Stamped AFTER the listing returns, not from the `now` read at entry.
+	// Stamping at entry would make the window cover the listing itself, so a
+	// slow listing would publish an already-expired snapshot.
+	s.cachedAt = s.now.Now()
+	s.haveCached = true
+	return ids, readable
+}
+
+// LiveSessionsFresh lists the registry without consulting the cache. It
+// publishes nothing: a fresh read must leave the cache as it found it, so this
+// cannot be turned into a cache-poisoning path.
+func (s *sessionLivenessChecker) LiveSessionsFresh(ctx context.Context) (SessionIDs, bool) {
+	return s.list(ctx)
+}
+
+// list reads every session id the registry holds, in one pass. It is the ONLY
+// place Readdirnames is called on the registry, so a read of the store pays one
+// listing rather than one per item.
 //
 // The second result is false when the registry could not be read at all — an
 // absent directory, an unopenable one, or a failed listing. That is a distinct
 // answer from an empty set: an empty readable registry proves every session is
 // gone, while an unreadable one proves nothing and reads as live.
-func (s *sessionLivenessChecker) LiveSessions(ctx context.Context) (SessionIDs, bool) {
+//
+// ⚠️ The ctx parameter is unused, and the signature is kept anyway: it is the
+// single body both halves of the listing capability share, so it carries the
+// shape sessionSnapshotter and sessionFreshLister declare rather than a shape
+// this body needs. Dropping it would make the two callers adapt instead.
+//
+//nolint:unparam // ctx is fixed by the listing capability's signature, not by this body
+func (s *sessionLivenessChecker) list(ctx context.Context) (SessionIDs, bool) {
 	// The registry is opened as an os.Root so every read is confined beneath
 	// it — the entry names come from ReadDir, but scoping the handle makes the
 	// confinement structural rather than an assumption about those names.
@@ -199,9 +302,19 @@ func (s sessionSnapshot) IsLive(ctx context.Context, sessionID string) bool {
 // that tests no session-model item — one whose items all carry heartbeat refs —
 // must not list the registry at all, and resolving in the constructor would
 // list it for every read regardless of what the read contains.
+//
+// ⚠️ A lookup that MISSES re-lists fresh before it answers "gone" — see IsLive.
+// That is what makes the checker's cache window safe: the snapshot may be up to
+// sessionRegistryCacheWindow old, but a wrong "gone" prunes a live item, while a
+// wrong "live" only delays a prune by up to that window. The direction of the
+// guarantee is one-sided on purpose, and the guard fires at most ONCE per
+// instance, so a read whose items are all genuinely dead does not re-list once
+// per item.
 type readSessionLiveness struct {
 	checker  SessionLivenessChecker
 	resolved sessionLiveness
+	// rechecked is whether the miss guard has already fired for this instance.
+	rechecked bool
 }
 
 // newReadSessionLiveness creates a per-caller liveness source over a checker.
@@ -210,8 +323,27 @@ func newReadSessionLiveness(checker SessionLivenessChecker) *readSessionLiveness
 }
 
 // IsLive resolves the source on the first call and answers from it thereafter.
+// A miss against that source re-lists the registry once — see the type comment.
 func (r *readSessionLiveness) IsLive(ctx context.Context, sessionID string) bool {
 	r.resolveNow(ctx)
+	if r.resolved.IsLive(ctx, sessionID) {
+		return true
+	}
+	// Already re-listed for this read: the answer stands, so a read whose items
+	// are all dead pays one extra listing rather than one per item.
+	if r.rechecked {
+		return false
+	}
+	r.rechecked = true
+	fresh, ok := r.checker.(sessionFreshLister)
+	if !ok {
+		// A checker that cannot list fresh — a Counterfeiter fake, or any future
+		// remote probe — answers from its snapshot alone, so the guard is inert
+		// there and the interface stays the only contract a caller must satisfy.
+		return false
+	}
+	ids, readable := fresh.LiveSessionsFresh(ctx)
+	r.resolved = sessionSnapshot{ids: ids, readable: readable}
 	return r.resolved.IsLive(ctx, sessionID)
 }
 
