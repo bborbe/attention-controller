@@ -368,13 +368,23 @@ var _ = Describe("the session name on the served page", func() {
 		// is read at render time, but it is served from that cache inside the
 		// window, so without this the second load would legitimately still see the
 		// pre-rename registry.
+		//
+		// ⚠️ And past the window the load serves the snapshot it already holds and
+		// refreshes BEHIND the request, so the rename does not show on this load
+		// either — it shows on a later one, once the background refresh has
+		// published. The stale load is asserted directly, and the rename is
+		// asserted with Eventually over further loads.
 		writeSession("106", "session-renamed", "After Rename", "user")
 		clock.SetNow(clock.Now().Add(libtime.Duration(3 * 1e9)))
 
-		second := rowOf(get(page).Body.String(), item.ItemID)
-		Expect(second).To(ContainSubstring(`<span class="session-name">After Rename</span>`))
+		stale := rowOf(get(page).Body.String(), item.ItemID)
+		Expect(stale).To(ContainSubstring(`<span class="session-name">Before Rename</span>`))
+
+		Eventually(func() string {
+			return rowOf(get(page).Body.String(), item.ItemID)
+		}, "2s").Should(ContainSubstring(`<span class="session-name">After Rename</span>`))
 		// The first load's name is gone, not merely superseded.
-		Expect(second).NotTo(ContainSubstring("Before Rename"))
+		Expect(rowOf(get(page).Body.String(), item.ItemID)).NotTo(ContainSubstring("Before Rename"))
 	})
 
 	It("keeps the task, goal and topic spans beside the session name", func() {

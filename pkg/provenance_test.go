@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/bborbe/errors"
 	"github.com/bborbe/run"
@@ -435,8 +436,20 @@ var _ = Describe("ProvenanceResolver", func() {
 		// of connected clients: every store change wakes every stream, and each
 		// one would otherwise re-read the pane listing (a subprocess), the
 		// registry and the 1,114-file ledger.
+		//
+		// ⚠️ Past the window the resolve no longer reads at all: it serves the
+		// snapshot already in hand and refreshes behind the request, so the fresh
+		// value arrives on a LATER resolve. The stale return is asserted directly,
+		// and the refresh is proven to have run by the listing count reaching 2 —
+		// the count cannot express "the request path did not read", because the
+		// background goroutine's call is indistinguishable from a request-path
+		// one; the synchronous-return spec below is where that property is
+		// pinned.
+		writeSessionWithSource("1", "session-w", "Before Name", "user")
 		writeEvents("producer-w", eventLine("key-w", "producer-w", "burn", "/w/w", "", ""))
-		items := pkg.Items{item("item-w", "producer-w", "key-w")}
+		items := pkg.Items{
+			sessionItem("item-w", "producer-w", "key-w", "session-w"),
+		}
 
 		resolver.Resolve(ctx, items)
 		Expect(paneLister.ListCallCount()).To(Equal(1))
@@ -446,9 +459,142 @@ var _ = Describe("ProvenanceResolver", func() {
 		Expect(paneLister.ListCallCount()).To(Equal(1))
 
 		advanceClock()
-		resolver.Resolve(ctx, items)
+		writeSessionWithSource("1", "session-w", "After Name", "user")
+
+		// Past the window: the snapshot in hand is served — copied under the lock
+		// before the refresh goroutine is scheduled — and the refresh starts
+		// behind this request rather than in front of it.
+		third := resolver.Resolve(ctx, items)[pkg.ItemID("item-w")]
+		Expect(third.SessionName).To(Equal("Before Name"))
+
+		// The background refresh is what reads the listing now, so the count
+		// reaches 2 without this resolve having read anything itself.
+		Eventually(paneLister.ListCallCount, "2s").Should(Equal(2))
+
+		// A further resolve, once the refresh has published, serves the fresh
+		// snapshot — with no third read.
+		Eventually(func() string {
+			return string(resolver.Resolve(ctx, items)[pkg.ItemID("item-w")].SessionName)
+		}, "2s").Should(Equal("After Name"))
 		Expect(paneLister.ListCallCount()).To(Equal(2))
 	})
+
+	It("returns without waiting for the refresh it starts past the window",
+		func(_ SpecContext) {
+			// ⚠️ The discriminating spec for the whole change. The pane listing is
+			// held open and the clock is advanced past the window, so the resolve
+			// below is a post-window caller — and it must return WHILE THE LISTING
+			// IS STILL HELD. The assertion is that the call returned at all: an
+			// implementation that reintroduced the synchronous read would park
+			// inside the stub and hang this spec rather than pass it. Asserting
+			// only that some later resolve eventually sees fresh data would pass
+			// against the blocking implementation, which is exactly what this
+			// exists to rule out.
+			writeSessionWithSource("1", "session-nowait", "Before Name", "user")
+			items := pkg.Items{
+				sessionItem("item-nowait", "producer-nowait", "key-nowait", "session-nowait"),
+			}
+
+			Expect(resolver.Resolve(ctx, items)[pkg.ItemID("item-nowait")].SessionName).
+				To(Equal("Before Name"))
+
+			advanceClock()
+			writeSessionWithSource("1", "session-nowait", "After Name", "user")
+
+			entered := make(chan struct{}, 1)
+			release := make(chan struct{})
+			releaseAll := releaseOnce(release)
+			DeferCleanup(releaseAll)
+			paneLister.ListCalls(func(context.Context) (map[int]pkg.Pane, error) {
+				select {
+				case entered <- struct{}{}:
+				default:
+				}
+				<-release
+				return map[int]pkg.Pane{}, nil
+			})
+
+			// No extra goroutine, no Eventually and no timeout: a plain synchronous
+			// call. If the request path waits on the refresh, this never returns.
+			served := resolver.Resolve(ctx, items)[pkg.ItemID("item-nowait")]
+			Expect(served.SessionName).To(Equal("Before Name"))
+
+			// The refresh is behind the request, so it is the one parked in the
+			// stub — released here so the refreshed value can be observed.
+			Eventually(entered, "2s").Should(Receive())
+			releaseAll()
+
+			Eventually(func() string {
+				return string(resolver.Resolve(ctx, items)[pkg.ItemID("item-nowait")].SessionName)
+			}, "2s").Should(Equal("After Name"))
+		},
+		// A regression must fail fast rather than park the suite for Go's
+		// ten-minute default. ⚠️ GracePeriod(0) is load-bearing: Ginkgo's default
+		// 30-second grace period would wait for the parked node to exit, and a
+		// node blocked inside a synchronous Resolve never will — so the leak is
+		// declared immediately and the DeferCleanup above releases the stub.
+		NodeTimeout(5*time.Second),
+		GracePeriod(0),
+	)
+
+	It("does not let the request's cancellation kill the background refresh",
+		func() {
+			// ⚠️ The boundary this change crosses, and the one thing the specs
+			// above cannot catch: they all resolve with context.Background(), so a
+			// refresh handed the request's plain ctx would satisfy every one of
+			// them and still cancel every real refresh in production. The ctx
+			// Resolve receives IS the HTTP request's and is cancelled the moment
+			// the response is written — which is before a background refresh
+			// finishes.
+			writeSessionWithSource("1", "session-cancel", "Before Name", "user")
+			items := pkg.Items{
+				sessionItem("item-cancel", "producer-cancel", "key-cancel", "session-cancel"),
+			}
+
+			Expect(resolver.Resolve(ctx, items)[pkg.ItemID("item-cancel")].SessionName).
+				To(Equal("Before Name"))
+
+			advanceClock()
+			writeSessionWithSource("1", "session-cancel", "After Name", "user")
+
+			entered := make(chan struct{}, 1)
+			release := make(chan struct{})
+			releaseAll := releaseOnce(release)
+			DeferCleanup(releaseAll)
+			paneLister.ListCalls(func(context.Context) (map[int]pkg.Pane, error) {
+				select {
+				case entered <- struct{}{}:
+				default:
+				}
+				<-release
+				return map[int]pkg.Pane{}, nil
+			})
+
+			// ⚠️ Cancelled BEFORE the post-window resolve, not after it returns.
+			// readHostState evaluates its struct literal in source order —
+			// sessionNames and sessionModes run before panes.List — so holding the
+			// pane listing open gates the refresh only AFTER it has already read
+			// the registry and the ledger. Cancelling afterwards would let a
+			// bare-ctx implementation finish the registry read first and publish
+			// the fresh name, and this spec would then pass against the very
+			// implementation it exists to catch.
+			requestCtx, cancel := context.WithCancel(ctx)
+			cancel()
+			resolver.Resolve(requestCtx, items)
+			Eventually(entered, "2s").Should(Receive())
+
+			releaseAll()
+
+			// ⚠️ The refreshed VALUE, not merely "a snapshot was published".
+			// readHostState never returns early on cancellation and refresh always
+			// publishes, so a bare-ctx implementation publishes an empty-named
+			// snapshot rather than no snapshot at all. Only the resolved name
+			// separates the two implementations.
+			Eventually(func() string {
+				return string(resolver.Resolve(ctx, items)[pkg.ItemID("item-cancel")].SessionName)
+			}, "2s").Should(Equal("After Name"))
+		},
+	)
 
 	It(
 		"serves the last good snapshot while a refresh is in flight instead of queueing behind it",
@@ -520,9 +666,17 @@ var _ = Describe("ProvenanceResolver", func() {
 			Expect(stale[pkg.ItemID("item-block")].SessionName).To(Equal("Before Name"))
 
 			releaseAll()
-			var fresh pkg.Provenances
-			Eventually(refresher, "2s").Should(Receive(&fresh))
-			Expect(fresh[pkg.ItemID("item-block")].SessionName).To(Equal("After Name"))
+			// ⚠️ A FURTHER resolve, not the refresher channel. Under the new
+			// contract that goroutine returned the stale snapshot the moment it
+			// was called — the refresh it starts runs BEHIND the request — so its
+			// value is the stale one and says nothing about freshness. It is
+			// drained and discarded; the refreshed snapshot arrives on the next
+			// caller, once the background refresh has published.
+			var discarded pkg.Provenances
+			Eventually(refresher, "2s").Should(Receive(&discarded))
+			Eventually(func() string {
+				return string(resolver.Resolve(ctx, items)[pkg.ItemID("item-block")].SessionName)
+			}, "2s").Should(Equal("After Name"))
 		},
 	)
 
@@ -662,11 +816,19 @@ var _ = Describe("ProvenanceResolver", func() {
 		Expect(second.SessionName).To(Equal("Before Name"))
 		Expect(second.Headless).To(BeFalse())
 
-		// Past the window the fresh registry and ledger are served.
+		// Past the window the resolve serves the snapshot it already holds and
+		// refreshes behind the request, so the fresh registry and ledger are NOT
+		// on this return — they arrive on a later resolve once the background
+		// refresh has published.
 		advanceClock()
 		third := resolver.Resolve(ctx, items)[pkg.ItemID("item-cached")]
-		Expect(third.SessionName).To(Equal("After Name"))
-		Expect(third.Headless).To(BeTrue())
+		Expect(third.SessionName).To(Equal("Before Name"))
+		Expect(third.Headless).To(BeFalse())
+
+		Eventually(func() bool {
+			refreshed := resolver.Resolve(ctx, items)[pkg.ItemID("item-cached")]
+			return refreshed.SessionName == "After Name" && refreshed.Headless
+		}, "2s").Should(BeTrue())
 	})
 
 	It("carries a pane listing error through the cache and never serves it as success", func() {
@@ -697,12 +859,17 @@ var _ = Describe("ProvenanceResolver", func() {
 		Expect(second.PaneRecorded).To(BeFalse())
 		Expect(second.Pane).To(BeEmpty())
 
-		// Past the window the fresh listing is read and the pane resolves.
+		// Past the window the resolve serves the cached error and refreshes
+		// behind the request, so it still makes no pane claim. The fresh listing
+		// resolves the pane on a later resolve, once the refresh has published.
 		advanceClock()
 		third := resolver.Resolve(ctx, items)[pkg.ItemID("item-cached-err")]
-		Expect(third.PaneRecorded).To(BeTrue())
-		Expect(third.Routable).To(BeTrue())
-		Expect(third.Pane).To(Equal("928"))
+		Expect(third.PaneRecorded).To(BeFalse())
+		Expect(third.Pane).To(BeEmpty())
+
+		Eventually(func() string {
+			return resolver.Resolve(ctx, items)[pkg.ItemID("item-cached-err")].Pane
+		}, "2s").Should(Equal("928"))
 	})
 
 	It("does not race when many resolves share one resolver", func() {
