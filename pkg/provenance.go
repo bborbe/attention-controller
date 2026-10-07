@@ -368,6 +368,21 @@ func (r *provenanceResolver) hostState(ctx context.Context) hostState {
 			// property the refreshing token's own comment exists to protect, and
 			// the property the "reads the pane listing once for a whole page"
 			// spec depends on.
+			//
+			// ⚠️ A raw goroutine, deliberately, against go-concurrency/no-raw-go-func.
+			// That rule's premise is fan-out — several concurrent operations needing
+			// run.All / run.Sequential and a hand-rolled WaitGroup to join them. This
+			// is the opposite shape: one detached task, no fan-out, no WaitGroup, and
+			// no leak beyond a single refresh bounded by paneListingTimeout. Every
+			// run.* primitive WAITS, so routing this through one would re-introduce
+			// exactly the request-path stall the change removes. Recorded here rather
+			// than left as a silent exemption.
+			//
+			// ⚠️ Nothing on this path recovers. On the request goroutine a panic would
+			// have been absorbed per-connection by net/http; here it terminates the
+			// process. No panic site is reachable today — sessionNames and sessionModes
+			// guard every error, and paneLister.List guards cmd.Output and
+			// json.Unmarshal — but the blast radius is wider than it was.
 			token := make(chan struct{})
 			r.refreshing = token
 			go r.refresh(context.WithoutCancel(ctx), token)
