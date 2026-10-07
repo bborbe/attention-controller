@@ -66,6 +66,39 @@ func NewSessionLivenessCheckerWithClock(
 	return &sessionLivenessChecker{sessionsDir: sessionsDir, now: now}
 }
 
+// NewAlwaysLiveSessionLivenessChecker returns a checker that reports every
+// session live, so no item is ever classified dead and nothing is ever pruned.
+//
+// ⚠️ This is the cluster backend's checker, and it exists because the registry
+// the other constructor reads is host-local. `NewSessionLivenessChecker` reads
+// `~/.claude/sessions/<pid>.json`, which names sessions on ONE host — a backend
+// in a cluster reads every producer elsewhere as gone. The store already fails
+// open when that directory is *absent* (an unreadable registry reads as live —
+// see IsLive), so an ordinary container prunes nothing by accident; but the
+// guarantee must not rest on whether a path happens to exist. A container that
+// creates `$HOME/.claude/sessions` — an emptyDir mount, or a base image that
+// makes the directory — turns the registry *readable and empty*, and every item
+// is then pruned on the next read. Wiring this checker makes the cluster's
+// behaviour explicit rather than a side effect of the filesystem.
+//
+// ⚠️ Items are then bounded by age alone: `answered-max-age` closes answered
+// items, and nothing else removes them. That is the intended shape for a
+// cluster backend — "the attention controller in the cluster only stores
+// attentions and makes them available for others" — and it is why the schema's
+// dead-asker resolution stays a host-side concern rather than this one's.
+func NewAlwaysLiveSessionLivenessChecker() SessionLivenessChecker {
+	return &alwaysLiveSessionLivenessChecker{}
+}
+
+type alwaysLiveSessionLivenessChecker struct{}
+
+// IsLive reports true for every id, including the empty one. This checker's
+// whole contract is that nothing is dead, so a caller asking about an
+// unresolvable producer is told live rather than pruned.
+func (a *alwaysLiveSessionLivenessChecker) IsLive(_ context.Context, _ string) bool {
+	return true
+}
+
 type sessionLivenessChecker struct {
 	sessionsDir string
 	now         libtime.CurrentDateTimeGetter

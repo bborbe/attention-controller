@@ -10,6 +10,8 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/bborbe/argument/v2"
@@ -387,5 +389,65 @@ var _ = Describe("registerPprofIfLoopback", func() {
 			router.ServeHTTP(rec, req)
 			Expect(rec.Code).To(Equal(http.StatusOK), path)
 		}
+	})
+})
+
+var _ = Describe("sessionLivenessChecker", func() {
+	var ctx context.Context
+
+	BeforeEach(func() {
+		ctx = context.Background()
+	})
+
+	// ⚠️ The cluster mode, and the assertion that carries it: EVERY id reads
+	// live, including one this host has never seen and the empty id. A registry
+	// that is present but empty would otherwise answer "gone" for all of them,
+	// and the next read would sweep the store. The SessionsDir is a real empty
+	// directory on purpose — that is the input shape the mode exists to survive.
+	It("reports every id live when liveness is off", func() {
+		app := &application{SessionLiveness: "off", SessionsDir: GinkgoT().TempDir()}
+
+		checker, err := app.sessionLivenessChecker(ctx)
+		Expect(err).To(BeNil())
+		Expect(checker.IsLive(ctx, "never-seen-on-this-host")).To(BeTrue())
+		Expect(checker.IsLive(ctx, "")).To(BeTrue())
+	})
+
+	It("reads the registry when liveness is registry", func() {
+		dir := GinkgoT().TempDir()
+		Expect(os.WriteFile(
+			filepath.Join(dir, "present.json"),
+			[]byte(`{"sessionId":"present"}`),
+			0600,
+		)).To(BeNil())
+		app := &application{SessionLiveness: "registry", SessionsDir: dir}
+
+		checker, err := app.sessionLivenessChecker(ctx)
+		Expect(err).To(BeNil())
+		Expect(checker.IsLive(ctx, "present")).To(BeTrue())
+		Expect(checker.IsLive(ctx, "absent")).To(BeFalse())
+	})
+
+	// ⚠️ The empty value is the struct's zero value, not a mode. It resolves to
+	// the registry, matching the flag's own `default:"registry"` — so a caller
+	// that builds an `application` by hand gets today's behaviour rather than a
+	// silently disabled prune.
+	It("treats an unset value as the registry", func() {
+		app := &application{SessionLiveness: "", SessionsDir: GinkgoT().TempDir()}
+
+		checker, err := app.sessionLivenessChecker(ctx)
+		Expect(err).To(BeNil())
+		Expect(checker.IsLive(ctx, "absent")).To(BeFalse())
+	})
+
+	// ⚠️ A typo must not silently disable pruning, and must not silently keep
+	// it: the two modes differ in whether stored data is deleted, so the failure
+	// has to be loud rather than defaulted.
+	It("refuses an unrecognised value instead of falling back", func() {
+		app := &application{SessionLiveness: "offf"}
+
+		_, err := app.sessionLivenessChecker(ctx)
+		Expect(err).NotTo(BeNil())
+		Expect(err.Error()).To(ContainSubstring("unknown session-liveness 'offf'"))
 	})
 })
