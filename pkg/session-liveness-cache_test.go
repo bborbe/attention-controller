@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	libboltkv "github.com/bborbe/boltkv"
@@ -28,6 +29,12 @@ import (
 type mutableClock struct {
 	mu  sync.Mutex
 	now libtime.DateTime
+	// nowCalls counts how many times Now has been read. The stampede spec uses
+	// it to tell one collapsed listing from N separate ones, because `list` is
+	// unexported and the clock is the only seam that observes it from
+	// `package pkg_test`. Atomic because that spec reads the clock from N
+	// goroutines at once.
+	nowCalls atomic.Int64
 }
 
 func newMutableClock() *mutableClock {
@@ -36,9 +43,15 @@ func newMutableClock() *mutableClock {
 
 // Now returns the current reading.
 func (c *mutableClock) Now() libtime.DateTime {
+	c.nowCalls.Add(1)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.now
+}
+
+// NowCalls returns how many times Now has been called so far.
+func (c *mutableClock) NowCalls() int64 {
+	return c.nowCalls.Load()
 }
 
 // Advance moves the reading forward by the given duration.
@@ -56,12 +69,22 @@ func writeSessionEntry(dir, sessionID string) {
 }
 
 // newCacheTestStore opens a temp-file DB and a store over the given checker.
+//
+// ⚠️ The DB close is registered as a DeferCleanup rather than left to each
+// spec's last line: the consult-count spec opens one DB per loop iteration, so
+// an assertion failing mid-loop would leak every DB opened before it. Cleanup
+// runs however the spec exits, including on failure. boltkv's Close is
+// idempotent — bbolt returns nil for an already-closed DB — so the existing
+// specs' explicit Close still returns nil and their assertions are untouched.
 func newCacheTestStore(
 	ctx context.Context,
 	checker pkg.SessionLivenessChecker,
 ) (pkg.AttentionStore, libkv.DB) {
 	db, err := libboltkv.OpenTemp(ctx)
 	Expect(err).To(BeNil())
+	DeferCleanup(func() {
+		Expect(db.Close()).To(BeNil())
+	})
 	store := pkg.NewAttentionStore(
 		db,
 		pkg.NewItemIDGenerator(),
@@ -217,5 +240,96 @@ var _ = Describe("Session registry cache", func() {
 
 			Expect(db.Close()).To(BeNil())
 		}
+	})
+
+	// ⚠️ The discriminator for the miss guard's ANSWER, not merely that it fired.
+	// The consult-count spec above proves the guard RAN; this one proves the
+	// listing it fetched is the one that DECIDES. The registry entry is written
+	// WITHOUT moving the clock, so the cached listing predates it and the read's
+	// first lookup must miss. Only the guard's fresh listing holds the id: an
+	// implementation that called LiveSessionsFresh and threw the result away
+	// would answer from the stale cached listing, classify the item as dead and
+	// prune it — this spec fails against exactly that implementation.
+	It(
+		"uses the miss guard's fresh listing, so a session registered inside the window is kept",
+		func() {
+			dir := GinkgoT().TempDir() // empty: no session is registered yet
+			clock := newMutableClock()
+			checker := pkg.NewSessionLivenessCheckerWithClock(dir, clock)
+			store, _ := newCacheTestStore(ctx, checker)
+
+			// An ask (message, not ack), so a producer read as gone is prunable.
+			pushAbsentSessionItem(ctx, store, 0)
+
+			// Prime the cache with the empty listing. LiveSessions directly, not
+			// ReadBoard: a read here would classify the item against the empty
+			// registry and prune it before the spec's setup was complete.
+			ids, readable := snapshotOf(checker).LiveSessions(ctx)
+			Expect(readable).To(BeTrue())
+			Expect(ids).To(BeEmpty(), "the listing is now cached and holds nothing")
+
+			// Register the session WITHOUT advancing the clock: the cached listing
+			// predates this entry, so the read's first lookup must miss it.
+			writeSessionEntry(dir, "session-0")
+
+			items, err := store.ReadBoard(ctx)
+			Expect(err).To(BeNil())
+			Expect(items).To(HaveLen(1),
+				"only the miss guard's fresh listing holds the id; an answer taken from the cached listing would prune a live item")
+		},
+	)
+
+	// ⚠️ The design claim the cache rests on: the mutex is held ACROSS the
+	// listing, so N callers past the window collapse into ONE listing rather
+	// than N. Every other spec drives a single goroutine, so nothing else tests
+	// it.
+	//
+	// `list` is unexported, so the listing count is observed through the
+	// injected clock: LiveSessions reads `s.now.Now()` once at entry and stamps
+	// `s.cachedAt` from a SECOND read AFTER the single listing returns. One
+	// collapsed stampede therefore costs N+1 clock reads — N entry reads plus
+	// the one stamp — while N separate listings would cost 2N, one entry read
+	// and one stamp each. The assertion below is N+1.
+	It("collapses a stampede of concurrent callers into one listing", func() {
+		dir := GinkgoT().TempDir()
+		writeSessionEntry(dir, "a")
+		clock := newMutableClock()
+		checker := pkg.NewSessionLivenessCheckerWithClock(dir, clock)
+		snapshotter := snapshotOf(checker)
+
+		// Prime the cache, then step past the window so every caller is stale.
+		_, readable := snapshotter.LiveSessions(ctx)
+		Expect(readable).To(BeTrue())
+		clock.Advance(libtime.Duration(2 * time.Second))
+
+		const goroutines = 8
+		before := clock.NowCalls()
+		// All callers are released together and contend on the checker's lock,
+		// so this is deterministic without a sleep: the start channel plus the
+		// lock held across the listing is what collapses them.
+		start := make(chan struct{})
+		results := make([]pkg.SessionIDs, goroutines)
+		readables := make([]bool, goroutines)
+		var wg sync.WaitGroup
+		wg.Add(goroutines)
+		for i := 0; i < goroutines; i++ {
+			go func(i int) {
+				defer wg.Done()
+				<-start
+				results[i], readables[i] = snapshotter.LiveSessions(ctx)
+			}(i)
+		}
+		close(start)
+		wg.Wait()
+
+		for i := 0; i < goroutines; i++ {
+			Expect(readables[i]).To(BeTrue())
+			Expect(results[i]).To(ConsistOf("a"),
+				"every caller must receive the same listing")
+		}
+		// N entry reads + 1 stamp = N+1. A lock released across the listing
+		// would let callers list separately, costing 2N.
+		Expect(clock.NowCalls()-before).To(Equal(int64(goroutines+1)),
+			"the lock must be held across the listing, collapsing N callers into one")
 	})
 })
