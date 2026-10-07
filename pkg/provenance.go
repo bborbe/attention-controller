@@ -354,9 +354,14 @@ func (r *provenanceResolver) hostState(ctx context.Context) hostState {
 			// request's and is cancelled the moment the response is written,
 			// which is before a background refresh finishes — passing it through
 			// would cancel every refresh the page path starts. WithoutCancel
-			// keeps the values and drops the cancellation, and the read stays
-			// bounded by paneListingTimeout, which paneLister.List applies
-			// itself.
+			// keeps the values and drops the cancellation.
+			//
+			// ⚠️ The bound covers the SUBPROCESS, not the whole read. panes.List
+			// applies paneListingTimeout itself, but readHostState evaluates
+			// sessionNames and sessionModes BEFORE it, and those honour ctx.Done()
+			// alone — which WithoutCancel has just disarmed. Both are finite local
+			// directory walks with no subprocess, so this is a loose bound rather
+			// than a hang, but the guarantee is narrower than "the read".
 			//
 			// ⚠️ Started only when r.refreshing == nil. That is what stops one
 			// stale window multiplying into one subprocess per caller — the
