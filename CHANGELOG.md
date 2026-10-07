@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.48.3
 
 - fix: reuse one listing of the session registry for a short window, so the board's read path no longer re-reads `~/.claude/sessions` on every request. Measured on the deployed board 2026-10-07 with `/debug/pprof/profile` (45 s under live poll load), that path was 35.33 % of the process's CPU and the single largest application frame: every read request took a fresh listing of roughly 41 `openat`+`read`+`close` triples, while the clients poll `/api/1.0/attention` every 2 s and the registry itself changes only when a session starts or exits. `sessionLivenessChecker` now holds one listing for `sessionRegistryCacheWindow` (1 s), guarded by a mutex that is deliberately held across the listing itself — the listing is a bounded local directory walk with no subprocess and no network, so holding the lock is what stops N concurrent pollers turning one stale window into N simultaneous listings. ⚠️ **The window is not a correctness budget.** A lookup that misses the cached listing re-lists fresh before it answers "gone" — the checker's `IsLive` and the read path's `readSessionLiveness` both do, the latter at most once per read — so a stale window can only delay a prune, never cause one; the one dangerous direction, concluding "gone" from a stale listing and pruning a live item, is impossible. An unreadable registry still reads as live at every caller, through the cache as before it. The read-cost probe's counts (1 per board read, 2 for a read that prunes, 0 when no item declares a session) are unchanged.
 
