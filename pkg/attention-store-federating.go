@@ -269,6 +269,27 @@ func (f *federatingAttentionStore) withRemote(ctx context.Context, local Items) 
 // ⚠️ A FAILED read is never cached. Caching it would turn one transient peer
 // failure into a window of silence for every caller behind it, and the next
 // caller is exactly the one that should retry.
+//
+// ⚠️⚠️ THIS CALL IS NOT READ-ONLY — it mutates the peer. The peer's read prunes
+// its dead-asker items as a side effect ("Dead askers are removed from the store
+// as a side effect of the read"), so rendering a peer's card can DELETE that
+// card upstream. Observed 2026-10-08 on the live dev pair: the operator's board
+// showed the pod's card, and minutes later the same card was gone from both the
+// peer and the board.
+//
+// That is accepted, deliberately, and the reasoning is worth keeping: the prune
+// is the peer store's OWN designed semantics and every reader of that store
+// triggers it, so the federation is not introducing a defect — it is being one
+// more reader. The alternative was measured and rejected: switching to the
+// peer's non-pruning History read would avoid the delete but would then SHOW
+// dead-asker items the peer's own board deliberately hides, which makes this
+// board a less faithful mirror of the one it federates.
+//
+// ⚠️ The consequence to keep in view is FREQUENCY, not correctness. A human
+// reading the peer's board prunes rarely; this store reads it every
+// federationCacheWindow, so the prune becomes near-continuous — and an item can
+// therefore be removed before the peer's own consumers poll it. If that ever
+// bites, the lever is the cache window (a mitigation), not a change of reader.
 func (f *federatingAttentionStore) remoteItems(ctx context.Context) (Items, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
