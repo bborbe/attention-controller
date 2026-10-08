@@ -44,21 +44,39 @@ type SessionHeartbeatView struct {
 // NewSessionHeartbeatView projects a stored heartbeat onto the read shape,
 // measuring its age against the supplied clock and window.
 //
-// ⚠️ `AgeSeconds` is ROUNDED UP, and that is what keeps it from contradicting
-// `Live`. Truncating would render a 60.9-second-old row as `age_seconds: 60`
-// while `Live` — which compares the real duration against the window — said
-// false, so a reader keying on the age would see an in-window row the same
-// struct marks dead. Rounding up makes the integer agree with the verdict at
-// every boundary: 60.0 s stays 60 (Live), 60.9 s becomes 61 (not Live).
+// ⚠️ `AgeSeconds` ROUNDS AWAY FROM ZERO, and both directions are load-bearing.
+//
+// Upward for a positive age: truncating would render a 60.9-second-old row as
+// `age_seconds: 60` while `Live` — which compares the real duration against the
+// window — said false, so a reader keying on the age would see an in-window row
+// the same struct marks dead.
+//
+// Downward for a NEGATIVE age, and that half is subtler. A row stamped slightly
+// ahead of the reader's clock gives a small negative age, and plain `math.Ceil`
+// turns `-0.3` into `-0`, which `int()` renders as `0` — so the wire would carry
+// `age_seconds: 0` beside `live: false`, and the rule that "when the age is
+// negative, Live is authoritative" could never fire, because the rendered age
+// is not negative. Flooring keeps the skew visible in the number, so a reader
+// testing `age <= window` is not told "in window" about a row the verdict
+// already called dead.
+//
+// The shared principle in both directions is that the rendered age never
+// UNDERSTATES the distance from the stamp. Understating is the direction that
+// makes a dead session look alive.
 func NewSessionHeartbeatView(
 	heartbeat SessionHeartbeat,
 	now libtime.DateTime,
 	window libtime.Duration,
 ) SessionHeartbeatView {
 	age := now.Sub(heartbeat.At)
+	seconds := age.Duration().Seconds()
+	rounded := math.Ceil(seconds)
+	if seconds < 0 {
+		rounded = math.Floor(seconds)
+	}
 	return SessionHeartbeatView{
 		SessionHeartbeat: heartbeat,
-		AgeSeconds:       int(math.Ceil(age.Duration().Seconds())),
+		AgeSeconds:       int(rounded),
 		Live:             heartbeat.IsFresh(now, window),
 	}
 }

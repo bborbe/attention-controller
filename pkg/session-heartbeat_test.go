@@ -155,6 +155,22 @@ var _ = Describe("Session heartbeat", func() {
 			Expect(view.AgeSeconds).To(BeNumerically("<", 0))
 			Expect(view.Live).To(BeFalse())
 		})
+
+		It("keeps a SUB-SECOND future stamp visible rather than rounding it to zero", func() {
+			// ⚠️ The case a large negative value does not reach, and the one the
+			// first version of this rounding got wrong. At -0.3 s, plain Ceil
+			// yields -0 and int(-0.0) renders 0 — so the wire would carry
+			// `age_seconds: 0` beside `live: false`, and the documented rule that
+			// Live is authoritative *when the age is negative* could never fire,
+			// because the rendered age is not negative. A reader testing
+			// `age <= window` would be told "in window" about a row the verdict
+			// already called dead. Rounding away from zero keeps the skew visible.
+			view := pkg.NewSessionHeartbeatView(
+				heartbeat(), after(-300*stdtime.Millisecond), heartbeatWindow,
+			)
+			Expect(view.AgeSeconds).To(BeNumerically("<", 0))
+			Expect(view.Live).To(BeFalse())
+		})
 	})
 
 	Describe("validation", func() {
