@@ -110,15 +110,28 @@ type sessionHeartbeatFile struct {
 	//
 	// ⚠️ The FILE calls this `activity` while the WIRE calls it `state`, and the
 	// asymmetry is deliberate rather than drift. This directory is shared with
-	// four readers that already own the word `state` for a LIVENESS VERDICT —
+	// four readers that own the word `state` for a LIVENESS VERDICT —
 	// `worker-sessions.py`, `fleet-board.py`, `adopt-orphans.py` and
 	// `session-liveness.py` all gate on `stamp.get("state", "live") != "live"`,
-	// where a MISSING key must read as `live` rather than vanish. A row carrying
-	// `state: "busy"` therefore reads as NOT-live: it draws no fleet-board row,
-	// reports `alive: false`, and stops counting as live for the orphan-adoption
-	// gate — which is exactly what frees an auto-resume to spawn a duplicate onto
-	// a session that is alive. The wire has no such collision (its verdict is
-	// `live`), so it keeps the name the endpoint's contract already declares.
+	// where a MISSING key must read as `live` rather than vanish.
+	//
+	// ⚠️ **Those four gates never see a raw stamp, and an earlier revision of this
+	// comment claimed they did** — asserting that a row carrying `state: "busy"`
+	// "reads as NOT-live" and frees a duplicate auto-resume. It does not: the
+	// readers' single chokepoint parses a raw stamp and builds a fresh dict
+	// carrying its OWN verdict, never reading the file's key. So this field is
+	// WRITE-ONLY today, and the rename is PREVENTIVE — it removes a name that
+	// collides with the verdict vocabulary before a raw-stamp reader exists to be
+	// bitten by it.
+	//
+	// ⚠️ **The wire can therefore carry an EMPTY `state`.** With the fallback
+	// deliberately absent, a row written by the previous release of this store
+	// (which used `state`) still parses but projects `SessionHeartbeatState("")`
+	// onto GET and LIST responses — a value `SessionHeartbeatState.Validate`
+	// itself rejects. Accepted rather than repaired, and worth naming so an API
+	// consumer reads it as an expected mid-deploy value rather than a bug: it
+	// clears as soon as the writer posts again, and a dead session's row is
+	// already not-live by age. See `toHeartbeat`.
 	Location string `json:"location,omitempty"`
 	Activity string `json:"activity,omitempty"`
 }
