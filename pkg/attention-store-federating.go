@@ -250,6 +250,17 @@ func (f *federatingAttentionStore) isRemote(ctx context.Context, itemID ItemID) 
 }
 
 // withRemote merges the peer's open items into a local result.
+//
+// ⚠️ The merge is where the peer's pruning side effect is ACCEPTED rather than
+// worked around, and the reasoning belongs here rather than on the call that
+// merely triggers it. The prune is the peer store's own designed semantics and
+// every reader of that store triggers it, so the federation introduces no
+// defect — it is being one more reader. The alternative was measured and
+// rejected: the peer's non-pruning History read would avoid the delete but would
+// then SHOW dead-asker items the peer's own board deliberately hides, which
+// makes this board a less faithful mirror of the one it federates. If the added
+// frequency ever bites, the lever is the cache window — a mitigation, not a
+// change of reader.
 func (f *federatingAttentionStore) withRemote(ctx context.Context, local Items) Items {
 	remote, err := f.remoteItems(ctx)
 	if err != nil {
@@ -269,6 +280,24 @@ func (f *federatingAttentionStore) withRemote(ctx context.Context, local Items) 
 // ⚠️ A FAILED read is never cached. Caching it would turn one transient peer
 // failure into a window of silence for every caller behind it, and the next
 // caller is exactly the one that should retry.
+//
+// ⚠️ THIS CALL IS NOT READ-ONLY — it mutates the peer. The peer's read prunes
+// its dead-asker items as a side effect ("Dead askers are removed from the store
+// as a side effect of the read"), so rendering a peer's card can DELETE that
+// card upstream. Observed 2026-10-08 on the live dev pair: the operator's board
+// showed the pod's card, and minutes later the same card was gone from both the
+// peer and the board. See withRemote for why that is accepted.
+//
+// ⚠️ What the prune costs is FREQUENCY, and only frequency. An OPEN item is
+// pruned for one of two INDEPENDENT reasons, and naming only the first is the
+// mistake this sentence exists to prevent: it has EXPIRED (checked before
+// liveness, and load-bearing there — an expired item is moot whoever is still
+// alive), or its producer is dead and it was asked. An item pruned either way is
+// also omitted from the peer's read, so a peer consumer polling a moment later
+// sees exactly the same state whether or not this store read first. No
+// observation is lost. What changes is that the peer now prunes on THIS store's
+// cadence rather than a human's, which is extra write traffic against the peer
+// and nothing beyond it.
 func (f *federatingAttentionStore) remoteItems(ctx context.Context) (Items, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
