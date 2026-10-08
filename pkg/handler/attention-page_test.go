@@ -9,10 +9,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 
 	libboltkv "github.com/bborbe/boltkv"
+	"github.com/bborbe/errors"
 	libhttp "github.com/bborbe/http"
 	libkv "github.com/bborbe/kv"
 	libtime "github.com/bborbe/time"
@@ -975,6 +977,99 @@ var _ = Describe("AttentionPageHandler", func() {
 
 			Expect(second).To(ContainSubstring("does not resolve to this session"))
 			Expect(second).NotTo(ContainSubstring("No pane was recorded"))
+		},
+	)
+
+	// ⚠️ REPRODUCTION for [[A Card Loses Its Jump Button While the Session's Pane
+	// Is Still Open]]. The defect is a COMPOSITION, and this is the only spec that
+	// can see it. Each half is correct alone and each is pinned by its own spec:
+	//
+	//   - the resolver deliberately makes no pane claim when the pane listing
+	//     cannot be read (pkg/provenance_test.go, "makes no pane claim at all when
+	//     the pane listing cannot be read") — chosen over `unroutable`, because
+	//     marking it unroutable would assert the pane is not this session's, which
+	//     an unreadable listing cannot establish;
+	//   - the renderer turns an absent claim into its own sentence (the specs
+	//     above, every one of which INJECTS the Provenance).
+	//
+	// Because every other spec here injects the Provenance, none of them can see
+	// the two halves disagree. Composed, they state something false about the
+	// item: a row whose pane WAS recorded, whose session is registered and live,
+	// tells the operator no pane was ever recorded — and the operator then reads
+	// that as the item's own property rather than as the board's failed read.
+	//
+	// ⚠️ Asserted as the DESIRED behaviour, not the current one, so this spec
+	// fails before the fix and passes after — the shape SC3 requires. It is
+	// deliberately narrower than any fix: all three candidate fixes agree the row
+	// must stop asserting this, so this spec does not pre-commit to one.
+	It(
+		"keeps its jump control, marked unvalidated, when only the pane listing was unreadable",
+		func() {
+			// A pane IS recorded for this item, and its session is in the registry —
+			// so the item carries a pane claim, and the only thing wrong is the read.
+			stateDir := GinkgoT().TempDir()
+			sessionsDir := GinkgoT().TempDir()
+			Expect(os.WriteFile(
+				filepath.Join(stateDir, "producer-nopane.events.jsonl"),
+				[]byte(`{"item_id":"gate-nopane","session_id":"producer-nopane",`+
+					`"host":"burn","cwd":"/tmp","tool_name":"","pane":"58"}`+"\n"),
+				0o600,
+			)).To(BeNil())
+			Expect(os.WriteFile(
+				filepath.Join(sessionsDir, "12345.json"),
+				[]byte(`{"sessionId":"producer-nopane","name":"⚙ Go Mod Update 2026-10"}`),
+				0o600,
+			)).To(BeNil())
+
+			// Every listing failure is the same to the caller: wezterm absent, a
+			// wedged mux, a timeout past paneListingTimeout.
+			paneLister := &mocks.PaneLister{}
+			paneLister.ListReturns(nil, errors.New(ctx, "wezterm not found"))
+
+			// The REAL resolver, not the mock: composing the two halves is the whole
+			// point of this spec. A nil task index is legal and resolves no task.
+			httpHandler = handler.NewAttentionPageHandler(
+				store,
+				pkg.NewProvenanceResolver(
+					pkg.NewEventLogReader(stateDir),
+					sessionsDir,
+					GinkgoT().TempDir(),
+					paneLister,
+					nil,
+					libtime.NewCurrentDateTime(),
+				),
+				false,
+				vaultDir,
+				testBuildIdentity,
+				metrics,
+			)
+
+			item, err := store.Push(
+				ctx,
+				pushRequest("producer-nopane", "gate-nopane", "who owns this?"),
+			)
+			Expect(err).To(BeNil())
+
+			row := rowOf(get("GET").Body.String(), item.ItemID)
+
+			// Positive control: the row rendered at all, so the assertions below cannot
+			// pass on a page that dropped it.
+			Expect(row).To(ContainSubstring(item.Payload.String()))
+			// ⚠️ THE FIX, first half. Pane 58 is recorded on the item and its session is
+			// live; only the listing read failed, and a wedged `list` does not imply a
+			// dead `activate-pane`. The row keeps its route rather than losing it for a
+			// reason the operator cannot see.
+			Expect(row).To(ContainSubstring(`data-jump="/jump/` + item.ItemID.String() + `"`))
+			// ⚠️ Second half, and the one that keeps the first honest: the id has not
+			// been validated against a live listing, so the row says so. Without this
+			// marker the control would present an unvalidated pane as a confirmed one.
+			Expect(row).To(ContainSubstring(`<span class="unvalidated">unvalidated</span>`))
+			// ⚠️ And the defect itself: the board's own failed read must never reach the
+			// operator as a fact about the item.
+			Expect(row).NotTo(ContainSubstring("No pane was recorded"))
+			// The explanation element is absent because the row HAS a control — the
+			// reason and the control are one decision, read twice.
+			Expect(row).NotTo(ContainSubstring(`class="no-jump"`))
 		},
 	)
 

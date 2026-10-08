@@ -53,6 +53,24 @@ type Provenance struct {
 	// Routable is whether the recorded pane is proven to be this producer's.
 	// False with PaneRecorded true is the case the page marks `unroutable`.
 	Routable bool
+	// PaneListingUnreadable is whether the pane listing could not be read on this
+	// render — wezterm absent, a wedged mux, a timeout past paneListingTimeout.
+	// It is a fact about the READ, not about the item, which is exactly why the
+	// page must be able to say it: without it the row renders identically to one
+	// whose producer recorded no pane at all, and the operator reads the board's
+	// failed read as a property of the item.
+	PaneListingUnreadable bool
+	// RecordedPane is the pane id the producer's own event recorded, carried
+	// UNVALIDATED when the listing could not be read.
+	//
+	// ⚠️ It is deliberately not Pane. Pane's contract is "rendered only when
+	// Routable", and this value has not been validated against the live listing —
+	// putting it there would be the defaulted pane this type's doctrine names as
+	// "that failure wearing a friendlier face". It is not a defaulted value
+	// either: it is the item's own recorded fact, shown as such. The page renders
+	// its control and marks it `unvalidated`, so the operator gets the route back
+	// while the row still states what was and was not confirmed.
+	RecordedPane string
 	// TaskName is the title of the vault task this item's session is anchored
 	// to, from the task file that records the session. Empty when nothing
 	// resolved.
@@ -428,6 +446,12 @@ func (r *provenanceResolver) refresh(ctx context.Context, token chan struct{}) h
 	// earlier, so the worst-case age of a value a reader sees is
 	// provenanceCacheWindow plus one refresh — about five seconds, not two.
 	//
+	// ⚠️ That figure moved when readHostState gained a second bounded attempt at
+	// the pane listing: a refresh that times out on BOTH attempts now runs for two
+	// paneListingTimeouts, so the worst case is about eight seconds. The bound is
+	// a property of the refresh and is stated here so it moves with it — a reader
+	// sizing a client's tolerance against "five" would now be three seconds short.
+	//
 	// ⚠️ And because the lock is released across the refresh, two overlapping
 	// cold-start refreshes can publish out of READ order: the one that read first
 	// but finished last overwrites the fresher snapshot, so the window can serve
@@ -447,10 +471,20 @@ func (r *provenanceResolver) readHostState(ctx context.Context) hostState {
 	}
 	state.panes, state.panesErr = r.panes.List(ctx)
 	if state.panesErr != nil {
-		// Logged, never flattened into an empty map: "no panes" would mark every
-		// row unroutable, which asserts the pane does not resolve to this session —
-		// something an unreadable listing cannot establish.
-		glog.V(2).Infof("pane listing unavailable, rendering no pane: %v", state.panesErr)
+		// ⚠️ ONE retry, and it is the whole difference between a transient mux
+		// hiccup and every row on the board losing its jump control. A wedged
+		// `list` is bounded by paneListingTimeout and is routinely a one-off —
+		// measured on this host, ten consecutive listings ran in 25-28 ms — so
+		// this absorbs the transient case entirely and leaves only a genuinely
+		// unreadable listing to reach a row.
+		//
+		// ⚠️ Not a loop. A second failure is evidence about the host, not about
+		// this render, and retrying it would multiply the subprocess by the number
+		// of callers — the amplification the single-flight token exists to prevent.
+		state.panes, state.panesErr = r.panes.List(ctx)
+	}
+	if state.panesErr != nil {
+		glog.V(2).Infof("pane listing unavailable after retry: %v", state.panesErr)
 	}
 	return state
 }
@@ -762,8 +796,16 @@ func (r *provenanceResolver) resolveByName(
 	panesAvailable bool,
 ) (Provenance, bool) {
 	if !panesAvailable {
-		// The listing could not be read, so nothing can be said about any pane
-		// either way. Same direction as build: no claim, never a negative one.
+		// The listing could not be read, so no pane can be proven this session's.
+		// Same direction as build: no claim, never a negative one.
+		//
+		// ⚠️ No PaneListingUnreadable marker here, and the asymmetry with build is
+		// deliberate. This path is reached precisely because the producer wrote no
+		// event line for the item, so there is no recorded id to carry and nothing
+		// the marker could qualify. Setting it made the row say "this item's pane
+		// could not be confirmed" about an item with no pane on record — the same
+		// defect class (a board-side failure reaching the operator as a property of
+		// the item) this change exists to close.
 		return Provenance{}, false
 	}
 	sessionID := sessionIDFromItem(item)
@@ -819,8 +861,15 @@ func (r *provenanceResolver) build(
 		return provenance
 	}
 	if !panesAvailable {
-		// The pane was recorded but the listing could not be read, so nothing
-		// can be said about it either way.
+		// The pane was recorded but the listing could not be read, so whether it
+		// is still this session's cannot be established. ⚠️ This used to return
+		// with NO claim at all, which the page renders as "No pane was recorded
+		// for this item" — a false statement about the item, produced by a failure
+		// of the board's OWN read. The recorded id is carried in RecordedPane and
+		// the row states what actually happened.
+		provenance.PaneRecorded = true
+		provenance.PaneListingUnreadable = true
+		provenance.RecordedPane = strconv.Itoa(paneID)
 		return provenance
 	}
 	provenance.PaneRecorded = true

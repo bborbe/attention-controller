@@ -197,13 +197,21 @@ var _ = Describe("ProvenanceResolver", func() {
 		Expect(provenance.Host).To(Equal("burn"))
 	})
 
-	It("makes no pane claim at all when the pane listing cannot be read", func() {
-		// ⚠️ The defect the live launchd artifact exposed. WezTerm is not on the
-		// plist's PATH, so the listing fails there on every request — and the
-		// first implementation flattened that failure into an empty map, which
-		// marked every row `unroutable`. That asserts the pane does not resolve
-		// to this session, which an unreadable listing cannot establish. The row
-		// must instead carry no pane claim, exactly as when a value is absent.
+	It("carries the recorded pane unvalidated when the pane listing cannot be read", func() {
+		// ⚠️ AMENDED 2026-10-08 — [[A Card Loses Its Jump Button While the
+		// Session's Pane Is Still Open]]. The original requirement stands: the
+		// first implementation flattened this failure into an empty map, which
+		// marked every row `unroutable` — asserting the pane does not resolve to
+		// this session, which an unreadable listing cannot establish. The pane is
+		// still neither validated nor disowned.
+		//
+		// What the original got wrong is the consequence. "No claim at all" is
+		// indistinguishable from "the producer recorded nothing", and the page
+		// rendered both as "No pane was recorded for this item" — so the board's
+		// OWN failed read reached the operator as a fact about the item, and the
+		// row lost its jump control with no true explanation. The claim is still
+		// withheld; the recorded id is now carried separately and marked
+		// unvalidated.
 		writeSession("111", "producer-x", "⚙ Some Session")
 		writeEvents("producer-x", eventLine("key-x", "producer-x", "burn", "/w/x", "", "928"))
 		paneLister.ListReturns(nil, errors.New(ctx, "wezterm not found"))
@@ -213,14 +221,52 @@ var _ = Describe("ProvenanceResolver", func() {
 			pkg.Items{item("item-x", "producer-x", "key-x")},
 		)[pkg.ItemID("item-x")]
 
-		// The pane is neither shown nor disowned.
-		Expect(provenance.PaneRecorded).To(BeFalse())
+		// Still neither validated nor disowned, so nothing presents this id as
+		// confirmed.
 		Expect(provenance.Routable).To(BeFalse())
 		Expect(provenance.Pane).To(BeEmpty())
+		// ⚠️ PaneRecorded is now TRUE, and that is the accurate answer: the event
+		// DID record a pane. It was false only because the row had nowhere to say
+		// "a pane was recorded and I could not check it".
+		Expect(provenance.PaneRecorded).To(BeTrue())
+		Expect(provenance.PaneListingUnreadable).To(BeTrue())
+		Expect(provenance.RecordedPane).To(Equal("928"))
 		// The rest of the row still resolves — an unreadable listing is not a
 		// reason to drop host, cwd or tool.
 		Expect(provenance.Host).To(Equal("burn"))
 		Expect(provenance.Cwd).To(Equal("/w/x"))
+	})
+
+	It("retries the pane listing once, so a transient hiccup never reaches the row", func() {
+		// ⚠️ The retry is the whole reason a transient mux hiccup does not cost a
+		// card its jump control, and until this spec nothing pinned it: every other
+		// unreadable-listing case uses ListReturns, which answers BOTH attempts the
+		// same way, so the branch the performance argument rests on was never
+		// exercised. The first attempt fails and the second succeeds — the shape the
+		// retry exists for.
+		writeSession("111", "producer-retry", "⚙ Session R")
+		writeEvents(
+			"producer-retry",
+			eventLine("key-retry", "producer-retry", "burn", "/w/r", "", "928"),
+		)
+		paneLister.ListReturnsOnCall(0, nil, errors.New(ctx, "wezterm not found"))
+		paneLister.ListReturnsOnCall(1, map[int]pkg.Pane{
+			928: {PaneID: 928, Title: "◑ Session R"},
+		}, nil)
+
+		provenance := resolver.Resolve(
+			ctx,
+			pkg.Items{item("item-retry", "producer-retry", "key-retry")},
+		)[pkg.ItemID("item-retry")]
+
+		// The retry converted a transient failure into a VALIDATED pane, so the row
+		// needs no unvalidated marker at all — which is the outcome the retry exists
+		// to produce, and the opposite of the unreadable-listing case above.
+		Expect(provenance.Pane).To(Equal("928"))
+		Expect(provenance.Routable).To(BeTrue())
+		Expect(provenance.PaneListingUnreadable).To(BeFalse())
+		Expect(provenance.RecordedPane).To(BeEmpty())
+		Expect(paneLister.ListCallCount()).To(Equal(2))
 	})
 
 	It(
@@ -833,8 +879,11 @@ var _ = Describe("ProvenanceResolver", func() {
 
 	It("carries a pane listing error through the cache and never serves it as success", func() {
 		// The fail-closed direction requirement 5 pins: an unreadable listing
-		// yields no pane claim, and a cached error is not later replaced by a
-		// successful listing until the window lapses.
+		// yields no VALIDATED pane claim, and a cached error is not later replaced
+		// by a successful listing until the window lapses. ⚠️ The recorded id is
+		// carried unvalidated alongside — see the amended spec above — so the row
+		// can still name the read that failed instead of claiming the item never
+		// had a pane.
 		writeSession("111", "producer-cached-err", "⚙ Session E")
 		writeEvents(
 			"producer-cached-err",
@@ -844,7 +893,9 @@ var _ = Describe("ProvenanceResolver", func() {
 
 		paneLister.ListReturns(nil, errors.New(ctx, "wezterm unreachable"))
 		first := resolver.Resolve(ctx, items)[pkg.ItemID("item-cached-err")]
-		Expect(first.PaneRecorded).To(BeFalse())
+		Expect(first.PaneRecorded).To(BeTrue())
+		Expect(first.PaneListingUnreadable).To(BeTrue())
+		Expect(first.RecordedPane).To(Equal("928"))
 		Expect(first.Pane).To(BeEmpty())
 		// The rest of the row still resolves — an unreadable listing is not a
 		// reason to drop host, cwd or tool.
@@ -856,7 +907,8 @@ var _ = Describe("ProvenanceResolver", func() {
 			928: {PaneID: 928, Title: "◑ Session E"},
 		}, nil)
 		second := resolver.Resolve(ctx, items)[pkg.ItemID("item-cached-err")]
-		Expect(second.PaneRecorded).To(BeFalse())
+		Expect(second.PaneRecorded).To(BeTrue())
+		Expect(second.RecordedPane).To(Equal("928"))
 		Expect(second.Pane).To(BeEmpty())
 
 		// Past the window the resolve serves the cached error and refreshes
@@ -864,7 +916,8 @@ var _ = Describe("ProvenanceResolver", func() {
 		// resolves the pane on a later resolve, once the refresh has published.
 		advanceClock()
 		third := resolver.Resolve(ctx, items)[pkg.ItemID("item-cached-err")]
-		Expect(third.PaneRecorded).To(BeFalse())
+		Expect(third.PaneRecorded).To(BeTrue())
+		Expect(third.RecordedPane).To(Equal("928"))
 		Expect(third.Pane).To(BeEmpty())
 
 		Eventually(func() string {

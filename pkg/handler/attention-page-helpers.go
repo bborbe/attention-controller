@@ -340,6 +340,36 @@ func vaultFileURL(vaultName string, path string) template.URL {
 	return template.URL(link)
 }
 
+// jumpPane is the pane a row's control targets, and the ONE place the two ways a
+// row can have one are ordered.
+//
+// ⚠️ A validated pane wins outright. RecordedPane is consulted only when the
+// listing could not be read, which is the single case where the board holds a
+// pane id it cannot confirm: refusing it would take the route away for a reason
+// the operator cannot see, and offering it unmarked would present an unvalidated
+// value as resolved. The row offers it AND says so — the page marks it
+// `unvalidated` — which is the only shape that is both honest and useful.
+//
+// ⚠️ A wedged `list` does NOT guarantee a dead jump, but it does not guarantee a
+// live one either, and the difference is worth stating exactly — an earlier
+// version of this comment claimed the activator "runs a different subcommand",
+// which is false. `weztermPaneActivator.Activate` reads its OWN listing first
+// (`a.panes.List`, before it ever reaches `activate-pane`) and fails on it, so a
+// click while the mux is still wedged answers 502. What makes the control work is
+// the CACHE: the resolver serves a snapshot up to provenanceCacheWindow plus one
+// refresh old while the activator reads live, so a mux that recovers inside that
+// gap turns the click into a real jump. The control is a CONDITIONAL recovery, not
+// a guaranteed route, and the row's `unvalidated` marker is what says so.
+func jumpPane(provenance pkg.Provenance) string {
+	if provenance.Pane != "" {
+		return provenance.Pane
+	}
+	if provenance.PaneListingUnreadable {
+		return provenance.RecordedPane
+	}
+	return ""
+}
+
 // jumpCommand renders the copyable half of the handover for an item the board
 // must not answer.
 //
@@ -360,10 +390,11 @@ func jumpCommand(item pkg.Item, provenance pkg.Provenance) string {
 	if item.AnswerMechanism == pkg.MessageAnswerMechanism {
 		return ""
 	}
-	if provenance.Pane == "" {
+	pane := jumpPane(provenance)
+	if pane == "" {
 		return ""
 	}
-	return "/supervisor:jump " + provenance.Pane
+	return "/supervisor:jump " + pane
 }
 
 // jumpURL renders the clickable half of the handover: a path on this board, not
@@ -384,7 +415,7 @@ func jumpCommand(item pkg.Item, provenance pkg.Provenance) string {
 // now the only condition, which is also why a row's button and its explanation
 // cannot disagree about why it is missing.
 func jumpURL(item pkg.Item, provenance pkg.Provenance) string {
-	if provenance.Pane == "" {
+	if jumpPane(provenance) == "" {
 		return ""
 	}
 	return "/jump/" + string(item.ItemID)
@@ -405,6 +436,14 @@ func jumpURL(item pkg.Item, provenance pkg.Provenance) string {
 // read from the resolver, and it would name host-internal paths on a card the
 // operator reads. See [[A Card With No Jump Target Explains Why Instead of
 // Rendering Nothing]] § Results.
+//
+// ⚠️ There is deliberately NO sentence for "the listing was unreadable". A row in
+// that state carries a recorded pane and therefore renders a control, so the guard
+// above returns before any sentence — the state cannot reach this function. A
+// branch for it was written and removed rather than left standing: unreachable
+// code reads as coverage, and the sentence it produced was false for the one shape
+// that could reach it. See [[A Card Loses Its Jump Button While the Session's Pane
+// Is Still Open]].
 // ⚠️ The "jump is unavailable on this host" sentence is gone with the token
 // gate that produced it. It explained a row that HAD a resolvable pane yet
 // carried no control — the state that existed only while the button was gated
@@ -687,6 +726,7 @@ li.item {
 }
 .info-panel span + span::before { content: " · "; }
 .info-panel .unroutable { color: var(--warn); }
+.info-panel .unvalidated { color: var(--warn); }
 .empty { color: var(--muted); font-size: 14px; }
 /* The answer card, rendered for message items only. The context line carries
    the background the producer declared, kept separate from the question so the
