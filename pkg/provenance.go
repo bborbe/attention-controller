@@ -446,6 +446,12 @@ func (r *provenanceResolver) refresh(ctx context.Context, token chan struct{}) h
 	// earlier, so the worst-case age of a value a reader sees is
 	// provenanceCacheWindow plus one refresh — about five seconds, not two.
 	//
+	// ⚠️ That figure moved when readHostState gained a second bounded attempt at
+	// the pane listing: a refresh that times out on BOTH attempts now runs for two
+	// paneListingTimeouts, so the worst case is about eight seconds. The bound is
+	// a property of the refresh and is stated here so it moves with it — a reader
+	// sizing a client's tolerance against "five" would now be three seconds short.
+	//
 	// ⚠️ And because the lock is released across the refresh, two overlapping
 	// cold-start refreshes can publish out of READ order: the one that read first
 	// but finished last overwrites the fresher snapshot, so the window can serve
