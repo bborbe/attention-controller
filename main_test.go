@@ -170,6 +170,41 @@ var _ = Describe("parseAnsweredMaxAge", func() {
 	})
 })
 
+// ⚠️ The branch this Describe exists for is the NON-POSITIVE one, and it is the
+// highest-consequence line in the session-heartbeat wiring. `libtime.ParseDuration`
+// rejects unparseable input but accepts `0s` and `-5m` happily, and `IsFresh`
+// compares `age <= window` — so either value reports EVERY row dead at once,
+// which is a board showing every live session as finished. The sibling
+// `parseAnsweredMaxAge` refuses the same collapse for its own flag; the two
+// duration flags in main.go must hold one line, not one guarding and one not.
+var _ = Describe("parseSessionHeartbeatWindow", func() {
+	var ctx context.Context
+
+	BeforeEach(func() {
+		ctx = context.Background()
+	})
+
+	It("parses a positive window", func() {
+		window, err := parseSessionHeartbeatWindow(ctx, "60s")
+		Expect(err).To(BeNil())
+		Expect(time.Duration(window)).To(Equal(60 * time.Second))
+	})
+
+	It("rejects an unparseable window", func() {
+		_, err := parseSessionHeartbeatWindow(ctx, "banana")
+		Expect(err).NotTo(BeNil())
+	})
+
+	for _, bad := range []string{"0s", "-5m"} {
+		bad := bad
+		It("rejects the non-positive window "+bad, func() {
+			// Accepted, this would make every row read stale at once.
+			_, err := parseSessionHeartbeatWindow(ctx, bad)
+			Expect(err).NotTo(BeNil())
+		})
+	}
+})
+
 var _ = Describe("addAttentionStoreAPIListener", func() {
 	var ctx context.Context
 	var db libkv.DB

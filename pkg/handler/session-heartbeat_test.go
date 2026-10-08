@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	stdtime "time"
 
 	libtime "github.com/bborbe/time"
@@ -175,6 +176,21 @@ var _ = Describe("Session heartbeat handlers", func() {
 			// blur the guarantee this file documents: an unreadable store is a
 			// FAILURE, never `absent`.
 			Expect(get("..").Code).To(Equal(http.StatusBadRequest))
+		})
+
+		It("answers 500, NOT 404, when the row exists but cannot be read", func() {
+			// ⚠️ This is the file's load-bearing claim, and until this spec it
+			// was asserted only in prose. A corrupt file makes the store's parse
+			// fail and Get return an error — and the answer must NOT be 404,
+			// because "no row" is precisely what renders a live session's card
+			// Resume. A reader that collapsed the two would report a running
+			// session as dead.
+			Expect(os.WriteFile(
+				filepath.Join(dir, "5f2a1c34-0000-4000-8000-000000000001.json"),
+				[]byte("{"), 0600,
+			)).To(BeNil())
+			Expect(get("5f2a1c34-0000-4000-8000-000000000001").Code).
+				To(Equal(http.StatusInternalServerError))
 		})
 
 		It("answers 200 with live true for a fresh row", func() {

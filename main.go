@@ -216,21 +216,47 @@ func (a *application) createAttentionStore(
 func (a *application) createSessionHeartbeatStore(
 	ctx context.Context,
 ) (pkg.SessionHeartbeatStore, libtime.Duration, error) {
-	window, err := libtime.ParseDuration(ctx, a.SessionHeartbeatWindow)
+	window, err := parseSessionHeartbeatWindow(ctx, a.SessionHeartbeatWindow)
 	if err != nil {
-		return nil, libtime.Duration(0), errors.Wrapf(
-			ctx, err, "parse session heartbeat window '%s' failed", a.SessionHeartbeatWindow,
-		)
+		return nil, libtime.Duration(0), err
 	}
 	now := libtime.NewCurrentDateTime()
 	if a.SessionHeartbeatDir != "" {
-		return pkg.NewSessionHeartbeatStore(a.SessionHeartbeatDir, now), *window, nil
+		return pkg.NewSessionHeartbeatStore(a.SessionHeartbeatDir, now), window, nil
 	}
 	store, err := pkg.NewSessionHeartbeatStoreFromEnv(ctx, now)
 	if err != nil {
 		return nil, libtime.Duration(0), err
 	}
-	return store, *window, nil
+	return store, window, nil
+}
+
+// parseSessionHeartbeatWindow resolves the session-heartbeat staleness window
+// and refuses a non-positive one.
+//
+// ⚠️ **A zero or negative window is a startup error, not a value to accept.**
+// `libtime.ParseDuration` rejects unparseable input but accepts `0s` and `-5m`
+// happily, and `IsFresh` compares `age <= window` — so either value reports
+// EVERY row dead at once, which is a board showing every live session as
+// finished. That is the same collapse the sibling `parseAnsweredMaxAge` refuses
+// for its own flag, and the two duration flags in this file must hold the same
+// line rather than one guarding and the other not.
+//
+// It is a function rather than inline statements, for the sibling's reason: the
+// branch that rejects a non-positive bound is the highest-consequence line
+// here, and a spec can reach it directly instead of standing up the whole HTTP
+// path.
+func parseSessionHeartbeatWindow(ctx context.Context, raw string) (libtime.Duration, error) {
+	window, err := libtime.ParseDuration(ctx, raw)
+	if err != nil {
+		return 0, errors.Wrapf(ctx, err, "parse session heartbeat window '%s' failed", raw)
+	}
+	if *window <= 0 {
+		return 0, errors.Errorf(
+			ctx, "session heartbeat window must be positive, got '%s'", raw,
+		)
+	}
+	return *window, nil
 }
 
 // registerSessionHeartbeatRoutes wires the session-heartbeat endpoints under
