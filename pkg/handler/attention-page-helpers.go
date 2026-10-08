@@ -340,6 +340,29 @@ func vaultFileURL(vaultName string, path string) template.URL {
 	return template.URL(link)
 }
 
+// jumpPane is the pane a row's control targets, and the ONE place the two ways a
+// row can have one are ordered.
+//
+// ⚠️ A validated pane wins outright. RecordedPane is consulted only when the
+// listing could not be read, which is the single case where the board holds a
+// pane id it cannot confirm: refusing it would take the route away for a reason
+// the operator cannot see, and offering it unmarked would present an unvalidated
+// value as resolved. The row offers it AND says so — the page marks it
+// `unvalidated` — which is the only shape that is both honest and useful.
+//
+// ⚠️ A wedged `list` does NOT imply a dead jump: the activator runs a different
+// subcommand (`activate-pane`), so the control this returns is worth offering
+// even while the listing is unreadable.
+func jumpPane(provenance pkg.Provenance) string {
+	if provenance.Pane != "" {
+		return provenance.Pane
+	}
+	if provenance.PaneListingUnreadable {
+		return provenance.RecordedPane
+	}
+	return ""
+}
+
 // jumpCommand renders the copyable half of the handover for an item the board
 // must not answer.
 //
@@ -360,10 +383,11 @@ func jumpCommand(item pkg.Item, provenance pkg.Provenance) string {
 	if item.AnswerMechanism == pkg.MessageAnswerMechanism {
 		return ""
 	}
-	if provenance.Pane == "" {
+	pane := jumpPane(provenance)
+	if pane == "" {
 		return ""
 	}
-	return "/supervisor:jump " + provenance.Pane
+	return "/supervisor:jump " + pane
 }
 
 // jumpURL renders the clickable half of the handover: a path on this board, not
@@ -384,7 +408,7 @@ func jumpCommand(item pkg.Item, provenance pkg.Provenance) string {
 // now the only condition, which is also why a row's button and its explanation
 // cannot disagree about why it is missing.
 func jumpURL(item pkg.Item, provenance pkg.Provenance) string {
-	if provenance.Pane == "" {
+	if jumpPane(provenance) == "" {
 		return ""
 	}
 	return "/jump/" + string(item.ItemID)
@@ -396,7 +420,7 @@ func jumpURL(item pkg.Item, provenance pkg.Provenance) string {
 // themselves rather than restating their guards, so the explanation cannot drift
 // from the control it explains: there is one decision, read twice.
 //
-// ⚠️ Three sentences, not one per code path, and the coarseness is read rather
+// ⚠️ Four sentences, not one per code path, and the coarseness is read rather
 // than chosen. The reasons a pane is absent subdivide by *writer* — no state dir,
 // an unopenable one, a missing producer log, a log with no line for the key — but
 // readEvents collapses every one of its own failures into the same empty map and
@@ -405,6 +429,12 @@ func jumpURL(item pkg.Item, provenance pkg.Provenance) string {
 // read from the resolver, and it would name host-internal paths on a card the
 // operator reads. See [[A Card With No Jump Target Explains Why Instead of
 // Rendering Nothing]] § Results.
+//
+// ⚠️ The one split that is NOT invented is the listing-unreadable sentence. Every
+// failure above belongs to the PRODUCER; that one belongs to the BOARD, and the
+// resolver holds the fact (panesAvailable) — it simply had nowhere to put it.
+// Collapsing the board's own failed read into "no pane was recorded" told the
+// operator a falsehood about the item, which is the defect this sentence closes.
 // ⚠️ The "jump is unavailable on this host" sentence is gone with the token
 // gate that produced it. It explained a row that HAD a resolvable pane yet
 // carried no control — the state that existed only while the button was gated
@@ -414,6 +444,17 @@ func jumpURL(item pkg.Item, provenance pkg.Provenance) string {
 func noJumpReason(item pkg.Item, provenance pkg.Provenance) string {
 	if jumpCommand(item, provenance) != "" || jumpURL(item, provenance) != "" {
 		return ""
+	}
+	if provenance.PaneListingUnreadable {
+		// ⚠️ The board's OWN read failed. It must say that, and must not let the
+		// failure reach the operator as a fact about the item — which is exactly
+		// what happened while this state collapsed into the sentence below, and
+		// what [[A Card Loses Its Jump Button While the Session's Pane Is Still
+		// Open]] was filed about.
+		//
+		// Reached only when there is no control to explain: a row carrying a
+		// RecordedPane renders jumpURL's button and this returns "" above.
+		return "The pane listing could not be read, so this item's pane could not be confirmed."
 	}
 	if provenance.PaneRecorded {
 		// A pane was recorded and does not resolve to this session: the case
@@ -632,6 +673,7 @@ li.item {
    template emitting trailing separators for values that were omitted. */
 .provenance span + span::before { content: " · "; }
 .provenance .unroutable { color: var(--warn); }
+.provenance .unvalidated { color: var(--warn); }
 /* The explanation a row carries when it has no jump control at all. Muted
    rather than warned: a designed absence is not a fault, and colouring it like
    one would put the board back where the operator could not tell the two
@@ -687,6 +729,7 @@ li.item {
 }
 .info-panel span + span::before { content: " · "; }
 .info-panel .unroutable { color: var(--warn); }
+.info-panel .unvalidated { color: var(--warn); }
 .empty { color: var(--muted); font-size: 14px; }
 /* The answer card, rendered for message items only. The context line carries
    the background the producer declared, kept separate from the question so the

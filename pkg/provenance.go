@@ -53,6 +53,24 @@ type Provenance struct {
 	// Routable is whether the recorded pane is proven to be this producer's.
 	// False with PaneRecorded true is the case the page marks `unroutable`.
 	Routable bool
+	// PaneListingUnreadable is whether the pane listing could not be read on this
+	// render — wezterm absent, a wedged mux, a timeout past paneListingTimeout.
+	// It is a fact about the READ, not about the item, which is exactly why the
+	// page must be able to say it: without it the row renders identically to one
+	// whose producer recorded no pane at all, and the operator reads the board's
+	// failed read as a property of the item.
+	PaneListingUnreadable bool
+	// RecordedPane is the pane id the producer's own event recorded, carried
+	// UNVALIDATED when the listing could not be read.
+	//
+	// ⚠️ It is deliberately not Pane. Pane's contract is "rendered only when
+	// Routable", and this value has not been validated against the live listing —
+	// putting it there would be the defaulted pane this type's doctrine names as
+	// "that failure wearing a friendlier face". It is not a defaulted value
+	// either: it is the item's own recorded fact, shown as such. The page renders
+	// its control and marks it `unvalidated`, so the operator gets the route back
+	// while the row still states what was and was not confirmed.
+	RecordedPane string
 	// TaskName is the title of the vault task this item's session is anchored
 	// to, from the task file that records the session. Empty when nothing
 	// resolved.
@@ -447,9 +465,19 @@ func (r *provenanceResolver) readHostState(ctx context.Context) hostState {
 	}
 	state.panes, state.panesErr = r.panes.List(ctx)
 	if state.panesErr != nil {
-		// Logged, never flattened into an empty map: "no panes" would mark every
-		// row unroutable, which asserts the pane does not resolve to this session —
-		// something an unreadable listing cannot establish.
+		// ⚠️ ONE retry, and it is the whole difference between a transient mux
+		// hiccup and every row on the board losing its jump control. A wedged
+		// `list` is bounded by paneListingTimeout and is routinely a one-off —
+		// measured on this host, ten consecutive listings ran in 25-28 ms — so
+		// this absorbs the transient case entirely and leaves only a genuinely
+		// unreadable listing to reach a row.
+		//
+		// ⚠️ Not a loop. A second failure is evidence about the host, not about
+		// this render, and retrying it would multiply the subprocess by the number
+		// of callers — the amplification the single-flight token exists to prevent.
+		state.panes, state.panesErr = r.panes.List(ctx)
+	}
+	if state.panesErr != nil {
 		glog.V(2).Infof("pane listing unavailable, rendering no pane: %v", state.panesErr)
 	}
 	return state
@@ -762,9 +790,12 @@ func (r *provenanceResolver) resolveByName(
 	panesAvailable bool,
 ) (Provenance, bool) {
 	if !panesAvailable {
-		// The listing could not be read, so nothing can be said about any pane
-		// either way. Same direction as build: no claim, never a negative one.
-		return Provenance{}, false
+		// The listing could not be read, so no pane can be proven this session's.
+		// ⚠️ Unlike build there is no recorded id to fall back on — this path is
+		// reached precisely because the producer wrote no event line for the item —
+		// but the row must still name the read that failed rather than claim the
+		// item never had a pane.
+		return Provenance{PaneListingUnreadable: true}, true
 	}
 	sessionID := sessionIDFromItem(item)
 	if sessionID == "" {
@@ -819,8 +850,15 @@ func (r *provenanceResolver) build(
 		return provenance
 	}
 	if !panesAvailable {
-		// The pane was recorded but the listing could not be read, so nothing
-		// can be said about it either way.
+		// The pane was recorded but the listing could not be read, so whether it
+		// is still this session's cannot be established. ⚠️ This used to return
+		// with NO claim at all, which the page renders as "No pane was recorded
+		// for this item" — a false statement about the item, produced by a failure
+		// of the board's OWN read. The recorded id is carried in RecordedPane and
+		// the row states what actually happened.
+		provenance.PaneRecorded = true
+		provenance.PaneListingUnreadable = true
+		provenance.RecordedPane = strconv.Itoa(paneID)
 		return provenance
 	}
 	provenance.PaneRecorded = true
