@@ -59,22 +59,48 @@ func handleSessionHeartbeatPost(
 		)
 	}
 	if err := store.Post(ctx, heartbeat); err != nil {
-		return libhttp.WrapWithDetails(
+		// ⚠️ The rejection reason decides the status, and the two must not be
+		// collapsed. A malformed id is the CALLER's error and answers 400; a
+		// disk-full, permission-denied or rename failure is the SERVER's and
+		// answers 500. Reporting the second as 400 tells an operator to fix a
+		// request that was perfectly well formed — the same conflation
+		// session-heartbeat-get.go splits on the read side.
+		if errors.Is(err, pkg.ErrInvalidSessionID) {
+			return libhttp.WrapWithDetails(
+				errors.Wrap(ctx, err, "invalid session id"),
+				libhttp.ErrorCodeValidation,
+				http.StatusBadRequest,
+				map[string]any{"session_id": heartbeat.SessionID},
+			)
+		}
+		return libhttp.WrapWithCode(
 			errors.Wrap(ctx, err, "post heartbeat failed"),
-			libhttp.ErrorCodeValidation,
-			http.StatusBadRequest,
-			map[string]any{"session_id": heartbeat.SessionID},
+			libhttp.ErrorCodeInternal,
+			http.StatusInternalServerError,
 		)
 	}
 	// Read back rather than echoing the request: the stored row carries the
 	// store's own stamp, and a caller that saw its own `at` echoed would have
 	// no way to tell whether the stamp was applied.
 	stored, found, err := store.Get(ctx, heartbeat.SessionID)
-	if err != nil || !found {
+	if err != nil {
 		return libhttp.WrapWithCode(
 			errors.Wrap(ctx, err, "read back heartbeat failed"),
 			libhttp.ErrorCodeInternal,
 			http.StatusInternalServerError,
+		)
+	}
+	// ⚠️ `!found` is its own case and must NOT share the branch above. There is
+	// no error to wrap here — `errors.Wrap` returns nil for a nil error, so
+	// folding the two together would hand a nil error to the response builder.
+	// Reaching this needs the row to vanish between the Post and the read-back,
+	// which is a genuine server-side inconsistency rather than a client error.
+	if !found {
+		return libhttp.WrapWithDetails(
+			errors.Wrap(ctx, pkg.ErrSessionHeartbeatNotFound, "read back found no row"),
+			libhttp.ErrorCodeInternal,
+			http.StatusInternalServerError,
+			map[string]any{"session_id": heartbeat.SessionID},
 		)
 	}
 	if err := libhttp.SendJSONResponse(ctx, resp, stored, http.StatusOK); err != nil {

@@ -50,6 +50,20 @@ func handleSessionHeartbeatGet(
 	sessionID := mux.Vars(req)["sessionID"]
 	heartbeat, found, err := store.Get(ctx, sessionID)
 	if err != nil {
+		// ⚠️ A MALFORMED id is the CLIENT's error, and it must not be folded into
+		// the store-failure branch below. `validateSessionID` refuses `..`, `.`
+		// and anything carrying a path separator, so a caller sending one gets
+		// 400 — reporting 500 would blame the server for the caller's input, and
+		// routing it through the same branch would blur the guarantee this file
+		// exists to state: an unreadable STORE is a failure, never `absent`.
+		if errors.Is(err, pkg.ErrInvalidSessionID) {
+			return libhttp.WrapWithDetails(
+				errors.Wrap(ctx, err, "invalid session id"),
+				libhttp.ErrorCodeValidation,
+				http.StatusBadRequest,
+				map[string]any{"session_id": sessionID},
+			)
+		}
 		// An unreadable store is a FAILURE, never `absent` — reporting a read
 		// error as "no such session" is what would render a live session's card
 		// Resume. The distinction is the one worker-sessions.py states as "an

@@ -302,6 +302,34 @@ var _ = Describe("createAttentionStoreAPIHandler", func() {
 		httpHandler.ServeHTTP(rec, req)
 		Expect(rec.Code).To(Equal(http.StatusNotFound))
 	})
+
+	It("does not serve the session-heartbeat routes even to an authenticated caller", func() {
+		// ⚠️ This pins the placement `registerSessionHeartbeatRoutes` claims in its
+		// own comment, which was otherwise enforced by that comment alone. Those
+		// routes are mounted on the board router in `createHTTPServer`, NOT in
+		// `registerAttentionAPIRoutes` — the shared table THIS listener is built
+		// from. Moving them into it would silently publish an unauthenticated
+		// WRITE into the shared supervisor store on a cluster-reachable listener,
+		// where any caller could plant a row and have the board render a dead
+		// session as Live. Asserted WITH the header, for the same reason as the
+		// metrics and pprof probes above: unauthenticated these paths would also
+		// 404, and only the authenticated probe distinguishes "not mounted" from
+		// "mounted behind the middleware".
+		for _, probe := range []struct {
+			method string
+			path   string
+		}{
+			{http.MethodGet, "/api/1.0/session-heartbeat"},
+			{http.MethodPost, "/api/1.0/session-heartbeat"},
+			{http.MethodGet, "/api/1.0/session-heartbeat/some-session-id"},
+		} {
+			req := httptest.NewRequest(probe.method, probe.path, nil)
+			req.Header.Set("Authorization", "Bearer s3cret-token")
+			rec := httptest.NewRecorder()
+			httpHandler.ServeHTTP(rec, req)
+			Expect(rec.Code).To(Equal(http.StatusNotFound), probe.method+" "+probe.path)
+		}
+	})
 })
 
 var _ = Describe("attention store token configuration", func() {

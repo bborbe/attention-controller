@@ -168,6 +168,15 @@ var _ = Describe("Session heartbeat handlers", func() {
 			Expect(get("never-seen").Code).To(Equal(http.StatusNotFound))
 		})
 
+		It("answers 400 for a malformed session id, not 500", func() {
+			// ⚠️ The id becomes a filename, so the store refuses `..` — and that
+			// is the CALLER's error. Answering 500 would blame the server for the
+			// caller's input, and folding it into the store-failure branch would
+			// blur the guarantee this file documents: an unreadable store is a
+			// FAILURE, never `absent`.
+			Expect(get("..").Code).To(Equal(http.StatusBadRequest))
+		})
+
 		It("answers 200 with live true for a fresh row", func() {
 			Expect(post(body()).Code).To(Equal(http.StatusOK))
 			resp := get("5f2a1c34-0000-4000-8000-000000000001")
