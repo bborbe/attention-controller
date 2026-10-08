@@ -116,6 +116,45 @@ var _ = Describe("Session heartbeat", func() {
 			Expect(view.AgeSeconds).To(Equal(60))
 			Expect(view.Live).To(BeTrue())
 		})
+
+		It("projects a whole listing in the order it was handed", func() {
+			// The plural constructor is what the HTTP surface consumes directly,
+			// so its ordering is a contract rather than an implementation detail.
+			first := heartbeat()
+			second := heartbeat()
+			second.SessionID = "00000000-0000-4000-8000-000000000002"
+			views := pkg.NewSessionHeartbeatViews(
+				pkg.SessionHeartbeats{first, second}, at, heartbeatWindow,
+			)
+			Expect(views).To(HaveLen(2))
+			Expect(views[0].SessionID).To(Equal(first.SessionID))
+			Expect(views[1].SessionID).To(Equal(second.SessionID))
+		})
+
+		It("renders an empty listing as an empty NON-NIL slice, never null", func() {
+			// ⚠️ `null` and `[]` are different answers on the wire. A consumer
+			// that counts rows would have to special-case null, and one that
+			// iterates would have to guard — so the empty listing must serialise
+			// as `[]`, which the preallocated make guarantees.
+			views := pkg.NewSessionHeartbeatViews(pkg.SessionHeartbeats{}, at, heartbeatWindow)
+			Expect(views).NotTo(BeNil())
+			Expect(views).To(BeEmpty())
+		})
+
+		It("carries a NEGATIVE age for a future-dated row, with live false", func() {
+			// ⚠️ Documents the disagreement rather than pretending it cannot
+			// happen: a row stamped ahead of the clock yields a negative age, and
+			// `-300 <= window` reads as in-window to anyone testing the age. The
+			// rule the field's comment states is that `Live` is authoritative
+			// here — clamping to zero would NOT fix it, since `0 <= window` is
+			// true as well. Pinned so a future change to either field has to
+			// confront the pair.
+			view := pkg.NewSessionHeartbeatView(
+				heartbeat(), after(-5*stdtime.Minute), heartbeatWindow,
+			)
+			Expect(view.AgeSeconds).To(BeNumerically("<", 0))
+			Expect(view.Live).To(BeFalse())
+		})
 	})
 
 	Describe("validation", func() {

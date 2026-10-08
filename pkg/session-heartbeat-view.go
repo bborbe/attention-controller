@@ -23,6 +23,16 @@ type SessionHeartbeatView struct {
 	// AgeSeconds is how long ago the store stamped the row. Exposed as a
 	// number rather than left to the reader to derive from `at`, so a script
 	// and the board cannot disagree about the arithmetic.
+	//
+	// ⚠️ It can be NEGATIVE, and when it is, `Live` is the answer — not this
+	// field. A row stamped ahead of the reader's clock yields a negative age
+	// (e.g. `-300` beside `live: false`), and a reader testing `age <= window`
+	// would read that as in-window. Clamping to zero does NOT fix it, since
+	// `0 <= window` is true as well; the only honest rule is that a negative
+	// age means the clock is skewed, and the verdict is the one to trust. The
+	// store stamps `At` from its own clock, so reaching this needs cross-host
+	// skew rather than a hostile caller — but a reader must not have to work
+	// that out to get the right answer.
 	AgeSeconds int `json:"age_seconds"`
 	// Live reports whether the age is within the read path's window. ⚠️ It is
 	// the ONLY thing that separates `live` from `stale` — a reader that ignores
