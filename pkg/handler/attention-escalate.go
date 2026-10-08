@@ -112,14 +112,14 @@ func wrapEscalateError(ctx context.Context, err error, itemID pkg.ItemID) error 
 	case errors.Is(err, pkg.ErrAlreadyEscalated):
 		return libhttp.WrapWithDetails(
 			errors.Wrap(ctx, err, "escalate failed"),
-			ErrorCodeAlreadyEscalated,
+			pkg.ErrorCodeAlreadyEscalated,
 			http.StatusConflict,
 			map[string]any{"item_id": itemID.String()},
 		)
 	case errors.Is(err, pkg.ErrItemNotOpen):
 		return libhttp.WrapWithDetails(
 			errors.Wrap(ctx, err, "escalate failed"),
-			ErrorCodeItemNotOpen,
+			pkg.ErrorCodeItemNotOpen,
 			http.StatusConflict,
 			map[string]any{"item_id": itemID.String()},
 		)

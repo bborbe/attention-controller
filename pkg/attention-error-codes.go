@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-package handler
+package pkg
 
 // Error codes this service defines for failure modes libhttp has no constant
 // for. They live here rather than inline at the call site so a typo fails at
@@ -13,6 +13,15 @@ package handler
 // that lost an answer race must be able to tell that apart from a validation
 // failure, and collapsing them onto ErrorCodeValidation would erase exactly the
 // distinction the compare-and-set exists to report.
+//
+// ⚠️ They live in `pkg` rather than `pkg/handler` because they are the wire
+// names of this package's own sentinel errors — ErrAlreadyAnswered,
+// ErrIllegalTransition and ErrItemNotFound are declared here, and a code is
+// what those sentinels read as on the wire. The federating client
+// (attention-remote.go) has to turn a peer's response BACK into the sentinel,
+// and it cannot import `pkg/handler`: handler imports pkg, so the reverse edge
+// is a cycle. Pairing each code with the sentinel it names is what lets the
+// client round-trip an error faithfully instead of collapsing the two 409s.
 const (
 	// ErrorCodeAlreadyEscalated is the code a caller receives when another
 	// session stamped the item first. Distinct from ErrorCodeItemNotOpen: the
@@ -43,6 +52,10 @@ const (
 	// names the arm that won, ErrIllegalTransition names no arm because there
 	// was none — and collapsing them here would erase the distinction between
 	// "already handled" and "no longer exists".
+	//
+	// ⚠️ Both are HTTP 409, which is why the federating client reads this field
+	// rather than the status: a status-only mapping cannot tell them apart, and
+	// a federated answer that lost a race would report "no longer exists".
 	//
 	// The response carries the item's closed_at, because the terminal state is
 	// the whole of what the caller can act on: the item is not coming back, and
