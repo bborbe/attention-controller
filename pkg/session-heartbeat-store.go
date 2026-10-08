@@ -50,8 +50,21 @@ type SessionHeartbeatStore interface {
 // ⚠️ The directory is the EXISTING heartbeat store the supervisor scripts
 // already read — `~/.local/state/claude-supervisor/live` by default. This
 // extends that store rather than building a parallel one: the same files keep
-// being read by the same Node readers, and the new fields are additive, so a
-// record written before this change still parses and still means what it did.
+// being read by the same Node readers, and the fields this task adds are
+// additive, so a LEGACY row still parses and still means what it did. Legacy
+// here means the rows the Node writers produce, which never carried an activity
+// under any key.
+//
+// ⚠️ That promise is ONE-DIRECTIONAL, and the direction it does not cover is
+// named here so the two comments in this file cannot be read as contradicting
+// each other. A row written by the PREVIOUS RELEASE OF THIS STORE carries
+// `state` and no `activity`; it still parses, but `toHeartbeat` reads
+// `r.Activity`, so it surfaces with an empty State. Accepted rather than
+// repaired: nothing in-repo consumes State beyond serialization, `Post`
+// rewrites a live session's row wholesale within one post interval, and a dead
+// session's row already reads not-live by age. A `state` fallback would keep
+// the collision key alive on the READ path, which is the thing this rename
+// exists to remove. Pinned by a spec, so a later fallback refactor is visible.
 func NewSessionHeartbeatStore(
 	dir string,
 	now libtime.CurrentDateTimeGetter,

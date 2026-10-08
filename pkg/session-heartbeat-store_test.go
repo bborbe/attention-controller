@@ -129,6 +129,30 @@ var _ = Describe("Session heartbeat store", func() {
 			Expect(onDisk).ToNot(HaveKey("state"))
 		})
 
+		It("still parses a row written before the rename, and surfaces it with an empty State", func() {
+			// ⚠️ The rename is ONE-DIRECTIONAL, and this pins the direction it does
+			// not cover. A row written by the PREVIOUS RELEASE of this store carries
+			// `state` and no `activity`; it parses, but `toHeartbeat` reads
+			// `r.Activity`, so the activity is gone rather than repaired by a
+			// fallback. That is deliberate — a `state` fallback would keep the
+			// collision key alive on the READ path, which is exactly what this
+			// rename removes. Pinned so a later fallback refactor is a visible
+			// change rather than a silent one.
+			legacy := `{"sessionId":"5f2a1c34-0000-4000-8000-000000000001","pid":4242,` +
+				`"mode":"local","at":"2026-10-08T09:00:00Z","source":"mcp-timer",` +
+				`"location":"local","state":"busy"}`
+			Expect(os.WriteFile(
+				filepath.Join(dir, "5f2a1c34-0000-4000-8000-000000000001.json"),
+				[]byte(legacy), 0600,
+			)).To(BeNil())
+
+			got, found, err := store.Get(ctx, "5f2a1c34-0000-4000-8000-000000000001")
+			Expect(err).To(BeNil())
+			Expect(found).To(BeTrue(), "a legacy row must still parse, not vanish")
+			Expect(got.Location).To(Equal(pkg.LocalSessionHeartbeatLocation))
+			Expect(string(got.State)).To(BeEmpty())
+		})
+
 		It("leaves no temp file behind after a write", func() {
 			// The rename is what makes a row either wholly old or wholly new; a
 			// leftover temp would be a file the listing has to skip forever.
