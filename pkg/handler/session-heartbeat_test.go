@@ -125,6 +125,22 @@ var _ = Describe("Session heartbeat handlers", func() {
 			Expect(post(payload).Code).To(Equal(http.StatusBadRequest))
 		})
 
+		It("rejects a session id carrying a path separator with 400", func() {
+			// ⚠️ The id arrives from the network and becomes a FILENAME, so this
+			// is the one input that could escape the store directory. A row
+			// written outside it would be invisible to every reader and would
+			// overwrite whatever it landed on.
+			payload := body()
+			payload["session_id"] = "../../escaped"
+			Expect(post(payload).Code).To(Equal(http.StatusBadRequest))
+		})
+
+		It("rejects a session id that is a bare dot with 400", func() {
+			payload := body()
+			payload["session_id"] = ".."
+			Expect(post(payload).Code).To(Equal(http.StatusBadRequest))
+		})
+
 		It("rejects a body that is not valid JSON with 400", func() {
 			req := httptest.NewRequest(
 				http.MethodPost, "/api/1.0/session-heartbeat", bytes.NewReader([]byte("{")),
