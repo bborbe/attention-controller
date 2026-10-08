@@ -40,7 +40,10 @@ type SessionHeartbeatStore interface {
 	// exists — a distinct answer from a row that exists and is stale, which is
 	// what lets a reader tell `absent` from `stale` (SC10).
 	Get(ctx context.Context, sessionID string) (SessionHeartbeat, bool, error)
-	// List returns every row the store holds, in no guaranteed order.
+	// List returns every row the store holds, ordered by session id. The order
+	// is a property of the implementation, not of this contract — it exists so
+	// two reads of an unchanged store agree, which is what makes a diff of two
+	// listings meaningful.
 	List(ctx context.Context) (SessionHeartbeats, error)
 }
 
@@ -212,6 +215,16 @@ func (s *sessionHeartbeatStore) Get(
 // holds non-heartbeat files (`_cluster-reachability.json`), so one unexpected
 // file must not take the whole read path down — but the skip is logged, so a
 // genuinely corrupt heartbeat is visible rather than silent.
+//
+// ⚠️ That skip is DELIBERATELY asymmetric with Get, and the asymmetry is the
+// safer direction rather than an oversight. Get is asked about one named
+// session, so an unreadable row for it is a failure it must report rather than
+// answer "absent" — "absent" is what renders a live session's card Resume.
+// List is asked about the whole store, so refusing the entire listing over one
+// bad file would take every OTHER session's liveness down with it. The cost is
+// real and accepted: a directory of corrupt rows lists as empty, which reads as
+// every session dead. The log line is what separates that from a genuinely
+// empty store.
 func (s *sessionHeartbeatStore) List(ctx context.Context) (SessionHeartbeats, error) {
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
@@ -269,6 +282,17 @@ func parseSessionHeartbeatFile(
 }
 
 // toHeartbeat projects the on-disk record onto the wire shape.
+//
+// ⚠️ The enum fields are passed through VERBATIM and are deliberately NOT
+// validated against `Available*`. This is a read of a SHARED store, so a row
+// this endpoint did not write is a legitimate input: the legacy cluster writer
+// stamps `source: "cluster"`, which is not in this task's write vocabulary, and
+// a row predating these fields carries no source at all. Rejecting those on
+// read would make the endpoint blind to exactly the rows it exists to surface,
+// and inventing a value for them would put a declaration on the wire that no
+// producer made. So the reader gets what the file says — and the contract that
+// matters is on the CONSUMER: only `mcp-timer` counts as proof of liveness, and
+// an unrecognised or empty source is not proof of anything.
 func (r sessionHeartbeatFile) toHeartbeat() SessionHeartbeat {
 	return SessionHeartbeat{
 		SessionID: r.SessionID,
@@ -316,12 +340,12 @@ func validateSessionID(ctx context.Context, sessionID string) error {
 // sessionHeartbeatDirFromEnv resolves the DEFAULT store directory.
 //
 // ⚠️ It deliberately does NOT read SESSION_HEARTBEAT_DIR. That override belongs
-// to the `-session-heartbeat-dir` argument-struct field, which the arg parser
-// already fills from that env var — so reading it again here would be a second
-// config surface for one value, and the copy would be dead: this helper is only
-// reached when the field is EMPTY, which is precisely when the env var is unset.
-// What is left here is the part a static default cannot express, because it
-// depends on the user's home.
+// to the argument-struct field the HTTP surface wires as
+// `-session-heartbeat-dir` — so reading the env var again here would be a
+// second config surface for one value, and the copy would be dead anyway: this
+// helper is reached only when that field is EMPTY, which is precisely when the
+// env var is unset. What is left here is the part a static default cannot
+// express, because it depends on the user's home.
 func sessionHeartbeatDirFromEnv() string {
 	stateDir := os.Getenv("XDG_STATE_HOME")
 	if stateDir == "" {
