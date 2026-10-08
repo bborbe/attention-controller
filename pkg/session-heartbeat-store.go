@@ -93,9 +93,21 @@ type sessionHeartbeatFile struct {
 	// reader can say which body of work a live session is advancing.
 	Task  string `json:"task,omitempty"`
 	Vault string `json:"vault,omitempty"`
-	// Location and State are this task's additions; see SessionHeartbeat.
+	// Location and Activity are this task's additions; see SessionHeartbeat.
+	//
+	// ⚠️ The FILE calls this `activity` while the WIRE calls it `state`, and the
+	// asymmetry is deliberate rather than drift. This directory is shared with
+	// four readers that already own the word `state` for a LIVENESS VERDICT —
+	// `worker-sessions.py`, `fleet-board.py`, `adopt-orphans.py` and
+	// `session-liveness.py` all gate on `stamp.get("state", "live") != "live"`,
+	// where a MISSING key must read as `live` rather than vanish. A row carrying
+	// `state: "busy"` therefore reads as NOT-live: it draws no fleet-board row,
+	// reports `alive: false`, and stops counting as live for the orphan-adoption
+	// gate — which is exactly what frees an auto-resume to spawn a duplicate onto
+	// a session that is alive. The wire has no such collision (its verdict is
+	// `live`), so it keeps the name the endpoint's contract already declares.
 	Location string `json:"location,omitempty"`
-	State    string `json:"state,omitempty"`
+	Activity string `json:"activity,omitempty"`
 }
 
 // Post writes one heartbeat, replacing any row the session already holds.
@@ -124,7 +136,7 @@ func (s *sessionHeartbeatStore) Post(ctx context.Context, heartbeat SessionHeart
 		Task:      heartbeat.Task,
 		Vault:     heartbeat.Vault,
 		Location:  heartbeat.Location.String(),
-		State:     heartbeat.State.String(),
+		Activity:  heartbeat.State.String(),
 	}
 	content, err := json.MarshalIndent(record, "", "  ")
 	if err != nil {
@@ -272,7 +284,7 @@ func (r sessionHeartbeatFile) toHeartbeat() SessionHeartbeat {
 		Task:      r.Task,
 		Vault:     r.Vault,
 		Location:  SessionHeartbeatLocation(r.Location),
-		State:     SessionHeartbeatState(r.State),
+		State:     SessionHeartbeatState(r.Activity),
 		Source:    SessionHeartbeatSource(r.Source),
 		At:        r.At,
 	}

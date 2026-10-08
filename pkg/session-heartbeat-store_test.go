@@ -106,6 +106,29 @@ var _ = Describe("Session heartbeat store", func() {
 			Expect(listed[0].State).To(Equal(pkg.BusySessionHeartbeatState))
 		})
 
+		It("writes the activity under `activity`, never under the readers' `state` key", func() {
+			// ⚠️ THE REGRESSION GUARD. This directory is shared with four readers
+			// that gate liveness on `stamp.get("state", "live") != "live"` —
+			// `worker-sessions.py`, `fleet-board.py`, `adopt-orphans.py` and
+			// `session-liveness.py` — where a MISSING key must read as `live`
+			// rather than vanish. A row carrying `state: "busy"` therefore reads as
+			// NOT-live: it draws no fleet-board row, reports `alive: false`, and
+			// stops counting as live for the orphan-adoption gate, which is what
+			// frees an auto-resume to spawn a duplicate onto a live session. The
+			// WIRE keeps the name `state` (its contract has no such collision), so
+			// only the file's key is asserted here.
+			Expect(store.Post(ctx, declaration())).To(BeNil())
+			entries, err := os.ReadDir(dir)
+			Expect(err).To(BeNil())
+			Expect(entries).To(HaveLen(1))
+			raw, err := os.ReadFile(filepath.Join(dir, entries[0].Name()))
+			Expect(err).To(BeNil())
+			var onDisk map[string]any
+			Expect(json.Unmarshal(raw, &onDisk)).To(BeNil())
+			Expect(onDisk["activity"]).To(Equal("idle"))
+			Expect(onDisk).ToNot(HaveKey("state"))
+		})
+
 		It("leaves no temp file behind after a write", func() {
 			// The rename is what makes a row either wholly old or wholly new; a
 			// leftover temp would be a file the listing has to skip forever.
