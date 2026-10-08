@@ -313,13 +313,16 @@ func validateSessionID(ctx context.Context, sessionID string) error {
 	return nil
 }
 
-// sessionHeartbeatDirFromEnv resolves the store directory, honouring an
-// override so the store can be pointed at a test directory or another host's
-// mount. The default is the existing supervisor heartbeat store.
+// sessionHeartbeatDirFromEnv resolves the DEFAULT store directory.
+//
+// ⚠️ It deliberately does NOT read SESSION_HEARTBEAT_DIR. That override belongs
+// to the `-session-heartbeat-dir` argument-struct field, which the arg parser
+// already fills from that env var — so reading it again here would be a second
+// config surface for one value, and the copy would be dead: this helper is only
+// reached when the field is EMPTY, which is precisely when the env var is unset.
+// What is left here is the part a static default cannot express, because it
+// depends on the user's home.
 func sessionHeartbeatDirFromEnv() string {
-	if value := os.Getenv("SESSION_HEARTBEAT_DIR"); value != "" {
-		return value
-	}
 	stateDir := os.Getenv("XDG_STATE_HOME")
 	if stateDir == "" {
 		home, err := os.UserHomeDir()
@@ -331,9 +334,10 @@ func sessionHeartbeatDirFromEnv() string {
 	return filepath.Join(stateDir, "claude-supervisor", "live")
 }
 
-// NewSessionHeartbeatStoreFromEnv creates a store over the directory named by
-// SESSION_HEARTBEAT_DIR, falling back to the supervisor's existing heartbeat
-// store.
+// NewSessionHeartbeatStoreFromEnv creates a store over the default heartbeat
+// directory. An explicit directory is passed to NewSessionHeartbeatStore
+// instead — see sessionHeartbeatDirFromEnv for why this helper reads no
+// override of its own.
 func NewSessionHeartbeatStoreFromEnv(
 	ctx context.Context,
 	now libtime.CurrentDateTimeGetter,
