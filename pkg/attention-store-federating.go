@@ -288,13 +288,16 @@ func (f *federatingAttentionStore) withRemote(ctx context.Context, local Items) 
 // showed the pod's card, and minutes later the same card was gone from both the
 // peer and the board. See withRemote for why that is accepted.
 //
-// ⚠️ What the prune costs is FREQUENCY, and only frequency. An item is pruned
-// only when it is open, its producer is dead AND it was asked — and such an item
-// is omitted from the peer's read either way, so a peer consumer polling a
-// moment later sees exactly the same state whether or not this store read
-// first. No observation is lost. What changes is that the peer now prunes on
-// THIS store's cadence rather than a human's, which is extra write traffic
-// against the peer and nothing beyond it.
+// ⚠️ What the prune costs is FREQUENCY, and only frequency. An OPEN item is
+// pruned for one of two INDEPENDENT reasons, and naming only the first is the
+// mistake this sentence exists to prevent: it has EXPIRED (checked before
+// liveness, and load-bearing there — an expired item is moot whoever is still
+// alive), or its producer is dead and it was asked. An item pruned either way is
+// also omitted from the peer's read, so a peer consumer polling a moment later
+// sees exactly the same state whether or not this store read first. No
+// observation is lost. What changes is that the peer now prunes on THIS store's
+// cadence rather than a human's, which is extra write traffic against the peer
+// and nothing beyond it.
 func (f *federatingAttentionStore) remoteItems(ctx context.Context) (Items, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
