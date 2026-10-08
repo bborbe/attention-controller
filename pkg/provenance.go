@@ -484,7 +484,7 @@ func (r *provenanceResolver) readHostState(ctx context.Context) hostState {
 		state.panes, state.panesErr = r.panes.List(ctx)
 	}
 	if state.panesErr != nil {
-		glog.V(2).Infof("pane listing unavailable, rendering no pane: %v", state.panesErr)
+		glog.V(2).Infof("pane listing unavailable after retry: %v", state.panesErr)
 	}
 	return state
 }
@@ -797,11 +797,16 @@ func (r *provenanceResolver) resolveByName(
 ) (Provenance, bool) {
 	if !panesAvailable {
 		// The listing could not be read, so no pane can be proven this session's.
-		// ⚠️ Unlike build there is no recorded id to fall back on — this path is
-		// reached precisely because the producer wrote no event line for the item —
-		// but the row must still name the read that failed rather than claim the
-		// item never had a pane.
-		return Provenance{PaneListingUnreadable: true}, true
+		// Same direction as build: no claim, never a negative one.
+		//
+		// ⚠️ No PaneListingUnreadable marker here, and the asymmetry with build is
+		// deliberate. This path is reached precisely because the producer wrote no
+		// event line for the item, so there is no recorded id to carry and nothing
+		// the marker could qualify. Setting it made the row say "this item's pane
+		// could not be confirmed" about an item with no pane on record — the same
+		// defect class (a board-side failure reaching the operator as a property of
+		// the item) this change exists to close.
+		return Provenance{}, false
 	}
 	sessionID := sessionIDFromItem(item)
 	if sessionID == "" {

@@ -357,6 +357,35 @@ var _ = Describe("Attention jump handover", func() {
 			Expect(pane).To(Equal("1907"))
 		})
 
+		// ⚠️ THE BLOCKING FINDING on PR #115, pinned. The page renders the control
+		// whenever jumpPane is non-empty, which includes the recorded-but-unvalidated
+		// case — so the handler must resolve through the SAME ordering. Reading
+		// `.Pane` alone made the button a functional no-op on exactly the path it
+		// was added for: `.Pane` is empty there by construction, so every click
+		// 404'd. The two halves of the handover must agree about which pane they
+		// mean, and this is the spec that holds them to it.
+		It("activates the recorded pane when the listing was unreadable", func() {
+			item := pushItem(nonMessageRequest())
+			provenance.ResolveReturns(pkg.Provenances{
+				item.ItemID: pkg.Provenance{
+					PaneRecorded:          true,
+					PaneListingUnreadable: true,
+					RecordedPane:          "58",
+					// ⚠️ Routable false and Pane empty, exactly as build leaves them on
+					// this path: the id has not been validated against a live listing,
+					// which is the whole reason the row marks it `unvalidated`.
+					Routable: false,
+				},
+			})
+
+			resp := jump(item.ItemID, "same-origin")
+
+			Expect(resp.Code).To(Equal(http.StatusNoContent))
+			Expect(activator.ActivateCallCount()).To(Equal(1))
+			_, pane := activator.ActivateArgsForCall(0)
+			Expect(pane).To(Equal("58"))
+		})
+
 		// ⚠️ The handler no longer reads a token, so this is now purely a
 		// regression guard: it fires only if a future implementation starts
 		// reading the credential again AND writing it into a response. Kept

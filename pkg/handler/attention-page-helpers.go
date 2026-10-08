@@ -420,7 +420,7 @@ func jumpURL(item pkg.Item, provenance pkg.Provenance) string {
 // themselves rather than restating their guards, so the explanation cannot drift
 // from the control it explains: there is one decision, read twice.
 //
-// ⚠️ Four sentences, not one per code path, and the coarseness is read rather
+// ⚠️ Three sentences, not one per code path, and the coarseness is read rather
 // than chosen. The reasons a pane is absent subdivide by *writer* — no state dir,
 // an unopenable one, a missing producer log, a log with no line for the key — but
 // readEvents collapses every one of its own failures into the same empty map and
@@ -430,11 +430,13 @@ func jumpURL(item pkg.Item, provenance pkg.Provenance) string {
 // operator reads. See [[A Card With No Jump Target Explains Why Instead of
 // Rendering Nothing]] § Results.
 //
-// ⚠️ The one split that is NOT invented is the listing-unreadable sentence. Every
-// failure above belongs to the PRODUCER; that one belongs to the BOARD, and the
-// resolver holds the fact (panesAvailable) — it simply had nowhere to put it.
-// Collapsing the board's own failed read into "no pane was recorded" told the
-// operator a falsehood about the item, which is the defect this sentence closes.
+// ⚠️ There is deliberately NO sentence for "the listing was unreadable". A row in
+// that state carries a recorded pane and therefore renders a control, so the guard
+// above returns before any sentence — the state cannot reach this function. A
+// branch for it was written and removed rather than left standing: unreachable
+// code reads as coverage, and the sentence it produced was false for the one shape
+// that could reach it. See [[A Card Loses Its Jump Button While the Session's Pane
+// Is Still Open]].
 // ⚠️ The "jump is unavailable on this host" sentence is gone with the token
 // gate that produced it. It explained a row that HAD a resolvable pane yet
 // carried no control — the state that existed only while the button was gated
@@ -444,17 +446,6 @@ func jumpURL(item pkg.Item, provenance pkg.Provenance) string {
 func noJumpReason(item pkg.Item, provenance pkg.Provenance) string {
 	if jumpCommand(item, provenance) != "" || jumpURL(item, provenance) != "" {
 		return ""
-	}
-	if provenance.PaneListingUnreadable {
-		// ⚠️ The board's OWN read failed. It must say that, and must not let the
-		// failure reach the operator as a fact about the item — which is exactly
-		// what happened while this state collapsed into the sentence below, and
-		// what [[A Card Loses Its Jump Button While the Session's Pane Is Still
-		// Open]] was filed about.
-		//
-		// Reached only when there is no control to explain: a row carrying a
-		// RecordedPane renders jumpURL's button and this returns "" above.
-		return "The pane listing could not be read, so this item's pane could not be confirmed."
 	}
 	if provenance.PaneRecorded {
 		// A pane was recorded and does not resolve to this session: the case

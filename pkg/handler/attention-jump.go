@@ -39,6 +39,12 @@ import (
 // which is a wrong answer wearing the appearance of a resolved one. An item
 // whose pane does not resolve jumps nowhere and says so.
 //
+// ⚠️ Re-resolved, but through `jumpPane` — not through `.Pane`. The two are not
+// the same question once the listing can be unreadable: `.Pane` carries only a
+// VALIDATED pane, while the row renders its control whenever `jumpPane` is
+// non-empty, which includes the recorded-but-unvalidated case. Reading `.Pane`
+// here made the control a no-op on exactly the path it was added for.
+//
 // The 204 is what keeps the browser on the board: it is not a navigation, so
 // the page's fetch() resolves in place and the operator's screen stays put.
 // That was the operator's own ask — "so we dont switch the screen".
@@ -65,7 +71,14 @@ func NewAttentionJumpHandler(
 				if err != nil {
 					return wrapTransitionError(ctx, err, itemID)
 				}
-				pane := provenance.Resolve(ctx, pkg.Items{*item})[item.ItemID].Pane
+				// ⚠️ The pane is read through jumpPane, the SAME ordering the page
+				// rendered the control with. Reading `.Pane` alone here was a
+				// functional no-op: the control renders exactly when the listing is
+				// unreadable and `.Pane` is empty, so the button 404'd on every click
+				// on the one path it exists for. One ordering, read twice — the same
+				// rule noJumpReason follows.
+				resolved := provenance.Resolve(ctx, pkg.Items{*item})[item.ItemID]
+				pane := jumpPane(resolved)
 				if pane == "" {
 					return libhttp.WrapWithCode(
 						errors.New(ctx, "item has no resolvable pane"),
