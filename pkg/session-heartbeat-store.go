@@ -50,8 +50,21 @@ type SessionHeartbeatStore interface {
 // ⚠️ The directory is the EXISTING heartbeat store the supervisor scripts
 // already read — `~/.local/state/claude-supervisor/live` by default. This
 // extends that store rather than building a parallel one: the same files keep
-// being read by the same Node readers, and the new fields are additive, so a
-// record written before this change still parses and still means what it did.
+// being read by the same Node readers, and the fields this task adds are
+// additive, so a LEGACY row still parses and still means what it did. Legacy
+// here means the rows the Node writers produce, which never carried an activity
+// under any key.
+//
+// ⚠️ That promise is ONE-DIRECTIONAL, and the direction it does not cover is
+// named here so the two comments in this file cannot be read as contradicting
+// each other. A row written by the PREVIOUS RELEASE OF THIS STORE carries
+// `state` and no `activity`; it still parses, but `toHeartbeat` reads
+// `r.Activity`, so it surfaces with an empty State. Accepted rather than
+// repaired: nothing in-repo consumes State beyond serialization, `Post`
+// rewrites a live session's row wholesale within one post interval, and a dead
+// session's row already reads not-live by age. A `state` fallback would keep
+// the collision key alive on the READ path, which is the thing this rename
+// exists to remove. Pinned by a spec, so a later fallback refactor is visible.
 func NewSessionHeartbeatStore(
 	dir string,
 	now libtime.CurrentDateTimeGetter,
@@ -93,9 +106,34 @@ type sessionHeartbeatFile struct {
 	// reader can say which body of work a live session is advancing.
 	Task  string `json:"task,omitempty"`
 	Vault string `json:"vault,omitempty"`
-	// Location and State are this task's additions; see SessionHeartbeat.
+	// Location and Activity are this task's additions; see SessionHeartbeat.
+	//
+	// ⚠️ The FILE calls this `activity` while the WIRE calls it `state`, and the
+	// asymmetry is deliberate rather than drift. This directory is shared with
+	// four readers that own the word `state` for a LIVENESS VERDICT —
+	// `worker-sessions.py`, `fleet-board.py`, `adopt-orphans.py` and
+	// `session-liveness.py` all gate on `stamp.get("state", "live") != "live"`,
+	// where a MISSING key must read as `live` rather than vanish.
+	//
+	// ⚠️ **Those four gates never see a raw stamp, and an earlier revision of this
+	// comment claimed they did** — asserting that a row carrying `state: "busy"`
+	// "reads as NOT-live" and frees a duplicate auto-resume. It does not: the
+	// readers' single chokepoint parses a raw stamp and builds a fresh dict
+	// carrying its OWN verdict, never reading the file's key. So this field is
+	// WRITE-ONLY today, and the rename is PREVENTIVE — it removes a name that
+	// collides with the verdict vocabulary before a raw-stamp reader exists to be
+	// bitten by it.
+	//
+	// ⚠️ **The wire can therefore carry an EMPTY `state`.** With the fallback
+	// deliberately absent, a row written by the previous release of this store
+	// (which used `state`) still parses but projects `SessionHeartbeatState("")`
+	// onto GET and LIST responses — a value `SessionHeartbeatState.Validate`
+	// itself rejects. Accepted rather than repaired, and worth naming so an API
+	// consumer reads it as an expected mid-deploy value rather than a bug: it
+	// clears as soon as the writer posts again, and a dead session's row is
+	// already not-live by age. See `toHeartbeat`.
 	Location string `json:"location,omitempty"`
-	State    string `json:"state,omitempty"`
+	Activity string `json:"activity,omitempty"`
 }
 
 // Post writes one heartbeat, replacing any row the session already holds.
@@ -124,7 +162,7 @@ func (s *sessionHeartbeatStore) Post(ctx context.Context, heartbeat SessionHeart
 		Task:      heartbeat.Task,
 		Vault:     heartbeat.Vault,
 		Location:  heartbeat.Location.String(),
-		State:     heartbeat.State.String(),
+		Activity:  heartbeat.State.String(),
 	}
 	content, err := json.MarshalIndent(record, "", "  ")
 	if err != nil {
@@ -272,7 +310,7 @@ func (r sessionHeartbeatFile) toHeartbeat() SessionHeartbeat {
 		Task:      r.Task,
 		Vault:     r.Vault,
 		Location:  SessionHeartbeatLocation(r.Location),
-		State:     SessionHeartbeatState(r.State),
+		State:     SessionHeartbeatState(r.Activity),
 		Source:    SessionHeartbeatSource(r.Source),
 		At:        r.At,
 	}
