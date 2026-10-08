@@ -170,7 +170,7 @@ var _ = Describe("AttentionAnswerHandler", func() {
 		// point and the timestamp is the only part the caller can act on.
 		var errorResponse libhttp.ErrorResponse
 		Expect(json.NewDecoder(rec.Body).Decode(&errorResponse)).To(BeNil())
-		Expect(errorResponse.Error.Code).To(Equal(handler.ErrorCodeItemClosed))
+		Expect(errorResponse.Error.Code).To(Equal(pkg.ErrorCodeItemClosed))
 		Expect(errorResponse.Error.Details).To(HaveKeyWithValue("state", pkg.ClosedState.String()))
 		Expect(errorResponse.Error.Details).
 			To(HaveKeyWithValue("closed_at", closed.ClosedAt.String()))
@@ -205,7 +205,7 @@ var _ = Describe("AttentionAnswerHandler", func() {
 
 		var errorResponse libhttp.ErrorResponse
 		Expect(json.NewDecoder(rec.Body).Decode(&errorResponse)).To(BeNil())
-		Expect(errorResponse.Error.Code).To(Equal(handler.ErrorCodeAlreadyAnswered))
+		Expect(errorResponse.Error.Code).To(Equal(pkg.ErrorCodeAlreadyAnswered))
 		Expect(errorResponse.Error.Message).To(ContainSubstring("telegram"))
 	})
 })

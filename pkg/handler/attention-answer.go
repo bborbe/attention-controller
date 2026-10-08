@@ -189,7 +189,7 @@ func wrapAnswerError(
 	case errors.Is(err, pkg.ErrAlreadyAnswered):
 		return libhttp.WrapWithDetails(
 			errors.Wrap(ctx, err, "answer failed"),
-			ErrorCodeAlreadyAnswered,
+			pkg.ErrorCodeAlreadyAnswered,
 			http.StatusConflict,
 			map[string]any{"item_id": itemID.String()},
 		)
@@ -249,14 +249,14 @@ func wrapItemClosedError(
 				itemID,
 				item.ClosedAt,
 			),
-			ErrorCodeItemClosed,
+			pkg.ErrorCodeItemClosed,
 			http.StatusConflict,
 			details,
 		)
 	}
 	return libhttp.WrapWithDetails(
 		errors.Wrapf(ctx, err, "item %s left the queue before the answer arrived", itemID),
-		ErrorCodeItemClosed,
+		pkg.ErrorCodeItemClosed,
 		http.StatusConflict,
 		details,
 	)

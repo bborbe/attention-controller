@@ -134,6 +134,38 @@ type application struct {
 	// the API unauthenticated on a non-loopback address. That is the
 	// fail-closed default, not a degenerate configuration.
 	AttentionStoreToken string `required:"false" arg:"attention-store-token"    env:"ATTENTION_STORE_TOKEN"    usage:"bearer token every request to the second listener must present (empty disables the listener)"                                                          display:"length"`
+	// AttentionUpstreamURL is the base URL of a PEER attention store whose open
+	// items this instance merges into its own board.
+	//
+	// ⚠️ Empty disables federation entirely, which is a supported configuration
+	// rather than a degenerate one: an instance with no peer serves exactly the
+	// board it serves today. It is logged rather than silent, so a card that
+	// stops appearing is traceable to the setting that disabled it instead of to
+	// a bug — the same switch AttentionStoreListen has.
+	//
+	// ⚠️ It is the peer's BUSINESS API listener — the bearer-gated one — not its
+	// board. The board listener renders HTML and is deliberately not exposed; the
+	// business API is the surface a token can gate.
+	AttentionUpstreamURL string `required:"false" arg:"attention-upstream-url"   env:"ATTENTION_UPSTREAM_URL"   usage:"base URL of a peer attention store whose open items are merged into this instance's board (empty disables federation)"`
+	// AttentionUpstreamToken is the bearer token the peer's business API
+	// requires.
+	//
+	// ⚠️ A credential: never logged, never rendered. display:"length" makes
+	// argument.Parse()'s startup dump print this field's length rather than its
+	// value.
+	//
+	// ⚠️ There is deliberately NO arg: tag. Its sibling AttentionStoreToken has
+	// one, and the review of the change that added it flagged the consequence: an
+	// argv-passed token is readable in the process's ps output by every local
+	// user. This field has no operational need for a flag — the peer's address
+	// and token are configured together in the deployment — so it is env-only
+	// rather than repeating a known exposure for symmetry's sake.
+	//
+	// ⚠️ Empty disables federation, exactly as an empty URL does. The two halves
+	// are required TOGETHER: a URL with no token would call a gated API that
+	// answers 401, which is a configured-looking instance that silently federates
+	// nothing.
+	AttentionUpstreamToken string `required:"false"                                env:"ATTENTION_UPSTREAM_TOKEN" usage:"bearer token the peer attention store's business API requires (empty disables federation)"                                                             display:"length"`
 	// TTSURL is the tts server's base URL. Optional: with no value the
 	// read-aloud route is not registered and the page renders no read-aloud
 	// control, so a host without a tts server serves the same page minus one
@@ -162,7 +194,15 @@ func (a *application) Run(ctx context.Context, sentryClient libsentry.Client) er
 	// write signals it, and into the server so the board's live channel can
 	// subscribe to it. Two instances would be a channel nothing writes to.
 	notifier := pkg.NewAttentionChangeNotifier()
-	store := pkg.NewNotifyingAttentionStore(rawStore, notifier)
+
+	// ⚠️ The federation wraps the NOTIFYING store, not the other way round, and
+	// the order is the whole of the correctness here. A write the federation
+	// proxies to the peer changes nothing locally, so it must not wake this
+	// instance's live views; with the notifier INSIDE the federation, a proxied
+	// answer leaves the local store untouched and signals nothing, which is
+	// exactly right. Reversed, every federated write would fire a board re-read
+	// for a store that did not move.
+	store := a.federate(pkg.NewNotifyingAttentionStore(rawStore, notifier))
 
 	// Built once per process and injected, so the two counters are registered on
 	// the default registry — the one /metrics serves — exactly once. A second
@@ -174,6 +214,29 @@ func (a *application) Run(ctx context.Context, sentryClient libsentry.Client) er
 		a.createHTTPServer(sentryClient, db, store, notifier, boardMetrics),
 	)
 
+}
+
+// federate wraps the store so a peer attention store's items are visible on
+// this instance's board, when a peer is configured.
+//
+// ⚠️ Both halves of the configuration are required together, and an empty
+// either way disables the whole thing rather than half of it. A URL with no
+// token would call a gated API that answers 401 — an instance that looks
+// configured and federates nothing — so the two are checked as one setting.
+//
+// ⚠️ It is logged when disabled, mirroring addAttentionStoreAPIListener, so a
+// card that stops appearing is traceable to the setting that disabled it
+// instead of to a bug. The URL is logged; the token never is.
+func (a *application) federate(store pkg.AttentionStore) pkg.AttentionStore {
+	if a.AttentionUpstreamURL == "" || a.AttentionUpstreamToken == "" {
+		glog.Warningf("attention federation disabled (upstream url or token is empty)")
+		return store
+	}
+	glog.V(2).Infof("attention federation enabled, reading peer at %s", a.AttentionUpstreamURL)
+	return pkg.NewFederatingAttentionStore(
+		store,
+		pkg.NewHTTPRemoteAttentionStore(a.AttentionUpstreamURL, a.AttentionUpstreamToken),
+	)
 }
 
 // createAttentionStore builds the attention store.
