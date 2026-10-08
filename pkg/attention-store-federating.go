@@ -250,6 +250,17 @@ func (f *federatingAttentionStore) isRemote(ctx context.Context, itemID ItemID) 
 }
 
 // withRemote merges the peer's open items into a local result.
+//
+// ⚠️ The merge is where the peer's pruning side effect is ACCEPTED rather than
+// worked around, and the reasoning belongs here rather than on the call that
+// merely triggers it. The prune is the peer store's own designed semantics and
+// every reader of that store triggers it, so the federation introduces no
+// defect — it is being one more reader. The alternative was measured and
+// rejected: the peer's non-pruning History read would avoid the delete but would
+// then SHOW dead-asker items the peer's own board deliberately hides, which
+// makes this board a less faithful mirror of the one it federates. If the added
+// frequency ever bites, the lever is the cache window — a mitigation, not a
+// change of reader.
 func (f *federatingAttentionStore) withRemote(ctx context.Context, local Items) Items {
 	remote, err := f.remoteItems(ctx)
 	if err != nil {
@@ -270,26 +281,20 @@ func (f *federatingAttentionStore) withRemote(ctx context.Context, local Items) 
 // failure into a window of silence for every caller behind it, and the next
 // caller is exactly the one that should retry.
 //
-// ⚠️⚠️ THIS CALL IS NOT READ-ONLY — it mutates the peer. The peer's read prunes
+// ⚠️ THIS CALL IS NOT READ-ONLY — it mutates the peer. The peer's read prunes
 // its dead-asker items as a side effect ("Dead askers are removed from the store
 // as a side effect of the read"), so rendering a peer's card can DELETE that
 // card upstream. Observed 2026-10-08 on the live dev pair: the operator's board
 // showed the pod's card, and minutes later the same card was gone from both the
-// peer and the board.
+// peer and the board. See withRemote for why that is accepted.
 //
-// That is accepted, deliberately, and the reasoning is worth keeping: the prune
-// is the peer store's OWN designed semantics and every reader of that store
-// triggers it, so the federation is not introducing a defect — it is being one
-// more reader. The alternative was measured and rejected: switching to the
-// peer's non-pruning History read would avoid the delete but would then SHOW
-// dead-asker items the peer's own board deliberately hides, which makes this
-// board a less faithful mirror of the one it federates.
-//
-// ⚠️ The consequence to keep in view is FREQUENCY, not correctness. A human
-// reading the peer's board prunes rarely; this store reads it every
-// federationCacheWindow, so the prune becomes near-continuous — and an item can
-// therefore be removed before the peer's own consumers poll it. If that ever
-// bites, the lever is the cache window (a mitigation), not a change of reader.
+// ⚠️ What the prune costs is FREQUENCY, and only frequency. An item is pruned
+// only when it is open, its producer is dead AND it was asked — and such an item
+// is omitted from the peer's read either way, so a peer consumer polling a
+// moment later sees exactly the same state whether or not this store read
+// first. No observation is lost. What changes is that the peer now prunes on
+// THIS store's cadence rather than a human's, which is extra write traffic
+// against the peer and nothing beyond it.
 func (f *federatingAttentionStore) remoteItems(ctx context.Context) (Items, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -42,8 +42,9 @@ type RemoteAttentionStore interface {
 	// Read returns the peer's open items.
 	//
 	// ⚠️ It is NOT read-only: the peer prunes its dead-asker items as a side
-	// effect of this call, so reading the peer can delete from the peer. See the
-	// federating store's remoteItems for why that is accepted rather than
+	// effect of this call, so reading the peer can delete from the peer. That is
+	// the peer's own designed semantics — every reader of that store triggers it,
+	// so this one is simply another reader — and it is accepted rather than
 	// worked around.
 	Read(ctx context.Context) (Items, error)
 
