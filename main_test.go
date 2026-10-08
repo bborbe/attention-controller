@@ -170,6 +170,41 @@ var _ = Describe("parseAnsweredMaxAge", func() {
 	})
 })
 
+// ⚠️ The branch this Describe exists for is the NON-POSITIVE one, and it is the
+// highest-consequence line in the session-heartbeat wiring. `libtime.ParseDuration`
+// rejects unparseable input but accepts `0s` and `-5m` happily, and `IsFresh`
+// compares `age <= window` — so either value reports EVERY row dead at once,
+// which is a board showing every live session as finished. The sibling
+// `parseAnsweredMaxAge` refuses the same collapse for its own flag; the two
+// duration flags in main.go must hold one line, not one guarding and one not.
+var _ = Describe("parseSessionHeartbeatWindow", func() {
+	var ctx context.Context
+
+	BeforeEach(func() {
+		ctx = context.Background()
+	})
+
+	It("parses a positive window", func() {
+		window, err := parseSessionHeartbeatWindow(ctx, "60s")
+		Expect(err).To(BeNil())
+		Expect(time.Duration(window)).To(Equal(60 * time.Second))
+	})
+
+	It("rejects an unparseable window", func() {
+		_, err := parseSessionHeartbeatWindow(ctx, "banana")
+		Expect(err).NotTo(BeNil())
+	})
+
+	for _, bad := range []string{"0s", "-5m"} {
+		bad := bad
+		It("rejects the non-positive window "+bad, func() {
+			// Accepted, this would make every row read stale at once.
+			_, err := parseSessionHeartbeatWindow(ctx, bad)
+			Expect(err).NotTo(BeNil())
+		})
+	}
+})
+
 var _ = Describe("addAttentionStoreAPIListener", func() {
 	var ctx context.Context
 	var db libkv.DB
@@ -301,6 +336,34 @@ var _ = Describe("createAttentionStoreAPIHandler", func() {
 		rec := httptest.NewRecorder()
 		httpHandler.ServeHTTP(rec, req)
 		Expect(rec.Code).To(Equal(http.StatusNotFound))
+	})
+
+	It("does not serve the session-heartbeat routes even to an authenticated caller", func() {
+		// ⚠️ This pins the placement `registerSessionHeartbeatRoutes` claims in its
+		// own comment, which was otherwise enforced by that comment alone. Those
+		// routes are mounted on the board router in `createHTTPServer`, NOT in
+		// `registerAttentionAPIRoutes` — the shared table THIS listener is built
+		// from. Moving them into it would silently publish an unauthenticated
+		// WRITE into the shared supervisor store on a cluster-reachable listener,
+		// where any caller could plant a row and have the board render a dead
+		// session as Live. Asserted WITH the header, for the same reason as the
+		// metrics and pprof probes above: unauthenticated these paths would also
+		// 404, and only the authenticated probe distinguishes "not mounted" from
+		// "mounted behind the middleware".
+		for _, probe := range []struct {
+			method string
+			path   string
+		}{
+			{http.MethodGet, "/api/1.0/session-heartbeat"},
+			{http.MethodPost, "/api/1.0/session-heartbeat"},
+			{http.MethodGet, "/api/1.0/session-heartbeat/some-session-id"},
+		} {
+			req := httptest.NewRequest(probe.method, probe.path, nil)
+			req.Header.Set("Authorization", "Bearer s3cret-token")
+			rec := httptest.NewRecorder()
+			httpHandler.ServeHTTP(rec, req)
+			Expect(rec.Code).To(Equal(http.StatusNotFound), probe.method+" "+probe.path)
+		}
 	})
 })
 

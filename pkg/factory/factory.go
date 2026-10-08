@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	libsentry "github.com/bborbe/sentry"
+	libtime "github.com/bborbe/time"
 
 	"github.com/bborbe/attention-controller/pkg"
 	"github.com/bborbe/attention-controller/pkg/buildidentity"
@@ -23,6 +24,32 @@ func CreateAttentionPushHandler(store pkg.AttentionStore) http.Handler {
 // CreateAttentionReadHandler creates the handler every arm reads.
 func CreateAttentionReadHandler(store pkg.AttentionStore) http.Handler {
 	return handler.NewAttentionReadHandler(store)
+}
+
+// CreateSessionHeartbeatPostHandler creates the handler a session's MCP timer
+// calls to declare that it is still alive.
+func CreateSessionHeartbeatPostHandler(store pkg.SessionHeartbeatStore) http.Handler {
+	return handler.NewSessionHeartbeatPostHandler(store)
+}
+
+// CreateSessionHeartbeatGetHandler creates the handler that answers one
+// session's liveness.
+func CreateSessionHeartbeatGetHandler(
+	store pkg.SessionHeartbeatStore,
+	now libtime.CurrentDateTimeGetter,
+	window libtime.Duration,
+) http.Handler {
+	return handler.NewSessionHeartbeatGetHandler(store, now, window)
+}
+
+// CreateSessionHeartbeatListHandler creates the handler that answers every
+// session's liveness at once.
+func CreateSessionHeartbeatListHandler(
+	store pkg.SessionHeartbeatStore,
+	now libtime.CurrentDateTimeGetter,
+	window libtime.Duration,
+) http.Handler {
+	return handler.NewSessionHeartbeatListHandler(store, now, window)
 }
 
 // CreateAttentionAnswerHandler creates the handler that applies an answer as an
