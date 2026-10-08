@@ -350,9 +350,16 @@ func vaultFileURL(vaultName string, path string) template.URL {
 // value as resolved. The row offers it AND says so — the page marks it
 // `unvalidated` — which is the only shape that is both honest and useful.
 //
-// ⚠️ A wedged `list` does NOT imply a dead jump: the activator runs a different
-// subcommand (`activate-pane`), so the control this returns is worth offering
-// even while the listing is unreadable.
+// ⚠️ A wedged `list` does NOT guarantee a dead jump, but it does not guarantee a
+// live one either, and the difference is worth stating exactly — an earlier
+// version of this comment claimed the activator "runs a different subcommand",
+// which is false. `weztermPaneActivator.Activate` reads its OWN listing first
+// (`a.panes.List`, before it ever reaches `activate-pane`) and fails on it, so a
+// click while the mux is still wedged answers 502. What makes the control work is
+// the CACHE: the resolver serves a snapshot up to provenanceCacheWindow plus one
+// refresh old while the activator reads live, so a mux that recovers inside that
+// gap turns the click into a real jump. The control is a CONDITIONAL recovery, not
+// a guaranteed route, and the row's `unvalidated` marker is what says so.
 func jumpPane(provenance pkg.Provenance) string {
 	if provenance.Pane != "" {
 		return provenance.Pane
@@ -664,7 +671,6 @@ li.item {
    template emitting trailing separators for values that were omitted. */
 .provenance span + span::before { content: " · "; }
 .provenance .unroutable { color: var(--warn); }
-.provenance .unvalidated { color: var(--warn); }
 /* The explanation a row carries when it has no jump control at all. Muted
    rather than warned: a designed absence is not a fault, and colouring it like
    one would put the board back where the operator could not tell the two

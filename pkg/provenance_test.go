@@ -237,6 +237,38 @@ var _ = Describe("ProvenanceResolver", func() {
 		Expect(provenance.Cwd).To(Equal("/w/x"))
 	})
 
+	It("retries the pane listing once, so a transient hiccup never reaches the row", func() {
+		// ⚠️ The retry is the whole reason a transient mux hiccup does not cost a
+		// card its jump control, and until this spec nothing pinned it: every other
+		// unreadable-listing case uses ListReturns, which answers BOTH attempts the
+		// same way, so the branch the performance argument rests on was never
+		// exercised. The first attempt fails and the second succeeds — the shape the
+		// retry exists for.
+		writeSession("111", "producer-retry", "⚙ Session R")
+		writeEvents(
+			"producer-retry",
+			eventLine("key-retry", "producer-retry", "burn", "/w/r", "", "928"),
+		)
+		paneLister.ListReturnsOnCall(0, nil, errors.New(ctx, "wezterm not found"))
+		paneLister.ListReturnsOnCall(1, map[int]pkg.Pane{
+			928: {PaneID: 928, Title: "◑ Session R"},
+		}, nil)
+
+		provenance := resolver.Resolve(
+			ctx,
+			pkg.Items{item("item-retry", "producer-retry", "key-retry")},
+		)[pkg.ItemID("item-retry")]
+
+		// The retry converted a transient failure into a VALIDATED pane, so the row
+		// needs no unvalidated marker at all — which is the outcome the retry exists
+		// to produce, and the opposite of the unreadable-listing case above.
+		Expect(provenance.Pane).To(Equal("928"))
+		Expect(provenance.Routable).To(BeTrue())
+		Expect(provenance.PaneListingUnreadable).To(BeFalse())
+		Expect(provenance.RecordedPane).To(BeEmpty())
+		Expect(paneLister.ListCallCount()).To(Equal(2))
+	})
+
 	It(
 		"makes no claim for an item whose producer wrote no event log and is not in the registry",
 		func() {
