@@ -186,6 +186,13 @@ type SessionHeartbeat struct {
 	At libtime.DateTime `json:"at"`
 }
 
+// SessionHeartbeats is a collection of SessionHeartbeat.
+//
+// ⚠️ It lives beside the record rather than beside the store that produces it,
+// because the read model projects a whole listing and would otherwise depend on
+// the store's file for a type that is not about storage at all.
+type SessionHeartbeats []SessionHeartbeat
+
 // Validate returns an error when the heartbeat is not a well-formed
 // declaration. ⚠️ It judges the CALLER's declaration only: `At` is the store's
 // to write, so validating it here would reject every post for a zero instant —
