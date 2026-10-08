@@ -239,6 +239,18 @@ func (h SessionHeartbeat) validateOptionalVault(ctx context.Context) error {
 // ⚠️ The window is a parameter rather than a constant read here, so the
 // boundary is testable on an injected clock (SC7 reads at 59 s and 61 s) and so
 // the one place the number lives stays visible at the call site.
+//
+// ⚠️ A stamp in the FUTURE is not fresh. `now.Sub(h.At)` is negative for a row
+// dated ahead of the clock, and a negative duration is `<=` any positive
+// window — so the bare comparison would report a future-dated row Live
+// indefinitely, which is the one reading a liveness check must never produce.
+// The store stamps `At` from its own clock, so reaching this needs cross-host
+// clock skew rather than a hostile caller; it is refused anyway, because the
+// answer "definitely alive" must not be reachable from a nonsense input.
 func (h SessionHeartbeat) IsFresh(now libtime.DateTime, window libtime.Duration) bool {
-	return now.Sub(h.At) <= window
+	age := now.Sub(h.At)
+	if age < 0 {
+		return false
+	}
+	return age <= window
 }

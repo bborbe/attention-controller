@@ -5,6 +5,8 @@
 package pkg
 
 import (
+	"math"
+
 	libtime "github.com/bborbe/time"
 )
 
@@ -31,14 +33,22 @@ type SessionHeartbeatView struct {
 
 // NewSessionHeartbeatView projects a stored heartbeat onto the read shape,
 // measuring its age against the supplied clock and window.
+//
+// ⚠️ `AgeSeconds` is ROUNDED UP, and that is what keeps it from contradicting
+// `Live`. Truncating would render a 60.9-second-old row as `age_seconds: 60`
+// while `Live` — which compares the real duration against the window — said
+// false, so a reader keying on the age would see an in-window row the same
+// struct marks dead. Rounding up makes the integer agree with the verdict at
+// every boundary: 60.0 s stays 60 (Live), 60.9 s becomes 61 (not Live).
 func NewSessionHeartbeatView(
 	heartbeat SessionHeartbeat,
 	now libtime.DateTime,
 	window libtime.Duration,
 ) SessionHeartbeatView {
+	age := now.Sub(heartbeat.At)
 	return SessionHeartbeatView{
 		SessionHeartbeat: heartbeat,
-		AgeSeconds:       int(now.Sub(heartbeat.At).Duration().Seconds()),
+		AgeSeconds:       int(math.Ceil(age.Duration().Seconds())),
 		Live:             heartbeat.IsFresh(now, window),
 	}
 }
