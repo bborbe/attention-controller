@@ -59,6 +59,15 @@ var (
 	// ErrInvalidLivenessRef is returned when a liveness ref is not one of the
 	// three models, or carries no value.
 	ErrInvalidLivenessRef = stderrors.New("invalid liveness ref")
+
+	// ErrSessionHeartbeatNotFound is returned when no heartbeat row exists for
+	// a session id.
+	//
+	// ⚠️ It is deliberately NOT used for an unreadable store. "No row" is the
+	// answer that renders a session's card Resume, so a read failure must never
+	// be able to produce it — the read path reports an unreadable store as a
+	// 500 and reserves this sentinel for a file that genuinely is not there.
+	ErrSessionHeartbeatNotFound = stderrors.New("session heartbeat not found")
 )
 
 // isNotFound reports whether a libkv read failed because the thing asked for
