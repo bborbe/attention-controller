@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.52.1
 
 - chore: update github.com/bborbe/argument/v2 to v2.13.3, github.com/bborbe/boltkv to v1.16.1, github.com/bborbe/collection to v1.21.0, github.com/getsentry/sentry-go to v0.50.0, github.com/onsi/gomega to v1.44.0, github.com/prometheus/client_golang to v1.25.0
 
