@@ -132,35 +132,40 @@ var _ = Describe("Session heartbeat store", func() {
 			Expect(onDisk).ToNot(HaveKey("state"))
 		})
 
-		It("still parses a row written before the rename, and surfaces it with an empty State", func() {
-			// ⚠️ The rename is ONE-DIRECTIONAL, and this pins the direction it does
-			// not cover. A row written by the PREVIOUS RELEASE of this store carries
-			// `state` and no `activity`; it parses, but `toHeartbeat` reads
-			// `r.Activity`, so the activity is gone rather than repaired by a
-			// fallback. That is deliberate — a `state` fallback would keep the
-			// collision key alive on the READ path, which is exactly what this
-			// rename removes. Pinned so a later fallback refactor is a visible
-			// change rather than a silent one.
-			legacy := `{"sessionId":"5f2a1c34-0000-4000-8000-000000000001","pid":4242,` +
-				`"mode":"local","at":"2026-10-08T09:00:00Z","source":"mcp-timer",` +
-				`"location":"local","state":"busy"}`
-			Expect(os.WriteFile(
-				filepath.Join(dir, "5f2a1c34-0000-4000-8000-000000000001.json"),
-				[]byte(legacy), 0600,
-			)).To(BeNil())
+		It(
+			"still parses a row written before the rename, and surfaces it with an empty State",
+			func() {
+				// ⚠️ The rename is ONE-DIRECTIONAL, and this pins the direction it does
+				// not cover. A row written by the PREVIOUS RELEASE of this store carries
+				// `state` and no `activity`; it parses, but `toHeartbeat` reads
+				// `r.Activity`, so the activity is gone rather than repaired by a
+				// fallback. That is deliberate — a `state` fallback would keep the
+				// collision key alive on the READ path, which is exactly what this
+				// rename removes. Pinned so a later fallback refactor is a visible
+				// change rather than a silent one.
+				legacy := `{"sessionId":"5f2a1c34-0000-4000-8000-000000000001","pid":4242,` +
+					`"mode":"local","at":"2026-10-08T09:00:00Z","source":"mcp-timer",` +
+					`"location":"local","state":"busy"}`
+				Expect(os.WriteFile(
+					filepath.Join(dir, "5f2a1c34-0000-4000-8000-000000000001.json"),
+					[]byte(legacy), 0600,
+				)).To(BeNil())
 
-			got, found, err := store.Get(ctx, "5f2a1c34-0000-4000-8000-000000000001")
-			Expect(err).To(BeNil())
-			Expect(found).To(BeTrue(), "a legacy row must still parse, not vanish")
-			// ⚠️ The advertised claim is that the row still PARSES, so the fields that
-			// were never renamed have to be asserted too — `found` alone passes on a
-			// row that parsed into a zero-valued struct.
-			Expect(got.SessionID).To(Equal("5f2a1c34-0000-4000-8000-000000000001"))
-			Expect(got.Location).To(Equal(pkg.LocalSessionHeartbeatLocation))
-			Expect(got.Source.String()).To(Equal("mcp-timer"))
-			Expect(stdtime.Time(got.At).UTC()).To(Equal(stdtime.Date(2026, 10, 8, 9, 0, 0, 0, stdtime.UTC)))
-			Expect(string(got.State)).To(BeEmpty())
-		})
+				got, found, err := store.Get(ctx, "5f2a1c34-0000-4000-8000-000000000001")
+				Expect(err).To(BeNil())
+				Expect(found).To(BeTrue(), "a legacy row must still parse, not vanish")
+				// ⚠️ The advertised claim is that the row still PARSES, so the fields that
+				// were never renamed have to be asserted too — `found` alone passes on a
+				// row that parsed into a zero-valued struct.
+				Expect(got.SessionID).To(Equal("5f2a1c34-0000-4000-8000-000000000001"))
+				Expect(got.Location).To(Equal(pkg.LocalSessionHeartbeatLocation))
+				Expect(got.Source.String()).To(Equal("mcp-timer"))
+				Expect(
+					stdtime.Time(got.At).UTC(),
+				).To(Equal(stdtime.Date(2026, 10, 8, 9, 0, 0, 0, stdtime.UTC)))
+				Expect(string(got.State)).To(BeEmpty())
+			},
+		)
 
 		It("lists a legacy row alongside a new-format one", func() {
 			// ⚠️ Mixed-format directories are the REALISTIC mid-deploy state, not a
