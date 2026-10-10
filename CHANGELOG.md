@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.52.4
 
 - docs: **the session-heartbeat contract is written down next to the store.** `docs/session-heartbeat.md` names the record's fields and the deliberately separate on-disk shape, the three vocabularies (`location`, `state`, `source`), the 30 s producer interval, the three endpoints and their status codes, and — the reason the page exists — the **three numbers that look alike and are not interchangeable**: the store's own 60 s window, `HEARTBEAT_WINDOW`'s 15 m for `heartbeat:<path>` file mtimes, and claude-supervisor's `HEARTBEAT_TTL_MS` for the producer's timer. It also pins the two invariants that are easy to collapse: `absent` (404) and `stale` (200, `live: false`) are different answers, and an unreadable store is a 500 rather than an `absent` — because `absent` is the one verdict that authorises a caller to resume, and resuming onto a live conversation is the harm. Change set: `docs/session-heartbeat.md`, `CHANGELOG.md`.
 
