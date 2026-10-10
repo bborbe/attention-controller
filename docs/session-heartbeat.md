@@ -28,7 +28,13 @@ Wire shape (snake_case), as served by the read routes:
 ⚠️ **The on-disk record is a deliberately separate type from the wire shape.** On disk the
 row is camelCase (`sessionId`) and carries legacy `pid`/`mode` fields a Node writer still
 produces; on the wire it is snake_case. A wire rename therefore cannot orphan a row that an
-older writer created.
+older writer created. ⚠️ **The one rename a reader will actually trip over is the state
+field: the file stores it under `activity` while the wire calls it `state`** — deliberate
+rather than drift, because on the file the name `state` collides with the liveness verdict
+the store's own readers compute. The cost is one-directional and accepted: a row written by
+the previous release carries `state` and no `activity`, so it still parses but projects an
+empty `state` onto `GET` and `LIST` — an expected mid-deploy value that clears as soon as
+the writer posts again, not a bug.
 
 ## The vocabularies
 
