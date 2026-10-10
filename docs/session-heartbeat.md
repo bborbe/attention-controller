@@ -51,14 +51,18 @@ neither is an error.
 - **The interval is 30 s.** The producer is the session's own supervisor MCP server process,
   which lives as long as its session and posts from a timer. A hook cannot do this: Claude
   Code hooks are event-driven, so an idle session fires none.
-- **The window is 60 s** — the store's own named constant, and **the value `live` is computed
-  against.**
+- **The window is 60 s** — the config field `SESSION_HEARTBEAT_WINDOW` (env) /
+  `-session-heartbeat-window`, default `60s` (`main.go`), parsed by
+  `parseSessionHeartbeatWindow`, and **the value `live` is computed against.** ⚠️ It is
+  deliberately **not** a constant in the store: the store holds no window and computes no
+  freshness verdict at all, and the read path takes the value as a parameter
+  (`IsFresh(now, window)`), so the number has exactly one home.
 
 ⚠️ **Three numbers, three classes — do not collapse them:**
 
 | Number | Where it lives | What it governs |
 |---|---|---|
-| **60 s** | the session-heartbeat store (this page) | whether a **session** is live. Bounds death detection. |
+| **60 s** | `SESSION_HEARTBEAT_WINDOW` (env, default `60s`, `main.go`) | whether a **session** is live. Bounds death detection. |
 | **15 m** | `HEARTBEAT_WINDOW` (env, default `15m`, `main.go`) | the **mtime of a `heartbeat:<path>` file** — a different probe entirely. Stops a cron that runs every 10 minutes from being declared dead. |
 | `HEARTBEAT_TTL_MS` | `claude-supervisor`, `server/heartbeat.mjs` | **feeds the producer's timer**, not the read. |
 
@@ -72,9 +76,9 @@ Registered on the board's router (`main.go`), so they are reachable wherever the
 
 | Route | Answers |
 |---|---|
-| `POST /api/1.0/session-heartbeat` | Writes a row. `200` with the stored row echoed; **`400`** for a missing required field (`session_id`, `task`, `vault`, `location`, `state`) or a malformed `session_id`; **`500`** for a store I/O failure — a disk-full or permission error is the server's problem and must not be reported as a bad request. |
+| `POST /api/1.0/session-heartbeat` | Writes a row. `200` with the stored row echoed; **`400`** for a missing required field (`session_id`, `location`, `state`, `source`) or a malformed `session_id`; **`500`** for a store I/O failure — a disk-full or permission error is the server's problem and must not be reported as a bad request. ⚠️ **`task` and `vault` are NOT required** — both empty is legal, because a session with no task anchor is a real state; they are **paired** instead, so declaring one without the other is a `400`, since the vault is what makes a task name unambiguous. |
 | `GET /api/1.0/session-heartbeat` | The whole store as a JSON array, live and stale rows alike, each with `age_seconds` and `live`. |
-| `GET /api/1.0/session-heartbeat/{sessionID}` | One row, or **`404`** when the id has never been posted. |
+| `GET /api/1.0/session-heartbeat/{sessionID}` | One row, or **`404`** when the id has never been posted; **`400`** for a malformed id (`.`, `..` or a path separator) — the caller's input, not a store failure. |
 
 ⚠️ **`absent` and `stale` are different answers and must stay different.** `404` means *never
 posted*; `200` with `live: false` means *posted, past the window*. Collapsing them is the
