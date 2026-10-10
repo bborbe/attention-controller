@@ -1,6 +1,6 @@
 # Pod hook mode
 
-How a worker running in a Kubernetes pod declares itself live to the session-heartbeat store: what a pod posts, what the store accepts, and what a reader may conclude from the row. This page is the **contract**. It is deliberately separate from `session-heartbeat.md`, which describes the endpoint's shape for every poster.
+How a worker running in a Kubernetes pod declares itself live to the session-heartbeat store: what a pod posts, what the store accepts, and what a reader may conclude from the row. This page is the **contract**, and it covers the pod-located row only — deliberately not the store's shape for every poster.
 
 ⚠️ **Two things this page is not, and both are stated first because a later reader will otherwise read it as more than it is.**
 
