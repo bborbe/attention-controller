@@ -21,6 +21,9 @@ generate:
 	rm -rf mocks avro
 	mkdir -p mocks
 	echo "package mocks" > mocks/mocks.go
+	# restore the license header here, not only in addlicense: addlicense runs last
+	# in precommit, so any earlier failure would leave mocks.go headerless
+	go run github.com/google/addlicense@$(ADDLICENSE_VERSION) -c "Benjamin Borbe" -y $$(date +'%Y') -l bsd mocks/mocks.go
 	go generate -mod=mod ./...
 
 # -race=true catches data races but flakes on some CI runners (rare SIGSEGV
