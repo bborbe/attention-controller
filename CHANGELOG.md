@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.52.7
 
 - fix: `make generate` restores the license header on `mocks/mocks.go` itself, so a `make precommit` that fails before `addlicense` no longer leaves the tracked file stripped of its header
 
