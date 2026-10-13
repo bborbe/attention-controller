@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.52.6
 
 - chore: update github.com/bborbe/argument/v2 to v2.13.5, github.com/bborbe/errors to v1.6.3, github.com/bborbe/kv to v1.21.17, github.com/bborbe/log to v1.7.3, github.com/bborbe/metrics to v0.6.6, github.com/bborbe/sentry to v1.10.3, github.com/bborbe/time to v1.27.16, github.com/onsi/ginkgo/v2 to v2.33.1
 
