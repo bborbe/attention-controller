@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.52.7
 
 - fix: `make generate` restores the license header on `mocks/mocks.go` itself, so a `make precommit` that fails before `addlicense` no longer leaves the tracked file stripped of its header
 - add: the spawn-ledger endpoints — `POST` and `GET /api/1.0/session-ledger`, `GET /api/1.0/session-ledger/{sessionID}` — keyed by `session_id` and never by `agent_id`, which is a per-process counter that collides across supervisor reconnects; the row carries identity only and leaves liveness to the heartbeat store, joined by the caller on `session_id`
