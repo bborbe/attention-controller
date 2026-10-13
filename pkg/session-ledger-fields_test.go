@@ -64,9 +64,11 @@ var _ = Describe("SessionLedgerEntry carried fields", func() {
 			SupervisorExitedAt: &exited,
 			UnknownReason:      "headless worker terminated with its supervisor mid-turn",
 			Status:             "unknown",
-			Result:             "done",
-			WorkerID:           "worker-7",
-			Target:             "docker",
+			// An OBJECT, matching every non-null `result` in the live ledger (245 of 1898,
+			// measured 2026-10-14) — a string here is the shape that silently dropped them.
+			Result:   json.RawMessage(`{"subtype":"success","num_turns":3}`),
+			WorkerID: "worker-7",
+			Target:   "docker",
 		}
 		Expect(store.Post(ctx, entry)).To(BeNil())
 

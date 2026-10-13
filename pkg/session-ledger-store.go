@@ -140,9 +140,13 @@ func (s *sessionLedgerStore) List(ctx context.Context) (SessionLedgerEntries, er
 // truth once the switch lands, and an import that could overwrite it would let
 // a stale file undo a live write.
 //
-// ⚠️ `added` is reset inside the transaction body, because `db.Update` may run
-// the closure more than once on a write conflict. Counting outside it would
-// report a total across attempts rather than the rows this import added.
+// ⚠️ `added` is reset inside the transaction body, and the reset is DEFENSIVE rather
+// than load-bearing. The justification this comment carried ("`db.Update` may run the
+// closure more than once on a write conflict") is FALSE and was corrected 2026-10-14:
+// `boltkv.Update` calls bbolt's `db.Update`, which runs its closure exactly once and
+// does not retry. It is kept because counting outside the body would be wrong the day a
+// retry is introduced, but it must not be read as a description of bbolt's behaviour
+// today.
 func (s *sessionLedgerStore) Import(
 	ctx context.Context,
 	entries SessionLedgerEntries,

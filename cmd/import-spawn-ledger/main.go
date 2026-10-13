@@ -35,9 +35,15 @@ import (
 	libboltkv "github.com/bborbe/boltkv"
 	"github.com/bborbe/errors"
 	libtime "github.com/bborbe/time"
+	bolt "go.etcd.io/bbolt"
 
 	"github.com/bborbe/attention-controller/pkg"
 )
+
+// openTimeout bounds the BoltDB lock wait. Long enough that a slow deploy window is not
+// mistaken for a held lock, short enough that a mistaken run against a live service reports
+// rather than hangs.
+const openTimeout = 5 * time.Second
 
 // fileRecord is the shape of one `~/.local/state/claude-supervisor/sessions/<sid>.json`.
 //
@@ -45,22 +51,24 @@ import (
 // tool reads a store the supervisor has already stopped writing — a shape that changes
 // under it must fail loudly at parse time rather than silently import a truncated row.
 type fileRecord struct {
-	SessionID      string          `json:"session_id"`
-	AgentID        string          `json:"agent_id"`
-	Label          string          `json:"label"`
-	Mode           string          `json:"mode"`
-	ModeSource     string          `json:"mode_source"`
-	Cwd            string          `json:"cwd"`
-	Launcher       string          `json:"launcher"`
-	PaneID         string          `json:"pane_id"`
-	ResumedFrom    string          `json:"resumed_from"`
-	Policy         string          `json:"policy"`
-	ParentSession  string          `json:"parent_session"`
-	Role           string          `json:"role"`
-	SpawnedAt      string          `json:"spawned_at"`
-	EndedAt        string          `json:"ended_at"`
-	Status         string          `json:"status"`
-	Result         string          `json:"result"`
+	SessionID     string `json:"session_id"`
+	AgentID       string `json:"agent_id"`
+	Label         string `json:"label"`
+	Mode          string `json:"mode"`
+	ModeSource    string `json:"mode_source"`
+	Cwd           string `json:"cwd"`
+	Launcher      string `json:"launcher"`
+	PaneID        string `json:"pane_id"`
+	ResumedFrom   string `json:"resumed_from"`
+	Policy        string `json:"policy"`
+	ParentSession string `json:"parent_session"`
+	Role          string `json:"role"`
+	SpawnedAt     string `json:"spawned_at"`
+	EndedAt       string `json:"ended_at"`
+	Status        string `json:"status"`
+	// ⚠️ An OBJECT in every row that carries one (245 of 1898, measured 2026-10-14), never a
+	// string — a `string` here fails to unmarshal those rows and the importer drops them.
+	Result         json.RawMessage `json:"result"`
 	WorkerID       string          `json:"worker_id"`
 	Target         string          `json:"target"`
 	UnknownReason  string          `json:"unknown_reason"`
@@ -95,25 +103,40 @@ func run() error {
 		)
 	}
 
-	entries, skipped, err := readLedgerDir(ctx, ledgerDir)
+	entries, unparsable, noID, err := readLedgerDir(ctx, ledgerDir)
 	if err != nil {
 		return err
 	}
-	fmt.Printf(
-		"read %d row(s) from %s (%d skipped: no session_id)\n",
-		len(entries),
-		ledgerDir,
-		skipped,
-	)
+	// ⚠️ The two skip reasons are reported SEPARATELY, and that is the point rather than
+	// tidiness: they mean opposite things. An unparseable row is a file this tool could not
+	// read — a defect worth chasing, and each one is named on stderr as it is hit. A row with
+	// no `session_id` is a legitimate skip, since `session_id` is the identity and its only
+	// join key. Folding them into one "no session_id" count, which this did, reports every
+	// unreadable row under a reason that is false for it.
+	fmt.Printf("read %d row(s) from %s\n", len(entries), ledgerDir)
+	if unparsable > 0 {
+		fmt.Printf("  %d row(s) SKIPPED — unreadable JSON, each named above\n", unparsable)
+	}
+	if noID > 0 {
+		fmt.Printf("  %d row(s) skipped — no session_id\n", noID)
+	}
 
-	// ⚠️ The exclusive lock is why this command is documented as outage-only. If the
-	// service is running this blocks and then fails here, rather than corrupting anything.
-	db, err := libboltkv.OpenDir(ctx, dataDir)
+	// ⚠️ A TIMEOUT, and without it this command HANGS rather than failing. `OpenDir` passes
+	// `bolt.DefaultOptions`, whose `Timeout` is 0, and bbolt's `flock` with a zero timeout
+	// loops on `LOCK_NB` forever — so a run against a live service would sit silently with
+	// no output and the diagnostic below would be unreachable. This comment previously
+	// claimed the refusal "arrives as a lock timeout"; it does not, and the option below is
+	// what makes that claim true rather than aspirational.
+	db, err := libboltkv.OpenDir(
+		ctx,
+		dataDir,
+		func(opts *bolt.Options) { opts.Timeout = openTimeout },
+	)
 	if err != nil {
 		return errors.Wrap(
 			ctx,
 			err,
-			"open the store failed — is attention-controller still running? it holds an exclusive BoltDB lock",
+			"open the store failed — is attention-controller still running? it holds the BoltDB lock for its whole life, so this command must run in the deploy's stop window",
 		)
 	}
 	store := pkg.NewSessionLedgerStore(db)
@@ -140,13 +163,13 @@ func run() error {
 // synthesised key: `session_id` is the row's identity and its only join key, so an
 // invented one would be addressable but meaningless. The count is reported because a
 // silently dropped row is indistinguishable from one that was never there.
-func readLedgerDir(ctx context.Context, dir string) (pkg.SessionLedgerEntries, int, error) {
+func readLedgerDir(ctx context.Context, dir string) (pkg.SessionLedgerEntries, int, int, error) {
 	names, err := os.ReadDir(dir)
 	if err != nil {
-		return nil, 0, errors.Wrapf(ctx, err, "read ledger dir %s failed", dir)
+		return nil, 0, 0, errors.Wrapf(ctx, err, "read ledger dir %s failed", dir)
 	}
 	entries := pkg.SessionLedgerEntries{}
-	skipped := 0
+	unparsable, noID := 0, 0
 	for _, name := range names {
 		if filepath.Ext(name.Name()) != ".json" {
 			continue
@@ -157,26 +180,28 @@ func readLedgerDir(ctx context.Context, dir string) (pkg.SessionLedgerEntries, i
 		// ReadDir result.
 		raw, err := os.ReadFile(filepath.Join(dir, name.Name()))
 		if err != nil {
-			return nil, 0, errors.Wrapf(ctx, err, "read %s failed", name.Name())
+			return nil, 0, 0, errors.Wrapf(ctx, err, "read %s failed", name.Name())
 		}
 		var record fileRecord
 		if err := json.Unmarshal(raw, &record); err != nil {
-			// A half-written file is skipped, matching the supervisor's own reader —
-			// one bad file must not abort a migration of 1895 good ones.
-			skipped++
+			// ⚠️ Skipped rather than fatal — one unreadable file must not abort a migration
+			// of 1895 good ones — but NAMED on stderr, because a silently dropped row is
+			// indistinguishable from one that was never there.
+			fmt.Fprintf(os.Stderr, "  unreadable: %s: %v\n", name.Name(), err)
+			unparsable++
 			continue
 		}
 		if record.SessionID == "" {
-			skipped++
+			noID++
 			continue
 		}
 		entry, err := toEntry(ctx, record)
 		if err != nil {
-			return nil, 0, err
+			return nil, 0, 0, err
 		}
 		entries = append(entries, entry)
 	}
-	return entries, skipped, nil
+	return entries, unparsable, noID, nil
 }
 
 // toEntry is the mapping, and the two differences from the file shape are the whole of
@@ -215,10 +240,19 @@ func toEntry(ctx context.Context, record fileRecord) (pkg.SessionLedgerEntry, er
 		WorkerID:      record.WorkerID,
 		Target:        record.Target,
 		UnknownReason: record.UnknownReason,
-		// Opaque, matching how the writer publishes it: the store never reads inside
-		// it, and reshaping it here would be a second implementation of the writer's
-		// secret-redaction rule — the drift the redaction cannot survive.
-		ParkedPermission: record.Parked,
+	}
+	// ⚠️ Carried opaquely, matching how the writer publishes it: the store never reads
+	// inside it, and reshaping it here would be a second implementation of the writer's
+	// secret-redaction rule — the drift the redaction cannot survive.
+	//
+	// ⚠️ And a row whose `parked_permission` is JSON `null` (75 of 1898, measured
+	// 2026-10-14) unmarshals to a NON-NIL RawMessage holding the four bytes `null`, so
+	// `omitempty` would not drop it and the imported row would serve
+	// `"parked_permission": null` where the field is documented as ABSENT when no gate is
+	// held. The store's own spec asserts that absence, so the guard is what keeps the
+	// imported rows reading the way the written ones do.
+	if !isJSONNull(record.Parked) {
+		entry.ParkedPermission = record.Parked
 	}
 	if record.EndedAt != "" {
 		endedAt, err := time.Parse(time.RFC3339, record.EndedAt)
@@ -249,4 +283,14 @@ func toEntry(ctx context.Context, record fileRecord) (pkg.SessionLedgerEntry, er
 		entry.SupervisorExitedAt = &converted
 	}
 	return entry, nil
+}
+
+// isJSONNull reports whether a raw JSON value is the literal `null`, or absent entirely.
+//
+// ⚠️ It exists because `json.RawMessage` cannot tell "absent" from "present and null":
+// both arrive as a non-nil slice for the latter and a nil one for the former, and
+// `omitempty` drops only the nil. A field documented as ABSENT when it holds nothing must
+// therefore be guarded explicitly rather than left to the struct tag.
+func isJSONNull(raw json.RawMessage) bool {
+	return len(raw) == 0 || string(raw) == "null"
 }

@@ -122,8 +122,18 @@ type SessionLedgerEntry struct {
 	// supervisor mid-turn while an interactive one outlives it, so the same
 	// `unknown` status means opposite things in the two cases.
 	UnknownReason string `json:"unknown_reason"`
-	// Result is the worker's terminal result, empty while it has none.
-	Result string `json:"result"`
+	// Result is the worker's terminal result, absent while it has none.
+	//
+	// ⚠️ **CARRIED OPAQUELY, and a `string` here was a real defect rather than a
+	// tidiness question.** Every one of the 245 non-null `result` values in the live
+	// ledger is a JSON OBJECT (`{"subtype":…,"num_turns":…,"permission_denials":…}` —
+	// measured 2026-10-14, 245 object / 0 string), so a `string` field fails to
+	// unmarshal them: the one-time import would silently DROP 245 of 1898 rows, and the
+	// POST route would answer 400 to every write carrying a terminal result — which is
+	// every cluster worker's and every finished worker's. The store never reads inside
+	// the value; the supervisor's reader does (`result: record.result ?? null`), and an
+	// opaque blob is exactly the shape it expects.
+	Result json.RawMessage `json:"result,omitempty"`
 	// ParkedPermission is the permission prompt the worker was parked on when
 	// its supervisor last wrote, absent when it holds none.
 	//
