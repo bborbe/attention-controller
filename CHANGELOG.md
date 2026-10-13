@@ -11,6 +11,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 ## Unreleased
 
 - add: the spawn-ledger endpoints — `POST` and `GET /api/1.0/session-ledger`, `GET /api/1.0/session-ledger/{sessionID}` — keyed by `session_id` and never by `agent_id`, which is a per-process counter that collides across supervisor reconnects; the row carries identity only and leaves liveness to the heartbeat store, joined by the caller on `session_id`
+- add: the spawn-ledger row carries every field its readers consume — `cwd`, `mode_source`, `worker_id`, `target`, `supervisor_exited_at`, `unknown_reason` and the parked permission prompt — so the supervisor's readers can move onto the endpoint without losing a fact the file ledger held; `parked_permission` is stored as an opaque blob because the store must not re-implement the writer's secret-redaction rule, and the three required fields are unchanged
 
 ## v0.52.7
 

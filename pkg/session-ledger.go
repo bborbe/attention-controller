@@ -6,6 +6,7 @@ package pkg
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/bborbe/errors"
 	libtime "github.com/bborbe/time"
@@ -50,8 +51,32 @@ type SessionLedgerEntry struct {
 	Label string `json:"label"`
 	// Mode is how the worker runs: `interactive`, `headless` or `cluster`.
 	Mode string `json:"mode"`
+	// ModeSource is which of argument / env / config / default decided Mode. It
+	// is carried because the mode alone cannot say whether a headless worker
+	// was ASKED for or merely inherited, which is the question asked when a
+	// fleet turns out to be running the wrong way.
+	ModeSource string `json:"mode_source"`
 	// Launcher is the command the worker was started with, when there was one.
 	Launcher string `json:"launcher"`
+	// Cwd is the directory the worker was spawned in.
+	//
+	// ⚠️ It is carried because `list_agents` renders it and the roster's own
+	// reader (`registry-rehydrate.mjs`) maps it; a row without it reads back as
+	// a worker whose directory is unknown, which is indistinguishable from one
+	// that has none.
+	Cwd string `json:"cwd"`
+	// WorkerID is the A2A controller's id for a worker running as a container
+	// or pod, empty for every local and cluster mode.
+	//
+	// ⚠️ **NOTHING ELSE CAN MAP A CONTROLLER WORKER BACK TO ITS SESSION.** The
+	// liveness mirror lists the controller's workers by id and joins them to
+	// ledger rows on this field alone, so dropping it makes every A2A worker
+	// read dead after a supervisor restart. The worker's TOKEN is deliberately
+	// NOT carried: it authenticates turns, and this row is served to any reader.
+	WorkerID string `json:"worker_id"`
+	// Target is the spawn target whose name doubles as an A2A worker's status
+	// (`docker` / `k8s`), empty for every other mode.
+	Target string `json:"target"`
 	// PaneID is the WezTerm pane the worker occupies, empty for a headless
 	// worker which has no pane. ⚠️ A pane id is recycled across tab moves and
 	// restarts, so it identifies a pane, never a session.
@@ -86,8 +111,30 @@ type SessionLedgerEntry struct {
 	// see the type comment. It is carried because the ledger carried it, and
 	// dropping it would make the import lossy.
 	Status string `json:"status"`
+	// SupervisorExitedAt is when the supervisor that owned the worker went away
+	// without observing its outcome, absent when that never happened.
+	//
+	// ⚠️ A POINTER for the same reason EndedAt is: "the supervisor is still
+	// running" and "it exited at the zero instant" must stay distinguishable.
+	SupervisorExitedAt *libtime.DateTime `json:"supervisor_exited_at,omitempty"`
+	// UnknownReason says WHY the supervisor stopped watching, and it is the half
+	// that makes SupervisorExitedAt readable: a headless worker dies with its
+	// supervisor mid-turn while an interactive one outlives it, so the same
+	// `unknown` status means opposite things in the two cases.
+	UnknownReason string `json:"unknown_reason"`
 	// Result is the worker's terminal result, empty while it has none.
 	Result string `json:"result"`
+	// ParkedPermission is the permission prompt the worker was parked on when
+	// its supervisor last wrote, absent when it holds none.
+	//
+	// ⚠️ **CARRIED OPAQUELY, and the opacity is deliberate.** This is the
+	// durable half of a parked gate: it outlives the spawner so a resume can
+	// carry the operator's decision to the worker's next turn. The store never
+	// reads inside it — only the supervisor that wrote it does — and typing it
+	// here would mean re-implementing that writer's secret-redaction rule in a
+	// second language, which is a drift the redaction cannot survive. A blob the
+	// store does not interpret cannot drift from the one that wrote it.
+	ParkedPermission json.RawMessage `json:"parked_permission,omitempty"`
 }
 
 // SessionLedgerEntries is a collection of SessionLedgerEntry.
