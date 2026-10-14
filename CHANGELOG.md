@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.54.0
 
 - add: `cmd/import-spawn-ledger`, the one-off tool that moves the supervisor's file-backed spawn ledger into the session-ledger store. It exists because `Import` had NO CALLER — implemented and tested, but nothing invoked it, and the migration is what lets the supervisor's readers leave the filesystem. ⚠️ **It must run while attention-controller is STOPPED:** the store is BoltDB, the service holds the file's exclusive lock for its whole life, and `Import` writes, so a read-only open is not available — the intended window is the deploy's own `launchctl kickstart` outage. ⚠️ **The mapping is not a pass-through and the import aborts as a whole if one row is bad:** `Import` validates every entry in one transaction and `Validate` requires `location`, which the file ledger never carried (present in 0 of the 1895 live rows), so `location: local` is injected and the file's `parent_session` is renamed onto the endpoint's `spawner_session_id`. Re-running is safe — `Import` is idempotent by key and does not overwrite. ⚠️ Two review findings are fixed here: unmarshal failures get their own counter and are NAMED on stderr instead of being folded into a "no session_id" reason that is false for them, and `OpenDir` is given a 5 s `Timeout` — at the default zero it HANGS on a held lock rather than failing, so a run against a live service would sit silently instead of reporting.
 
