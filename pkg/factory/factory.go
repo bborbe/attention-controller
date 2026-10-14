@@ -52,6 +52,24 @@ func CreateSessionHeartbeatListHandler(
 	return handler.NewSessionHeartbeatListHandler(store, now, window)
 }
 
+// CreateSessionLedgerPostHandler creates the handler a supervisor calls to
+// record one spawn.
+func CreateSessionLedgerPostHandler(store pkg.SessionLedgerStore) http.Handler {
+	return handler.NewSessionLedgerPostHandler(store)
+}
+
+// CreateSessionLedgerGetHandler creates the handler that answers one session's
+// ledger row.
+func CreateSessionLedgerGetHandler(store pkg.SessionLedgerStore) http.Handler {
+	return handler.NewSessionLedgerGetHandler(store)
+}
+
+// CreateSessionLedgerListHandler creates the handler that answers the whole
+// spawn ledger at once — the read that replaces the supervisor's frozen roster.
+func CreateSessionLedgerListHandler(store pkg.SessionLedgerStore) http.Handler {
+	return handler.NewSessionLedgerListHandler(store)
+}
+
 // CreateAttentionAnswerHandler creates the handler that applies an answer as an
 // atomic compare-and-set.
 func CreateAttentionAnswerHandler(store pkg.AttentionStore) http.Handler {

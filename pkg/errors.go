@@ -68,6 +68,15 @@ var (
 	// be able to produce it — the read path reports an unreadable store as a
 	// 500 and reserves this sentinel for a file that genuinely is not there.
 	ErrSessionHeartbeatNotFound = stderrors.New("session heartbeat not found")
+
+	// ErrSessionLedgerEntryNotFound is the read path's "no such row" sentinel.
+	//
+	// ⚠️ It is reserved for a row that genuinely is not there, exactly as the
+	// heartbeat sentinel beside it is: an unreadable store reports a 500 and
+	// must never be able to produce this. The distinction carries more weight
+	// here than on the heartbeat path, because the row it answers for is what a
+	// manager reads to decide whether a worker exists at all.
+	ErrSessionLedgerEntryNotFound = stderrors.New("session ledger entry not found")
 )
 
 // isNotFound reports whether a libkv read failed because the thing asked for
