@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.53.0
 
 - add: the session-ledger row — the type that replaces the supervisor's file-backed spawn record. ⚠️ `session_id` is the row's identity and its only sound key: the ledger it replaces keyed its roster by `agent_id`, a per-process counter that restarts at 0 on every supervisor reconnect, so 1891 rows carry only 187 distinct ids and 215 claim `agent_1`. ⚠️ `status` is NOT liveness — 1480 of those 1891 rows assert `running` for workers that died days ago, because nothing closes an entry whose supervisor went away; liveness is joined from the heartbeat store on `session_id`. ⚠️ `result` is carried opaquely (`json.RawMessage`), because every one of the 245 non-null `result` values in the live ledger is a JSON OBJECT and typing it as a string would fail to unmarshal exactly those rows — the one-time import would have silently dropped them. `task` and `vault` are PAIRED rather than individually required: both empty is a real state, a half-declared anchor is not.
 
