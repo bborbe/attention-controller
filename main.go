@@ -348,6 +348,31 @@ func registerSessionHeartbeatRoutes(
 		Handler(factory.CreateSessionHeartbeatGetHandler(store, now, window))
 }
 
+// registerSessionLedgerRoutes wires the spawn-ledger endpoints under
+// /api/1.0/.
+//
+// ⚠️ **It shares the heartbeat's two-route shape, and for the same reason.** The
+// bare path lists every row while the /{sessionID} path answers one and returns
+// 404 for a row that does not exist — a caller that read the 404 as "not live"
+// would collapse `never spawned` onto `ended`, which is the distinction a
+// manager deciding whether to resume a worker has to make.
+//
+// ⚠️ The two stores are deliberately SEPARATE endpoints rather than one joined
+// read. Identity comes from the ledger and liveness from the heartbeat, and a
+// service that joined them here would be inventing a third answer neither store
+// owns — the split `registry-rehydrate.mjs` keeps on the Node side.
+func registerSessionLedgerRoutes(router *mux.Router, store pkg.SessionLedgerStore) {
+	router.Path("/api/1.0/session-ledger").
+		Methods(http.MethodPost).
+		Handler(factory.CreateSessionLedgerPostHandler(store))
+	router.Path("/api/1.0/session-ledger").
+		Methods(http.MethodGet).
+		Handler(factory.CreateSessionLedgerListHandler(store))
+	router.Path("/api/1.0/session-ledger/{sessionID}").
+		Methods(http.MethodGet).
+		Handler(factory.CreateSessionLedgerGetHandler(store))
+}
+
 // sessionLivenessChecker resolves the checker the store prunes through.
 //
 // ⚠️ `off` changes ONLY the store's checker. The page's provenance join reads
@@ -678,6 +703,13 @@ func (a *application) createHTTPServer(
 			return err
 		}
 		registerSessionHeartbeatRoutes(router, sessionHeartbeatStore, sessionHeartbeatWindow)
+
+		// The spawn ledger. ⚠️ It shares this process's single BoltDB handle
+		// rather than opening its own: a second handle on the same file is what
+		// BoltDB refuses, and the refusal arrives as a lock timeout rather than a
+		// readable error. The bucket is separate from the attention items', so
+		// the two lifetimes stay independent.
+		registerSessionLedgerRoutes(router, pkg.NewSessionLedgerStore(db))
 
 		// ⚠️ Two listeners, one process — this is the fold's whole claim, and it
 		// is why SC1's evidence is `lsof` naming ONE pid on both ports. Both run
