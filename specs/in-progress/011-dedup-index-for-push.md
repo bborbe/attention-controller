@@ -1,8 +1,9 @@
 ---
-status: prompted
+status: verifying
 approved: "2026-10-15T13:50:24Z"
 generating: "2026-10-15T13:50:25Z"
 prompted: "2026-10-15T14:28:07Z"
+verifying: "2026-10-15T15:15:44Z"
 branch: dark-factory/dedup-index-for-push
 ---
 
