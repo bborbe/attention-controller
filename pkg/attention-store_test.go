@@ -1355,6 +1355,121 @@ var _ = Describe("AttentionStore", func() {
 		})
 	})
 
+	// The dedup index is the fourth derived index: what `Push` resolves duplicate
+	// suppression against, so a push stops decoding the whole items bucket. The
+	// specs below are the ones the decode-count probe cannot see — that the index
+	// is PERSISTED, that it is RESTORABLE when lost, and that its removal is
+	// scoped to the row being removed.
+	Describe("dedup index", func() {
+		// dedupIndexEntryCount opens the dedup index bucket BY NAME through the raw
+		// DB and counts its real entries. ⚠️ The `!` built-marker is a key in the
+		// same bucket, so counting every key would read one too high; it is skipped
+		// by name, the same way `collectHistoryPage` skips it.
+		dedupIndexEntryCount := func() int {
+			count := 0
+			err := db.View(ctx, func(ctx context.Context, tx libkv.Tx) error {
+				bucket, err := tx.Bucket(ctx, libkv.NewBucketName("attention-dedup-index"))
+				if err != nil {
+					if errors.Is(err, libkv.ErrBucketNotFound) {
+						return nil
+					}
+					return err
+				}
+				it := bucket.Iterator()
+				defer it.Close()
+				for it.Rewind(); it.Valid(); it.Next() {
+					if string(it.Item().Key()) == "!" {
+						continue
+					}
+					count++
+				}
+				return nil
+			})
+			Expect(err).To(BeNil())
+			return count
+		}
+
+		It("persists one entry per open (producer_id, dedup_key) and drops it on close", func() {
+			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
+			Expect(err).To(BeNil())
+			Expect(dedupIndexEntryCount()).To(Equal(1))
+
+			_, err = store.Close(ctx, item.ItemID, "", nil)
+			Expect(err).To(BeNil())
+			Expect(dedupIndexEntryCount()).To(Equal(0))
+		})
+
+		It(
+			"rebuilds a dropped index from the items bucket rather than writing a duplicate",
+			func() {
+				_, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
+				Expect(err).To(BeNil())
+
+				// The lost-index failure mode: no marker and no entries.
+				err = db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
+					return tx.DeleteBucket(ctx, libkv.NewBucketName("attention-dedup-index"))
+				})
+				Expect(err).To(BeNil())
+
+				_, err = store.Push(ctx, pushRequest("session-a", "gate-1"))
+				Expect(err).To(BeNil())
+				_, err = store.Push(ctx, pushRequest("session-a", "gate-1"))
+				Expect(err).To(BeNil())
+
+				items, err := store.Read(ctx)
+				Expect(err).To(BeNil())
+				Expect(items).To(HaveLen(1))
+			},
+		)
+
+		It("keeps the surviving open row's entry when a sibling sharing its key closes", func() {
+			first, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
+			Expect(err).To(BeNil())
+
+			// The dead-producer path writes a SECOND open row under the same
+			// (producer_id, dedup_key); the index now holds that one as the pair's
+			// representative.
+			sessionLivenessChecker.IsLiveReturns(false)
+			second, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
+			Expect(err).To(BeNil())
+			Expect(second.ItemID).NotTo(Equal(first.ItemID))
+
+			_, err = store.Close(ctx, first.ItemID, "", nil)
+			Expect(err).To(BeNil())
+
+			// If closing the non-representative row had removed the entry, this push
+			// would find nothing to collapse onto and write a THIRD row.
+			sessionLivenessChecker.IsLiveReturns(true)
+			repushed, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
+			Expect(err).To(BeNil())
+			Expect(repushed.ItemID).To(Equal(second.ItemID))
+
+			items, err := store.Read(ctx)
+			Expect(err).To(BeNil())
+			Expect(items).To(HaveLen(1))
+		})
+
+		It("opens exactly one write transaction per push", func() {
+			counting := &countingDB{DB: db}
+			countingStore := pkg.NewAttentionStore(
+				counting,
+				pkg.NewItemIDGenerator(),
+				sessionLivenessChecker,
+				libtime.NewCurrentDateTime(),
+				libtime.Duration(15*60*1e9),
+			)
+
+			_, err := countingStore.Push(ctx, pushRequest("session-a", "gate-1"))
+			Expect(err).To(BeNil())
+			Expect(counting.updates).To(Equal(1))
+
+			counting.updates = 0
+			_, err = countingStore.Push(ctx, pushRequest("session-a", "gate-1"))
+			Expect(err).To(BeNil())
+			Expect(counting.updates).To(Equal(1))
+		})
+	})
+
 	// ⚠️ These specs pin the read path's transaction SHAPE, which is a
 	// correctness property and not an optimisation: bbolt permits one read-write
 	// transaction at a time, so a read that opens one blocks every Push behind
