@@ -33,6 +33,7 @@ func NewAttentionStore(
 		liveIndex:    libkv.NewStoreTx[string, Item](attentionLiveIndexBucketName),
 		openIndex:    libkv.NewStoreTx[string, Item](attentionOpenIndexBucketName),
 		historyIndex: libkv.NewStoreTx[string, Item](attentionHistoryIndexBucketName),
+		dedupIndex:   libkv.NewStoreTx[string, Item](attentionDedupIndexBucketName),
 		attempts: libkv.NewStoreTx[string, DeliveryAttempt](
 			deliveryAttemptBucketName,
 		),
@@ -44,121 +45,12 @@ func NewAttentionStore(
 	}
 }
 
-// attentionLiveIndexBucketName is the bucket the read scans instead of the
-// items bucket. It holds a copy of every item whose state is not `ClosedState`
-// — the exact set `classifyForRead` can keep or remove — keyed by the same item
-// id, so a read decodes the live population rather than the whole store.
-//
-// ⚠️ It is a STORAGE layout, not a schema: [[Attention Item Schema]] is
-// untouched by it, which is what the task's SC5 requires. The bucket is derived
-// data and can be rebuilt from the items bucket at any time, which is what
-// makes a lost or suspect index recoverable rather than corrupting.
-var attentionLiveIndexBucketName = libkv.NewBucketName("attention-live-index")
-
-// liveIndexMarkerKey marks the live index as BUILT.
-//
-// ⚠️ Its presence is load-bearing and the bucket's own existence is NOT a
-// substitute: `putItem` creates the bucket on the first write, so a store that
-// takes a write before its first read would otherwise look "built" while
-// holding one entry — and the read would silently UNDER-return, which is the
-// failure mode this whole design is guarded against.
-//
-// `!` (0x21) sorts before every character a UUID can contain (hex digits and
-// `-`, 0x2D and up), so it can never collide with an item id, and the scan
-// skips it by key.
-const liveIndexMarkerKey = "!"
-
-// attentionOpenIndexBucketName is the bucket the OPEN-ONLY read scans. It holds
-// a copy of every item whose state is `OpenState`, keyed by the same item id.
-//
-// ⚠️ It exists because the live index admits `answered` items and the JSON read
-// API every supervisor polls does not want them: `Read` decoded the whole live
-// index and then threw the answered half away in `classifyForRead` — measured
-// 2026-10-03 at 2,547 decoded to return 16. The answered max age bounds that
-// backlog; this index is what stops it coming back, because the open-only read
-// then costs the OPEN population whatever the backlog does.
-//
-// Like the live index it is a STORAGE layout and not a schema — the item schema
-// is untouched — and it is derived data, rebuildable from the items bucket.
-var attentionOpenIndexBucketName = libkv.NewBucketName("attention-open-index")
-
-// openIndexMarkerKey marks the open index as BUILT. It carries the same spelling
-// as the live index's marker because the two live in different buckets, so `!`
-// in either means the same thing to a reader.
-const openIndexMarkerKey = "!"
-
-// attentionHistoryIndexBucketName is the bucket `History` scans. It holds a copy
-// of every item — History never filters on state or liveness — its one narrowing is an expired OPEN item, which is neither what resolved nor what escalated — keyed by
-// `created_at|item_id` rather than by the item id, so a cursor reads it
-// NEWEST-FIRST and a page costs the page rather than the store.
-//
-// ⚠️ It exists because `History` was an unbounded scan: it decoded all 22,381
-// rows (~18.8 MB) on every request, including the ~19,500 closed ones. Bounding
-// that scan without an ordering would have returned an ARBITRARY page — item ids
-// are random 128-bit hex (`item-id-generator.go`), so items-bucket key order
-// carries no time meaning, and "the first 1000" would be a different 1000 on
-// every store. An index is what makes the bound mean something.
-//
-// Like the live and open indexes it is a STORAGE layout and not a schema — the
-// item schema is untouched — and it is derived data, rebuildable from the items
-// bucket.
-var attentionHistoryIndexBucketName = libkv.NewBucketName("attention-history-index")
-
-// historyIndexMarkerKey marks the history index as BUILT, with the same spelling
-// and the same reasoning as its two siblings. `!` (0x21) still sorts before every
-// key this index holds, because those begin with a digit (0x30).
-const historyIndexMarkerKey = "!"
-
-// historyIndexKeyLayout is the fixed-width time prefix of a history index key.
-//
-// ⚠️ Fixed width is load-bearing, and `time.RFC3339Nano` is the trap here rather
-// than the obvious choice. It TRIMS trailing zeros in the fraction, so an item
-// created at exactly `…:37Z` and one at `…:37.1Z` produce `…37Z` and `…37.1Z` —
-// and lexicographically `.` (0x2E) sorts before `Z` (0x5A), putting 37.1 BEFORE
-// 37. The index would then return a newest-first page that is not newest-first,
-// silently, and only for the items whose timestamps happened to fall on a whole
-// second. Nine fixed digits removes the ambiguity.
-//
-// The trailing `Z` normalizes to UTC, so the keys of items created in different
-// local offsets still sort against one another.
-const historyIndexKeyLayout = "2006-01-02T15:04:05.000000000Z"
-
-// historyIndexSeparator joins the time prefix to the item id. It sorts above
-// every character in the prefix and in a hex id, so it can never be confused
-// with either, and it makes the id recoverable by splitting on the LAST
-// occurrence.
-const historyIndexSeparator = "|"
-
-// indexKeyFunc derives one index's key for one item.
-//
-// ⚠️ The items-bucket key is passed rather than re-derived, because the live and
-// open indexes ARE keyed by it and the history index is not. Both live behind
-// this one type so `reconcileIndex` and `rebuildIndex` stay single functions:
-// three near-identical copies is the shape `dupl` already rejected once on this
-// file, and the second copy is the one that drifts.
-type indexKeyFunc func(bucketKey string, item Item) string
-
-// itemIDIndexKey keys an index by the item id — the items-bucket key, unchanged.
-// The live and open indexes use it.
-func itemIDIndexKey(bucketKey string, _ Item) string { return bucketKey }
-
-// timeOrderedIndexKey derives the history index key: the fixed-width UTC
-// creation time, a separator, then the item id.
-//
-// ⚠️ The id is appended rather than left implicit because two items CAN share a
-// nanosecond — a batch push writes several inside one transaction — and a key
-// collision would silently drop one of them from the history. The id makes the
-// key total.
-func timeOrderedIndexKey(_ string, item Item) string {
-	return item.CreatedAt.Time().UTC().Format(historyIndexKeyLayout) +
-		historyIndexSeparator + item.ItemID.String()
-}
-
 type attentionStore struct {
 	store                  libkv.StoreTx[string, Item]
 	liveIndex              libkv.StoreTx[string, Item]
 	openIndex              libkv.StoreTx[string, Item]
 	historyIndex           libkv.StoreTx[string, Item]
+	dedupIndex             libkv.StoreTx[string, Item]
 	attempts               libkv.StoreTx[string, DeliveryAttempt]
 	db                     libkv.DB
 	itemIDGenerator        ItemIDGenerator
@@ -180,6 +72,15 @@ func (a *attentionStore) Push(ctx context.Context, request PushRequest) (*Item, 
 	}
 	var result *Item
 	err := a.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
+		// ⚠️ FIRST, before `updateExistingIfLive`, because that is what reads the
+		// index. A store migrated from an older version has items and no dedup
+		// marker, so its first push rebuilds the index from the items bucket once,
+		// inside this same transaction — the one-time migration cost. A crash
+		// mid-build leaves the marker unset, so the next push rebuilds and no
+		// operator action is needed.
+		if err := a.ensureDedupIndex(ctx, tx); err != nil {
+			return err
+		}
 		updated, err := a.updateExistingIfLive(ctx, tx, request)
 		if err != nil {
 			return err
@@ -541,26 +442,6 @@ type storedItem struct {
 	item Item
 }
 
-// liveIndexWorthy reports whether an item belongs in the live index.
-//
-// ⚠️ The predicate is deliberately "not closed" rather than "is open or
-// answered". `classifyForRead` keeps or removes only for `OpenState` and — when
-// asked — `AnsweredState`, so excluding exactly the closed items is equivalent
-// today, and a state added to the schema later lands IN the index by default.
-// That is the safe direction: over-including costs decodes, while
-// under-including makes the read return less than it should, silently.
-func liveIndexWorthy(item Item) bool {
-	return item.State != ClosedState
-}
-
-// openIndexWorthy reports whether an item belongs in the open-only index, which
-// is the exact set `Read` can keep: an answered item is dropped by
-// `classifyForRead` when includeAnswered is false, so indexing it would only
-// make the open-only read decode something it discards.
-func openIndexWorthy(item Item) bool {
-	return item.State == OpenState
-}
-
 // putItem writes an item to the items bucket and reconciles its live-index
 // entry, both inside the caller's transaction.
 //
@@ -608,11 +489,14 @@ func (a *attentionStore) putItem(ctx context.Context, tx libkv.Tx, item Item) er
 		if err := a.liveIndex.Add(ctx, tx, liveIndexMarkerKey, Item{}); err != nil {
 			return errors.Wrap(ctx, err, "mark live index built failed")
 		}
-		// Both markers, for the reason above: a store with no items bucket held
-		// no items, so both indexes this same call maintains are complete by
+		// All three markers, for the reason above: a store with no items bucket
+		// held no items, so every index this same call maintains is complete by
 		// construction.
 		if err := a.openIndex.Add(ctx, tx, openIndexMarkerKey, Item{}); err != nil {
 			return errors.Wrap(ctx, err, "mark open index built failed")
+		}
+		if err := a.dedupIndex.Add(ctx, tx, dedupIndexMarkerKey, Item{}); err != nil {
+			return errors.Wrap(ctx, err, "mark dedup index built failed")
 		}
 	}
 	return a.reconcileIndexes(ctx, tx, item, previous)
@@ -637,77 +521,6 @@ func (a *attentionStore) storedItem(
 		return nil, errors.Wrapf(ctx, err, "get item %s failed", key)
 	}
 	return item, nil
-}
-
-// reconcileIndexes brings ALL THREE derived indexes in line with one item: the
-// live index holds everything not closed, the open-only index holds open items
-// only, and the history index holds everything, keyed by creation time.
-//
-// ⚠️ One function for all three rather than three call sites that must agree. An
-// item moving between states has to leave one index as it enters the other, and
-// splitting that across callers is how an index silently drifts — the failure
-// `rebuildIndex` exists to repair.
-func (a *attentionStore) reconcileIndexes(
-	ctx context.Context,
-	tx libkv.Tx,
-	item Item,
-	previous *Item,
-) error {
-	if err := a.reconcileIndex(
-		ctx, tx, a.liveIndex, "live", item, liveIndexWorthy(item), itemIDIndexKey,
-	); err != nil {
-		return err
-	}
-	if err := a.reconcileIndex(
-		ctx, tx, a.openIndex, "open", item, openIndexWorthy(item), itemIDIndexKey,
-	); err != nil {
-		return err
-	}
-	// ⚠️ History is the one index whose predicate is constant — every item belongs
-	// whatever its state, because History narrows only on expiry — an expired OPEN item, which is neither what resolved nor what escalated — and it is also the one
-	// index whose key can MOVE, because that key is derived from CreatedAt.
-	//
-	// ⚠️ An earlier version of this comment claimed CreatedAt "is written once and
-	// never rewritten", and that claim was FALSE: `updateExistingIfLive` rewrites
-	// it on a duplicate-suppressed push. Since `reconcileIndex` only ever ADDS for
-	// this index, the row written under the old key was stranded and the reverse
-	// cursor returned the same ItemID once per suppressed push — defeating the
-	// counting purpose the endpoint exists for. The removal below is the fix; the
-	// false claim is recorded rather than deleted because the assumption reads as
-	// obviously true and is not.
-	if previous != nil {
-		oldKey := timeOrderedIndexKey("", *previous)
-		if newKey := timeOrderedIndexKey("", item); oldKey != newKey {
-			if err := a.removeIndexKey(ctx, tx, a.historyIndex, oldKey, "history"); err != nil {
-				return err
-			}
-		}
-	}
-	return a.reconcileIndex(
-		ctx, tx, a.historyIndex, "history", item, true, timeOrderedIndexKey,
-	)
-}
-
-// reconcileIndex adds the item to index when it belongs there and removes it
-// otherwise. The key comes from keyOf so the live and open indexes can key by
-// item id while the history index keys by creation time.
-func (a *attentionStore) reconcileIndex(
-	ctx context.Context,
-	tx libkv.Tx,
-	index libkv.StoreTx[string, Item],
-	name string,
-	item Item,
-	worthy bool,
-	keyOf indexKeyFunc,
-) error {
-	key := keyOf(item.ItemID.String(), item)
-	if worthy {
-		if err := index.Add(ctx, tx, key, item); err != nil {
-			return errors.Wrapf(ctx, err, "add %s index entry failed", name)
-		}
-		return nil
-	}
-	return a.removeIndexKey(ctx, tx, index, key, name)
 }
 
 // itemsBucketAbsent reports whether the items bucket is missing, which — read
@@ -768,67 +581,6 @@ func (a *attentionStore) removeAttemptEntry(ctx context.Context, tx libkv.Tx, ke
 	return nil
 }
 
-// removeIndexEntry drops one item's entries from every index, treating "not
-// there" as success so callers stay idempotent. Each removeIndexKey checks first
-// because `kv`'s Remove would otherwise create the index bucket to delete
-// nothing from it.
-//
-// ⚠️ item may be nil, and the nil case is handled explicitly rather than folded
-// in. The live and open indexes are keyed by the item id, so they can be cleared
-// from the key alone; the history index cannot. When the item is already gone
-// its entry is LEFT for the rebuild to clear rather than guessed at — a wrong
-// key removes nothing and reports success, which is the silent-drift shape this
-// file is built to avoid.
-//
-// ⚠️ That branch is DEFENSIVE rather than reachable, and saying so is better
-// than testing it. `removeItem`'s only caller is `pruneDead`, which asks
-// `stillDead` first — and `stillDead` returns false for a key that is not found
-// ("another read pruned it first"), so a missing item never reaches here through
-// any public path. Reaching it in a spec would mean fabricating index drift by
-// writing a bucket entry directly, which would pin a contrived state rather than
-// the contract. It is kept because `removeItem` is this file's deletion
-// primitive: a future caller that does not pre-filter would otherwise strand the
-// entry silently, which is the failure this whole comment exists to name.
-func (a *attentionStore) removeIndexEntry(
-	ctx context.Context,
-	tx libkv.Tx,
-	key string,
-	item *Item,
-) error {
-	if err := a.removeIndexKey(ctx, tx, a.liveIndex, key, "live"); err != nil {
-		return err
-	}
-	if err := a.removeIndexKey(ctx, tx, a.openIndex, key, "open"); err != nil {
-		return err
-	}
-	if item == nil {
-		return nil
-	}
-	return a.removeIndexKey(ctx, tx, a.historyIndex, timeOrderedIndexKey(key, *item), "history")
-}
-
-// removeIndexKey removes one key from one index, tolerating its absence — a
-// removal can run after a state change that already took the entry out.
-func (a *attentionStore) removeIndexKey(
-	ctx context.Context,
-	tx libkv.Tx,
-	index libkv.StoreTx[string, Item],
-	key string,
-	name string,
-) error {
-	exists, err := index.Exists(ctx, tx, key)
-	if err != nil {
-		return errors.Wrapf(ctx, err, "check %s index entry %s failed", name, key)
-	}
-	if !exists {
-		return nil
-	}
-	if err := index.Remove(ctx, tx, key); err != nil {
-		return errors.Wrapf(ctx, err, "remove %s index entry %s failed", name, key)
-	}
-	return nil
-}
-
 // ensureLiveIndex builds the live index if it has not been built, and is a
 // no-op otherwise.
 //
@@ -885,7 +637,7 @@ func (a *attentionStore) liveIndexBuilt(ctx context.Context) (bool, error) {
 }
 
 // rebuildIndex reconciles ONE derived index against the items bucket inside the
-// caller's transaction. All three indexes use it: they differ only in which
+// caller's transaction. All four indexes use it: they differ only in which
 // items they admit, which bucket they live in, and how their key is derived.
 //
 // ⚠️ Two passes, because the index can be wrong in two directions and adding
@@ -904,7 +656,12 @@ func (a *attentionStore) rebuildIndex(
 	ctx context.Context,
 	tx libkv.Tx,
 	index libkv.StoreTx[string, Item],
-	markerKey string,
+	// ⚠️ Every caller passes `"!"`, and the parameter is kept rather than
+	// inlined because it is what makes this ONE function rather than four
+	// near-identical copies — the shape `dupl` rejected on this file once
+	// already. unparam reports it once there are four call sites; the report is
+	// correct and the parameter is deliberate.
+	markerKey string, //nolint:unparam // one marker value, four indexes, one rebuild
 	name string,
 	worthy func(Item) bool,
 	keyOf indexKeyFunc,
@@ -1065,6 +822,45 @@ func (a *attentionStore) historyIndexBuilt(ctx context.Context) (bool, error) {
 		return false, errors.Wrap(ctx, err, "check history index failed")
 	}
 	return built, nil
+}
+
+// ensureDedupIndex builds the dedup index if it has not been built, inside the
+// CALLER'S write transaction, and is a no-op otherwise.
+//
+// ⚠️ It takes a tx rather than opening its own Update, and that is the whole
+// difference between this and its three siblings. `Push` already holds
+// bbolt's single writer lock for the length of the push, so an ensure that
+// called a.db.Update here would deadlock against it. Every other reader of a
+// derived index runs on the read path and can afford a transaction of its
+// own; the dedup index's only reader is inside a write.
+//
+// ⚠️ The marker is re-checked INSIDE the caller's transaction, which is also
+// what makes two writers racing the first push on a marker-less store safe:
+// bbolt admits one writer at a time, so the loser finds the marker already
+// written and does no work rather than rebuilding twice.
+func (a *attentionStore) ensureDedupIndex(ctx context.Context, tx libkv.Tx) error {
+	built, err := a.dedupIndex.Exists(ctx, tx, dedupIndexMarkerKey)
+	if err != nil {
+		return errors.Wrap(ctx, err, "check dedup index failed")
+	}
+	if built {
+		return nil
+	}
+	if err := a.rebuildIndex(
+		ctx,
+		tx,
+		a.dedupIndex,
+		dedupIndexMarkerKey,
+		"dedup",
+		openIndexWorthy,
+		dedupIndexKey,
+	); err != nil {
+		return err
+	}
+	// The marker is written in the SAME transaction as the build, so an index
+	// can never be marked built while half-populated — and a crash mid-build
+	// leaves it unset, so the next push rebuilds rather than trusting it.
+	return a.dedupIndex.Add(ctx, tx, dedupIndexMarkerKey, Item{})
 }
 
 // readOpenItems decodes the OPEN items inside a read-only transaction.
@@ -1840,35 +1636,41 @@ func (a *attentionStore) updateExistingIfLive(
 	return existing, nil
 }
 
-// findOpenByDedupKey returns the open item sharing this producer and dedup key,
-// or nil when none exists.
+// findOpenByDedupKey returns the open item sharing this producer and dedup
+// key, or nil when none exists.
+//
+// ⚠️ It is a POINT READ of the dedup index, and the walk it replaces was the
+// dominant cost of a push: it decoded every stored item on every push,
+// including the create path's, because `updateExistingIfLive` runs before the
+// row is created. Its early-out never worked either — the guard returned nil,
+// and a nil return from a `Map` callback CONTINUES the walk, so the scan ran
+// to the end of the bucket whether or not it matched on the first row.
+//
+// ⚠️ The state guard is gone, and its absence is safe rather than lost: the
+// index admits open items only (`openIndexWorthy`), so every entry it can
+// return is one suppression may legitimately collapse onto. The producer and
+// dedup-key guards are gone for the same reason — they are the index's key.
+//
+// ⚠️ `nil, nil` on absence is the contract `updateExistingIfLive` already
+// relies on ("no suppression applied, create a new row"), and `isNotFound` is
+// what turns both the absent-key and the never-created-bucket case into it.
 func (a *attentionStore) findOpenByDedupKey(
 	ctx context.Context,
 	tx libkv.Tx,
 	request PushRequest,
 ) (*Item, error) {
-	var found *Item
-	err := a.store.Map(ctx, tx, func(ctx context.Context, key string, item Item) error {
-		if found != nil {
-			return nil
-		}
-		if item.State != OpenState {
-			return nil
-		}
-		if item.ProducerID != request.ProducerID {
-			return nil
-		}
-		if item.DedupKey != request.DedupKey {
-			return nil
-		}
-		copy := item
-		found = &copy
-		return nil
-	})
+	item, err := a.dedupIndex.Get(
+		ctx,
+		tx,
+		dedupIndexKeyOf(request.ProducerID, request.DedupKey),
+	)
 	if err != nil {
-		return nil, errors.Wrap(ctx, err, "map items failed")
+		if isNotFound(err) {
+			return nil, nil
+		}
+		return nil, errors.Wrap(ctx, err, "get dedup index entry failed")
 	}
-	return found, nil
+	return item, nil
 }
 
 // isProducerLive resolves the item's declared liveness model against the
