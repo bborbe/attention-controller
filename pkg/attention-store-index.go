@@ -138,6 +138,14 @@ const dedupIndexMarkerKey = "!"
 // dedupIndexSeparator joins the producer id to the dedup key. It is the same
 // `"\x00"` `suppressAnsweredTwins` already joins this exact pair with, so the
 // two spellings of one identity cannot drift apart.
+//
+// ⚠️ The join is NOT injective — `("a\x00b", "c")` and `("a", "b\x00c")` produce
+// one key. The scan this index replaces compared the two FIELDS and could not
+// conflate them. It is theoretical here rather than merely unlikely: both halves
+// are validated only `NotEmptyString` (`attention-store.go`), so nothing forbids
+// an embedded NUL, but the values are session ids and gate names, and a NUL would
+// have to be crafted. Kept for the consistency above; a length-prefixed encoding
+// would be the fix if a producer ever emits one.
 const dedupIndexSeparator = "\x00"
 
 // indexKeyFunc derives one index's key for one item.
@@ -395,9 +403,19 @@ func (a *attentionStore) removeIndexKey(
 //
 // ⚠️ The mirror case is NOT covered, and it is the spec's Failure Modes row 2:
 // when the REPRESENTATIVE itself closes while a sibling open row survives, this
-// removal is taken and the survivor is left unindexed until the built-marker is
-// dropped and a later push rebuilds. Do not read the compare above as a
-// guarantee that every open row is indexed.
+// removal is taken and the survivor is left unindexed. ⚠️ The recovery is
+// OPERATOR-DRIVEN and NOT automatic: nothing in production drops the built-marker,
+// so no later push rebuilds on this path — the survivor stays unindexed until an
+// operator deletes the `attention-dedup-index` bucket (or its marker) and the next
+// push rebuilds from the items bucket. Until then a re-push of that key finds
+// nothing to collapse onto and writes a third row. Do not read the compare above
+// as a guarantee that every open row is indexed.
+//
+// ⚠️ Reachability, so the above is not read as routine: it needs two open rows on
+// one key (the dead-producer path), then the representative to close while the
+// older row survives — which in turn needs that row's producer to have come back
+// LIVE before the next read, because `pruneDead` otherwise removes it. Narrow, but
+// real; see the follow-up task rather than assuming it cannot happen.
 //
 // The Get is also what makes an absent bucket safe: `StoreTx.Get` on a bucket
 // that was never created fails with an error `isNotFound` recognises.
