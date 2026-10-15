@@ -1,9 +1,10 @@
 ---
-status: verifying
+status: completed
 approved: "2026-10-15T13:50:24Z"
 generating: "2026-10-15T13:50:25Z"
 prompted: "2026-10-15T14:28:07Z"
 verifying: "2026-10-15T15:15:44Z"
+completed: "2026-10-15T16:37:13Z"
 branch: dark-factory/dedup-index-for-push
 ---
 
@@ -41,9 +42,10 @@ A push resolves duplicate suppression by a point read of a derived index, so bot
 - [ ] Duplicate suppression semantics are unchanged — evidence: `go test ./pkg/...` exits 0, including the existing specs `updates rather than duplicates when the same live producer re-pushes the same dedup key`, `does not deduplicate across two different producers`, `creates a new row when the same dedup key comes from a producer whose liveness failed`, and `omits an open re-push whose ask was already answered`.
 - [ ] The index is a **persisted bucket**, not an in-memory map — evidence: a spec that opens the `attention-dedup-index` bucket by name through `db.View`/`tx.Bucket` and counts its keys **excluding the `!` built-marker** returns exactly `1` after one push of a fresh `(producer_id, dedup_key)`, and `0` after that item is closed.
 - [ ] The dedup index is restorable, not merely faster — evidence: a spec that drops the index's built-marker **and** its entries, then re-pushes the same `(producer_id, dedup_key)` twice, observes `store.Read` return exactly one open item.
-- [ ] **Post-Deploy (Rung-2):** against the deployed store, `POST /api/1.0/attention` under 20 concurrent full-list readers peaks below 1 s (baseline peak 2.26 s) — evidence: the load probe in `## Verification` prints a `peak=` line below `1.000`, and the deployed binary's stamped revision matches the merge commit.
+- [ ] **Post-Deploy (Rung-2):** against the deployed store, `POST /api/1.0/attention` under 20 concurrent full-list readers peaks below 1 s (baseline peak 2.26 s) — evidence: the load probe in `## Verification` prints a `peak=` line below `1.000`, and the deployed binary **contains** the merge commit — `git merge-base --is-ancestor <merge-commit> <deployed-revision>` exits 0.
   - `deploy_check:` `go version -m ~/.local/bin/attention-controller 2>/dev/null | sed -n 's/.*vcs.revision=\([0-9a-f]\{7,40\}\).*/\1/p' | cut -c1-7`
-  - `deploy_target:` `$(git rev-parse --short HEAD)`
+  - `deploy_target:` `$(git rev-parse --short origin/master)` — the deploy source, not `HEAD`.
+  - ⚠️ **Amended 2026-10-15, during verification, and recorded as an amendment rather than a silent pass.** The clause originally read "the deployed binary's stamped revision **matches the merge commit**", with `deploy_target: $(git rev-parse --short HEAD)`. Both were wrong, and the AC was **unsatisfiable by construction**: this repo's release flow cuts a `release vX.Y.Z` commit *on top of* the merge, so the deployed revision is always a **descendant** of the merge commit and can never equal it; and `$(git rev-parse --short HEAD)` resolves from whichever checkout runs it (`32fdec9` from the feature worktree, stale `22890d1` from the main checkout) and never to the deploy source. Measured at amendment time: deployed `c2584f2` (`release v0.54.1`), merge commit `d4e55d6`, `git merge-base --is-ancestor d4e55d6 c2584f2` → exit 0, `git diff --stat d4e55d6 c2584f2` → `CHANGELOG.md | 2 +-`. The check now states the property the deployment actually has to satisfy, and `deploy_target` names `origin/master` (which was `c2584f2`, matching `deploy_check` exactly). **The threshold (1 s) and the property (the deployed binary carries this change) are unchanged** — only the derivation that could never hold was corrected.
 
 ## Verification
 
@@ -127,3 +129,16 @@ One prompt: the mechanism and its proof are one change, and a probe written agai
 ## Do-Nothing Option
 
 Push latency keeps scaling with the store's total population, and the population only grows — 38,194 items on 2026-10-12, against 21,995 when the same scan was first measured on 2026-10-03. The sibling task's 3 s → 10 s client timeout raise is a mitigation that buys headroom without removing the cost, so the ceiling moves out and is reached again; the store's own history is what pushes it. Leaving it also leaves the create path paying a scan it has no use for, on the same writer lock the board's reads contend for.
+
+## Verification Result
+
+**Verified:** 2026-10-15T16:37:07Z (HEAD 32fdec9)
+**Binary:** installed `dark-factory` v0.198.7 (Phase 0 skipped — this is not dark-factory's own repo); artifact under test is `/Users/bborbe/.local/bin/attention-controller`, stamped `vcs.revision=c2584f2`
+**Scenario:** no scenario file declared by this spec; replayed its `## Verification` commands and the live load probe against the running controller (pid 47149, healthz 200)
+**Evidence:**
+- `Push SC1 raw: open=50 closed=1000 decodes=2 | closed=20000 decodes=2 | delta=19000 tolerance=950` — and the identical `Push SC2 raw` line (delta 0 < tolerance 950)
+- `git grep -n 'a.store.Map' pkg/attention-store-impl.go` → one hit, line 670, inside `rebuildIndex`; none inside `findOpenByDedupKey`
+- `go test ./pkg/... -count=1` exit 0; `make precommit` exit 0, golangci-lint `0 issues`; Ginkgo `Ran 432 of 432 Specs ... 432 Passed | 0 Failed | 0 Pending | 0 Skipped`
+- Live probe, 20 concurrent full-list readers: `PEAK=0.026`, all 10 POSTs HTTP 201 collapsing onto one `item_id` (baseline peak 2.26 s); probe row closed, `verify-probe rows: 0`
+- Deploy: `deploy_check` c2584f2 == `deploy_target` (`git rev-parse --short origin/master`) c2584f2; `git merge-base --is-ancestor d4e55d6 c2584f2` exit 0; `git diff --stat d4e55d6 c2584f2` → `CHANGELOG.md | 2 +-` (no revert between merge and deployed)
+**Verdict:** PASS
