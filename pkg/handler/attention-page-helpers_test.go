@@ -11,6 +11,7 @@
 package handler
 
 import (
+	"strings"
 	stdtime "time"
 
 	libtime "github.com/bborbe/time"
@@ -70,4 +71,36 @@ var _ = Describe("navigationSessionName", func() {
 	It("returns empty for a provenance carrying neither value", func() {
 		Expect(navigationSessionName(pkg.Provenance{})).To(Equal(""))
 	})
+})
+
+// The permission pair's identity is frozen in its MARKUP — specs 004 and 012,
+// and in-progress 007 whose AC5 asserts the class-bearing literal is unchanged —
+// so the fix that stops a board walk from answering gates it never read had to
+// land in the stylesheet instead. These cases pin that it did, and that it still
+// wins the cascade: measured 2026-10-16, a walk clicking the green forward-move
+// control recorded allow on every permission card it passed.
+var _ = Describe("attentionPageStyles and the permission pair", func() {
+	It("styles both controls through the data-decision attribute", func() {
+		Expect(attentionPageStyles).
+			To(ContainSubstring(`.actions button[data-decision="allow"] { color: var(--green); border-color: var(--green); }`))
+		Expect(attentionPageStyles).
+			To(ContainSubstring(`.actions button[data-decision="deny"] { color: var(--warn); border-color: var(--warn); }`))
+	})
+
+	It("gives the pair neither the forward move's filled green nor the skip's muted grey", func() {
+		Expect(attentionPageStyles).
+			NotTo(ContainSubstring(`button[data-decision="allow"] { background: var(--green-bg)`))
+		Expect(attentionPageStyles).
+			NotTo(ContainSubstring(`button[data-decision="deny"] { background: transparent; color: var(--muted)`))
+	})
+
+	It(
+		"places the pair's rules after the forward-move rule, so the attribute selector wins",
+		func() {
+			forward := strings.Index(attentionPageStyles, ".actions .next {")
+			pair := strings.Index(attentionPageStyles, ".actions button[data-decision] {")
+			Expect(forward).To(BeNumerically(">=", 0))
+			Expect(pair).To(BeNumerically(">", forward))
+		},
+	)
 })
