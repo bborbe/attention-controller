@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 
@@ -176,6 +177,33 @@ var _ = Describe("HTTP remote attention store", func() {
 			Expect(errors.Is(err, pkg.ErrPeerUnavailable)).Should(BeTrue())
 			// ⚠️ Not ErrItemNotFound: a failed call is not evidence of absence,
 			// so a 404 here would answer a question the read never settled.
+			Expect(errors.Is(err, pkg.ErrItemNotFound)).Should(BeFalse())
+		})
+
+		It("maps an UNREACHABLE peer to ErrPeerUnavailable", func() {
+			// ⚠️ The arm that matters most, and the one an httptest server
+			// structurally cannot produce: every server above ANSWERS, so every
+			// failure it can raise arrives as a response and is classified by
+			// remoteResponseError. A refused connection never gets there — there
+			// is no response to classify — and this path was still sentinel-less
+			// after the first fix, still answering 409 VALIDATION_ERROR. It took
+			// a live probe of the built binary against a dead port to find that;
+			// these specs could not, which is why this one exists.
+			//
+			// The port is bound and then released, so the connection is refused
+			// promptly rather than hanging until the client's own timeout.
+			listener, listenErr := net.Listen("tcp", "127.0.0.1:0")
+			Expect(listenErr).To(BeNil())
+			deadURL := "http://" + listener.Addr().String()
+			Expect(listener.Close()).To(BeNil())
+
+			remote = pkg.NewHTTPRemoteAttentionStore(deadURL, "peer-token")
+
+			_, err := remote.Get(ctx, "peer-1")
+
+			Expect(errors.Is(err, pkg.ErrPeerUnavailable)).Should(BeTrue())
+			// ⚠️ Not ErrItemNotFound: a connection that was refused is not
+			// evidence that the item is absent.
 			Expect(errors.Is(err, pkg.ErrItemNotFound)).Should(BeFalse())
 		})
 
