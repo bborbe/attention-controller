@@ -6,6 +6,8 @@ package handler_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +15,7 @@ import (
 	"strings"
 
 	libboltkv "github.com/bborbe/boltkv"
+	"github.com/bborbe/errors"
 	libkv "github.com/bborbe/kv"
 	libtime "github.com/bborbe/time"
 	. "github.com/onsi/ginkgo/v2"
@@ -25,17 +28,17 @@ import (
 	"github.com/bborbe/attention-controller/pkg/handler"
 )
 
-// The whole chain, end to end: a fixture spawn ledger on disk, read by the real
-// provenance resolver and rendered by the real page handler, with every
-// assertion made on the served row. This is the file that carries this
-// feature's acceptance criteria that observe the served page, because the
-// resolution and the template are each only half of what the operator sees —
-// neither a resolver-level nor a template-only spec can observe the rendered
-// HTML that half produces.
+// The whole chain, end to end: a fixture spawn ledger posted through the real
+// ledger store, read by the real provenance resolver and rendered by the real
+// page handler, with every assertion made on the served row. This is the file
+// that carries this feature's acceptance criteria that observe the served page,
+// because the resolution and the template are each only half of what the
+// operator sees — neither a resolver-level nor a template-only spec can observe
+// the rendered HTML that half produces.
 //
 // ⚠️ The gate this file pins is fail-closed: every uncertainty about a
-// session's mode renders NO control. The four absence cases below (no record, a
-// missing directory, an unparseable record, an unrecognised mode) are the
+// session's mode renders NO control. The four absence cases below (a nil store,
+// a store whose read fails, a missing row, an unrecognised mode) are the
 // evidence for that invariant, and each is preceded by a positive control so an
 // absence-shaped case cannot pass on a page that dropped the row.
 var _ = Describe("the Allow / Deny pair on the served page", func() {
@@ -48,13 +51,17 @@ var _ = Describe("the Allow / Deny pair on the served page", func() {
 	// hand-written literal `Personal` rather than a value read back from the same
 	// helper the code uses.
 	var vault string
-	// stateDir holds the producers' event logs, sessionsDir the session registry
-	// and spawnDir the supervisor's spawn ledger. All three are fresh per case:
-	// the ledger is scanned inside every Resolve call, so a case that writes a
-	// record must not see another case's.
+	// stateDir holds the producers' event logs and sessionsDir the session
+	// registry. Both are fresh per case: the registry is scanned inside every
+	// Resolve call, so a case that writes a record must not see another case's.
+	//
+	// sessionLedger is the supervisor's spawn ledger, and it is the SAME store
+	// the attention items live in — one BoltDB handle, two buckets, exactly the
+	// production wiring. It is a real store over the real db, never a mock: the
+	// whole point of the change is that the mode read goes to a real store.
 	var stateDir string
 	var sessionsDir string
-	var spawnDir string
+	var sessionLedger pkg.SessionLedgerStore
 	// clock drives the provenance resolver's host-snapshot cache. Frozen in
 	// BeforeEach so the cases that change the ledger between loads can advance
 	// it with SetNow rather than sleeping past the cache window.
@@ -102,7 +109,10 @@ var _ = Describe("the Allow / Deny pair on the served page", func() {
 		vault = filepath.Join(GinkgoT().TempDir(), "Personal")
 		stateDir = GinkgoT().TempDir()
 		sessionsDir = GinkgoT().TempDir()
-		spawnDir = GinkgoT().TempDir()
+		// ⚠️ The ledger store reuses the attention store's own db — one BoltDB
+		// handle, two buckets, which is exactly the production wiring. A second
+		// handle on the same file is what BoltDB refuses.
+		sessionLedger = pkg.NewSessionLedgerStore(db)
 		clock = libtime.NewCurrentDateTime()
 		clock.SetNow(clock.Now())
 	})
@@ -111,19 +121,20 @@ var _ = Describe("the Allow / Deny pair on the served page", func() {
 		Expect(db.Close()).To(BeNil())
 	})
 
-	// writeSpawn writes one spawn-ledger record as `<spawnDir>/<sessionID>.json`.
+	// writeSpawn posts one spawn-ledger row through the REAL store, as the
+	// supervisor's own spawn path does.
 	//
-	// ⚠️ Written as raw JSON text, never marshalled from spawnRecord: the fixture
-	// must be the *file shape* the supervisor's ledger actually holds, so a field
-	// rename in the resolver's own struct cannot make the fixture agree with
-	// itself. The record carries only the two fields the page reads; the live
-	// ledger carries more.
+	// ⚠️ Never built from the resolver's own read path: the row goes in through
+	// SessionLedgerStore.Post and comes out through the resolver's own List, so
+	// the fixture cannot agree with itself. The row carries only the fields the
+	// page reads; the live ledger carries more.
 	writeSpawn := func(sessionID, mode string) {
-		Expect(os.WriteFile(
-			filepath.Join(spawnDir, sessionID+".json"),
-			[]byte(`{"session_id":"`+sessionID+`","mode":"`+mode+`"}`),
-			0o600,
-		)).To(BeNil())
+		Expect(sessionLedger.Post(ctx, pkg.SessionLedgerEntry{
+			SessionID: sessionID,
+			Mode:      mode,
+			Location:  pkg.LocalSessionHeartbeatLocation,
+			SpawnedAt: clock.Now(),
+		})).To(Succeed())
 	}
 
 	// writeVault writes one fixture file under <vault>/<dir>/, as raw text rather
@@ -187,22 +198,21 @@ var _ = Describe("the Allow / Deny pair on the served page", func() {
 	}
 
 	// buildPageWithSpawn assembles the real chain over the vault as it stands
-	// *now*, reading the spawn ledger at the given directory: the real index, the
-	// real resolver reading the fixture state, session and spawn directories, and
-	// the real page handler over the real store.
+	// *now*, reading the spawn ledger through the given store: the real index,
+	// the real resolver reading the fixture state and session directories and
+	// the ledger store, and the real page handler over the real store.
 	//
 	// ⚠️ It must be called per case and never in the BeforeEach ahead of the
 	// fixtures: the index reads the vault once, at construction, so a chain built
-	// before the case wrote its files would see an empty vault. The spawn dir is a
-	// parameter so the missing-directory case can point the resolver at a path
-	// that does not exist.
-	buildPageWithSpawn := func(spawn string) http.Handler {
+	// before the case wrote its files would see an empty vault. The ledger store
+	// is a parameter so the nil-store case can hand the resolver a nil.
+	buildPageWithSpawn := func(sessionLedger pkg.SessionLedgerStore) http.Handler {
 		return handler.NewAttentionPageHandler(
 			store,
 			pkg.NewProvenanceResolver(
 				pkg.NewEventLogReader(stateDir),
 				sessionsDir,
-				spawn,
+				sessionLedger,
 				panes,
 				pkg.NewTaskIndex(ctx, vault, clock),
 				clock,
@@ -216,20 +226,20 @@ var _ = Describe("the Allow / Deny pair on the served page", func() {
 
 	// buildPage is buildPageWithSpawn over the case's own spawn ledger.
 	buildPage := func() http.Handler {
-		return buildPageWithSpawn(spawnDir)
+		return buildPageWithSpawn(sessionLedger)
 	}
 
 	It(
-		"renders the Allow / Deny pair on a headless worker's permission row and no control on a tab worker's",
+		"renders the Allow / Deny pair on a headless worker's permission row and renders the pair on a tab worker's permission card",
 		func() {
 			// Two records identical apart from `mode`. ⚠️ The session ids must differ:
 			// the ledger is keyed by session id and a duplicate id collides
 			// last-read-wins, which would leave both rows resolving identically and the
 			// paired control unobservable.
-			writeSpawn("session-headless", "headless")
-			writeSpawn("session-tab", "interactive")
-			headless := pushPermission("session-headless")
-			tab := pushPermission("session-tab")
+			writeSpawn(ledgerSessionID("headless"), "headless")
+			writeSpawn(ledgerSessionID("tab"), "interactive")
+			headless := pushPermission(ledgerSessionID("headless"))
+			tab := pushPermission(ledgerSessionID("tab"))
 
 			resp := get(buildPage())
 			Expect(resp.Code).To(Equal(http.StatusOK))
@@ -238,132 +248,176 @@ var _ = Describe("the Allow / Deny pair on the served page", func() {
 			tabRow := rowOf(body, tab.ItemID)
 
 			// Positive control on both rows: each carries its own item's payload, so
-			// the pair rendered. This is what makes the zero below a withheld control
-			// rather than an absent row — a run in which both rows carry zero
-			// data-decision attributes is the unfixed build and fails here.
+			// the pair rendered. This is what makes each count below a rendered control
+			// rather than a page that dropped the row.
 			Expect(headlessRow).To(ContainSubstring(headless.Payload.String()))
 			Expect(tabRow).To(ContainSubstring(tab.Payload.String()))
 
-			// Exactly one of the two carries the pair, and it is the headless row. The
-			// positive assertion is what stops an absence-shaped pass.
+			// BOTH classes carry the pair: the mode is no longer part of the gate. The
+			// headless row is asserted first so a build that rendered the pair on only
+			// one class cannot pass by picking the other.
 			Expect(strings.Count(headlessRow, `data-decision="allow"`)).To(Equal(1))
 			Expect(strings.Count(headlessRow, `data-decision="deny"`)).To(Equal(1))
 			Expect(headlessRow).To(ContainSubstring(allowDenyPair))
-			Expect(strings.Count(tabRow, `data-decision=`)).To(Equal(0))
+			Expect(strings.Count(tabRow, `data-decision="allow"`)).To(Equal(1))
+			Expect(strings.Count(tabRow, `data-decision="deny"`)).To(Equal(1))
+			Expect(tabRow).To(ContainSubstring(allowDenyPair))
 		},
 	)
 
-	It("renders no control when the session has no spawn ledger record", func() {
+	It(
+		"resolves headless from the ledger store alone, with no record in the retired spawn directory",
+		func() {
+			// ⚠️ THE SC2 NEGATIVE PROBE. The supervisor's file-backed spawn
+			// directory is RETIRED — its newest `spawned_at` is 2026-10-14T21:40:28Z
+			// and every spawn since lives only in the ledger store. A resolver that
+			// still read the directory would resolve nothing for this fixture,
+			// because the session exists ONLY in the store. The card must render
+			// the Allow / Deny pair, and it can only do so by reading the store.
+			//
+			// ⚠️ The retired directory is deliberately never created and its path
+			// is never consulted: the resolver is handed the store and nothing
+			// else.
+			writeSpawn(ledgerSessionID("store-only"), "headless")
+			item := pushPermission(ledgerSessionID("store-only"))
+
+			resp := get(buildPage())
+			Expect(resp.Code).To(Equal(http.StatusOK))
+			row := rowOf(resp.Body.String(), item.ItemID)
+
+			// Positive control: the card rendered, so the pair below is a rendered
+			// control rather than a page that dropped the row.
+			Expect(row).To(ContainSubstring(item.Payload.String()))
+			Expect(strings.Count(row, `data-decision="allow"`)).To(Equal(1))
+			Expect(strings.Count(row, `data-decision="deny"`)).To(Equal(1))
+			Expect(row).To(ContainSubstring(allowDenyPair))
+		},
+	)
+
+	It("renders the pair when the session resolves no spawn ledger record", func() {
 		// The ledger holds records for other sessions, but none for this one — an
-		// older spawn, a pruned ledger. The row is a tab worker's by default.
-		writeSpawn("session-somebody-else", "headless")
-		item := pushPermission("session-unrecorded")
+		// older spawn, a pruned ledger. The pair renders anyway: the ledger is no
+		// longer part of the gate.
+		writeSpawn(ledgerSessionID("somebody-else"), "headless")
+		item := pushPermission(ledgerSessionID("unrecorded"))
 
 		resp := get(buildPage())
 		Expect(resp.Code).To(Equal(http.StatusOK))
 		row := rowOf(resp.Body.String(), item.ItemID)
 
-		// Positive control: the card rendered, so the absence below is a withheld
+		// Positive control: the card rendered, so the pair below is a rendered
 		// control rather than a dropped row.
 		Expect(row).To(ContainSubstring(item.Payload.String()))
-		Expect(strings.Count(row, `data-decision=`)).To(Equal(0))
+		Expect(strings.Count(row, `data-decision="allow"`)).To(Equal(1))
+		Expect(strings.Count(row, `data-decision="deny"`)).To(Equal(1))
 	})
 
-	It("renders no control when the spawn ledger directory does not exist", func() {
-		item := pushPermission("session-no-ledger")
+	It("renders the pair when the ledger store is nil", func() {
+		item := pushPermission(ledgerSessionID("no-ledger"))
 
-		// A host with no claude-supervisor: the configured directory is absent.
-		resp := get(buildPageWithSpawn(filepath.Join(spawnDir, "does-not-exist")))
+		// A host with no ledger store wired in at all. The resolver resolves no
+		// mode, and the pair renders regardless.
+		resp := get(buildPageWithSpawn(nil))
 		Expect(resp.Code).To(Equal(http.StatusOK))
 		row := rowOf(resp.Body.String(), item.ItemID)
 
+		// Positive control: the card rendered, so the pair below is a rendered
+		// control rather than a dropped row.
 		Expect(row).To(ContainSubstring(item.Payload.String()))
-		Expect(strings.Count(row, `data-decision=`)).To(Equal(0))
+		Expect(strings.Count(row, `data-decision="allow"`)).To(Equal(1))
+		Expect(strings.Count(row, `data-decision="deny"`)).To(Equal(1))
 	})
 
-	It("renders no control when a spawn ledger record does not parse", func() {
-		// Truncated JSON: the file exists but is mid-write or corrupt. Written as
-		// raw bytes rather than through writeSpawn, because the point is that the
-		// record does not parse.
-		Expect(os.WriteFile(
-			filepath.Join(spawnDir, "session-broken.json"),
-			[]byte(`{"session_id":"session-broken","mode":`),
-			0o600,
-		)).To(BeNil())
-		item := pushPermission("session-broken")
+	It("renders the pair when the ledger store cannot be read", func() {
+		// The store's read fails. The pair renders regardless: the ledger is no
+		// longer part of the gate.
+		//
+		// ⚠️ The mock is legitimate for THIS case alone: it simulates a store
+		// FAILURE, not a store's CONTENTS, and a failure is the one thing a real
+		// store cannot be asked to produce on demand. Every other fixture here
+		// posts through the real store, because a fixture built from a mock's
+		// contents would agree with itself.
+		failing := &mocks.SessionLedgerStore{}
+		failing.ListReturns(nil, errors.New(ctx, "ledger unreadable"))
+		item := pushPermission(ledgerSessionID("broken"))
+
+		resp := get(buildPageWithSpawn(failing))
+		Expect(resp.Code).To(Equal(http.StatusOK))
+		row := rowOf(resp.Body.String(), item.ItemID)
+
+		// Positive control: the card rendered, so the pair below is a rendered
+		// control rather than a dropped row.
+		Expect(row).To(ContainSubstring(item.Payload.String()))
+		Expect(strings.Count(row, `data-decision="allow"`)).To(Equal(1))
+		Expect(strings.Count(row, `data-decision="deny"`)).To(Equal(1))
+	})
+
+	It("renders the pair when a record's mode is outside the headless/interactive set", func() {
+		// A third mode the ledger has not been taught. The pair renders anyway:
+		// the mode is no longer part of the gate.
+		writeSpawn(ledgerSessionID("daemon"), "daemon")
+		item := pushPermission(ledgerSessionID("daemon"))
 
 		resp := get(buildPage())
 		Expect(resp.Code).To(Equal(http.StatusOK))
 		row := rowOf(resp.Body.String(), item.ItemID)
 
 		Expect(row).To(ContainSubstring(item.Payload.String()))
-		Expect(strings.Count(row, `data-decision=`)).To(Equal(0))
-	})
-
-	It("renders no control when a record's mode is outside the headless/interactive set", func() {
-		// A third mode the ledger has not been taught. Fail-closed means it reads
-		// as not headless: the operator loses a control rather than gaining a
-		// laundering one.
-		writeSpawn("session-daemon", "daemon")
-		item := pushPermission("session-daemon")
-
-		resp := get(buildPage())
-		Expect(resp.Code).To(Equal(http.StatusOK))
-		row := rowOf(resp.Body.String(), item.ItemID)
-
-		Expect(row).To(ContainSubstring(item.Payload.String()))
-		Expect(strings.Count(row, `data-decision=`)).To(Equal(0))
+		Expect(strings.Count(row, `data-decision="allow"`)).To(Equal(1))
+		Expect(strings.Count(row, `data-decision="deny"`)).To(Equal(1))
 	})
 
 	It(
-		"reads the spawn ledger at render time, so a record added between loads adds the control",
+		"renders the pair independently of the spawn ledger, present before any record exists and unmoved by a mode flip",
 		func() {
-			item := pushPermission("session-late")
+			item := pushPermission(ledgerSessionID("late"))
 
-			// ⚠️ The handler is built once and used for all three loads. No restart, no
-			// rebuild and no second handler: the render-time read is the design, and a
-			// case that rebuilt the handler between loads would pass even for an
-			// implementation that cached the ledger at construction.
+			// ⚠️ The handler is built once and used for all four loads. No restart, no
+			// rebuild and no second handler: the case proves the pair does not depend
+			// on the ledger at all, and a case that rebuilt the handler between loads
+			// could not observe that.
 			page := buildPage()
 
 			first := rowOf(get(page).Body.String(), item.ItemID)
-			// Positive control: the card rendered, so the zero below is a withheld
-			// control rather than a dropped row.
+			// Positive control: the card rendered, and it already carries the pair
+			// with NO ledger record in existence.
 			Expect(first).To(ContainSubstring(item.Payload.String()))
-			Expect(strings.Count(first, `data-decision=`)).To(Equal(0))
+			Expect(strings.Count(first, `data-decision="allow"`)).To(Equal(1))
+			Expect(strings.Count(first, `data-decision="deny"`)).To(Equal(1))
 
-			// The record appears between the two loads. The clock is advanced past
-			// the resolver's two-second host-snapshot window first: the ledger is
-			// read at render time, but it is served from that cache inside the
-			// window, so without this the second load would legitimately still see
-			// the pre-change ledger.
-			//
-			// ⚠️ And past the window the load serves the snapshot it already holds
-			// and refreshes BEHIND the request, so the control does not appear on
-			// this load either — it appears on a later one, once the background
-			// refresh has published. The stale load is asserted directly, and the
-			// control is asserted with Eventually over further loads.
-			writeSpawn("session-late", "headless")
+			// A record appears between the loads. The clock is advanced past the
+			// resolver's two-second host-snapshot window first, so this load is
+			// served the snapshot the resolver already holds rather than a fresh
+			// read. The pair is unchanged by the record either way, which is the
+			// point: the ledger's arrival moves nothing on the card.
+			writeSpawn(ledgerSessionID("late"), "headless")
 			clock.SetNow(clock.Now().Add(libtime.Duration(3 * 1e9)))
 			stale := rowOf(get(page).Body.String(), item.ItemID)
-			// Positive control: the card rendered, so the zero below is a withheld
+			// Positive control: the card rendered, so the pair below is a rendered
 			// control rather than a dropped row.
 			Expect(stale).To(ContainSubstring(item.Payload.String()))
-			Expect(strings.Count(stale, `data-decision=`)).To(Equal(0))
+			Expect(strings.Count(stale, `data-decision="allow"`)).To(Equal(1))
+			Expect(strings.Count(stale, `data-decision="deny"`)).To(Equal(1))
 
+			// ⚠️ Redundant with the assertions above now that the ledger is not read
+			// by the gate: kept as a load-over-time sanity check, not as a distinct
+			// control.
 			Eventually(func() string {
 				return rowOf(get(page).Body.String(), item.ItemID)
 			}, "2s").Should(ContainSubstring(`data-decision="allow"`))
 
-			// And disappears again: past the next window the load still serves the
-			// snapshot holding the control and refreshes behind it, so the control
-			// is gone on a later load rather than on that one.
-			Expect(os.Remove(filepath.Join(spawnDir, "session-late.json"))).To(BeNil())
+			// And the pair survives the row's mode flipping away from headless. ⚠️ The
+			// store has no Delete — Post REPLACES a session's row — so the retired
+			// file-shaped "record removed" is expressed as a mode flip to
+			// `interactive`. The pair is unmoved, because the mode was never part of
+			// the gate.
+			writeSpawn(ledgerSessionID("late"), "interactive")
 			clock.SetNow(clock.Now().Add(libtime.Duration(3 * 1e9)))
 			Eventually(func() bool {
 				row := rowOf(get(page).Body.String(), item.ItemID)
 				return strings.Contains(row, item.Payload.String()) &&
-					strings.Count(row, `data-decision=`) == 0
+					strings.Count(row, `data-decision="allow"`) == 1 &&
+					strings.Count(row, `data-decision="deny"`) == 1
 			}, "2s").Should(BeTrue())
 		},
 	)
@@ -373,15 +427,15 @@ var _ = Describe("the Allow / Deny pair on the served page", func() {
 		func() {
 			// The tab session resolves a vault task, so its row draws a provenance line
 			// with the task span — the elements this case asserts are unchanged.
-			writeBoardPolishVault("session-tab-unchanged")
-			writeSpawn("session-tab-unchanged", "interactive")
-			// ⚠️ A SECOND permission item, whose session IS recorded headless, is
-			// required: without a headless row there is no row carrying the pair, and
-			// the exact-markup assertion below would have nothing to observe.
-			writeSpawn("session-headless-unchanged", "headless")
+			writeBoardPolishVault(ledgerSessionID("tab-unchanged"))
+			writeSpawn(ledgerSessionID("tab-unchanged"), "interactive")
+			// ⚠️ A SECOND permission item, whose session IS recorded headless, is kept
+			// beside the tab one so the pair's exact markup is observed on the class it
+			// was first asserted against, not only on the newly included one.
+			writeSpawn(ledgerSessionID("headless-unchanged"), "headless")
 
-			tab := pushPermission("session-tab-unchanged")
-			headless := pushPermission("session-headless-unchanged")
+			tab := pushPermission(ledgerSessionID("tab-unchanged"))
+			headless := pushPermission(ledgerSessionID("headless-unchanged"))
 
 			resp := get(buildPage())
 			Expect(resp.Code).To(Equal(http.StatusOK))
@@ -392,16 +446,18 @@ var _ = Describe("the Allow / Deny pair on the served page", func() {
 			Expect(tabRow).To(ContainSubstring(tab.Payload.String()))
 
 			// The jump corner, the corner X and the provenance line — with its task
-			// span — are unchanged on a tab worker's row. The X is a CLEARING control,
-			// not an answering one, so the gate does not reach it.
+			// span — are unchanged on a tab worker's row.
 			Expect(tabRow).To(ContainSubstring(`class="jump-corner"`))
 			Expect(tabRow).To(ContainSubstring("data-corner-x"))
 			Expect(tabRow).To(ContainSubstring(`class="provenance"`))
 			Expect(tabRow).To(ContainSubstring(`<span class="task">`))
 			Expect(tabRow).NotTo(ContainSubstring("<form"))
 			Expect(tabRow).NotTo(ContainSubstring("<input"))
-			// And no answering control: the pair is withheld from the tab worker.
-			Expect(strings.Count(tabRow, `data-decision=`)).To(Equal(0))
+			// And the pair renders on the tab worker's card too: the mode is no longer
+			// part of the gate.
+			Expect(strings.Count(tabRow, `data-decision="allow"`)).To(Equal(1))
+			Expect(strings.Count(tabRow, `data-decision="deny"`)).To(Equal(1))
+			Expect(tabRow).To(ContainSubstring(allowDenyPair))
 
 			// The headless row carries the pair's markup exactly, unchanged from the
 			// pre-change revision.
@@ -445,3 +501,18 @@ var _ = Describe("the Allow / Deny pair on the served page", func() {
 		},
 	)
 })
+
+// ledgerSessionID maps a readable fixture label to the well-formed lowercase
+// UUID the ledger store's Validate requires.
+//
+// ⚠️ It exists because the fixture's session ids must be the store's own shape:
+// SessionLedgerEntry.Validate refuses anything that is not a dashed lowercase
+// UUID, and the store's key IS that id. The mapping is deterministic, so a
+// label used in a ledger row, an item's liveness ref and a vault task file all
+// name the SAME session. It is shared with the production-touching page suite,
+// which lives in this same test package.
+func ledgerSessionID(label string) string {
+	sum := sha256.Sum256([]byte(label))
+	h := hex.EncodeToString(sum[:16])
+	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
+}

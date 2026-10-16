@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"time"
 
+	libboltkv "github.com/bborbe/boltkv"
+	libkv "github.com/bborbe/kv"
 	libtime "github.com/bborbe/time"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -28,7 +30,10 @@ var _ = Describe("Provenance safety net", func() {
 	var ctx context.Context
 	var stateDir string
 	var sessionsDir string
-	var spawnDir string
+	// sessionLedger is the supervisor's spawn ledger as the real store the
+	// resolver reads — a real temp boltkv DB, never a mock.
+	var sessionLedger pkg.SessionLedgerStore
+	var ledgerDB libkv.DB
 	var vault string
 	// clock is frozen in BeforeEach so the backstop window is measured from a
 	// fixed instant; the specs advance it with SetNow rather than sleeping, per
@@ -79,7 +84,10 @@ var _ = Describe("Provenance safety net", func() {
 		ctx = context.Background()
 		stateDir = GinkgoT().TempDir()
 		sessionsDir = GinkgoT().TempDir()
-		spawnDir = GinkgoT().TempDir()
+		var err error
+		ledgerDB, err = libboltkv.OpenTemp(ctx)
+		Expect(err).To(BeNil())
+		sessionLedger = pkg.NewSessionLedgerStore(ledgerDB)
 		vault = GinkgoT().TempDir()
 		clock = libtime.NewCurrentDateTime()
 		clock.SetNow(clock.Now())
@@ -93,11 +101,15 @@ var _ = Describe("Provenance safety net", func() {
 		resolver = pkg.NewProvenanceResolver(
 			pkg.NewEventLogReader(stateDir),
 			sessionsDir,
-			spawnDir,
+			sessionLedger,
 			panes,
 			index,
 			clock,
 		)
+	})
+
+	AfterEach(func() {
+		Expect(ledgerDB.Close()).To(BeNil())
 	})
 
 	It("resolves a task file no watcher delivered, once the backstop lapses", func() {

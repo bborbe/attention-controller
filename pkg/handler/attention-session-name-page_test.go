@@ -59,7 +59,9 @@ var _ = Describe("the session name on the served page", func() {
 	// Resolve call, so a case that writes a record must not see another case's.
 	var stateDir string
 	var sessionsDir string
-	var spawnDir string
+	// sessionLedger is the supervisor's spawn ledger as the real store, sharing
+	// the attention store's own db — one BoltDB handle, two buckets.
+	var sessionLedger pkg.SessionLedgerStore
 	// clock drives the provenance resolver's host-snapshot cache. Frozen in
 	// BeforeEach so the case that renames the session between loads can advance
 	// it with SetNow rather than sleeping past the cache window.
@@ -101,7 +103,9 @@ var _ = Describe("the session name on the served page", func() {
 		vault = filepath.Join(GinkgoT().TempDir(), "Personal")
 		stateDir = GinkgoT().TempDir()
 		sessionsDir = GinkgoT().TempDir()
-		spawnDir = GinkgoT().TempDir()
+		// ⚠️ The ledger store reuses the attention store's own db — one BoltDB
+		// handle, two buckets, which is exactly the production wiring.
+		sessionLedger = pkg.NewSessionLedgerStore(db)
 		clock = libtime.NewCurrentDateTime()
 		clock.SetNow(clock.Now())
 	})
@@ -207,7 +211,7 @@ var _ = Describe("the session name on the served page", func() {
 			pkg.NewProvenanceResolver(
 				pkg.NewEventLogReader(stateDir),
 				sessionsDir,
-				spawnDir,
+				sessionLedger,
 				panes,
 				pkg.NewTaskIndex(ctx, vault, clock),
 				clock,
