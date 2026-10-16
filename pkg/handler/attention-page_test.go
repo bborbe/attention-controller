@@ -1596,8 +1596,11 @@ var _ = Describe("AttentionPageHandler", func() {
 			// ⚠️ AMENDED 2026-10-01: the Allow / Deny pair renders only on a
 			// HEADLESS worker's permission row, so the mock must record this session
 			// as headless or the pair — and the `.actions` container the assertions
-			// below pin — is absent. The X itself is a CLEARING control, not an
-			// answering one, and is unchanged by that gate.
+			// below pin — is absent. ⚠️ AMENDED 2026-10-16: this sentence called the
+			// X "a CLEARING control, not an answering one". That is no longer true
+			// on this row — it renders the Deny control, so the X's act here is the
+			// Deny answer. The X is unchanged by the headless gate either way, which
+			// is the only claim these assertions rest on.
 			provenance.ResolveReturns(pkg.Provenances{
 				permission.ItemID: pkg.Provenance{Headless: true},
 			})
@@ -1605,9 +1608,14 @@ var _ = Describe("AttentionPageHandler", func() {
 			block := rowOf(get("GET").Body.String(), permission.ItemID)
 
 			// The permission card carries the X from 2026-09-27. It still
-			// carries no ANSWER control — the card renders no form, which is
-			// what keeps the gate answerable only by the operator. The X closes
-			// it without answering, so both assertions hold at once.
+			// carries no ANSWER control in the markup sense these assertions
+			// pin — the card renders no form. ⚠️ AMENDED 2026-10-16: this
+			// comment read "The X closes it without answering, so both
+			// assertions hold at once", and that is false for this row now
+			// that the X's act on it is the Deny answer. The two assertions
+			// below are unchanged and still hold because they assert MARKUP,
+			// not the act — a Go test cannot see what a click does, which is
+			// why the act is asserted in e2e/answer-shapes_test.go instead.
 			Expect(block).To(ContainSubstring("data-corner-x"))
 			// ⚠️ `<form`, not `class="answer"`: the two are on the same element
 			// and equivalent, but `<form` is one of the three ANSWER-control

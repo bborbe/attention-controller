@@ -504,6 +504,56 @@ var _ = Describe("an answer given on the rendered board", func() {
 		Expect(answeredItem(itemID).Decision).To(Equal(pkg.Decision("deny")))
 	})
 
+	// The corner X on a permission row whose Deny control renders is the same act
+	// as that Deny control, not the clear it performs on every other row. The
+	// distinction is not cosmetic: `closed` is terminal and the store's
+	// transition table carries no `closed` -> `answered` row, so a clear there
+	// consumes the park's only answer path and the worker's gate never releases.
+	// ⚠️ This is the discriminating case for that act, and it is discriminating
+	// by its STATE assertion, not by its payload one: a close would leave the
+	// item `closed` with an empty Decision, and `Eventually` on `AnsweredState`
+	// never passes on a `closed` item — it times out.
+	It("stores the corner X on a permission card as decision deny, and issues no close", func() {
+		itemID := pushCard(pkg.PushRequest{
+			DedupKey:        "shape-corner-x-permission",
+			Payload:         "Write: /tmp/e2e-corner-x-permission",
+			InterruptClass:  pkg.InterruptClass("approve"),
+			AnswerMechanism: pkg.PermissionAnswerMechanism,
+		})
+		page = newPage("")
+
+		// The precondition, asserted rather than assumed: the X's act is the
+		// Deny control's only while that control renders, so a fixture whose
+		// `Decide` were false would test the other class and pass for the wrong
+		// reason.
+		Expect(page.Locator(rowSelector(itemID)+` button[data-decision="deny"]`).Count()).
+			To(Equal(1), "the fixture must render the Deny control the X dispatches")
+
+		// The close half of the criterion, observed at the network rather than
+		// inferred from the state: a build that answered AND closed would satisfy
+		// the decision assertion below while still issuing the request this
+		// change exists to remove. The callback records rather than asserts —
+		// Ginkgo's Expect is not goroutine-safe, and the route runs on its own —
+		// and it CONTINUES the request rather than aborting it, so a build that
+		// still closes leaves the item `closed` and the failure below names that
+		// state instead of a stalled `open`.
+		closes := make(chan struct{}, 4)
+		Expect(page.Route("**/close", func(route playwright.Route) {
+			select {
+			case closes <- struct{}{}:
+			default:
+			}
+			_ = route.Continue()
+		})).To(Succeed())
+
+		click(page, itemID, cornerXSelector)
+
+		item := answeredItem(itemID)
+		Expect(item.Decision).To(Equal(pkg.Decision("deny")))
+		Expect(item.AnsweredBy).To(Equal("attention-board"))
+		Expect(closes).To(HaveLen(0), "the corner X issued a close on a permission row")
+	})
+
 	It("renders the store's failure on a lost-race Allow, never the answerFailure object", func() {
 		// ⚠️ The pair only survives on a card the store still holds open, so the
 		// click has to OUTLIVE the item. The board renders no closed item at all,

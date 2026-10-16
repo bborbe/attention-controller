@@ -784,20 +784,34 @@ document.addEventListener('click', function (event) {
    it is the Dismiss the card already carries (the skip answer, open -> answered,
    answer.kind: skip), on an ack card it is the Acknowledge it already carries
    (the close, open -> closed, answered_at unset), and on a permission card it is
-   the clear (that same close — open -> closed, answered_at and decision both
-   unset). It adds no transition and no field — see [[Attention Item Schema]]
+   the Deny control the card already carries where that control renders (the
+   answer, open -> answered, decision: deny) or the clear where it does not
+   (that same close — open -> closed, answered_at and decision both unset). It
+   adds no transition and no field — see [[Attention Item Schema]]
    § Answer routing, § The corner X.
-   A permission card DOES render the X, from 2026-09-27. It is not the permission
-   laundering the schema forbids, and the earlier reading here conflated two
-   different acts: the schema forbids an arm ANSWERING a permission item —
-   causing open -> answered on the operator's behalf — while the X only CLEARS
-   the card. No answer is routed, so the asking session stays frozen exactly as
-   it was, and the gate is still answered only by the operator, in the session
-   that raised it. Clearing is not deciding.
+   ⚠️ THE PERMISSION BRANCH SPLITS BY CLASS, from 2026-10-16, and that split is
+   the whole of the change. Where the Deny control renders (row.Decide true — a
+   headless, non-production-touching park) the X now ANSWERS, dispatching the
+   Deny button exactly as the message branch dispatches Dismiss. It previously
+   cleared there, and the reading that stood here defended that: "the schema
+   forbids an arm ANSWERING a permission item ... while the X only CLEARS the
+   card. Clearing is not deciding." The first half is still true; the second is
+   not, because a clear on a permission item is not a lesser act than an answer —
+   it is a fatal one. closed is terminal, the store's transition table carries no
+   closed -> answered row, so the parked worker's own arm answer is refused with
+   ITEM_CLOSED and the gate never releases: the worker sits its full timeout to
+   the auto-deny. A clear does not preserve the operator's decision, it consumes
+   the only path that decision had.
+   ⚠️ Where the Deny control does NOT render (row.Decide false — a tab worker's
+   card, a production-touching park) the X is the board's ONLY control and it
+   still CLEARS. Routing it to /answer there would write an answer-shaped record
+   on a class the board deliberately renders no answering control for, which is
+   the permission laundering the schema forbids. Those two classes are their own
+   work, not this change's.
    There is deliberately no third branch below: a permission row carries no
-   form.answer, so it falls through to closeCard exactly as an ack row does. The
-   three mechanisms share one dispatch because they share one act, and it is
-   delegated on the document for the tab strip's reason.
+   form.answer, so a row with no Deny control falls through to closeCard exactly
+   as an ack row does. The mechanisms share one dispatch because they share one
+   act per class, and it is delegated on the document for the tab strip's reason.
    ⚠️ A dimmed record card now carries no data-corner-x button at all, so this
    listener never fires on one — which is why the fall-through to closeCard on a
    dimmed row can no longer happen. */
@@ -816,6 +830,14 @@ document.addEventListener('click', function (event) {
     var dismiss = form.querySelector('button[value=skip]');
     if (dismiss) { dismiss.click(); return; }
   }
+  /* A permission card's X is the Deny control, dispatched for the message
+     branch's reason: the data-decision handler owns the payload, the stale-card
+     classification and the reload, and a second copy here would be a second
+     thing to keep in step. Its PRESENCE is the class test — the control renders
+     under 'and .Decide (not .Dimmed)', so finding it means this row is the class
+     whose X answers, and its absence means the class whose X still clears. */
+  var deny = row.querySelector('button[data-decision=deny]');
+  if (deny) { deny.click(); return; }
   closeCard(row);
 });
 /* ⚠️ The container is OPTIONAL, and that is not defensive coding — it is the
@@ -1209,9 +1231,17 @@ function replayFailure(row) {
      an exception the operator disowned (it had been read off a yes on a menu
      they did not write). ⚠️ That disowned exception was a MECHANISM gate
      (permission), and mechanism gates are what the operator's ruling forbids: a
-     permission row carries the X because clearing a card is not answering a
-     gate — the X closes it, routes no answer, and leaves the asking session
-     frozen and the gate operator-only. ⚠️ .Dimmed is not a mechanism but a
+     permission row carries the X because the X is not itself an answer control —
+     its act is the mechanism's own dominant act, dispatched per class, adding no
+     transition and no field. ⚠️ AMENDED 2026-10-16: this sentence read "clearing
+     a card is not answering a gate — the X closes it, routes no answer, and
+     leaves the asking session frozen and the gate operator-only", and that is
+     FALSE on a permission row whose Deny control renders. The X ANSWERS there
+     (open -> answered, decision: deny). A clear would not leave the gate
+     operator-only — it would CONSUME it, because closed is terminal and the
+     table carries no closed -> answered row, so the asking session's own arm
+     answer is refused with ITEM_CLOSED. See the dispatch comment on the
+     data-corner-x handler below. ⚠️ .Dimmed is not a mechanism but a
      STATE (item.State == pkg.AnsweredState — the dimmed record card), so
      (not .Dimmed) does NOT re-create that exception: it withholds the X from no
      mechanism. The schema page already draws this boundary — the dimmed record
@@ -1220,7 +1250,7 @@ function replayFailure(row) {
      reaches it. ⚠️ Without the conjunct the X's fall-through below closes the
      item and deletes the record the dimmed card exists to preserve. See
      [[Attention Item Schema]] § The corner X, and the dispatch comment on the
-     data-corner-x handler below. */}}{{if not .Dimmed}}<button type="button" class="corner-x" data-corner-x aria-label="Skip this item">✕</button>{{end}}
+     data-corner-x handler below. */}}{{if not .Dimmed}}<button type="button" class="corner-x" data-corner-x aria-label="{{if .Decide}}Deny this request{{else}}Skip this item{{end}}">✕</button>{{end}}
 {{/* The read-aloud control renders on every row whose Speak is set, from
      2026-09-27 — except the dimmed record card, from 2026-09-27. It was gated on
      'and .Message .Speak', which excepted permission rows on the reasoning that
