@@ -39,9 +39,19 @@ const (
 	// ⚠️ It must be a well-formed lowercase dashed UUID: the ledger row that
 	// makes the fixture cards headless is posted through the running binary's
 	// /api/1.0/session-ledger endpoint, and SessionLedgerEntry.Validate refuses
-	// any other shape with a 400 — which would leave the fixture a tab worker
-	// and turn scenario 002's Allow / Deny click red.
+	// any other shape with a 400 — which would leave the fixture card with no
+	// ledger row at all and turn the ledger-dependent assertions red.
 	e2eSessionID = "11111111-1111-4111-8111-111111111111"
+	// e2eTabSessionID is the SECOND fixture session, registered alongside the
+	// first and recorded in the ledger with mode `interactive`. It exists so a
+	// case can assert a tab worker's permission card without displacing the
+	// headless one: the pair renders per-row, so the class needs a row of its
+	// own rather than a mode flip on the shared session.
+	//
+	// ⚠️ It must be a well-formed lowercase dashed UUID for the same reason as
+	// e2eSessionID — its ledger row goes through the same endpoint and the same
+	// Validate.
+	e2eTabSessionID = "22222222-2222-4222-8222-222222222222"
 	// e2eProducerID is the producer every fixture item is pushed under.
 	e2eProducerID = "e2e-producer"
 	// switchSelector is the board's Hide-answered control. It is a
@@ -186,7 +196,23 @@ func writeSessionRegistry(dir string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, "e2e.json"), content, 0o644)
+	if err := os.WriteFile(filepath.Join(dir, "e2e.json"), content, 0o644); err != nil {
+		return err
+	}
+	// The tab-worker fixture session, registered the same way. ⚠️ A SECOND file
+	// rather than a second entry in the first: the registry read is one
+	// `<pid>.json` per session, so an id without its own file reads as gone and
+	// the item pushed against it would not render.
+	tabEntry := map[string]string{
+		"sessionId":  e2eTabSessionID,
+		"name":       "e2e-tab",
+		"nameSource": "user",
+	}
+	tabContent, err := json.Marshal(tabEntry)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "e2e-tab.json"), tabContent, 0o644)
 }
 
 // seedLedger posts one spawn-ledger row for the fixture session through the
@@ -197,10 +223,17 @@ func writeSessionRegistry(dir string) error {
 // so the test process cannot open that store's file. The endpoint shares the
 // process's one BoltDB handle, which is exactly the production write path.
 //
-// ⚠️ The mode must be `headless` — the ledger is what decides whether a
-// permission card renders its Allow / Deny pair, and scenario
-// 002-board-answer-shapes.md clicks that rendered pair. A tab-worker fixture
-// would turn it red.
+// ⚠️ The mode no longer decides whether a permission card renders its Allow /
+// Deny pair: since 2026-10-16 the pair renders on every class, so the ledger
+// decides nothing about the pair. The mode is still recorded, because the
+// ledger is part of the fixture's provenance and a case may assert on it.
+//
+// ⚠️ The second half of the retired claim still holds in a different form:
+// seeding a tab-worker record IN PLACE OF the headless one would still turn
+// scenario 002-board-answer-shapes.md red — not because a tab worker renders no
+// pair, but because of WHICH record it replaces. That is why the tab-worker
+// class gets its OWN row (`e2eTabSessionID`, mode `interactive`) alongside the
+// headless session, never in place of it.
 func seedLedger(base, sessionID, mode string) error {
 	body, err := json.Marshal(map[string]string{
 		"session_id": sessionID,
@@ -308,9 +341,11 @@ var _ = BeforeSuite(func() {
 
 	// ⚠️ The ledger is seeded THROUGH THE RUNNING BINARY, not by writing a file
 	// the test process owns: the binary holds its own BoltDB handle on the temp
-	// datadir, so pre-seeding from here is impossible. `headless` is
-	// load-bearing — see seedLedger.
+	// datadir, so pre-seeding from here is impossible. Two rows, one per fixture
+	// class — see seedLedger for why the tab-worker row is added rather than
+	// substituted.
 	Expect(seedLedger(baseURL, e2eSessionID, "headless")).To(Succeed())
+	Expect(seedLedger(baseURL, e2eTabSessionID, "interactive")).To(Succeed())
 
 	pw, err = playwright.Run()
 	Expect(err).NotTo(HaveOccurred())

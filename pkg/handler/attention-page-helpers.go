@@ -112,28 +112,21 @@ func newAttentionPageRow(
 	// its session-name span both read this one field, so they cannot disagree
 	// about whether the line renders or what it carries.
 	row.Provenance.SessionName = navigationSessionName(row.Provenance)
-	// The Allow / Deny pair renders only for a headless worker's park. A tab
-	// worker's gate is answered by pressing the prompt in the session's own pane,
-	// so a board verdict there would be permission laundering — the exact failure
-	// the schema forbids — while a headless worker has no pane of its own, so the
-	// board is the one place its gate can honestly be answered. The fact is read
-	// fail-closed from the supervisor's spawn ledger: every uncertainty about a
-	// session's mode (an absent record, an unreadable directory, an unparseable
-	// file, an unrecognised mode) leaves it false and renders no control, whose
-	// worst case is a missing control rather than a control on a tab worker's gate.
+	// The Allow / Deny pair renders on every `permission` item. The gate is the
+	// mechanism alone: it was once narrowed to a headless worker's park (spec 004)
+	// and then further withheld from a task declaring a production-touching step
+	// (spec 007), and both exclusions were overruled on 2026-10-16 — the pair now
+	// renders whichever class the park belongs to. A tab worker's gate is still
+	// answerable in its own pane; the pair is a second affordance for one act, not
+	// a second act.
 	//
-	// ⚠️ The pair is additionally withheld when the item's task declares a
-	// production-touching step. Such a park is irreversible, and a one-click board
-	// approval of it is the harm the exclusion exists to prevent. The fact is read
-	// from the task file the resolver already opens — no second read and no new
-	// scan — and it fails **open**, the opposite polarity to the Headless term
-	// beside it: an absent, unreadable or unparsable task file and an absent marker
-	// all leave it false, which renders the pair. The worst case of that direction
-	// is a pair on a park whose task did not declare one, never a missing pair on a
-	// park that did.
-	row.Decide = item.AnswerMechanism == pkg.PermissionAnswerMechanism &&
-		provenance.Headless &&
-		!provenance.ProductionTouching
+	// ⚠️ The two provenance facts those exclusions read — the spawn ledger's
+	// headless flag and the task file's production-touching marker — are still
+	// resolved on every page load and are still deliberately kept out of
+	// Provenance.Resolved(). This derivation no longer reads either of them, so
+	// they are dead reads rather than dead facts; deleting them is a separate
+	// change with its own blast radius and is deliberately not done here.
+	row.Decide = item.AnswerMechanism == pkg.PermissionAnswerMechanism
 	if item.State == pkg.AnsweredState {
 		// The board renders the record of what was answered so the operator can
 		// see the answer standing in their name. `answered_by` is a caller

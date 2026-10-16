@@ -209,9 +209,9 @@ var _ = Describe("the production-touching marker on the served page", func() {
 		)
 	}
 
-	It("withholds the pair when the task declares a production-touching step", func() {
+	It("renders the pair on a production-touching park", func() {
 		// Three tasks, two of them marked. ⚠️ The paired probe: `Marked A` raises
-		// TWO parks, so a task-level reading withholds the pair from both — a
+		// TWO parks, so a task-level reading reaches both — a
 		// command-level reading would withhold it from neither, since the payloads
 		// differ. `Marked B` carries the same marker in a *differently named* file,
 		// so the reading follows the marker's content rather than the task's name.
@@ -234,16 +234,17 @@ var _ = Describe("the production-touching marker on the served page", func() {
 		body := resp.Body.String()
 
 		// Each marked row carries its own payload — the positive control that the
-		// card rendered — and carries no answering control at all.
+		// card rendered — and carries the pair, marker or no marker.
 		for _, item := range []*pkg.Item{parkA1, parkA2, parkB1} {
 			row := rowOf(body, item.ItemID)
 			Expect(row).To(ContainSubstring(item.Payload.String()))
-			Expect(strings.Count(row, "data-decision=")).To(Equal(0))
+			Expect(strings.Count(row, `data-decision="allow"`)).To(Equal(1))
+			Expect(strings.Count(row, `data-decision="deny"`)).To(Equal(1))
 		}
 
-		// ⚠️ The unmarked row is what stops an absence-shaped pass: a build that
-		// renders no control anywhere would satisfy the three zeros above by doing
-		// nothing. This row must carry the pair.
+		// ⚠️ The unmarked row is kept as the control: the pair renders there too, so
+		// the three pairs above are not an artefact of a build that renders the pair
+		// only on the marked class.
 		plainRow := rowOf(body, parkC1.ItemID)
 		Expect(plainRow).To(ContainSubstring(parkC1.Payload.String()))
 		Expect(strings.Count(plainRow, `data-decision="allow"`)).To(Equal(1))
@@ -274,17 +275,16 @@ var _ = Describe("the production-touching marker on the served page", func() {
 	})
 
 	// ⚠️ The pinned acceptance-criteria substrings for this case and its two
-	// neighbours below name the PAIR-RENDERS half, while the behaviour requires the
-	// pair to be WITHHELD on the marked row. The leading `guards against: ` clause
-	// is the defect the case exists to catch; the trailing clause states the
-	// assertion beside it. Each case renders both the marked row and an unmarked
-	// sibling, so the pair-renders half is observable on the sibling rather than
-	// asserted nowhere.
+	// neighbours below name the PAIR-RENDERS half. The leading `guards against: `
+	// clause is kept verbatim because spec 007 pins it; the behaviour it now
+	// guards is the same one the clause names — the pair renders on the marked row
+	// as well as on the unmarked sibling beside it, whichever box state carries
+	// the marker.
 	It(
-		"guards against: renders the pair when the marker sits on a checked box — the pair is withheld on the marked row",
+		"guards against: renders the pair when the marker sits on a checked box — and on the marked row",
 		func() {
-			// The `[x]` state-class probe: the sibling proves the state alone does not
-			// withhold the pair; only the marker does.
+			// The `[x]` state-class probe: the marked row and its unmarked sibling
+			// both render the pair, so the box state moves nothing.
 			writeTask("Checked.md", taskContent(ledgerSessionID("checked"),
 				"- [x] ⚠️ production-touching — `make install`"))
 			writeTask("Unmarked Checked.md", taskContent(ledgerSessionID("unmarked-checked"),
@@ -300,7 +300,8 @@ var _ = Describe("the production-touching marker on the served page", func() {
 
 			checkedRow := rowOf(body, checked.ItemID)
 			Expect(checkedRow).To(ContainSubstring(checked.Payload.String()))
-			Expect(strings.Count(checkedRow, "data-decision=")).To(Equal(0))
+			Expect(strings.Count(checkedRow, `data-decision="allow"`)).To(Equal(1))
+			Expect(strings.Count(checkedRow, `data-decision="deny"`)).To(Equal(1))
 
 			unmarkedRow := rowOf(body, unmarked.ItemID)
 			Expect(unmarkedRow).To(ContainSubstring(unmarked.Payload.String()))
@@ -310,10 +311,10 @@ var _ = Describe("the production-touching marker on the served page", func() {
 	)
 
 	It(
-		"guards against: renders the pair when the marker omits the warning glyph — the pair is withheld on the marked row",
+		"guards against: renders the pair when the marker omits the warning glyph — and on the marked row",
 		func() {
-			// The glyph-absent probe: the warning glyph is optional as a whole, so a
-			// marker written without it still withholds the pair.
+			// The glyph-absent probe: the warning glyph is optional as a whole, and a
+			// marker written without it renders the pair exactly as one written with it.
 			writeTask("Glyphless.md", taskContent(ledgerSessionID("glyphless"),
 				"- [ ] production-touching — `make install`"))
 			writeTask("Unmarked Glyphless.md", taskContent(ledgerSessionID("unmarked-glyphless"),
@@ -329,7 +330,8 @@ var _ = Describe("the production-touching marker on the served page", func() {
 
 			glyphlessRow := rowOf(body, glyphless.ItemID)
 			Expect(glyphlessRow).To(ContainSubstring(glyphless.Payload.String()))
-			Expect(strings.Count(glyphlessRow, "data-decision=")).To(Equal(0))
+			Expect(strings.Count(glyphlessRow, `data-decision="allow"`)).To(Equal(1))
+			Expect(strings.Count(glyphlessRow, `data-decision="deny"`)).To(Equal(1))
 
 			unmarkedRow := rowOf(body, unmarked.ItemID)
 			Expect(unmarkedRow).To(ContainSubstring(unmarked.Payload.String()))
@@ -339,10 +341,10 @@ var _ = Describe("the production-touching marker on the served page", func() {
 	)
 
 	It(
-		"guards against: renders the pair when the marker sits on a slash box — the pair is withheld on the marked row",
+		"guards against: renders the pair when the marker sits on a slash box — and on the marked row",
 		func() {
 			// The `[/]` state-class probe: the state the vault writes for in-progress
-			// subtasks. The marker is recognised on it exactly as on an open box.
+			// subtasks. The pair renders on it exactly as on an open box.
 			writeTask("Slash.md", taskContent(ledgerSessionID("slash"),
 				"- [/] ⚠️ production-touching — `make install`"))
 			writeTask("Unmarked Slash.md", taskContent(ledgerSessionID("unmarked-slash"),
@@ -358,7 +360,8 @@ var _ = Describe("the production-touching marker on the served page", func() {
 
 			slashRow := rowOf(body, slash.ItemID)
 			Expect(slashRow).To(ContainSubstring(slash.Payload.String()))
-			Expect(strings.Count(slashRow, "data-decision=")).To(Equal(0))
+			Expect(strings.Count(slashRow, `data-decision="allow"`)).To(Equal(1))
+			Expect(strings.Count(slashRow, `data-decision="deny"`)).To(Equal(1))
 
 			unmarkedRow := rowOf(body, unmarked.ItemID)
 			Expect(unmarkedRow).To(ContainSubstring(unmarked.Payload.String()))
@@ -385,9 +388,9 @@ var _ = Describe("the production-touching marker on the served page", func() {
 	It(
 		"keeps the jump corner, the corner X and the provenance line on a marked row, and renders the frozen pair on an unmarked row",
 		func() {
-			// The unchanged-elements guard: withholding the pair must not remove the
-			// clearing control, the jump corner or the provenance line — with its task
-			// span — from a marked row.
+			// The unchanged-elements guard: the pair's arrival on a marked row must not
+			// disturb the corner X, the jump corner or the provenance line — with its
+			// task span — on that row.
 			writeTask("Marked Elements.md", taskContent(ledgerSessionID("elements-marked"),
 				"- [ ] ⚠️ production-touching — `make install`"))
 			writeTask("Plain Elements.md", taskContent(ledgerSessionID("elements-plain"),
@@ -409,7 +412,8 @@ var _ = Describe("the production-touching marker on the served page", func() {
 			Expect(markedRow).To(ContainSubstring(`<span class="task">`))
 			Expect(markedRow).NotTo(ContainSubstring("<form"))
 			Expect(markedRow).NotTo(ContainSubstring("<input"))
-			Expect(strings.Count(markedRow, "data-decision=")).To(Equal(0))
+			Expect(strings.Count(markedRow, `data-decision="allow"`)).To(Equal(1))
+			Expect(strings.Count(markedRow, `data-decision="deny"`)).To(Equal(1))
 
 			plainRow := rowOf(body, plain.ItemID)
 			Expect(plainRow).To(ContainSubstring(plain.Payload.String()))
