@@ -1,9 +1,10 @@
 ---
-status: verifying
+status: completed
 approved: "2026-10-16T12:57:56Z"
 generating: "2026-10-16T13:00:22Z"
 prompted: "2026-10-16T13:40:18Z"
 verifying: "2026-10-16T16:38:15Z"
+completed: "2026-10-16T16:46:43Z"
 branch: dark-factory/render-decide-pair-on-every-permission-card
 ---
 
