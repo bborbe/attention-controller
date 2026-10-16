@@ -35,7 +35,13 @@ const (
 	// pushed items name it in their liveness_ref, so the store resolves them
 	// live and renders them — see writeSessionRegistry for why this must be a
 	// temp directory rather than the host's real registry.
-	e2eSessionID = "e2e-session"
+	//
+	// ⚠️ It must be a well-formed lowercase dashed UUID: the ledger row that
+	// makes the fixture cards headless is posted through the running binary's
+	// /api/1.0/session-ledger endpoint, and SessionLedgerEntry.Validate refuses
+	// any other shape with a 400 — which would leave the fixture a tab worker
+	// and turn scenario 002's Allow / Deny click red.
+	e2eSessionID = "11111111-1111-4111-8111-111111111111"
 	// e2eProducerID is the producer every fixture item is pushed under.
 	e2eProducerID = "e2e-producer"
 	// switchSelector is the board's Hide-answered control. It is a
@@ -94,7 +100,6 @@ const (
 var (
 	tmpRoot     string
 	sessionsDir string
-	spawnDir    string
 	binPath     string
 	baseURL     string
 	proc        *exec.Cmd
@@ -184,25 +189,45 @@ func writeSessionRegistry(dir string) error {
 	return os.WriteFile(filepath.Join(dir, "e2e.json"), content, 0o644)
 }
 
-// writeSpawnLedger creates a hermetic spawn ledger holding one headless
-// record for the fixture session, and returns its directory.
+// seedLedger posts one spawn-ledger row for the fixture session through the
+// running binary's OWN HTTP endpoint.
 //
-// It is deliberately a temp directory rather than the operator's real
-// ~/.local/state/claude-supervisor/sessions: the ledger is what decides
-// whether a permission card renders its Allow / Deny pair, and a fixture
-// session absent from the real ledger would lose the control the permission
-// answer-shape cases click. The record must be `headless` — a fixture that
-// read as a tab worker would turn scenario 002's "renders the two verdict
-// buttons" red.
-func writeSpawnLedger(dir, sessionID, mode string) error {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+// ⚠️ It must go through the endpoint rather than pre-seeding the BoltDB: the
+// suite starts the real binary as a separate process against a temp datadir,
+// so the test process cannot open that store's file. The endpoint shares the
+// process's one BoltDB handle, which is exactly the production write path.
+//
+// ⚠️ The mode must be `headless` — the ledger is what decides whether a
+// permission card renders its Allow / Deny pair, and scenario
+// 002-board-answer-shapes.md clicks that rendered pair. A tab-worker fixture
+// would turn it red.
+func seedLedger(base, sessionID, mode string) error {
+	body, err := json.Marshal(map[string]string{
+		"session_id": sessionID,
+		"mode":       mode,
+		"location":   "local",
+		"spawned_at": time.Now().UTC().Format(time.RFC3339),
+	})
+	if err != nil {
 		return err
 	}
-	return os.WriteFile(
-		filepath.Join(dir, sessionID+".json"),
-		[]byte(`{"session_id":"`+sessionID+`","mode":"`+mode+`"}`),
-		0o644,
+	resp, err := http.Post(
+		base+"api/1.0/session-ledger",
+		"application/json",
+		bytes.NewReader(body),
 	)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf(
+			"seed session ledger returned %d, want %d",
+			resp.StatusCode,
+			http.StatusOK,
+		)
+	}
+	return nil
 }
 
 // freePort reserves a port by binding it and closing the listener. The gap
@@ -225,14 +250,15 @@ func buildBinary(repoRoot, out string) error {
 	return cmd.Run()
 }
 
-// startBinary launches the real binary against the temp datadir, the hermetic
-// registry and the hermetic spawn ledger, and waits for /healthz.
+// startBinary launches the real binary against the temp datadir and the
+// hermetic registry, and waits for /healthz. The spawn ledger is NOT a flag any
+// more — it is a bucket in the binary's own BoltDB, seeded through the
+// /api/1.0/session-ledger endpoint once this returns (see seedLedger).
 func startBinary(port int) error {
 	proc = exec.Command(binPath,
 		"-listen", fmt.Sprintf("127.0.0.1:%d", port),
 		"-datadir", filepath.Join(tmpRoot, "data"),
 		"-sessions-dir", sessionsDir,
-		"-spawn-state-dir", spawnDir,
 		"-tts-url", tts.server.URL,
 		"-attention-state-dir", filepath.Join(tmpRoot, "state"),
 		// Empty disables the legacy pane-addressed jump listener. It is passed
@@ -270,8 +296,6 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 	sessionsDir = filepath.Join(tmpRoot, "sessions")
 	Expect(writeSessionRegistry(sessionsDir)).To(Succeed())
-	spawnDir = filepath.Join(tmpRoot, "spawn")
-	Expect(writeSpawnLedger(spawnDir, e2eSessionID, "headless")).To(Succeed())
 
 	tts = newTTSStub()
 
@@ -281,6 +305,12 @@ var _ = BeforeSuite(func() {
 	port, err := freePort()
 	Expect(err).NotTo(HaveOccurred())
 	Expect(startBinary(port)).To(Succeed())
+
+	// ⚠️ The ledger is seeded THROUGH THE RUNNING BINARY, not by writing a file
+	// the test process owns: the binary holds its own BoltDB handle on the temp
+	// datadir, so pre-seeding from here is impossible. `headless` is
+	// load-bearing — see seedLedger.
+	Expect(seedLedger(baseURL, e2eSessionID, "headless")).To(Succeed())
 
 	pw, err = playwright.Run()
 	Expect(err).NotTo(HaveOccurred())

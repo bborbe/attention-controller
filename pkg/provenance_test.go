@@ -6,12 +6,16 @@ package pkg_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
+	libboltkv "github.com/bborbe/boltkv"
 	"github.com/bborbe/errors"
+	libkv "github.com/bborbe/kv"
 	"github.com/bborbe/run"
 	libtime "github.com/bborbe/time"
 	. "github.com/onsi/ginkgo/v2"
@@ -25,7 +29,12 @@ var _ = Describe("ProvenanceResolver", func() {
 	var ctx context.Context
 	var stateDir string
 	var sessionsDir string
-	var spawnDir string
+	// sessionLedger is the supervisor's spawn ledger, as the real store the
+	// resolver reads. It is backed by a real temp boltkv DB rather than a mock:
+	// the whole point of the change is that the mode read goes to a real store,
+	// so a mocked SessionLedgerStore would let the fixture agree with itself.
+	var sessionLedger pkg.SessionLedgerStore
+	var ledgerDB libkv.DB
 	var paneLister *mocks.PaneLister
 	var resolver pkg.ProvenanceResolver
 	// clock drives the resolver's host-snapshot cache. It is frozen in
@@ -73,16 +82,19 @@ var _ = Describe("ProvenanceResolver", func() {
 		)).To(BeNil())
 	}
 
-	// writeSpawn writes one spawn-ledger record as `<spawnDir>/<sessionID>.json`.
-	// Written as raw JSON text, never marshalled from spawnRecord, so the fixture
-	// is the *file shape* the supervisor actually writes and a field rename in the
-	// resolver's own struct cannot make the fixture agree with itself.
+	// writeSpawn posts one spawn-ledger row through the REAL store, as the
+	// supervisor's own spawn path does. ⚠️ It is never built from the resolver's
+	// read path: the row goes in through SessionLedgerStore.Post and comes out
+	// through the resolver's own List, so the fixture cannot agree with itself.
+	// It carries only the two fields the page reads; the live ledger carries
+	// more.
 	writeSpawn := func(sessionID, mode string) {
-		Expect(os.WriteFile(
-			filepath.Join(spawnDir, sessionID+".json"),
-			[]byte(`{"session_id":"`+sessionID+`","mode":"`+mode+`"}`),
-			0o600,
-		)).To(BeNil())
+		Expect(sessionLedger.Post(ctx, pkg.SessionLedgerEntry{
+			SessionID: sessionID,
+			Mode:      mode,
+			Location:  pkg.LocalSessionHeartbeatLocation,
+			SpawnedAt: clock.Now(),
+		})).To(Succeed())
 	}
 
 	item := func(itemID, producerID, dedupKey string) pkg.Item {
@@ -109,7 +121,10 @@ var _ = Describe("ProvenanceResolver", func() {
 		ctx = context.Background()
 		stateDir = GinkgoT().TempDir()
 		sessionsDir = GinkgoT().TempDir()
-		spawnDir = GinkgoT().TempDir()
+		var err error
+		ledgerDB, err = libboltkv.OpenTemp(ctx)
+		Expect(err).To(BeNil())
+		sessionLedger = pkg.NewSessionLedgerStore(ledgerDB)
 		paneLister = &mocks.PaneLister{}
 		paneLister.ListReturns(map[int]pkg.Pane{}, nil)
 		clock = libtime.NewCurrentDateTime()
@@ -120,11 +135,15 @@ var _ = Describe("ProvenanceResolver", func() {
 		resolver = pkg.NewProvenanceResolver(
 			pkg.NewEventLogReader(stateDir),
 			sessionsDir,
-			spawnDir,
+			sessionLedger,
 			paneLister,
 			pkg.NewTaskIndex(ctx, GinkgoT().TempDir(), clock),
 			clock,
 		)
+	})
+
+	AfterEach(func() {
+		Expect(ledgerDB.Close()).To(BeNil())
 	})
 
 	It("joins on the item's dedup key, so one producer's items do not share provenance", func() {
@@ -295,15 +314,15 @@ var _ = Describe("ProvenanceResolver", func() {
 		// shape, where the log postdates the push. The registry and the pane
 		// listing are the only remaining route to the pane.
 		writeEvents("producer-h",
-			eventLine("some-other-key", "session-h", "burn", "/w/other", "", "77"))
-		writeSession("1", "session-h", "⚙ Session H")
+			eventLine("some-other-key", ledgerSessionID("h"), "burn", "/w/other", "", "77"))
+		writeSession("1", ledgerSessionID("h"), "⚙ Session H")
 		paneLister.ListReturns(map[int]pkg.Pane{
 			12: {PaneID: 12, Title: "✳ ⚙ Session H"},
 		}, nil)
 
 		resolved := resolver.Resolve(
 			ctx,
-			pkg.Items{sessionItem("item-11", "producer-h", "key-h", "session-h")},
+			pkg.Items{sessionItem("item-11", "producer-h", "key-h", ledgerSessionID("h"))},
 		)
 
 		provenance := resolved[pkg.ItemID("item-11")]
@@ -325,23 +344,30 @@ var _ = Describe("ProvenanceResolver", func() {
 		// the item's own key is in neither — so the only route to pane 34 is the
 		// session join. Writing `key-j` into the bare log instead would let the
 		// event path resolve it and the prefix would never be exercised.
-		writeEvents("session-j",
-			eventLine("some-other-key", "session-j", "burn", "/w/j", "", "88"))
-		writeSession("2", "session-j", "⚙ Session J")
+		writeEvents(ledgerSessionID("j"),
+			eventLine("some-other-key", ledgerSessionID("j"), "burn", "/w/j", "", "88"))
+		writeSession("2", ledgerSessionID("j"), "⚙ Session J")
 		paneLister.ListReturns(map[int]pkg.Pane{
 			34: {PaneID: 34, Title: "◐ ⚙ Session J"},
 		}, nil)
 
-		_, err := os.Stat(filepath.Join(stateDir, "session:session-j.events.jsonl"))
+		_, err := os.Stat(filepath.Join(stateDir, "session:"+ledgerSessionID("j")+".events.jsonl"))
 		Expect(os.IsNotExist(err)).To(BeTrue(), "the prefixed log must not exist")
-		bare, err := os.ReadFile(filepath.Join(stateDir, "session-j.events.jsonl"))
+		bare, err := os.ReadFile(filepath.Join(stateDir, ledgerSessionID("j")+".events.jsonl"))
 		Expect(err).To(BeNil())
 		Expect(string(bare)).To(ContainSubstring("some-other-key"))
 		Expect(string(bare)).NotTo(ContainSubstring("key-j"))
 
 		resolved := resolver.Resolve(
 			ctx,
-			pkg.Items{sessionItem("item-12", "session:session-j", "key-j", "session-j")},
+			pkg.Items{
+				sessionItem(
+					"item-12",
+					"session:"+ledgerSessionID("j"),
+					"key-j",
+					ledgerSessionID("j"),
+				),
+			},
 		)
 
 		provenance := resolved[pkg.ItemID("item-12")]
@@ -355,14 +381,14 @@ var _ = Describe("ProvenanceResolver", func() {
 		// unprovable-and-therefore-owned, but there is no pane whose title
 		// matches. Nothing is claimed and nothing is marked unroutable — there
 		// is no recorded pane to distrust.
-		writeSession("3", "session-k", "⚙ Session K")
+		writeSession("3", ledgerSessionID("k"), "⚙ Session K")
 		paneLister.ListReturns(map[int]pkg.Pane{
 			56: {PaneID: 56, Title: "⚙ Some Other Session"},
 		}, nil)
 
 		resolved := resolver.Resolve(
 			ctx,
-			pkg.Items{sessionItem("item-13", "session-k", "key-k", "session-k")},
+			pkg.Items{sessionItem("item-13", ledgerSessionID("k"), "key-k", ledgerSessionID("k"))},
 		)
 
 		provenance := resolved[pkg.ItemID("item-13")]
@@ -376,7 +402,7 @@ var _ = Describe("ProvenanceResolver", func() {
 			// Positive control (a): a fallback that returned the first pane it saw
 			// would pass every other test in this file. The matching pane is
 			// deliberately not the first in map order.
-			writeSession("4", "session-l", "⚙ Session L")
+			writeSession("4", ledgerSessionID("l"), "⚙ Session L")
 			paneLister.ListReturns(map[int]pkg.Pane{
 				90: {PaneID: 90, Title: "⚙ Unrelated"},
 				91: {PaneID: 91, Title: "⚙ Session L"},
@@ -385,7 +411,9 @@ var _ = Describe("ProvenanceResolver", func() {
 
 			resolved := resolver.Resolve(
 				ctx,
-				pkg.Items{sessionItem("item-14", "session-l", "key-l", "session-l")},
+				pkg.Items{
+					sessionItem("item-14", ledgerSessionID("l"), "key-l", ledgerSessionID("l")),
+				},
 			)
 
 			Expect(resolved[pkg.ItemID("item-14")].Pane).To(Equal("91"))
@@ -395,12 +423,12 @@ var _ = Describe("ProvenanceResolver", func() {
 	It("makes no claim when the pane listing cannot be read", func() {
 		// Same direction as build: an unreadable listing proves nothing, so the
 		// row makes no pane claim at all rather than being marked unroutable.
-		writeSession("5", "session-m", "⚙ Session M")
+		writeSession("5", ledgerSessionID("m"), "⚙ Session M")
 		paneLister.ListReturns(nil, errors.New(ctx, "wezterm unreachable"))
 
 		resolved := resolver.Resolve(
 			ctx,
-			pkg.Items{sessionItem("item-15", "session-m", "key-m", "session-m")},
+			pkg.Items{sessionItem("item-15", ledgerSessionID("m"), "key-m", ledgerSessionID("m"))},
 		)
 
 		provenance := resolved[pkg.ItemID("item-15")]
@@ -412,8 +440,11 @@ var _ = Describe("ProvenanceResolver", func() {
 		// The regression guard: the fallback must not displace the logged path.
 		// The log says pane 61 and the registry-name join would say 62; the log
 		// wins, and host/cwd still come from the event.
-		writeEvents("producer-n", eventLine("key-n", "session-n", "burn", "/w/n", "", "61"))
-		writeSession("6", "session-n", "⚙ Session N")
+		writeEvents(
+			"producer-n",
+			eventLine("key-n", ledgerSessionID("n"), "burn", "/w/n", "", "61"),
+		)
+		writeSession("6", ledgerSessionID("n"), "⚙ Session N")
 		paneLister.ListReturns(map[int]pkg.Pane{
 			61: {PaneID: 61, Title: "⚙ Session N"},
 			62: {PaneID: 62, Title: "⚙ Session N"},
@@ -433,7 +464,7 @@ var _ = Describe("ProvenanceResolver", func() {
 		unavailable := pkg.NewProvenanceResolver(
 			pkg.NewEventLogReader(filepath.Join(stateDir, "does-not-exist")),
 			filepath.Join(sessionsDir, "does-not-exist"),
-			spawnDir,
+			sessionLedger,
 			paneLister,
 			pkg.NewTaskIndex(ctx, GinkgoT().TempDir(), clock),
 			clock,
@@ -491,10 +522,10 @@ var _ = Describe("ProvenanceResolver", func() {
 		// background goroutine's call is indistinguishable from a request-path
 		// one; the synchronous-return spec below is where that property is
 		// pinned.
-		writeSessionWithSource("1", "session-w", "Before Name", "user")
+		writeSessionWithSource("1", ledgerSessionID("w"), "Before Name", "user")
 		writeEvents("producer-w", eventLine("key-w", "producer-w", "burn", "/w/w", "", ""))
 		items := pkg.Items{
-			sessionItem("item-w", "producer-w", "key-w", "session-w"),
+			sessionItem("item-w", "producer-w", "key-w", ledgerSessionID("w")),
 		}
 
 		resolver.Resolve(ctx, items)
@@ -505,7 +536,7 @@ var _ = Describe("ProvenanceResolver", func() {
 		Expect(paneLister.ListCallCount()).To(Equal(1))
 
 		advanceClock()
-		writeSessionWithSource("1", "session-w", "After Name", "user")
+		writeSessionWithSource("1", ledgerSessionID("w"), "After Name", "user")
 
 		// Past the window: the snapshot in hand is served — copied under the lock
 		// before the refresh goroutine is scheduled — and the refresh starts
@@ -536,16 +567,21 @@ var _ = Describe("ProvenanceResolver", func() {
 			// only that some later resolve eventually sees fresh data would pass
 			// against the blocking implementation, which is exactly what this
 			// exists to rule out.
-			writeSessionWithSource("1", "session-nowait", "Before Name", "user")
+			writeSessionWithSource("1", ledgerSessionID("nowait"), "Before Name", "user")
 			items := pkg.Items{
-				sessionItem("item-nowait", "producer-nowait", "key-nowait", "session-nowait"),
+				sessionItem(
+					"item-nowait",
+					"producer-nowait",
+					"key-nowait",
+					ledgerSessionID("nowait"),
+				),
 			}
 
 			Expect(resolver.Resolve(ctx, items)[pkg.ItemID("item-nowait")].SessionName).
 				To(Equal("Before Name"))
 
 			advanceClock()
-			writeSessionWithSource("1", "session-nowait", "After Name", "user")
+			writeSessionWithSource("1", ledgerSessionID("nowait"), "After Name", "user")
 
 			entered := make(chan struct{}, 1)
 			release := make(chan struct{})
@@ -592,16 +628,21 @@ var _ = Describe("ProvenanceResolver", func() {
 			// Resolve receives IS the HTTP request's and is cancelled the moment
 			// the response is written — which is before a background refresh
 			// finishes.
-			writeSessionWithSource("1", "session-cancel", "Before Name", "user")
+			writeSessionWithSource("1", ledgerSessionID("cancel"), "Before Name", "user")
 			items := pkg.Items{
-				sessionItem("item-cancel", "producer-cancel", "key-cancel", "session-cancel"),
+				sessionItem(
+					"item-cancel",
+					"producer-cancel",
+					"key-cancel",
+					ledgerSessionID("cancel"),
+				),
 			}
 
 			Expect(resolver.Resolve(ctx, items)[pkg.ItemID("item-cancel")].SessionName).
 				To(Equal("Before Name"))
 
 			advanceClock()
-			writeSessionWithSource("1", "session-cancel", "After Name", "user")
+			writeSessionWithSource("1", ledgerSessionID("cancel"), "After Name", "user")
 
 			entered := make(chan struct{}, 1)
 			release := make(chan struct{})
@@ -658,10 +699,10 @@ var _ = Describe("ProvenanceResolver", func() {
 			// event recorded, which is the same string in both snapshots and so cannot
 			// tell a stale answer from a fresh one; the registry's name is what changes
 			// underneath, and it is therefore what proves which snapshot was served.
-			writeSessionWithSource("1", "session-block", "Before Name", "user")
-			writeSpawn("session-block", "interactive")
+			writeSessionWithSource("1", ledgerSessionID("block"), "Before Name", "user")
+			writeSpawn(ledgerSessionID("block"), "interactive")
 			items := pkg.Items{
-				sessionItem("item-block", "producer-block", "key-block", "session-block"),
+				sessionItem("item-block", "producer-block", "key-block", ledgerSessionID("block")),
 			}
 
 			first := resolver.Resolve(ctx, items)[pkg.ItemID("item-block")]
@@ -671,7 +712,7 @@ var _ = Describe("ProvenanceResolver", func() {
 			// open for as long as this spec needs, so the lock-free path is the only
 			// way a concurrent caller can return at all.
 			advanceClock()
-			writeSessionWithSource("1", "session-block", "After Name", "user")
+			writeSessionWithSource("1", ledgerSessionID("block"), "After Name", "user")
 			// Buffered send rather than a bare close. The single-flight contract admits
 			// exactly one post-stub invocation today, so a close is correct as written —
 			// but if that contract ever regresses, a second invocation would panic with
@@ -735,9 +776,9 @@ var _ = Describe("ProvenanceResolver", func() {
 			// through and refreshes — and a cold start is exactly when many streams
 			// wake at once. The exposure is bounded rather than unbounded: each caller
 			// runs exactly one exec, itself bounded by paneListingTimeout.
-			writeSessionWithSource("1", "session-cold", "Cold Name", "user")
+			writeSessionWithSource("1", ledgerSessionID("cold"), "Cold Name", "user")
 			items := pkg.Items{
-				sessionItem("item-cold", "producer-cold", "key-cold", "session-cold"),
+				sessionItem("item-cold", "producer-cold", "key-cold", ledgerSessionID("cold")),
 			}
 
 			entries := make(chan struct{}, 4)
@@ -782,9 +823,9 @@ var _ = Describe("ProvenanceResolver", func() {
 			// started a third subprocess alongside it. Under a wedged mux a refresh
 			// takes the full paneListingTimeout — longer than provenanceCacheWindow —
 			// so that was the ordinary case there, not a race.
-			writeSessionWithSource("1", "session-token", "Token Name", "user")
+			writeSessionWithSource("1", ledgerSessionID("token"), "Token Name", "user")
 			items := pkg.Items{
-				sessionItem("item-token", "producer-token", "key-token", "session-token"),
+				sessionItem("item-token", "producer-token", "key-token", ledgerSessionID("token")),
 			}
 
 			// Each invocation gets its own release, so the spec can finish one
@@ -844,10 +885,10 @@ var _ = Describe("ProvenanceResolver", func() {
 		// sessionModes are cached. This case changes both on disk and shows the
 		// change is not observed until the window lapses, which is what proves
 		// those two reads are served from the same snapshot.
-		writeSessionWithSource("1", "session-cached", "Before Name", "user")
-		writeSpawn("session-cached", "interactive")
+		writeSessionWithSource("1", ledgerSessionID("cached"), "Before Name", "user")
+		writeSpawn(ledgerSessionID("cached"), "interactive")
 		items := pkg.Items{
-			sessionItem("item-cached", "producer-cached", "key-cached", "session-cached"),
+			sessionItem("item-cached", "producer-cached", "key-cached", ledgerSessionID("cached")),
 		}
 
 		first := resolver.Resolve(ctx, items)[pkg.ItemID("item-cached")]
@@ -855,8 +896,8 @@ var _ = Describe("ProvenanceResolver", func() {
 		Expect(first.Headless).To(BeFalse())
 
 		// Both files change on disk. Inside the window neither change is seen.
-		writeSessionWithSource("1", "session-cached", "After Name", "user")
-		writeSpawn("session-cached", "headless")
+		writeSessionWithSource("1", ledgerSessionID("cached"), "After Name", "user")
+		writeSpawn(ledgerSessionID("cached"), "headless")
 
 		second := resolver.Resolve(ctx, items)[pkg.ItemID("item-cached")]
 		Expect(second.SessionName).To(Equal("Before Name"))
@@ -952,7 +993,7 @@ var _ = Describe("ProvenanceResolver", func() {
 		return pkg.NewProvenanceResolver(
 			pkg.NewEventLogReader(stateDir),
 			sessionsDir,
-			spawnDir,
+			sessionLedger,
 			paneLister,
 			pkg.NewTaskIndex(ctx, vault, clock),
 			clock,
@@ -962,14 +1003,14 @@ var _ = Describe("ProvenanceResolver", func() {
 	It("resolves the vault task the item's session is anchored to", func() {
 		vault := GinkgoT().TempDir()
 		writeVaultTask(vault, "Fix the board.md",
-			"---\nclaude_session_id: session-task\nstatus: active\n---\n\nbody\n")
+			"---\nclaude_session_id: "+ledgerSessionID("task")+"\nstatus: active\n---\n\nbody\n")
 		writeEvents(
 			"producer-task",
-			eventLine("key-task", "session-task", "burn", "/w/task", "", ""),
+			eventLine("key-task", ledgerSessionID("task"), "burn", "/w/task", "", ""),
 		)
 
 		provenance := withVault(vault).Resolve(ctx, pkg.Items{
-			sessionItem("item-task", "producer-task", "key-task", "session-task"),
+			sessionItem("item-task", "producer-task", "key-task", ledgerSessionID("task")),
 		})[pkg.ItemID("item-task")]
 
 		Expect(provenance.TaskName).To(Equal("Fix the board"))
@@ -981,11 +1022,14 @@ var _ = Describe("ProvenanceResolver", func() {
 	It("resolves no task when no task file records the session", func() {
 		vault := GinkgoT().TempDir()
 		writeVaultTask(vault, "Someone Else's Task.md",
-			"---\nclaude_session_id: some-other-session\n---\n")
-		writeEvents("producer-none", eventLine("key-none", "session-none", "burn", "/w/n", "", ""))
+			"---\nclaude_session_id: "+ledgerSessionID("some-other-session")+"\n---\n")
+		writeEvents(
+			"producer-none",
+			eventLine("key-none", ledgerSessionID("none"), "burn", "/w/n", "", ""),
+		)
 
 		provenance := withVault(vault).Resolve(ctx, pkg.Items{
-			sessionItem("item-none", "producer-none", "key-none", "session-none"),
+			sessionItem("item-none", "producer-none", "key-none", ledgerSessionID("none")),
 		})[pkg.ItemID("item-none")]
 
 		Expect(provenance.TaskName).To(BeEmpty())
@@ -1001,10 +1045,10 @@ var _ = Describe("ProvenanceResolver", func() {
 		// task lookup must not depend on the pane branches.
 		vault := GinkgoT().TempDir()
 		writeVaultTask(vault, "No Log Task.md",
-			"---\nclaude_session_id: session-nolog\n---\n")
+			"---\nclaude_session_id: "+ledgerSessionID("nolog")+"\n---\n")
 
 		provenance := withVault(vault).Resolve(ctx, pkg.Items{
-			sessionItem("item-nolog", "producer-nolog", "key-nolog", "session-nolog"),
+			sessionItem("item-nolog", "producer-nolog", "key-nolog", ledgerSessionID("nolog")),
 		})[pkg.ItemID("item-nolog")]
 
 		// No pane is claimed and no event-log value resolved.
@@ -1026,18 +1070,21 @@ var _ = Describe("ProvenanceResolver", func() {
 	It("resolves no task when no index was configured", func() {
 		// The standalone host: no vault, so no index. Everything else still
 		// resolves exactly as it did before the index existed.
-		writeEvents("producer-nil", eventLine("key-nil", "session-nil", "burn", "/w/nil", "", ""))
+		writeEvents(
+			"producer-nil",
+			eventLine("key-nil", ledgerSessionID("nil"), "burn", "/w/nil", "", ""),
+		)
 		nilIndex := pkg.NewProvenanceResolver(
 			pkg.NewEventLogReader(stateDir),
 			sessionsDir,
-			spawnDir,
+			sessionLedger,
 			paneLister,
 			nil,
 			clock,
 		)
 
 		provenance := nilIndex.Resolve(ctx, pkg.Items{
-			sessionItem("item-nil", "producer-nil", "key-nil", "session-nil"),
+			sessionItem("item-nil", "producer-nil", "key-nil", ledgerSessionID("nil")),
 		})[pkg.ItemID("item-nil")]
 
 		Expect(provenance.TaskName).To(BeEmpty())
@@ -1050,7 +1097,11 @@ var _ = Describe("ProvenanceResolver", func() {
 		// one shape sessionIDFromItem reduces to "". The item names no session,
 		// so there is nothing to look up and no task is guessed.
 		vault := GinkgoT().TempDir()
-		writeVaultTask(vault, "Orphan Task.md", "---\nclaude_session_id: session-orphan\n---\n")
+		writeVaultTask(
+			vault,
+			"Orphan Task.md",
+			"---\nclaude_session_id: "+ledgerSessionID("orphan")+"\n---\n",
+		)
 
 		provenance := withVault(vault).Resolve(ctx, pkg.Items{pkg.Item{
 			ItemID:     pkg.ItemID("item-orphan"),
@@ -1065,11 +1116,11 @@ var _ = Describe("ProvenanceResolver", func() {
 	It("resolves the production-touching fact from the task's own marker", func() {
 		vault := GinkgoT().TempDir()
 		writeVaultTask(vault, "Deploy Task.md",
-			"---\nclaude_session_id: session-pt\n---\n\n"+
+			"---\nclaude_session_id: "+ledgerSessionID("pt")+"\n---\n\n"+
 				"- [ ] ⚠️ production-touching — `make install`\n")
 
 		provenance := withVault(vault).Resolve(ctx, pkg.Items{
-			sessionItem("item-pt", "producer-pt", "key-pt", "session-pt"),
+			sessionItem("item-pt", "producer-pt", "key-pt", ledgerSessionID("pt")),
 		})[pkg.ItemID("item-pt")]
 
 		// Positive control: the task resolved, so the boolean below is read from
@@ -1087,7 +1138,7 @@ var _ = Describe("ProvenanceResolver", func() {
 		// operator needs.
 		vault := GinkgoT().TempDir()
 		writeVaultTask(vault, "Prose Task.md",
-			"---\nclaude_session_id: session-pt-prose\n---\n\n"+
+			"---\nclaude_session_id: "+ledgerSessionID("pt-prose")+"\n---\n\n"+
 				"# Success Criteria\n\n"+
 				"- [ ] SC2: a production-touching park renders the Allow / Deny pair\n\n"+
 				"# Progress\n\n"+
@@ -1096,7 +1147,7 @@ var _ = Describe("ProvenanceResolver", func() {
 				"- The production-touching marker is authored by the operator\n")
 
 		provenance := withVault(vault).Resolve(ctx, pkg.Items{
-			sessionItem("item-pt-prose", "producer-pt-prose", "key-pt-prose", "session-pt-prose"),
+			sessionItem("item-pt-prose", "producer-pt-prose", "key-pt-prose", ledgerSessionID("pt-prose")),
 		})[pkg.ItemID("item-pt-prose")]
 
 		Expect(provenance.TaskName).To(Equal("Prose Task"))
@@ -1106,7 +1157,7 @@ var _ = Describe("ProvenanceResolver", func() {
 	It("resolves production-touching for a marker on a checked box", func() {
 		vault := GinkgoT().TempDir()
 		writeVaultTask(vault, "Checked Task.md",
-			"---\nclaude_session_id: session-pt-checked\n---\n\n"+
+			"---\nclaude_session_id: "+ledgerSessionID("pt-checked")+"\n---\n\n"+
 				"- [x] ⚠️ production-touching — `make install`\n")
 
 		provenance := withVault(vault).Resolve(ctx, pkg.Items{
@@ -1114,7 +1165,7 @@ var _ = Describe("ProvenanceResolver", func() {
 				"item-pt-checked",
 				"producer-pt-checked",
 				"key-pt-checked",
-				"session-pt-checked",
+				ledgerSessionID("pt-checked"),
 			),
 		})[pkg.ItemID("item-pt-checked")]
 
@@ -1125,11 +1176,11 @@ var _ = Describe("ProvenanceResolver", func() {
 	It("resolves production-touching for a marker on a slash box", func() {
 		vault := GinkgoT().TempDir()
 		writeVaultTask(vault, "Slash Task.md",
-			"---\nclaude_session_id: session-pt-slash\n---\n\n"+
+			"---\nclaude_session_id: "+ledgerSessionID("pt-slash")+"\n---\n\n"+
 				"- [/] ⚠️ production-touching — `make install`\n")
 
 		provenance := withVault(vault).Resolve(ctx, pkg.Items{
-			sessionItem("item-pt-slash", "producer-pt-slash", "key-pt-slash", "session-pt-slash"),
+			sessionItem("item-pt-slash", "producer-pt-slash", "key-pt-slash", ledgerSessionID("pt-slash")),
 		})[pkg.ItemID("item-pt-slash")]
 
 		Expect(provenance.TaskName).To(Equal("Slash Task"))
@@ -1142,7 +1193,7 @@ var _ = Describe("ProvenanceResolver", func() {
 		// silently fail this spelling.
 		vault := GinkgoT().TempDir()
 		writeVaultTask(vault, "Glyphless Task.md",
-			"---\nclaude_session_id: session-pt-glyphless\n---\n\n"+
+			"---\nclaude_session_id: "+ledgerSessionID("pt-glyphless")+"\n---\n\n"+
 				"- [ ] production-touching — `make install`\n")
 
 		provenance := withVault(vault).Resolve(ctx, pkg.Items{
@@ -1150,7 +1201,7 @@ var _ = Describe("ProvenanceResolver", func() {
 				"item-pt-glyphless",
 				"producer-pt-glyphless",
 				"key-pt-glyphless",
-				"session-pt-glyphless",
+				ledgerSessionID("pt-glyphless"),
 			),
 		})[pkg.ItemID("item-pt-glyphless")]
 
@@ -1164,15 +1215,15 @@ var _ = Describe("ProvenanceResolver", func() {
 		// renders the pair.
 		vault := GinkgoT().TempDir()
 		writeVaultTask(vault, "Other Task.md",
-			"---\nclaude_session_id: session-pt-other\n---\n\n"+
+			"---\nclaude_session_id: "+ledgerSessionID("pt-other")+"\n---\n\n"+
 				"- [ ] ⚠️ production-touching — `make install`\n")
 		writeEvents(
 			"producer-pt-none",
-			eventLine("key-pt-none", "session-pt-none", "burn", "/w/pt", "", ""),
+			eventLine("key-pt-none", ledgerSessionID("pt-none"), "burn", "/w/pt", "", ""),
 		)
 
 		provenance := withVault(vault).Resolve(ctx, pkg.Items{
-			sessionItem("item-pt-none", "producer-pt-none", "key-pt-none", "session-pt-none"),
+			sessionItem("item-pt-none", "producer-pt-none", "key-pt-none", ledgerSessionID("pt-none")),
 		})[pkg.ItemID("item-pt-none")]
 
 		// Positive control: the item's event-log provenance still resolved.
@@ -1185,18 +1236,20 @@ var _ = Describe("ProvenanceResolver", func() {
 		writeVaultTask(
 			vault,
 			"Fix the board.md",
-			"---\nclaude_session_id: session-goal\ngoals:\n  - \"[[Fix the Board]]\"\n---\n\nbody\n",
+			"---\nclaude_session_id: "+ledgerSessionID(
+				"goal",
+			)+"\ngoals:\n  - \"[[Fix the Board]]\"\n---\n\nbody\n",
 		)
 		writeVaultFile(vault, "24 Goals", "Fix the Board.md", "---\ntitle: Fix the Board\n---\n")
 		writeVaultFile(vault, "23 Topics", "Attention Board Polish.md",
 			"---\ntitle: Attention Board Polish\n---\n\n## Goals\n\n- [[Fix the Board]]\n")
 		writeEvents(
 			"producer-goal",
-			eventLine("key-goal", "session-goal", "burn", "/w/goal", "", ""),
+			eventLine("key-goal", ledgerSessionID("goal"), "burn", "/w/goal", "", ""),
 		)
 
 		provenance := withVault(vault).Resolve(ctx, pkg.Items{
-			sessionItem("item-goal", "producer-goal", "key-goal", "session-goal"),
+			sessionItem("item-goal", "producer-goal", "key-goal", ledgerSessionID("goal")),
 		})[pkg.ItemID("item-goal")]
 
 		Expect(provenance.GoalName).To(Equal("Fix the Board"))
@@ -1214,12 +1267,17 @@ var _ = Describe("ProvenanceResolver", func() {
 		// The dominant live case: 1,148 of 1,619 goal-carrying tasks resolve a
 		// goal span with no topic span.
 		vault := GinkgoT().TempDir()
-		writeVaultTask(vault, "Lonely Goal Task.md",
-			"---\nclaude_session_id: session-lonely\ngoals:\n  - \"[[Lonely Goal]]\"\n---\n")
+		writeVaultTask(
+			vault,
+			"Lonely Goal Task.md",
+			"---\nclaude_session_id: "+ledgerSessionID(
+				"lonely",
+			)+"\ngoals:\n  - \"[[Lonely Goal]]\"\n---\n",
+		)
 		writeVaultFile(vault, "24 Goals", "Lonely Goal.md", "---\ntitle: Lonely Goal\n---\n")
 
 		provenance := withVault(vault).Resolve(ctx, pkg.Items{
-			sessionItem("item-lonely", "producer-lonely", "key-lonely", "session-lonely"),
+			sessionItem("item-lonely", "producer-lonely", "key-lonely", ledgerSessionID("lonely")),
 		})[pkg.ItemID("item-lonely")]
 
 		Expect(provenance.GoalName).To(Equal("Lonely Goal"))
@@ -1231,11 +1289,11 @@ var _ = Describe("ProvenanceResolver", func() {
 	It("resolves no goal and no topic for a task carrying goals: []", func() {
 		vault := GinkgoT().TempDir()
 		writeVaultTask(vault, "Empty Goals Task.md",
-			"---\nclaude_session_id: session-empty\ngoals: []\n---\n")
+			"---\nclaude_session_id: "+ledgerSessionID("empty")+"\ngoals: []\n---\n")
 		writeVaultFile(vault, "24 Goals", "Some Goal.md", "---\ntitle: Some Goal\n---\n")
 
 		provenance := withVault(vault).Resolve(ctx, pkg.Items{
-			sessionItem("item-empty", "producer-empty", "key-empty", "session-empty"),
+			sessionItem("item-empty", "producer-empty", "key-empty", ledgerSessionID("empty")),
 		})[pkg.ItemID("item-empty")]
 
 		// The task itself still resolves — the three spans are not one unit.
@@ -1250,19 +1308,19 @@ var _ = Describe("ProvenanceResolver", func() {
 	It("resolves no goal and no topic when no vault was configured", func() {
 		writeEvents(
 			"producer-novault",
-			eventLine("key-novault", "session-novault", "burn", "/w/nv", "", ""),
+			eventLine("key-novault", ledgerSessionID("novault"), "burn", "/w/nv", "", ""),
 		)
 		nilIndex := pkg.NewProvenanceResolver(
 			pkg.NewEventLogReader(stateDir),
 			sessionsDir,
-			spawnDir,
+			sessionLedger,
 			paneLister,
 			nil,
 			clock,
 		)
 
 		provenance := nilIndex.Resolve(ctx, pkg.Items{
-			sessionItem("item-novault", "producer-novault", "key-novault", "session-novault"),
+			sessionItem("item-novault", "producer-novault", "key-novault", ledgerSessionID("novault")),
 		})[pkg.ItemID("item-novault")]
 
 		Expect(provenance.GoalName).To(BeEmpty())
@@ -1274,24 +1332,24 @@ var _ = Describe("ProvenanceResolver", func() {
 	})
 
 	It("renders the session name the registry records with source user", func() {
-		writeSessionWithSource("1", "session-name-user", "Board Polish Session", "user")
+		writeSessionWithSource("1", ledgerSessionID("name-user"), "Board Polish Session", "user")
 
 		provenance := resolver.Resolve(ctx, pkg.Items{
-			sessionItem("item-name-user", "producer-name-user", "key-name-user", "session-name-user"),
+			sessionItem("item-name-user", "producer-name-user", "key-name-user", ledgerSessionID("name-user")),
 		})[pkg.ItemID("item-name-user")]
 
 		Expect(provenance.SessionName).To(Equal("Board Polish Session"))
 	})
 
 	It("withholds the session name the registry records with source derived", func() {
-		writeSessionWithSource("1", "session-name-derived", "Generated Name", "derived")
+		writeSessionWithSource("1", ledgerSessionID("name-derived"), "Generated Name", "derived")
 
 		provenance := resolver.Resolve(ctx, pkg.Items{
 			sessionItem(
 				"item-name-derived",
 				"producer-name-derived",
 				"key-name-derived",
-				"session-name-derived",
+				ledgerSessionID("name-derived"),
 			),
 		})[pkg.ItemID("item-name-derived")]
 
@@ -1302,10 +1360,10 @@ var _ = Describe("ProvenanceResolver", func() {
 		// `peer` means the name was inherited from the spawning parent, so it
 		// belongs to another session and rendering it would attribute this card
 		// to a name the operator never chose.
-		writeSessionWithSource("1", "session-name-peer", "Inherited Name", "peer")
+		writeSessionWithSource("1", ledgerSessionID("name-peer"), "Inherited Name", "peer")
 
 		provenance := resolver.Resolve(ctx, pkg.Items{
-			sessionItem("item-name-peer", "producer-name-peer", "key-name-peer", "session-name-peer"),
+			sessionItem("item-name-peer", "producer-name-peer", "key-name-peer", ledgerSessionID("name-peer")),
 		})[pkg.ItemID("item-name-peer")]
 
 		Expect(provenance.SessionName).To(BeEmpty())
@@ -1316,14 +1374,14 @@ var _ = Describe("ProvenanceResolver", func() {
 		// writeSession has no `nameSource` key, which is the shape every record
 		// predating the field has — reading that absence as permission would
 		// render a name whose provenance is simply unknown.
-		writeSession("1", "session-name-absent", "Sourceless Name")
+		writeSession("1", ledgerSessionID("name-absent"), "Sourceless Name")
 
 		provenance := resolver.Resolve(ctx, pkg.Items{
 			sessionItem(
 				"item-name-absent",
 				"producer-name-absent",
 				"key-name-absent",
-				"session-name-absent",
+				ledgerSessionID("name-absent"),
 			),
 		})[pkg.ItemID("item-name-absent")]
 
@@ -1336,7 +1394,7 @@ var _ = Describe("ProvenanceResolver", func() {
 				"item-name-unknown",
 				"producer-name-unknown",
 				"key-name-unknown",
-				"session-name-unknown",
+				ledgerSessionID("name-unknown"),
 			),
 		})[pkg.ItemID("item-name-unknown")]
 
@@ -1347,7 +1405,7 @@ var _ = Describe("ProvenanceResolver", func() {
 		// ProducerID is the bare `session:` marker with no id after it — the one
 		// shape sessionIDFromItem reduces to "". There is no session to look up,
 		// so the registry is not consulted and no name is guessed.
-		writeSessionWithSource("1", "session-name-other", "Some Other Session", "user")
+		writeSessionWithSource("1", ledgerSessionID("name-other"), "Some Other Session", "user")
 
 		provenance := resolver.Resolve(ctx, pkg.Items{pkg.Item{
 			ItemID:     pkg.ItemID("item-name-nosession"),
@@ -1362,7 +1420,7 @@ var _ = Describe("ProvenanceResolver", func() {
 		unavailable := pkg.NewProvenanceResolver(
 			pkg.NewEventLogReader(stateDir),
 			filepath.Join(sessionsDir, "does-not-exist"),
-			spawnDir,
+			sessionLedger,
 			paneLister,
 			pkg.NewTaskIndex(ctx, GinkgoT().TempDir(), clock),
 			clock,
@@ -1373,7 +1431,7 @@ var _ = Describe("ProvenanceResolver", func() {
 				"item-name-nodir",
 				"producer-name-nodir",
 				"key-name-nodir",
-				"session-name-nodir",
+				ledgerSessionID("name-nodir"),
 			),
 		})
 
@@ -1388,14 +1446,14 @@ var _ = Describe("ProvenanceResolver", func() {
 			[]byte("this is not json"),
 			0o600,
 		)).To(BeNil())
-		writeSessionWithSource("2", "session-name-intact", "Intact Name", "user")
+		writeSessionWithSource("2", ledgerSessionID("name-intact"), "Intact Name", "user")
 
 		provenance := resolver.Resolve(ctx, pkg.Items{
 			sessionItem(
 				"item-name-intact",
 				"producer-name-intact",
 				"key-name-intact",
-				"session-name-intact",
+				ledgerSessionID("name-intact"),
 			),
 		})[pkg.ItemID("item-name-intact")]
 
@@ -1406,11 +1464,11 @@ var _ = Describe("ProvenanceResolver", func() {
 		// os.ReadDir returns entries sorted by filename and the map write is
 		// unconditional, so `b.json` is read after `a.json` and its name is the
 		// one left in the map.
-		writeSessionWithSource("a", "session-name-dup", "First Name", "user")
-		writeSessionWithSource("b", "session-name-dup", "Second Name", "user")
+		writeSessionWithSource("a", ledgerSessionID("name-dup"), "First Name", "user")
+		writeSessionWithSource("b", ledgerSessionID("name-dup"), "Second Name", "user")
 
 		provenance := resolver.Resolve(ctx, pkg.Items{
-			sessionItem("item-name-dup", "producer-name-dup", "key-name-dup", "session-name-dup"),
+			sessionItem("item-name-dup", "producer-name-dup", "key-name-dup", ledgerSessionID("name-dup")),
 		})[pkg.ItemID("item-name-dup")]
 
 		Expect(provenance.SessionName).To(Equal("Second Name"))
@@ -1422,12 +1480,12 @@ var _ = Describe("ProvenanceResolver", func() {
 		// its spawner's WEZTERM_PANE, so its item carries the spawner's pane id.
 		writeEvents(
 			"producer-headless",
-			eventLine("key-headless", "session-headless", "burn", "/w/h", "", ""),
+			eventLine("key-headless", ledgerSessionID("headless"), "burn", "/w/h", "", ""),
 		)
-		writeSpawn("session-headless", "headless")
+		writeSpawn(ledgerSessionID("headless"), "headless")
 
 		provenance := resolver.Resolve(ctx, pkg.Items{
-			sessionItem("item-headless", "producer-headless", "key-headless", "session-headless"),
+			sessionItem("item-headless", "producer-headless", "key-headless", ledgerSessionID("headless")),
 		})[pkg.ItemID("item-headless")]
 
 		// Positive control: the item resolved its event-log provenance at all.
@@ -1438,16 +1496,16 @@ var _ = Describe("ProvenanceResolver", func() {
 	It("resolves not headless for a session the spawn ledger records as interactive", func() {
 		writeEvents(
 			"producer-interactive",
-			eventLine("key-interactive", "session-interactive", "burn", "/w/i", "", ""),
+			eventLine("key-interactive", ledgerSessionID("interactive"), "burn", "/w/i", "", ""),
 		)
-		writeSpawn("session-interactive", "interactive")
+		writeSpawn(ledgerSessionID("interactive"), "interactive")
 
 		provenance := resolver.Resolve(ctx, pkg.Items{
 			sessionItem(
 				"item-interactive",
 				"producer-interactive",
 				"key-interactive",
-				"session-interactive",
+				ledgerSessionID("interactive"),
 			),
 		})[pkg.ItemID("item-interactive")]
 
@@ -1458,80 +1516,92 @@ var _ = Describe("ProvenanceResolver", func() {
 	It("resolves not headless when the spawn ledger holds no record for the session", func() {
 		writeEvents(
 			"producer-norecord",
-			eventLine("key-norecord", "session-norecord", "burn", "/w/nr", "", ""),
+			eventLine("key-norecord", ledgerSessionID("norecord"), "burn", "/w/nr", "", ""),
 		)
 		// A record for a *different* session: the map resolves, this item's
 		// session is absent from it, and absence is not headless.
-		writeSpawn("some-other-session", "headless")
+		writeSpawn(ledgerSessionID("some-other-session"), "headless")
 
 		provenance := resolver.Resolve(ctx, pkg.Items{
-			sessionItem("item-norecord", "producer-norecord", "key-norecord", "session-norecord"),
+			sessionItem("item-norecord", "producer-norecord", "key-norecord", ledgerSessionID("norecord")),
 		})[pkg.ItemID("item-norecord")]
 
 		Expect(provenance.Host).To(Equal("burn"))
 		Expect(provenance.Headless).To(BeFalse())
 	})
 
-	It("resolves not headless when the spawn ledger directory does not exist", func() {
+	It("resolves not headless when the ledger store is nil", func() {
+		// The store-shaped replacement for the retired "directory does not
+		// exist" case: a host with no ledger store wired in. The resolver must
+		// fail closed — a nil store resolves no mode at all, so no row renders
+		// a control.
 		writeEvents(
 			"producer-nospawn",
-			eventLine("key-nospawn", "session-nospawn", "burn", "/w/ns", "", ""),
+			eventLine("key-nospawn", ledgerSessionID("nospawn"), "burn", "/w/ns", "", ""),
 		)
 		unavailable := pkg.NewProvenanceResolver(
 			pkg.NewEventLogReader(stateDir),
 			sessionsDir,
-			filepath.Join(spawnDir, "does-not-exist"),
+			nil,
 			paneLister,
 			pkg.NewTaskIndex(ctx, GinkgoT().TempDir(), clock),
 			clock,
 		)
 
 		provenance := unavailable.Resolve(ctx, pkg.Items{
-			sessionItem("item-nospawn", "producer-nospawn", "key-nospawn", "session-nospawn"),
+			sessionItem("item-nospawn", "producer-nospawn", "key-nospawn", ledgerSessionID("nospawn")),
 		})[pkg.ItemID("item-nospawn")]
 
 		Expect(provenance.Host).To(Equal("burn"))
 		Expect(provenance.Headless).To(BeFalse())
 	})
 
-	It("resolves not headless when a spawn ledger record does not parse", func() {
+	It("resolves not headless when the ledger store cannot be read", func() {
+		// The store-shaped replacement for the retired "record does not parse"
+		// case. ⚠️ A mocked SessionLedgerStore is legitimate for THIS case alone:
+		// it simulates a store FAILURE, not a store's CONTENTS, and a failure is
+		// the one thing a real store cannot be asked to produce on demand. Every
+		// other fixture in this file posts through the real store, because a
+		// fixture built from a mock's contents would agree with itself.
+		//
+		// ⚠️ The per-record resilience the file-shaped case asserted ("one bad
+		// record must not blank the whole map") has no store-shaped equivalent:
+		// List is atomic, so a read failure blanks the whole map rather than one
+		// row. The fail-closed invariant is what is asserted here.
 		writeEvents(
 			"producer-broken",
-			eventLine("key-broken", "session-broken", "burn", "/w/b", "", ""),
+			eventLine("key-broken", ledgerSessionID("broken"), "burn", "/w/b", "", ""),
 		)
-		writeEvents(
-			"producer-sibling",
-			eventLine("key-sibling", "session-sibling", "burn", "/w/s", "", ""),
+		failing := &mocks.SessionLedgerStore{}
+		failing.ListReturns(nil, errors.New(ctx, "ledger unreadable"))
+		unavailable := pkg.NewProvenanceResolver(
+			pkg.NewEventLogReader(stateDir),
+			sessionsDir,
+			failing,
+			paneLister,
+			pkg.NewTaskIndex(ctx, GinkgoT().TempDir(), clock),
+			clock,
 		)
-		// A truncated record for the broken session; a valid headless record for
-		// its sibling, so one bad file must not blank the whole map.
-		Expect(os.WriteFile(
-			filepath.Join(spawnDir, "session-broken.json"),
-			[]byte(`{"session_id":"session-broken","mode":`),
-			0o600,
-		)).To(BeNil())
-		writeSpawn("session-sibling", "headless")
 
-		resolved := resolver.Resolve(ctx, pkg.Items{
-			sessionItem("item-broken", "producer-broken", "key-broken", "session-broken"),
-			sessionItem("item-sibling", "producer-sibling", "key-sibling", "session-sibling"),
-		})
+		provenance := unavailable.Resolve(ctx, pkg.Items{
+			sessionItem("item-broken", "producer-broken", "key-broken", ledgerSessionID("broken")),
+		})[pkg.ItemID("item-broken")]
 
-		// Positive control: the broken session's item still resolved its event.
-		Expect(resolved[pkg.ItemID("item-broken")].Host).To(Equal("burn"))
-		Expect(resolved[pkg.ItemID("item-broken")].Headless).To(BeFalse())
-		Expect(resolved[pkg.ItemID("item-sibling")].Headless).To(BeTrue())
+		// Positive control: the item still resolved its event, so the absence
+		// below is a withheld control rather than a dropped row.
+		Expect(provenance.Host).To(Equal("burn"))
+		Expect(provenance.Headless).To(BeFalse())
 	})
 
 	It("resolves not headless when a record's mode is outside the known set", func() {
 		writeEvents(
 			"producer-daemon",
-			eventLine("key-daemon", "session-daemon", "burn", "/w/d", "", ""),
+			eventLine("key-daemon", ledgerSessionID("daemon"), "burn", "/w/d", "", ""),
 		)
-		writeSpawn("session-daemon", "daemon")
+		writeSpawn(ledgerSessionID("daemon"), "daemon")
 
 		provenance := resolver.Resolve(ctx, pkg.Items{
-			sessionItem("item-daemon", "producer-daemon", "key-daemon", "session-daemon"),
+			sessionItem("item-daemon", "producer-daemon", "key-daemon", ledgerSessionID("daemon")),
 		})[pkg.ItemID("item-daemon")]
 
 		Expect(provenance.Host).To(Equal("burn"))
@@ -1582,3 +1652,17 @@ var _ = Describe("Provenance.Resolved", func() {
 		Expect((pkg.Provenance{}).Resolved()).To(BeFalse())
 	})
 })
+
+// ledgerSessionID maps a readable fixture label to the well-formed lowercase
+// UUID the ledger store's Validate requires.
+//
+// ⚠️ It exists because the fixture's session ids must be the store's own shape:
+// SessionLedgerEntry.Validate refuses anything that is not a dashed lowercase
+// UUID, and the store's key IS that id. The mapping is deterministic, so a
+// label used in a ledger row, an item's liveness ref, an event-log line and a
+// session-registry record all name the SAME session.
+func ledgerSessionID(label string) string {
+	sum := sha256.Sum256([]byte(label))
+	h := hex.EncodeToString(sum[:16])
+	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
+}

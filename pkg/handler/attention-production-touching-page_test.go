@@ -49,13 +49,16 @@ var _ = Describe("the production-touching marker on the served page", func() {
 	// hand-written literal `Personal` rather than a value read back from the same
 	// helper the code uses.
 	var vault string
-	// stateDir holds the producers' event logs, sessionsDir the session registry
-	// and spawnDir the supervisor's spawn ledger. All three are fresh per case:
-	// the ledger is scanned inside every Resolve call, so a case that writes a
-	// record must not see another case's.
+	// stateDir holds the producers' event logs and sessionsDir the session
+	// registry. Both are fresh per case: the registry is scanned inside every
+	// Resolve call, so a case that writes a record must not see another case's.
+	//
+	// sessionLedger is the supervisor's spawn ledger as the real store, sharing
+	// the attention store's own db — one BoltDB handle, two buckets, exactly the
+	// production wiring.
 	var stateDir string
 	var sessionsDir string
-	var spawnDir string
+	var sessionLedger pkg.SessionLedgerStore
 	// clock drives the provenance resolver's host-snapshot cache. Frozen in
 	// BeforeEach so the cases that change the ledger between loads can advance
 	// it with SetNow rather than sleeping past the cache window.
@@ -103,7 +106,9 @@ var _ = Describe("the production-touching marker on the served page", func() {
 		vault = filepath.Join(GinkgoT().TempDir(), "Personal")
 		stateDir = GinkgoT().TempDir()
 		sessionsDir = GinkgoT().TempDir()
-		spawnDir = GinkgoT().TempDir()
+		// ⚠️ The ledger store reuses the attention store's own db — one BoltDB
+		// handle, two buckets, which is exactly the production wiring.
+		sessionLedger = pkg.NewSessionLedgerStore(db)
 		clock = libtime.NewCurrentDateTime()
 		clock.SetNow(clock.Now())
 	})
@@ -126,14 +131,16 @@ var _ = Describe("the production-touching marker on the served page", func() {
 		return "---\nclaude_session_id: " + sessionID + "\nstatus: active\n---\n\n# Steps\n\n" + body + "\n"
 	}
 
-	// writeSpawn writes one spawn-ledger record as `<spawnDir>/<sessionID>.json`,
-	// as raw JSON text — never marshalled from the resolver's own struct.
+	// writeSpawn posts one spawn-ledger row through the REAL store, as the
+	// supervisor's own spawn path does — never built from the resolver's own
+	// read path, so the fixture cannot agree with itself.
 	writeSpawn := func(sessionID, mode string) {
-		Expect(os.WriteFile(
-			filepath.Join(spawnDir, sessionID+".json"),
-			[]byte(`{"session_id":"`+sessionID+`","mode":"`+mode+`"}`),
-			0o600,
-		)).To(BeNil())
+		Expect(sessionLedger.Post(ctx, pkg.SessionLedgerEntry{
+			SessionID: sessionID,
+			Mode:      mode,
+			Location:  pkg.LocalSessionHeartbeatLocation,
+			SpawnedAt: clock.Now(),
+		})).To(Succeed())
 	}
 
 	// pushPark pushes one `permission` item whose session id is recoverable by
@@ -190,7 +197,7 @@ var _ = Describe("the production-touching marker on the served page", func() {
 			pkg.NewProvenanceResolver(
 				pkg.NewEventLogReader(stateDir),
 				sessionsDir,
-				spawnDir,
+				sessionLedger,
 				panes,
 				pkg.NewTaskIndex(ctx, vault, clock),
 				clock,
@@ -208,19 +215,19 @@ var _ = Describe("the production-touching marker on the served page", func() {
 		// command-level reading would withhold it from neither, since the payloads
 		// differ. `Marked B` carries the same marker in a *differently named* file,
 		// so the reading follows the marker's content rather than the task's name.
-		writeTask("Marked A.md", taskContent("session-marked-a",
+		writeTask("Marked A.md", taskContent(ledgerSessionID("marked-a"),
 			"- [ ] ⚠️ production-touching — `make install`"))
-		writeTask("Marked B.md", taskContent("session-marked-b",
+		writeTask("Marked B.md", taskContent(ledgerSessionID("marked-b"),
 			"- [ ] ⚠️ production-touching — `make install`"))
-		writeTask("Plain C.md", taskContent("session-plain-c", "- [ ] ordinary step"))
-		writeSpawn("session-marked-a", "headless")
-		writeSpawn("session-marked-b", "headless")
-		writeSpawn("session-plain-c", "headless")
+		writeTask("Plain C.md", taskContent(ledgerSessionID("plain-c"), "- [ ] ordinary step"))
+		writeSpawn(ledgerSessionID("marked-a"), "headless")
+		writeSpawn(ledgerSessionID("marked-b"), "headless")
+		writeSpawn(ledgerSessionID("plain-c"), "headless")
 
-		parkA1 := pushPark("session-marked-a", "park-a-1")
-		parkA2 := pushPark("session-marked-a", "park-a-2")
-		parkB1 := pushPark("session-marked-b", "park-b-1")
-		parkC1 := pushPark("session-plain-c", "park-c-1")
+		parkA1 := pushPark(ledgerSessionID("marked-a"), "park-a-1")
+		parkA2 := pushPark(ledgerSessionID("marked-a"), "park-a-2")
+		parkB1 := pushPark(ledgerSessionID("marked-b"), "park-b-1")
+		parkC1 := pushPark(ledgerSessionID("plain-c"), "park-c-1")
 
 		resp := get(buildPage())
 		Expect(resp.Code).To(Equal(http.StatusOK))
@@ -247,14 +254,14 @@ var _ = Describe("the production-touching marker on the served page", func() {
 		// The precision case that stops a substring matcher: the phrase appears in
 		// a Success Criteria line, a Progress paragraph and a non-checkbox bullet —
 		// and in none of them in the marker form.
-		writeTask("Prose.md", taskContent("session-prose",
+		writeTask("Prose.md", taskContent(ledgerSessionID("prose"),
 			"# Success Criteria\n\n"+
 				"- [ ] SC2: a production-touching park renders the Allow / Deny pair\n\n"+
 				"# Progress\n\n"+
 				"The production-touching marker is read from the task file the resolver already opens.\n\n"+
 				"- The production-touching marker is authored by the operator"))
-		writeSpawn("session-prose", "headless")
-		item := pushPark("session-prose", "park-prose")
+		writeSpawn(ledgerSessionID("prose"), "headless")
+		item := pushPark(ledgerSessionID("prose"), "park-prose")
 
 		resp := get(buildPage())
 		Expect(resp.Code).To(Equal(http.StatusOK))
@@ -278,14 +285,14 @@ var _ = Describe("the production-touching marker on the served page", func() {
 		func() {
 			// The `[x]` state-class probe: the sibling proves the state alone does not
 			// withhold the pair; only the marker does.
-			writeTask("Checked.md", taskContent("session-checked",
+			writeTask("Checked.md", taskContent(ledgerSessionID("checked"),
 				"- [x] ⚠️ production-touching — `make install`"))
-			writeTask("Unmarked Checked.md", taskContent("session-unmarked-checked",
+			writeTask("Unmarked Checked.md", taskContent(ledgerSessionID("unmarked-checked"),
 				"- [x] ordinary step"))
-			writeSpawn("session-checked", "headless")
-			writeSpawn("session-unmarked-checked", "headless")
-			checked := pushPark("session-checked", "park-checked")
-			unmarked := pushPark("session-unmarked-checked", "park-unmarked-checked")
+			writeSpawn(ledgerSessionID("checked"), "headless")
+			writeSpawn(ledgerSessionID("unmarked-checked"), "headless")
+			checked := pushPark(ledgerSessionID("checked"), "park-checked")
+			unmarked := pushPark(ledgerSessionID("unmarked-checked"), "park-unmarked-checked")
 
 			resp := get(buildPage())
 			Expect(resp.Code).To(Equal(http.StatusOK))
@@ -307,14 +314,14 @@ var _ = Describe("the production-touching marker on the served page", func() {
 		func() {
 			// The glyph-absent probe: the warning glyph is optional as a whole, so a
 			// marker written without it still withholds the pair.
-			writeTask("Glyphless.md", taskContent("session-glyphless",
+			writeTask("Glyphless.md", taskContent(ledgerSessionID("glyphless"),
 				"- [ ] production-touching — `make install`"))
-			writeTask("Unmarked Glyphless.md", taskContent("session-unmarked-glyphless",
+			writeTask("Unmarked Glyphless.md", taskContent(ledgerSessionID("unmarked-glyphless"),
 				"- [ ] ordinary step"))
-			writeSpawn("session-glyphless", "headless")
-			writeSpawn("session-unmarked-glyphless", "headless")
-			glyphless := pushPark("session-glyphless", "park-glyphless")
-			unmarked := pushPark("session-unmarked-glyphless", "park-unmarked-glyphless")
+			writeSpawn(ledgerSessionID("glyphless"), "headless")
+			writeSpawn(ledgerSessionID("unmarked-glyphless"), "headless")
+			glyphless := pushPark(ledgerSessionID("glyphless"), "park-glyphless")
+			unmarked := pushPark(ledgerSessionID("unmarked-glyphless"), "park-unmarked-glyphless")
 
 			resp := get(buildPage())
 			Expect(resp.Code).To(Equal(http.StatusOK))
@@ -336,14 +343,14 @@ var _ = Describe("the production-touching marker on the served page", func() {
 		func() {
 			// The `[/]` state-class probe: the state the vault writes for in-progress
 			// subtasks. The marker is recognised on it exactly as on an open box.
-			writeTask("Slash.md", taskContent("session-slash",
+			writeTask("Slash.md", taskContent(ledgerSessionID("slash"),
 				"- [/] ⚠️ production-touching — `make install`"))
-			writeTask("Unmarked Slash.md", taskContent("session-unmarked-slash",
+			writeTask("Unmarked Slash.md", taskContent(ledgerSessionID("unmarked-slash"),
 				"- [/] ordinary step"))
-			writeSpawn("session-slash", "headless")
-			writeSpawn("session-unmarked-slash", "headless")
-			slash := pushPark("session-slash", "park-slash")
-			unmarked := pushPark("session-unmarked-slash", "park-unmarked-slash")
+			writeSpawn(ledgerSessionID("slash"), "headless")
+			writeSpawn(ledgerSessionID("unmarked-slash"), "headless")
+			slash := pushPark(ledgerSessionID("slash"), "park-slash")
+			unmarked := pushPark(ledgerSessionID("unmarked-slash"), "park-unmarked-slash")
 
 			resp := get(buildPage())
 			Expect(resp.Code).To(Equal(http.StatusOK))
@@ -363,8 +370,8 @@ var _ = Describe("the production-touching marker on the served page", func() {
 	It("renders the pair when the session resolves no task", func() {
 		// The fail-open case: no task file at all for this session. Every
 		// uncertainty about the marker leaves it false, which renders the pair.
-		writeSpawn("session-no-task", "headless")
-		item := pushPark("session-no-task", "park-no-task")
+		writeSpawn(ledgerSessionID("no-task"), "headless")
+		item := pushPark(ledgerSessionID("no-task"), "park-no-task")
 
 		resp := get(buildPage())
 		Expect(resp.Code).To(Equal(http.StatusOK))
@@ -381,14 +388,14 @@ var _ = Describe("the production-touching marker on the served page", func() {
 			// The unchanged-elements guard: withholding the pair must not remove the
 			// clearing control, the jump corner or the provenance line — with its task
 			// span — from a marked row.
-			writeTask("Marked Elements.md", taskContent("session-elements-marked",
+			writeTask("Marked Elements.md", taskContent(ledgerSessionID("elements-marked"),
 				"- [ ] ⚠️ production-touching — `make install`"))
-			writeTask("Plain Elements.md", taskContent("session-elements-plain",
+			writeTask("Plain Elements.md", taskContent(ledgerSessionID("elements-plain"),
 				"- [ ] ordinary step"))
-			writeSpawn("session-elements-marked", "headless")
-			writeSpawn("session-elements-plain", "headless")
-			marked := pushPark("session-elements-marked", "park-elements-marked")
-			plain := pushPark("session-elements-plain", "park-elements-plain")
+			writeSpawn(ledgerSessionID("elements-marked"), "headless")
+			writeSpawn(ledgerSessionID("elements-plain"), "headless")
+			marked := pushPark(ledgerSessionID("elements-marked"), "park-elements-marked")
+			plain := pushPark(ledgerSessionID("elements-plain"), "park-elements-plain")
 
 			resp := get(buildPage())
 			Expect(resp.Code).To(Equal(http.StatusOK))

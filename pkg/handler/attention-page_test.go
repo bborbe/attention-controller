@@ -1033,7 +1033,11 @@ var _ = Describe("AttentionPageHandler", func() {
 				pkg.NewProvenanceResolver(
 					pkg.NewEventLogReader(stateDir),
 					sessionsDir,
-					GinkgoT().TempDir(),
+					// The ledger store over the case's own db — one BoltDB handle,
+					// two buckets, the production wiring. The ledger is not what this
+					// spec is about, but it must still be a real store rather than a
+					// mocked one.
+					pkg.NewSessionLedgerStore(db),
 					paneLister,
 					nil,
 					libtime.NewCurrentDateTime(),

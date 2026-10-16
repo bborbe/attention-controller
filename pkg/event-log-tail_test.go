@@ -9,7 +9,9 @@ import (
 	"os"
 	"path/filepath"
 
+	libboltkv "github.com/bborbe/boltkv"
 	"github.com/bborbe/errors"
+	libkv "github.com/bborbe/kv"
 	"github.com/bborbe/run"
 	libtime "github.com/bborbe/time"
 	. "github.com/onsi/ginkgo/v2"
@@ -128,7 +130,10 @@ var _ = Describe("Event log incremental read", func() {
 	var ctx context.Context
 	var stateDir string
 	var sessionsDir string
-	var spawnDir string
+	// sessionLedger is the supervisor's spawn ledger as the real store the
+	// resolver reads — a real temp boltkv DB, never a mock.
+	var sessionLedger pkg.SessionLedgerStore
+	var ledgerDB libkv.DB
 	var paneLister *mocks.PaneLister
 	var counting *countingEventLogReader
 	var resolver pkg.ProvenanceResolver
@@ -175,7 +180,10 @@ var _ = Describe("Event log incremental read", func() {
 		ctx = context.Background()
 		stateDir = GinkgoT().TempDir()
 		sessionsDir = GinkgoT().TempDir()
-		spawnDir = GinkgoT().TempDir()
+		var err error
+		ledgerDB, err = libboltkv.OpenTemp(ctx)
+		Expect(err).To(BeNil())
+		sessionLedger = pkg.NewSessionLedgerStore(ledgerDB)
 		paneLister = &mocks.PaneLister{}
 		paneLister.ListReturns(map[int]pkg.Pane{}, nil)
 		clock = libtime.NewCurrentDateTime()
@@ -184,11 +192,15 @@ var _ = Describe("Event log incremental read", func() {
 		resolver = pkg.NewProvenanceResolver(
 			counting,
 			sessionsDir,
-			spawnDir,
+			sessionLedger,
 			paneLister,
 			pkg.NewTaskIndex(ctx, GinkgoT().TempDir(), clock),
 			clock,
 		)
+	})
+
+	AfterEach(func() {
+		Expect(ledgerDB.Close()).To(BeNil())
 	})
 
 	// ⚠️ The spec that makes the read-count criterion falsifiable. A second
