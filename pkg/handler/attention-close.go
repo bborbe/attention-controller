@@ -120,6 +120,13 @@ func wrapItemError(ctx context.Context, err error, itemID pkg.ItemID, what strin
 			http.StatusServiceUnavailable,
 			map[string]any{"item_id": itemID.String()},
 		)
+	case errors.Is(err, pkg.ErrPermissionCloseWithoutDecision):
+		return libhttp.WrapWithDetails(
+			errors.Wrap(ctx, err, what),
+			pkg.ErrorCodePermissionCloseWithoutDecision,
+			http.StatusConflict,
+			map[string]any{"item_id": itemID.String()},
+		)
 	default:
 		return libhttp.WrapWithDetails(
 			errors.Wrap(ctx, err, what),

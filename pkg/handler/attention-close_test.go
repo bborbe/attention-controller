@@ -87,6 +87,22 @@ var _ = Describe("AttentionCloseHandler", func() {
 		return item
 	}
 
+	// pushPermission pushes a `permission` item: a gate the operator alone may
+	// answer, so the close route's arm-caused write is not a way to end it.
+	pushPermission := func() *pkg.Item {
+		item, err := store.Push(ctx, pkg.PushRequest{
+			ProducerID:      "session-c",
+			ProducerKind:    pkg.SessionProducerKind,
+			LivenessRef:     pkg.LivenessRef("session:session-c"),
+			DedupKey:        "gate-permission-1",
+			InterruptClass:  "approve",
+			Payload:         "deploy prod?",
+			AnswerMechanism: pkg.PermissionAnswerMechanism,
+		})
+		Expect(err).To(BeNil())
+		return item
+	}
+
 	// closeItem posts a body to the item's close route. The path var is set with
 	// SetURLVars rather than by mounting a router: the handler reads it through
 	// mux.Vars, and a router would add a second thing to get wrong without
@@ -172,6 +188,26 @@ var _ = Describe("AttentionCloseHandler", func() {
 		// was already answered leaves the answering arm in place rather than
 		// replacing it with whoever closed it.
 		Expect(stored.AnsweredBy).To(Equal("supervisor:attention-next"))
+	})
+
+	It("answers the close route's own code for a decision-less permission close", func() {
+		item := pushPermission()
+
+		resp := closeItem(item.ItemID, `{"answered_by":"attention-board"}`)
+
+		// ⚠️ The status alone is not the assertion. A 409 still carrying
+		// VALIDATION_ERROR would be the same defect wearing the right number: the
+		// caller could not tell "this transition does not exist" from "this close
+		// is not an acceptable way to end a gate", which is the whole point of the
+		// refusal having its own code.
+		Expect(resp.Code).To(Equal(http.StatusConflict))
+		Expect(resp.Body.String()).To(ContainSubstring(pkg.ErrorCodePermissionCloseWithoutDecision))
+		Expect(resp.Body.String()).NotTo(ContainSubstring("VALIDATION_ERROR"))
+		// The refusal wrote nothing through the route either.
+		stored, err := store.Get(ctx, item.ItemID)
+		Expect(err).To(BeNil())
+		Expect(stored.State).To(Equal(pkg.OpenState))
+		Expect(stored.ClosedAt).To(BeNil())
 	})
 
 	It("returns 404 for an item that does not exist", func() {

@@ -1,8 +1,13 @@
 ---
-status: approved
+status: completed
 spec: [012-bug-permission-close-without-decision]
+summary: Mapped ErrPermissionCloseWithoutDecision to its own HTTP 409 wire code on the close route, with a handler spec asserting the code and the untouched item.
+execution_id: attention-controller-refuse-decisionless-close-exec-046-spec-012-close-route-code
+dark-factory-version: v0.198.7
 created: "2026-10-16T09:37:00Z"
 queued: "2026-10-16T09:59:47Z"
+started: "2026-10-16T10:05:50Z"
+completed: "2026-10-16T10:09:49Z"
 branch: dark-factory/bug-permission-close-without-decision
 ---
 

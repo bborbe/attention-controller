@@ -77,4 +77,19 @@ const (
 	// exactly the case where retrying IS right. Sending a peer outage as 409
 	// therefore gives the caller the one instruction that is wrong.
 	ErrorCodePeerUnavailable = "PEER_UNAVAILABLE"
+
+	// ErrorCodePermissionCloseWithoutDecision is the code a caller receives when
+	// it closes an open `permission` item naming an arm and carrying no decision.
+	//
+	// It is deliberately not ErrorCodeValidation, which is what it used to
+	// arrive as. The request was well formed and named a real item, so reporting
+	// it as a malformed request asks the caller to correct something that is not
+	// wrong — and the caller cannot tell "this transition does not exist" from
+	// "this close is not an acceptable way to end a gate".
+	//
+	// It is deliberately not the illegal-transition reading either: `open ->
+	// closed` IS a row of the schema's table, so the transition exists and is
+	// merely not one that records a decision. The refusal is keyed on the
+	// stored item's mechanism, never on anything the caller supplied.
+	ErrorCodePermissionCloseWithoutDecision = "PERMISSION_CLOSE_WITHOUT_DECISION"
 )
