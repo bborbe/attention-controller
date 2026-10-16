@@ -1,9 +1,10 @@
 ---
-status: verifying
+status: completed
 approved: "2026-10-03T12:40:05Z"
 generating: "2026-10-03T13:11:21Z"
 prompted: "2026-10-03T13:11:21Z"
 verifying: "2026-10-03T13:41:49Z"
+completed: "2026-10-16T08:51:43Z"
 branch: dark-factory/card-corner-band-and-identity-placement
 ---
 
