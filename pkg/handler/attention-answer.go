@@ -197,7 +197,7 @@ func wrapAnswerError(
 		return wrapItemClosedError(ctx, err, itemID, store)
 	case errors.Is(err, pkg.ErrPeerUnavailable):
 		// ⚠️ Before the catch-all, for the same reason as in
-		// wrapTransitionError: a failed peer call is not a malformed request,
+		// wrapItemError: a failed peer call is not a malformed request,
 		// and it is the only failure here a retry can clear.
 		return libhttp.WrapWithDetails(
 			errors.Wrap(ctx, err, "answer failed"),

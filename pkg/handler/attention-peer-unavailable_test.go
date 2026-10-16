@@ -162,6 +162,24 @@ var _ = Describe("a federated peer failure reaching the client", func() {
 		ExpectPeerUnavailable(resp)
 	})
 
+	It("names the operation the caller asked for, not a hardcoded one", func() {
+		// ⚠️ The wrap string was the literal "close failed" on EVERY branch,
+		// including the ones a GET reaches, so a read that never asked to close
+		// anything answered "close failed: …". That mislabel is what let an
+		// earlier investigation read a GET's failure as "this store's own
+		// Close" — which is how the masking came to be attributed to the wrong
+		// code path in the first place.
+		h := handler.NewAttentionGetHandler(federatingOver(
+			http.StatusNotFound,
+			`{"error":{"code":"NOT_FOUND","message":"no such item"}}`,
+		))
+
+		resp := call(h, http.MethodGet, "/api/1.0/attention/"+itemID.String(), "")
+
+		Expect(resp.Body.String()).To(ContainSubstring("get failed"))
+		Expect(resp.Body.String()).NotTo(ContainSubstring("close failed"))
+	})
+
 	It("still answers a healthy peer's 404 as 404, so the two are not collapsed", func() {
 		// The counterpart guard: this is the reading observed live on the running
 		// store (leg 2 of the task's two-leg probe), and it is what the new 503

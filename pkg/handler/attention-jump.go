@@ -69,7 +69,7 @@ func NewAttentionJumpHandler(
 				}
 				item, err := store.Get(ctx, itemID)
 				if err != nil {
-					return wrapTransitionError(ctx, err, itemID)
+					return wrapItemError(ctx, err, itemID, "get failed")
 				}
 				// ⚠️ The pane is read through jumpPane, the SAME ordering the page
 				// rendered the control with. Reading `.Pane` alone here was a

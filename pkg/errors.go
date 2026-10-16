@@ -75,7 +75,7 @@ var (
 	//
 	// ⚠️ It exists so the failure reaches the HANDLER still classifiable. Before
 	// it, the federating client wrapped such a failure in a sentinel-less error,
-	// and every handler mapping — wrapTransitionError, wrapAnswerError and the
+	// and every handler mapping — wrapItemError, wrapAnswerError and the
 	// escalate switch — sends anything that is not one of their own sentinels to
 	// 409 VALIDATION_ERROR. A peer outage therefore reached the client as "your
 	// request was malformed", which is the one reading that sends the next

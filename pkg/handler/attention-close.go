@@ -78,7 +78,7 @@ func NewAttentionCloseHandler(store pkg.AttentionStore) http.Handler {
 					answeredClientFromRequest(req, request.Automation),
 				)
 				if err != nil {
-					return wrapTransitionError(ctx, err, itemID)
+					return wrapItemError(ctx, err, itemID, "close failed")
 				}
 				if err := libhttp.SendJSONResponse(ctx, resp, item, http.StatusOK); err != nil {
 					return errors.Wrap(ctx, err, "send response failed")
@@ -89,14 +89,21 @@ func NewAttentionCloseHandler(store pkg.AttentionStore) http.Handler {
 	)
 }
 
-// wrapTransitionError maps the store's failures onto responses, so an illegal
-// move, a missing item and an unavailable peer are distinguishable by the
-// caller.
-func wrapTransitionError(ctx context.Context, err error, itemID pkg.ItemID) error {
+// wrapItemError maps the store's failures onto responses, so an illegal move, a
+// missing item and an unavailable peer are distinguishable by the caller.
+//
+// ⚠️ `what` names the operation the CALLER asked for, and the caller is the only
+// layer that knows it: this helper is reached from Get (attention-get.go,
+// attention-jump.go) as well as from Close, and the store client beneath it
+// cannot tell which one is calling. Hardcoding "close failed" here — which this
+// did — put the word "close" into the body of a GET's error, and that mislabel
+// is what let an earlier investigation read a GET's failure as "this store's own
+// Close".
+func wrapItemError(ctx context.Context, err error, itemID pkg.ItemID, what string) error {
 	switch {
 	case errors.Is(err, pkg.ErrItemNotFound):
 		return libhttp.WrapWithDetails(
-			errors.Wrap(ctx, err, "close failed"),
+			errors.Wrap(ctx, err, what),
 			libhttp.ErrorCodeNotFound,
 			http.StatusNotFound,
 			map[string]any{"item_id": itemID.String()},
@@ -107,19 +114,15 @@ func wrapTransitionError(ctx context.Context, err error, itemID pkg.ItemID) erro
 		// arrives as 409 VALIDATION_ERROR and reads as a malformed request —
 		// when in fact it is the one failure here that is NOT the caller's fault
 		// and IS worth retrying.
-		//
-		// ⚠️ It is reached from Get as well as Close (attention-get.go,
-		// attention-jump.go), which is why the status alone cannot be read as
-		// "the close failed".
 		return libhttp.WrapWithDetails(
-			errors.Wrap(ctx, err, "close failed"),
+			errors.Wrap(ctx, err, what),
 			pkg.ErrorCodePeerUnavailable,
 			http.StatusServiceUnavailable,
 			map[string]any{"item_id": itemID.String()},
 		)
 	default:
 		return libhttp.WrapWithDetails(
-			errors.Wrap(ctx, err, "close failed"),
+			errors.Wrap(ctx, err, what),
 			libhttp.ErrorCodeValidation,
 			http.StatusConflict,
 			map[string]any{"item_id": itemID.String()},

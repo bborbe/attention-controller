@@ -124,7 +124,7 @@ func wrapEscalateError(ctx context.Context, err error, itemID pkg.ItemID) error 
 			map[string]any{"item_id": itemID.String()},
 		)
 	case errors.Is(err, pkg.ErrPeerUnavailable):
-		// ⚠️ Before the catch-all, as in wrapTransitionError and
+		// ⚠️ Before the catch-all, as in wrapItemError and
 		// wrapAnswerError: a failed peer call is not a malformed request, and it
 		// is the only failure here a retry can clear.
 		return libhttp.WrapWithDetails(
