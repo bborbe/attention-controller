@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.54.2
 
 - fix: **the error body now names the operation the caller actually asked for.** `wrapTransitionError` hardcoded the wrap string `"close failed"` on **both** of its branches while being reached from `Get` (`attention-get.go`, `attention-jump.go`) as well as from `Close`, so a failed read answered `"message": "close failed: peer attention store: item not found"` for a request that never asked to close anything. It is renamed `wrapItemError` and takes the operation from its caller — the only layer that knows it, since the store client beneath it is reached from four different routes and cannot tell which. ⚠️ This is not cosmetic: that mislabel is what let an earlier investigation read a GET's failure as *"this store's own `Close`"*, and it is why the masking was first attributed to the wrong code path. ⚠️ The `attention-close.go` name was wrong in the same direction for the same reason — it is a shared helper, not a close-only one.
 
