@@ -69,6 +69,29 @@ var (
 	// 500 and reserves this sentinel for a file that genuinely is not there.
 	ErrSessionHeartbeatNotFound = stderrors.New("session heartbeat not found")
 
+	// ErrPeerUnavailable is returned when a federated call to the peer store
+	// fails for a reason this store cannot classify: an unreachable peer, a
+	// deadline, or a peer answer no case in remoteResponseError recognises.
+	//
+	// ⚠️ It exists so the failure reaches the HANDLER still classifiable. Before
+	// it, the federating client wrapped such a failure in a sentinel-less error,
+	// and every handler mapping — wrapTransitionError, wrapAnswerError and the
+	// escalate switch — sends anything that is not one of their own sentinels to
+	// 409 VALIDATION_ERROR. A peer outage therefore reached the client as "your
+	// request was malformed", which is the one reading that sends the next
+	// caller down the wrong path: it cannot tell a missing item from a broken
+	// peer.
+	//
+	// ⚠️ It is deliberately NOT ErrItemNotFound. A failed peer call is not
+	// evidence of absence — the item may exist on the peer and be unreadable —
+	// so mapping it to 404 would answer a question the read never settled.
+	//
+	// ⚠️ It names no route. The client is reached from Get, Close, Answer and
+	// Escalate alike and has no idea which one is calling it; a sentinel
+	// carrying an HTTP verb would be a layering leak, and the handler that DOES
+	// know the route is where a route-bearing message belongs.
+	ErrPeerUnavailable = stderrors.New("peer attention store unavailable")
+
 	// ErrSessionLedgerEntryNotFound is the read path's "no such row" sentinel.
 	//
 	// ⚠️ It is reserved for a row that genuinely is not there, exactly as the

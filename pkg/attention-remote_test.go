@@ -161,7 +161,32 @@ var _ = Describe("HTTP remote attention store", func() {
 			Expect(errors.Is(err, pkg.ErrItemNotOpen)).Should(BeTrue())
 		})
 
-		It("does not flatten an unauthenticated peer into a sentinel", func() {
+		It("maps an unclassified peer failure to ErrPeerUnavailable", func() {
+			// ⚠️ This is the arm that used to carry NO sentinel at all, which is
+			// what let every handler mapping fall through to its default and
+			// answer 409 VALIDATION_ERROR — a peer outage reported to the client
+			// as a malformed request.
+			respondWith(
+				http.StatusServiceUnavailable,
+				`{"error":{"code":"","message":"peer is down"}}`,
+			)
+
+			_, err := remote.Read(ctx)
+
+			Expect(errors.Is(err, pkg.ErrPeerUnavailable)).Should(BeTrue())
+			// ⚠️ Not ErrItemNotFound: a failed call is not evidence of absence,
+			// so a 404 here would answer a question the read never settled.
+			Expect(errors.Is(err, pkg.ErrItemNotFound)).Should(BeFalse())
+		})
+
+		It("maps a rejected token to ErrPeerUnavailable, not to ErrItemNotFound", func() {
+			// ⚠️ The 401 is the reading observed LIVE against the configured peer
+			// (the tokenless call), not a constructed case.
+			//
+			// It is a different OPERATOR problem from an unreachable peer, and the
+			// message keeps both the status and the peer's own code so the two stay
+			// distinguishable there — but it is the same CLIENT answer, because
+			// neither is something the caller can correct.
 			respondWith(
 				http.StatusUnauthorized,
 				`{"error":{"code":"UNAUTHORIZED","message":"bad token"}}`,
@@ -170,6 +195,7 @@ var _ = Describe("HTTP remote attention store", func() {
 			_, err := remote.Read(ctx)
 
 			Expect(err).ShouldNot(BeNil())
+			Expect(errors.Is(err, pkg.ErrPeerUnavailable)).Should(BeTrue())
 			Expect(errors.Is(err, pkg.ErrItemNotFound)).Should(BeFalse())
 			Expect(err.Error()).Should(ContainSubstring("401"))
 		})
