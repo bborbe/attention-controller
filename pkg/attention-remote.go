@@ -335,9 +335,17 @@ func remoteResponseError(ctx context.Context, resp *http.Response) error {
 		// rejected token are different operator problems, so the status and the
 		// peer's own code ride the message rather than being flattened into a
 		// generic failure.
+		//
+		// ⚠️ ErrPeerUnavailable is what keeps the failure CLASSIFIABLE by the
+		// handler, and without it the sentence above was untrue: the status and
+		// the code rode the message, but the error itself carried no sentinel,
+		// so every handler mapping fell through to its own default and answered
+		// 409 VALIDATION_ERROR. A peer outage reached the client as a malformed
+		// request. The sentinel is the part that makes the distinction
+		// actionable rather than merely printed.
 		return errors.Wrapf(
 			ctx,
-			errors.New(ctx, "peer attention store call failed"),
+			ErrPeerUnavailable,
 			"status %d code %q: %s",
 			resp.StatusCode,
 			code,

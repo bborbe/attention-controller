@@ -38,7 +38,7 @@ func NewAttentionGetHandler(store pkg.AttentionStore) http.Handler {
 				}
 				item, err := store.Get(ctx, itemID)
 				if err != nil {
-					return wrapTransitionError(ctx, err, itemID)
+					return wrapItemError(ctx, err, itemID, "get failed")
 				}
 				if err := libhttp.SendJSONResponse(ctx, resp, item, http.StatusOK); err != nil {
 					return errors.Wrap(ctx, err, "send response failed")

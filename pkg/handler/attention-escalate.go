@@ -88,7 +88,7 @@ func handleAttentionEscalate(
 
 // wrapEscalateError maps the store's escalation failures onto distinct
 // responses, so a caller can tell a lost race from an item that already left
-// the queue from a missing item.
+// the queue from a missing item from an unavailable peer.
 func wrapEscalateError(ctx context.Context, err error, itemID pkg.ItemID) error {
 	switch {
 	case errors.Is(err, pkg.ErrInvalidSessionID):
@@ -121,6 +121,16 @@ func wrapEscalateError(ctx context.Context, err error, itemID pkg.ItemID) error 
 			errors.Wrap(ctx, err, "escalate failed"),
 			pkg.ErrorCodeItemNotOpen,
 			http.StatusConflict,
+			map[string]any{"item_id": itemID.String()},
+		)
+	case errors.Is(err, pkg.ErrPeerUnavailable):
+		// ⚠️ Before the catch-all, as in wrapItemError and
+		// wrapAnswerError: a failed peer call is not a malformed request, and it
+		// is the only failure here a retry can clear.
+		return libhttp.WrapWithDetails(
+			errors.Wrap(ctx, err, "escalate failed"),
+			pkg.ErrorCodePeerUnavailable,
+			http.StatusServiceUnavailable,
 			map[string]any{"item_id": itemID.String()},
 		)
 	default:
