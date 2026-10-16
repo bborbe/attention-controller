@@ -230,7 +230,7 @@ var _ = Describe("the Allow / Deny pair on the served page", func() {
 	}
 
 	It(
-		"renders the Allow / Deny pair on a headless worker's permission row and no control on a tab worker's",
+		"renders the Allow / Deny pair on a headless worker's permission row and renders the pair on a tab worker's permission card",
 		func() {
 			// Two records identical apart from `mode`. ⚠️ The session ids must differ:
 			// the ledger is keyed by session id and a duplicate id collides
@@ -248,18 +248,20 @@ var _ = Describe("the Allow / Deny pair on the served page", func() {
 			tabRow := rowOf(body, tab.ItemID)
 
 			// Positive control on both rows: each carries its own item's payload, so
-			// the pair rendered. This is what makes the zero below a withheld control
-			// rather than an absent row — a run in which both rows carry zero
-			// data-decision attributes is the unfixed build and fails here.
+			// the pair rendered. This is what makes each count below a rendered control
+			// rather than a page that dropped the row.
 			Expect(headlessRow).To(ContainSubstring(headless.Payload.String()))
 			Expect(tabRow).To(ContainSubstring(tab.Payload.String()))
 
-			// Exactly one of the two carries the pair, and it is the headless row. The
-			// positive assertion is what stops an absence-shaped pass.
+			// BOTH classes carry the pair: the mode is no longer part of the gate. The
+			// headless row is asserted first so a build that rendered the pair on only
+			// one class cannot pass by picking the other.
 			Expect(strings.Count(headlessRow, `data-decision="allow"`)).To(Equal(1))
 			Expect(strings.Count(headlessRow, `data-decision="deny"`)).To(Equal(1))
 			Expect(headlessRow).To(ContainSubstring(allowDenyPair))
-			Expect(strings.Count(tabRow, `data-decision=`)).To(Equal(0))
+			Expect(strings.Count(tabRow, `data-decision="allow"`)).To(Equal(1))
+			Expect(strings.Count(tabRow, `data-decision="deny"`)).To(Equal(1))
+			Expect(tabRow).To(ContainSubstring(allowDenyPair))
 		},
 	)
 
@@ -292,9 +294,10 @@ var _ = Describe("the Allow / Deny pair on the served page", func() {
 		},
 	)
 
-	It("renders no control when the session has no spawn ledger record", func() {
+	It("renders the pair when the session resolves no spawn ledger record", func() {
 		// The ledger holds records for other sessions, but none for this one — an
-		// older spawn, a pruned ledger. The row is a tab worker's by default.
+		// older spawn, a pruned ledger. The pair renders anyway: the ledger is no
+		// longer part of the gate.
 		writeSpawn(ledgerSessionID("somebody-else"), "headless")
 		item := pushPermission(ledgerSessionID("unrecorded"))
 
@@ -302,30 +305,32 @@ var _ = Describe("the Allow / Deny pair on the served page", func() {
 		Expect(resp.Code).To(Equal(http.StatusOK))
 		row := rowOf(resp.Body.String(), item.ItemID)
 
-		// Positive control: the card rendered, so the absence below is a withheld
+		// Positive control: the card rendered, so the pair below is a rendered
 		// control rather than a dropped row.
 		Expect(row).To(ContainSubstring(item.Payload.String()))
-		Expect(strings.Count(row, `data-decision=`)).To(Equal(0))
+		Expect(strings.Count(row, `data-decision="allow"`)).To(Equal(1))
+		Expect(strings.Count(row, `data-decision="deny"`)).To(Equal(1))
 	})
 
-	It("renders no control when the ledger store is nil", func() {
+	It("renders the pair when the ledger store is nil", func() {
 		item := pushPermission(ledgerSessionID("no-ledger"))
 
-		// A host with no ledger store wired in at all. The resolver fails closed:
-		// a nil store resolves no mode, so the row renders no control.
+		// A host with no ledger store wired in at all. The resolver resolves no
+		// mode, and the pair renders regardless.
 		resp := get(buildPageWithSpawn(nil))
 		Expect(resp.Code).To(Equal(http.StatusOK))
 		row := rowOf(resp.Body.String(), item.ItemID)
 
-		// Positive control: the card rendered, so the absence below is a withheld
+		// Positive control: the card rendered, so the pair below is a rendered
 		// control rather than a dropped row.
 		Expect(row).To(ContainSubstring(item.Payload.String()))
-		Expect(strings.Count(row, `data-decision=`)).To(Equal(0))
+		Expect(strings.Count(row, `data-decision="allow"`)).To(Equal(1))
+		Expect(strings.Count(row, `data-decision="deny"`)).To(Equal(1))
 	})
 
-	It("renders no control when the ledger store cannot be read", func() {
-		// The store's read fails. Fail-closed: a read error resolves no mode, so
-		// the row renders no control.
+	It("renders the pair when the ledger store cannot be read", func() {
+		// The store's read fails. The pair renders regardless: the ledger is no
+		// longer part of the gate.
 		//
 		// ⚠️ The mock is legitimate for THIS case alone: it simulates a store
 		// FAILURE, not a store's CONTENTS, and a failure is the one thing a real
@@ -340,16 +345,16 @@ var _ = Describe("the Allow / Deny pair on the served page", func() {
 		Expect(resp.Code).To(Equal(http.StatusOK))
 		row := rowOf(resp.Body.String(), item.ItemID)
 
-		// Positive control: the card rendered, so the absence below is a withheld
+		// Positive control: the card rendered, so the pair below is a rendered
 		// control rather than a dropped row.
 		Expect(row).To(ContainSubstring(item.Payload.String()))
-		Expect(strings.Count(row, `data-decision=`)).To(Equal(0))
+		Expect(strings.Count(row, `data-decision="allow"`)).To(Equal(1))
+		Expect(strings.Count(row, `data-decision="deny"`)).To(Equal(1))
 	})
 
-	It("renders no control when a record's mode is outside the headless/interactive set", func() {
-		// A third mode the ledger has not been taught. Fail-closed means it reads
-		// as not headless: the operator loses a control rather than gaining a
-		// laundering one.
+	It("renders the pair when a record's mode is outside the headless/interactive set", func() {
+		// A third mode the ledger has not been taught. The pair renders anyway:
+		// the mode is no longer part of the gate.
 		writeSpawn(ledgerSessionID("daemon"), "daemon")
 		item := pushPermission(ledgerSessionID("daemon"))
 
@@ -358,61 +363,61 @@ var _ = Describe("the Allow / Deny pair on the served page", func() {
 		row := rowOf(resp.Body.String(), item.ItemID)
 
 		Expect(row).To(ContainSubstring(item.Payload.String()))
-		Expect(strings.Count(row, `data-decision=`)).To(Equal(0))
+		Expect(strings.Count(row, `data-decision="allow"`)).To(Equal(1))
+		Expect(strings.Count(row, `data-decision="deny"`)).To(Equal(1))
 	})
 
 	It(
-		"reads the spawn ledger at render time, so a record added between loads adds the control",
+		"renders the pair independently of the spawn ledger, present before any record exists and unmoved by a mode flip",
 		func() {
 			item := pushPermission(ledgerSessionID("late"))
 
-			// ⚠️ The handler is built once and used for all three loads. No restart, no
-			// rebuild and no second handler: the render-time read is the design, and a
-			// case that rebuilt the handler between loads would pass even for an
-			// implementation that cached the ledger at construction.
+			// ⚠️ The handler is built once and used for all four loads. No restart, no
+			// rebuild and no second handler: the case proves the pair does not depend
+			// on the ledger at all, and a case that rebuilt the handler between loads
+			// could not observe that.
 			page := buildPage()
 
 			first := rowOf(get(page).Body.String(), item.ItemID)
-			// Positive control: the card rendered, so the zero below is a withheld
-			// control rather than a dropped row.
+			// Positive control: the card rendered, and it already carries the pair
+			// with NO ledger record in existence.
 			Expect(first).To(ContainSubstring(item.Payload.String()))
-			Expect(strings.Count(first, `data-decision=`)).To(Equal(0))
+			Expect(strings.Count(first, `data-decision="allow"`)).To(Equal(1))
+			Expect(strings.Count(first, `data-decision="deny"`)).To(Equal(1))
 
-			// The record appears between the two loads. The clock is advanced past
-			// the resolver's two-second host-snapshot window first: the ledger is
-			// read at render time, but it is served from that cache inside the
-			// window, so without this the second load would legitimately still see
-			// the pre-change ledger.
-			//
-			// ⚠️ And past the window the load serves the snapshot it already holds
-			// and refreshes BEHIND the request, so the control does not appear on
-			// this load either — it appears on a later one, once the background
-			// refresh has published. The stale load is asserted directly, and the
-			// control is asserted with Eventually over further loads.
+			// A record appears between the loads. The clock is advanced past the
+			// resolver's two-second host-snapshot window first, so this load is
+			// served the snapshot the resolver already holds rather than a fresh
+			// read. The pair is unchanged by the record either way, which is the
+			// point: the ledger's arrival moves nothing on the card.
 			writeSpawn(ledgerSessionID("late"), "headless")
 			clock.SetNow(clock.Now().Add(libtime.Duration(3 * 1e9)))
 			stale := rowOf(get(page).Body.String(), item.ItemID)
-			// Positive control: the card rendered, so the zero below is a withheld
+			// Positive control: the card rendered, so the pair below is a rendered
 			// control rather than a dropped row.
 			Expect(stale).To(ContainSubstring(item.Payload.String()))
-			Expect(strings.Count(stale, `data-decision=`)).To(Equal(0))
+			Expect(strings.Count(stale, `data-decision="allow"`)).To(Equal(1))
+			Expect(strings.Count(stale, `data-decision="deny"`)).To(Equal(1))
 
+			// ⚠️ Redundant with the assertions above now that the ledger is not read
+			// by the gate: kept as a load-over-time sanity check, not as a distinct
+			// control.
 			Eventually(func() string {
 				return rowOf(get(page).Body.String(), item.ItemID)
 			}, "2s").Should(ContainSubstring(`data-decision="allow"`))
 
-			// And disappears again once the row stops being headless. ⚠️ The store
-			// has no Delete — Post REPLACES a session's row — so the retired
+			// And the pair survives the row's mode flipping away from headless. ⚠️ The
+			// store has no Delete — Post REPLACES a session's row — so the retired
 			// file-shaped "record removed" is expressed as a mode flip to
-			// `interactive`. The invariant is unchanged: the ledger is re-read at
-			// render time, so a change between loads is observed on a later load,
-			// and the fail-closed direction still withholds the control.
+			// `interactive`. The pair is unmoved, because the mode was never part of
+			// the gate.
 			writeSpawn(ledgerSessionID("late"), "interactive")
 			clock.SetNow(clock.Now().Add(libtime.Duration(3 * 1e9)))
 			Eventually(func() bool {
 				row := rowOf(get(page).Body.String(), item.ItemID)
 				return strings.Contains(row, item.Payload.String()) &&
-					strings.Count(row, `data-decision=`) == 0
+					strings.Count(row, `data-decision="allow"`) == 1 &&
+					strings.Count(row, `data-decision="deny"`) == 1
 			}, "2s").Should(BeTrue())
 		},
 	)
@@ -424,9 +429,9 @@ var _ = Describe("the Allow / Deny pair on the served page", func() {
 			// with the task span — the elements this case asserts are unchanged.
 			writeBoardPolishVault(ledgerSessionID("tab-unchanged"))
 			writeSpawn(ledgerSessionID("tab-unchanged"), "interactive")
-			// ⚠️ A SECOND permission item, whose session IS recorded headless, is
-			// required: without a headless row there is no row carrying the pair, and
-			// the exact-markup assertion below would have nothing to observe.
+			// ⚠️ A SECOND permission item, whose session IS recorded headless, is kept
+			// beside the tab one so the pair's exact markup is observed on the class it
+			// was first asserted against, not only on the newly included one.
 			writeSpawn(ledgerSessionID("headless-unchanged"), "headless")
 
 			tab := pushPermission(ledgerSessionID("tab-unchanged"))
@@ -441,16 +446,18 @@ var _ = Describe("the Allow / Deny pair on the served page", func() {
 			Expect(tabRow).To(ContainSubstring(tab.Payload.String()))
 
 			// The jump corner, the corner X and the provenance line — with its task
-			// span — are unchanged on a tab worker's row. The X is a CLEARING control,
-			// not an answering one, so the gate does not reach it.
+			// span — are unchanged on a tab worker's row.
 			Expect(tabRow).To(ContainSubstring(`class="jump-corner"`))
 			Expect(tabRow).To(ContainSubstring("data-corner-x"))
 			Expect(tabRow).To(ContainSubstring(`class="provenance"`))
 			Expect(tabRow).To(ContainSubstring(`<span class="task">`))
 			Expect(tabRow).NotTo(ContainSubstring("<form"))
 			Expect(tabRow).NotTo(ContainSubstring("<input"))
-			// And no answering control: the pair is withheld from the tab worker.
-			Expect(strings.Count(tabRow, `data-decision=`)).To(Equal(0))
+			// And the pair renders on the tab worker's card too: the mode is no longer
+			// part of the gate.
+			Expect(strings.Count(tabRow, `data-decision="allow"`)).To(Equal(1))
+			Expect(strings.Count(tabRow, `data-decision="deny"`)).To(Equal(1))
+			Expect(tabRow).To(ContainSubstring(allowDenyPair))
 
 			// The headless row carries the pair's markup exactly, unchanged from the
 			// pre-change revision.

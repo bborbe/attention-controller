@@ -784,30 +784,25 @@ document.addEventListener('click', function (event) {
    it is the Dismiss the card already carries (the skip answer, open -> answered,
    answer.kind: skip), on an ack card it is the Acknowledge it already carries
    (the close, open -> closed, answered_at unset), and on a permission card it is
-   the Deny control the card already carries where that control renders (the
-   answer, open -> answered, decision: deny) or the clear where it does not
-   (that same close — open -> closed, answered_at and decision both unset). It
+   the Deny control the card carries (the answer, open -> answered, decision:
+   deny). The class split that stood here until 2026-10-16 is gone: the pair
+   renders on every permission card, so the X answers on every one of them. It
    adds no transition and no field — see [[Attention Item Schema]]
    § Answer routing, § The corner X.
-   ⚠️ THE PERMISSION BRANCH SPLITS BY CLASS, from 2026-10-16, and that split is
-   the whole of the change. Where the Deny control renders (row.Decide true — a
-   headless, non-production-touching park) the X now ANSWERS, dispatching the
-   Deny button exactly as the message branch dispatches Dismiss. It previously
-   cleared there, and the reading that stood here defended that: "the schema
-   forbids an arm ANSWERING a permission item ... while the X only CLEARS the
-   card. Clearing is not deciding." The first half is still true; the second is
-   not, because a clear on a permission item is not a lesser act than an answer —
-   it is a fatal one. closed is terminal, the store's transition table carries no
-   closed -> answered row, so the parked worker's own arm answer is refused with
-   ITEM_CLOSED and the gate never releases: the worker sits its full timeout to
-   the auto-deny. A clear does not preserve the operator's decision, it consumes
-   the only path that decision had.
-   ⚠️ Where the Deny control does NOT render (row.Decide false — a tab worker's
-   card, a production-touching park) the X is the board's ONLY control and it
-   still CLEARS. Routing it to /answer there would write an answer-shaped record
-   on a class the board deliberately renders no answering control for, which is
-   the permission laundering the schema forbids. Those two classes are their own
-   work, not this change's.
+   ⚠️ THE PERMISSION BRANCH NO LONGER SPLITS BY CLASS, from 2026-10-16. It once
+   did: the X answered where the Deny control rendered and CLEARED where it did
+   not, and that split is gone because the pair now renders on every permission
+   card. The reading that defended the clearing arm is kept, because it is the
+   evidence the operator's ruling rests on: the schema forbids an arm ANSWERING a
+   permission item, and clearing was defended as "not deciding". The second half
+   of that reading was false. A clear on a permission item is not a lesser act
+   than an answer — it is a fatal one. closed is terminal, the store's transition
+   table carries no closed -> answered row, so the parked worker's own arm answer
+   is refused with ITEM_CLOSED and the gate never releases: the worker sits its
+   full timeout to the auto-deny. A clear does not preserve the operator's
+   decision, it consumes the only path that decision had. So the X now ANSWERS on
+   every permission card, dispatching the Deny button exactly as the message
+   branch dispatches Dismiss.
    There is deliberately no third branch below: a permission row carries no
    form.answer, so a row with no Deny control falls through to closeCard exactly
    as an ack row does. The mechanisms share one dispatch because they share one
@@ -834,15 +829,18 @@ document.addEventListener('click', function (event) {
      branch's reason: the data-decision handler owns the payload, the stale-card
      classification and the reload, and a second copy here would be a second
      thing to keep in step. Its PRESENCE is the class test — the control renders
-     under 'and .Decide (not .Dimmed)', so finding it means this row is the class
-     whose X answers, and its absence means the class whose X still clears. */
+     under 'and .Decide (not .Dimmed)', and .Decide is true for every permission
+     row, so finding it means this is a permission row and the X answers. The
+     closeCard fall-through below is therefore unreachable for a permission row;
+     it remains the ack path and the message-without-form path. */
   var deny = row.querySelector('button[data-decision=deny]');
   if (deny) { deny.click(); return; }
   closeCard(row);
 });
 /* ⚠️ The container is OPTIONAL, and that is not defensive coding — it is the
-   defect this function shipped with until 2026-09-27. A permission row renders
-   no .actions div (only message and ack rows do), so row.querySelector returned
+   defect this function shipped with until 2026-09-27. A permission card
+   carried no actions container then (only message and ack cards did), so
+   row.querySelector returned
    null and the next call threw a TypeError on EVERY X-click on a permission
    card. The close itself succeeded and the row still left the page, because the
    stream removes it rather than this handler — which is exactly why the throw

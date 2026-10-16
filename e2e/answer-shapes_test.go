@@ -31,12 +31,24 @@ import (
 // silently. Each case clicks the page's own controls and then reads the stored
 // item back through the API; nothing here calls the answer endpoint directly.
 
-// pushCard pushes a card built from a request the caller shapes, filling in the
-// fixture producer and liveness every case shares.
+// pushCard pushes a card bound to the shared headless fixture session.
 func pushCard(request pkg.PushRequest) string {
+	return pushCardFor(e2eSessionID, request)
+}
+
+// pushCardFor pushes a card built from a request the caller shapes, bound to the
+// given fixture session, filling in the fixture producer and liveness.
+//
+// ⚠️ It is a second entry point rather than a session parameter on every call:
+// only the cases that assert a SECOND class need it, and a parameter on pushCard
+// would put a session argument in the path every other case takes to serve two
+// of them. The binding is the whole point — a card pushed with the wrong
+// liveness_ref is not merely misfiled, it does not render, and a case that
+// asserted on it would pass vacuously.
+func pushCardFor(sessionID string, request pkg.PushRequest) string {
 	request.ProducerID = pkg.ProducerID(e2eProducerID)
 	request.ProducerKind = pkg.SessionProducerKind
-	request.LivenessRef = pkg.LivenessRef("session:" + e2eSessionID)
+	request.LivenessRef = pkg.LivenessRef("session:" + sessionID)
 	if request.InterruptClass == "" {
 		request.InterruptClass = pkg.InterruptClass("pick")
 	}
@@ -504,8 +516,8 @@ var _ = Describe("an answer given on the rendered board", func() {
 		Expect(answeredItem(itemID).Decision).To(Equal(pkg.Decision("deny")))
 	})
 
-	// The corner X on a permission row whose Deny control renders is the same act
-	// as that Deny control, not the clear it performs on every other row. The
+	// The corner X on a permission row is the same act as that row's Deny
+	// control, not the clear it performs on an ack or a message row. The
 	// distinction is not cosmetic: `closed` is terminal and the store's
 	// transition table carries no `closed` -> `answered` row, so a clear there
 	// consumes the park's only answer path and the worker's gate never releases.
@@ -513,45 +525,62 @@ var _ = Describe("an answer given on the rendered board", func() {
 	// by its STATE assertion, not by its payload one: a close would leave the
 	// item `closed` with an empty Decision, and `Eventually` on `AnsweredState`
 	// never passes on a `closed` item — it times out.
+	//
+	// ⚠️ It runs over BOTH fixture classes, because since 2026-10-16 the pair —
+	// and therefore the X's answering act — renders on every permission card, not
+	// only a headless worker's. The tab-worker class gets its OWN ledger row and
+	// its OWN pushed item: the pair renders per-row, so asserting page-wide would
+	// satisfy both classes off the headless row alone.
 	It("stores the corner X on a permission card as decision deny, and issues no close", func() {
-		itemID := pushCard(pkg.PushRequest{
-			DedupKey:        "shape-corner-x-permission",
-			Payload:         "Write: /tmp/e2e-corner-x-permission",
-			InterruptClass:  pkg.InterruptClass("approve"),
-			AnswerMechanism: pkg.PermissionAnswerMechanism,
-		})
-		page = newPage("")
+		fixtures := []struct {
+			class    string
+			session  string
+			dedupKey string
+		}{
+			{"headless worker", e2eSessionID, "shape-corner-x-permission"},
+			{"tab worker", e2eTabSessionID, "shape-corner-x-permission-tab"},
+		}
+		for _, fixture := range fixtures {
+			itemID := pushCardFor(fixture.session, pkg.PushRequest{
+				DedupKey:        pkg.DedupKey(fixture.dedupKey),
+				Payload:         pkg.Payload("Write: /tmp/" + fixture.dedupKey),
+				InterruptClass:  pkg.InterruptClass("approve"),
+				AnswerMechanism: pkg.PermissionAnswerMechanism,
+			})
+			page = newPage("")
 
-		// The precondition, asserted rather than assumed: the X's act is the
-		// Deny control's only while that control renders, so a fixture whose
-		// `Decide` were false would test the other class and pass for the wrong
-		// reason.
-		Expect(page.Locator(rowSelector(itemID)+` button[data-decision="deny"]`).Count()).
-			To(Equal(1), "the fixture must render the Deny control the X dispatches")
+			// The precondition, asserted rather than assumed: the X's act is the
+			// Deny control's only while that control renders, so a fixture whose
+			// `Decide` were false would test the other class and pass for the
+			// wrong reason.
+			Expect(page.Locator(rowSelector(itemID)+` button[data-decision="deny"]`).Count()).
+				To(Equal(1), "the %s fixture must render the Deny control the X dispatches", fixture.class)
 
-		// The close half of the criterion, observed at the network rather than
-		// inferred from the state: a build that answered AND closed would satisfy
-		// the decision assertion below while still issuing the request this
-		// change exists to remove. The callback records rather than asserts —
-		// Ginkgo's Expect is not goroutine-safe, and the route runs on its own —
-		// and it CONTINUES the request rather than aborting it, so a build that
-		// still closes leaves the item `closed` and the failure below names that
-		// state instead of a stalled `open`.
-		closes := make(chan struct{}, 4)
-		Expect(page.Route("**/close", func(route playwright.Route) {
-			select {
-			case closes <- struct{}{}:
-			default:
-			}
-			_ = route.Continue()
-		})).To(Succeed())
+			// The close half of the criterion, observed at the network rather than
+			// inferred from the state: a build that answered AND closed would
+			// satisfy the decision assertion below while still issuing the request
+			// this change exists to remove. The callback records rather than
+			// asserts — Ginkgo's Expect is not goroutine-safe, and the route runs on
+			// its own — and it CONTINUES the request rather than aborting it, so a
+			// build that still closes leaves the item `closed` and the failure below
+			// names that state instead of a stalled `open`.
+			closes := make(chan struct{}, 4)
+			Expect(page.Route("**/close", func(route playwright.Route) {
+				select {
+				case closes <- struct{}{}:
+				default:
+				}
+				_ = route.Continue()
+			})).To(Succeed())
 
-		click(page, itemID, cornerXSelector)
+			click(page, itemID, cornerXSelector)
 
-		item := answeredItem(itemID)
-		Expect(item.Decision).To(Equal(pkg.Decision("deny")))
-		Expect(item.AnsweredBy).To(Equal("attention-board"))
-		Expect(closes).To(HaveLen(0), "the corner X issued a close on a permission row")
+			item := answeredItem(itemID)
+			Expect(item.Decision).To(Equal(pkg.Decision("deny")))
+			Expect(item.AnsweredBy).To(Equal("attention-board"))
+			Expect(closes).To(HaveLen(0),
+				"the corner X issued a close on a %s permission row", fixture.class)
+		}
 	})
 
 	It("renders the store's failure on a lost-race Allow, never the answerFailure object", func() {
