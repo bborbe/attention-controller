@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.55.3
 
 - fix: **a permission card's Allow / Deny pair no longer wears the board's forward-move and skip affordances, so a board walk cannot answer a gate it never read.** Measured 2026-10-16: a walk down the board clicking the green advance control recorded `allow` on every permission card it passed — including one the operator had been told to Deny seconds earlier — because the pair borrowed `class="next"` (the green filled forward move that means *Submit answer* on every other card class) and `class="dismiss"` (the muted skip). So the board's own visual language taught *green = advance, red = skip*, and the only control a walk reached was Allow; no arm ever recorded a `deny` all day. The pair's markup is a **frozen interface** (`specs/completed/004`, `specs/completed/012`, and `specs/in-progress/007` whose AC5 asserts the class-bearing literal is unchanged), so the change lands in the stylesheet rather than the template: `[data-decision]` attribute rules restyle the pair as two explicit, equally weighted choices — Allow `--green` text and border, Deny `--warn` — neither filled like the forward move, neither muted like the skip. The attribute selector's `(0,2,1)` outranks `.actions .next`'s `(0,2,0)` and the rules are placed after it, so the cascade is unambiguous. No new palette token and no markup change.
 
