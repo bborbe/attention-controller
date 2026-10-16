@@ -21,7 +21,7 @@ Same harness as scenario 001: own binary, random port, temp `DATADIR`; the launc
 
 ## Expected
 
-- [ ] Suite reports `28 of 28 Specs` and `ok github.com/bborbe/attention-controller/e2e`. ⚠️ **This is the package total** — the answer-shape cases plus the board's cases in `e2e/board_test.go`. ⚠️ **Read it with `go test -mod=mod -tags e2e -count=1 -v ./e2e/`, not with `make e2e`:** that target runs `go test -tags e2e ./e2e/` **without `-v`**, and `go test` discards a passing package's stdout, so Ginkgo's `Ran N of N Specs` summary never appears.
+- [ ] Suite reports `36 of 36 Specs` and `ok github.com/bborbe/attention-controller/e2e`. ⚠️ **Moved `28` → `36` on 2026-10-16:** one of the eight is the corner X's new permission act; the other **seven landed before it and left this total stale**, so the gate read red on master until this edit. ⚠️ **This is the package total** — the answer-shape cases plus the board's cases in `e2e/board_test.go`. ⚠️ **Read it with `go test -mod=mod -tags e2e -count=1 -v ./e2e/`, not with `make e2e`:** that target runs `go test -tags e2e ./e2e/` **without `-v`**, and `go test` discards a passing package's stdout, so Ginkgo's `Ran N of N Specs` summary never appears.
 - [ ] `stores a single-question radio pick as option + value` — `answer.kind=option`, `answer.value=Dog`
 - [ ] `stores a single-question multi-select as option + values` — `answer.values` = Cheese, Olives
 - [ ] `stores free text typed in Other as text` — `answer.kind=text`, `answer.value=Zoe`
