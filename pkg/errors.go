@@ -100,6 +100,21 @@ var (
 	// here than on the heartbeat path, because the row it answers for is what a
 	// manager reads to decide whether a worker exists at all.
 	ErrSessionLedgerEntryNotFound = stderrors.New("session ledger entry not found")
+
+	// ErrPermissionCloseWithoutDecision is returned when an arm-caused close is
+	// attempted on an open `permission` item.
+	//
+	// A `permission` item is a gate the operator alone may answer, and the close
+	// route's arm-caused write records no decision — it is the acknowledgement of
+	// an `ack` item, which routes nothing back. Applying that write to a gate
+	// does not clear it, it consumes it: `closed` is terminal, so the write takes
+	// the gate's only answer path and the asking session stays parked.
+	//
+	// ⚠️ It is deliberately NOT ErrIllegalTransition. `open -> closed` is a row
+	// of the schema's table, so a caller told "illegal transition" would be told
+	// the wrong thing — and could not tell "this transition does not exist" from
+	// "this close is not an acceptable way to end a gate".
+	ErrPermissionCloseWithoutDecision = stderrors.New("permission close without decision")
 )
 
 // isNotFound reports whether a libkv read failed because the thing asked for
