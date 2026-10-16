@@ -1231,9 +1231,17 @@ function replayFailure(row) {
      an exception the operator disowned (it had been read off a yes on a menu
      they did not write). ⚠️ That disowned exception was a MECHANISM gate
      (permission), and mechanism gates are what the operator's ruling forbids: a
-     permission row carries the X because clearing a card is not answering a
-     gate — the X closes it, routes no answer, and leaves the asking session
-     frozen and the gate operator-only. ⚠️ .Dimmed is not a mechanism but a
+     permission row carries the X because the X is not itself an answer control —
+     its act is the mechanism's own dominant act, dispatched per class, adding no
+     transition and no field. ⚠️ AMENDED 2026-10-16: this sentence read "clearing
+     a card is not answering a gate — the X closes it, routes no answer, and
+     leaves the asking session frozen and the gate operator-only", and that is
+     FALSE on a permission row whose Deny control renders. The X ANSWERS there
+     (open -> answered, decision: deny). A clear would not leave the gate
+     operator-only — it would CONSUME it, because closed is terminal and the
+     table carries no closed -> answered row, so the asking session's own arm
+     answer is refused with ITEM_CLOSED. See the dispatch comment on the
+     data-corner-x handler below. ⚠️ .Dimmed is not a mechanism but a
      STATE (item.State == pkg.AnsweredState — the dimmed record card), so
      (not .Dimmed) does NOT re-create that exception: it withholds the X from no
      mechanism. The schema page already draws this boundary — the dimmed record
@@ -1242,7 +1250,7 @@ function replayFailure(row) {
      reaches it. ⚠️ Without the conjunct the X's fall-through below closes the
      item and deletes the record the dimmed card exists to preserve. See
      [[Attention Item Schema]] § The corner X, and the dispatch comment on the
-     data-corner-x handler below. */}}{{if not .Dimmed}}<button type="button" class="corner-x" data-corner-x aria-label="Skip this item">✕</button>{{end}}
+     data-corner-x handler below. */}}{{if not .Dimmed}}<button type="button" class="corner-x" data-corner-x aria-label="{{if .Decide}}Deny this request{{else}}Skip this item{{end}}">✕</button>{{end}}
 {{/* The read-aloud control renders on every row whose Speak is set, from
      2026-09-27 — except the dimmed record card, from 2026-09-27. It was gated on
      'and .Message .Speak', which excepted permission rows on the reasoning that
