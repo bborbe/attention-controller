@@ -1,8 +1,9 @@
 ---
-status: prompted
+status: verifying
 approved: "2026-10-16T09:32:49Z"
 generating: "2026-10-16T09:32:50Z"
 prompted: "2026-10-16T09:49:41Z"
+verifying: "2026-10-16T10:14:49Z"
 branch: dark-factory/bug-permission-close-without-decision
 ---
 
