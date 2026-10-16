@@ -1,7 +1,13 @@
 ---
-spec: ["012-render-decide-pair-on-every-permission-card"]
-status: draft
+status: completed
+spec: [012-render-decide-pair-on-every-permission-card]
+summary: 'Retired both exclusions from docs/production-touching-marker.md, keeping the marker convention documented, and verified the existing ## Unreleased changelog entry without editing it'
+execution_id: attention-controller-corner-x-all-classes-exec-046-spec-012-retire-exclusions-and-changelog
+dark-factory-version: v0.198.7
 created: "2026-10-16T16:30:00Z"
+queued: "2026-10-16T16:40:28Z"
+started: "2026-10-16T16:40:29Z"
+completed: "2026-10-16T16:42:42Z"
 ---
 
 <summary>
@@ -9,14 +15,14 @@ created: "2026-10-16T16:30:00Z"
 - The page still documents the production-touching marker convention itself — the marker's form, the pattern that recognises it, and the traps inside that pattern — because the convention outlives the board's read of it.
 - Every statement that the board withholds a control, that either gate fails open or closed, or that a marker suppresses the pair is gone from the page.
 - The page states plainly what replaced the two fail directions: nothing, because the render path consults no provenance fact any more.
-- The changelog gains an `## Unreleased` section, which the file does not have today, and this change's entry sits under it.
+- The changelog **already carries** an `## Unreleased` section with this change's bullet — dark-factory's changelog suffix wrote it while the preceding prompt ran — so this prompt verifies that entry rather than creating one.
 - No released changelog section is touched, and no version heading is added by hand — the releaser owns that rename.
 - No Go file, test, scenario, spec or vault file changes; the two now-unread provenance facts stay exactly where they are.
 - The repo's test and precommit gates are re-run as the final validation.
 </summary>
 
 <objective>
-Retire both exclusions from the in-tree marker page `docs/production-touching-marker.md` so it describes the board as it now ships, and record the change under a newly created `## Unreleased` heading in `CHANGELOG.md`. Doc and release hygiene only — this prompt changes no Go, no test, no scenario and no spec.
+Retire both exclusions from the in-tree marker page `docs/production-touching-marker.md` so it describes the board as it now ships, and verify the change's existing entry under the `## Unreleased` heading in `CHANGELOG.md`. Doc and release hygiene only — this prompt changes no Go, no test, no scenario and no spec.
 </objective>
 
 <context>
@@ -26,7 +32,7 @@ The behavioral change this prompt documents has already landed (its preceding pr
 
 Read these files in full before changing anything:
 - `docs/production-touching-marker.md` — the page being retired. It is a short page (55 lines) organised end to end around the exclusion. ⚠️ **Read every line**: the spec names four sites, but the page asserts the exclusion in more sentences than those four, and a sentence left standing teaches behaviour the shipped code no longer has.
-- `CHANGELOG.md` — its top. Read the preamble block (the `# Changelog` title, the `All notable changes…` line, the SemVer link and the three `* MAJOR / MINOR / PATCH` bullets) and the topmost `## vX.Y.Z` section. ⚠️ **`## Unreleased` DOES NOT EXIST in this file today** — the topmost section is a released one, so this prompt creates the heading. ⚠️ **Re-read the top when you start:** `.maintainer.yaml` carries `release.autoRelease: true`, so a releaser can cut a new version and move the topmost heading under you (it did exactly that while this prompt was being written, moving the top from `## v0.54.4` to `## v0.55.0`). Insert above *whatever* the topmost released heading is when you read the file; never hardcode a version number.
+- `CHANGELOG.md` — its top. Read the preamble block (the `# Changelog` title, the `All notable changes…` line, the SemVer link and the three `* MAJOR / MINOR / PATCH` bullets) and the topmost section. ⚠️ **`## Unreleased` ALREADY EXISTS and already carries this change's bullet** — dark-factory's changelog suffix wrote both while the preceding prompt ran, so this prompt verifies that entry and creates nothing. ⚠️ **Re-read the top when you start:** `.maintainer.yaml` carries `release.autoRelease: true`, so a releaser can rename `## Unreleased` to `## vX.Y.Z` under you (it did exactly that while an earlier draft of this prompt was being written, moving the top from `## v0.54.4` to `## v0.55.0`). If the heading has become a released section carrying this change's bullet, the releaser got there first — that is correct, not a failure; never hardcode a version number.
 - `prompts/1-spec-012-decide-derivation-comments-and-test-reconciliation.md` — the vocabulary this spec uses for the retired class split, and the wording of the change being recorded.
 - `specs/in-progress/012-render-decide-pair-on-every-permission-card.md` — the `## Constraints` row on `docs/production-touching-marker.md`, AC9, and the `## Verification` probes. This prompt covers the spec's row-3 focus (AC9) and is the second of two prompt files: the spec's rows 1 and 2 were merged into `prompts/1-spec-012-decide-derivation-comments-and-test-reconciliation.md`, because `validationCommand: make precommit` runs `test`, so a code-only prompt would be marked FAILED and no later prompt would run.
 - `.maintainer.yaml` — read the `release.autoRelease: true` comment. `.dark-factory.yaml` — read `autoRelease: false`. The two point opposite ways and both matter to the heading placement.
@@ -104,17 +110,19 @@ The parked command is available — the event log records it — but it cannot b
 
 3. **Keep the convention documented — do not delete the page.** The marker convention itself is unchanged (it is still authored by hand on the task's own subtask line, and `pkg/provenance.go` still parses it), so the page survives with its title, the marker example, the pattern literal, the `(?m)` warning, the glyph-group warning, the checkbox-class warning and the case-sensitivity warning intact. A deleted page loses the only in-tree record of the convention.
 
-4. **Create `## Unreleased` in `CHANGELOG.md` and add this change's bullet under it.**
+4. ⚠️ **`CHANGELOG.md` IS ALREADY DONE — VERIFY IT, DO NOT REPEAT IT.**
 
-   (a) Insert the heading immediately **after the last preamble line** (the `* PATCH version when you make backwards-compatible bug fixes.` bullet) and **above the topmost `## vX.Y.Z` heading** — whatever that heading is when you read the file. Keep the blank-line spacing the file already uses between the preamble and the first section. ⚠️ **Nothing may be inserted above or inside the preamble block** — that is the changelog guide's `preamble-frozen` MUST rule, and `<verification>` checks the preamble is still intact.
+   **This requirement was rewritten after the preceding prompt ran, and the reason matters.** dark-factory appends a changelog suffix to every prompt when `CHANGELOG.md` exists, and that suffix already inserted `## Unreleased` and wrote a full bullet for this change. So `grep -c '^## Unreleased' CHANGELOG.md` reads **`1` before you touch anything**, and the heading sits between the preamble and the topmost released section.
 
-   (b) Add **exactly one** bullet under the new heading. ⚠️ **The bullet must be a single line** — the placement probe in `<verification>` matches a pattern that requires the prefix and the wording to sit on the same line — and it must contain, contiguously and verbatim, the substring `Allow / Deny pair renders on every`. Use this bullet:
+   ⚠️ **Do NOT create the heading. Do NOT add a second bullet. Do NOT edit the existing one.** Two bullets for one logical change is the failure this rewrite exists to prevent, and it is an easy mistake to make: the previous wording said "insert the heading", and an agent told to insert a heading does not check whether one is already there.
 
-   ```markdown
-   - fix: **the Allow / Deny pair renders on every `permission` card, whichever class it belongs to, and the corner X answers on every one of them.** The row gate in `pkg/handler/attention-page-helpers.go` drops both provenance terms — `provenance.Headless` and `!provenance.ProductionTouching` — leaving the `answer_mechanism` comparison alone, so a tab worker's card, a production-touching park and an item whose session resolves no spawn-ledger record at all all render the pair. ⚠️ **Both exclusions are overruled, not refuted:** a tab worker's gate is still answerable in its own pane, and a production-touching park is still irreversible — the operator ruled the pair onto those classes with the hazard quoted on the card that carried the ruling, and this change adds no confirmation step, no second click and no warning interstitial. ⚠️ **The corner X needs no change of its own:** its class test is the *presence* of `button[data-decision=deny]` in the row, so rendering the pair flips the X from a clear to an answer by construction, and the `closeCard` fall-through becomes unreachable for a `permission` row. ⚠️ **The two provenance facts are still resolved and still kept out of `Provenance.Resolved()`** — they are dead reads rather than dead facts, and deleting them is deliberately not this change. ⚠️ **The pair's markup is unchanged** — the same `<div class="actions">` holding `✕ Deny` / `✓ Allow` — and no new field, lifecycle row or transition is added. **E2E:** `stores the corner X on a permission card as decision deny, and issues no close` in `e2e/answer-shapes_test.go` is extended to iterate the tab-worker class as well, asserting at the network that no `/close` is issued, and the suite stays `36 of 36`.
-   ```
+   **Verify instead, and report each number:**
+   - `grep -c '^## Unreleased' CHANGELOG.md` — must read **`1`**. A `2` means you duplicated the heading; revert that before finishing.
+   - `grep -m1 '^## ' CHANGELOG.md` — must print `## Unreleased`, i.e. it sits above the topmost released section.
+   - `grep -c 'Allow / Deny pair now renders on every' CHANGELOG.md` — must read **`1`**. That phrase occurs in the suffix's bullet and nowhere else in the file, so it is the discriminating anchor. ⚠️ **Do NOT probe the bare `Allow / Deny pair`**: it occurs **8** times, in released sections as well, so it cannot tell this change's bullet from any older one. ⚠️ If the count is `0`, the suffix did not run: add exactly ONE bullet in the changelog guide's shape, say so explicitly in your completion report, and still do not add a second.
+   - The preamble is intact — the `* MAJOR version when you make incompatible API changes,` bullet still sits above `## Unreleased`, and nothing was inserted above or inside the preamble block (the changelog guide's `preamble-frozen` MUST rule).
 
-   ⚠️ **One bullet for one logical change.** Do not describe what you verified, do not use the prompt filename as the entry, and do not copy a shell comment out of `<verification>`.
+   ⚠️ **Your actual work in this prompt is requirement 1, the doc page.** If `CHANGELOG.md` needs no edit, say exactly that in the report rather than inventing one.
 
 5. **Touch nothing else.** No released `## vX.Y.Z` section is edited, reordered or removed; no version heading is added by hand; no Go file, no test file, no `e2e/`, no `scenarios/`, no `specs/` file and no vault task file changes. `specs/in-progress/007-production-touching-exclusion.md` stays exactly where it is — its disposition is not this prompt's work.
 
@@ -142,7 +150,7 @@ OPEN QUESTIONS FOR THE REVIEWER (non-interactive generation; resolved best-effor
 
 1. The spec names FOUR sites in `docs/production-touching-marker.md` (line 3, § Fail direction's lines 40 and 44, and § What this withholds at 49-55). Reading the whole page, the exclusion is asserted on THIRTEEN content lines — 3, 25, 29, 31, 36, 40, 44, 45, 47, 49, 51, 53, 55 — plus the `## Fail direction` heading at line 38, i.e. fourteen sites by this prompt's own granularity. The spec's list omits lines 25, 29, 31 and 36 outright and groups § What this withholds' four lines and § Fail direction's four lines as two sections — and two of them (29 and 31) are the *rationale* for the pattern's narrowness, which the change makes historical. The spec's own instruction is to "enumerate every sentence that asserts either exclusion", so requirement 1 covers all fourteen sites — by whole-section replacement for § Fail direction and § What this withholds, and by named sentence for the rest — and the absence probe keys on 14 substrings across 12 lines. ⚠️ Two residual gaps: the probe does not key line 45's text nor line 25's second clause; both are removed by the whole-section replacement, so the page still scores 0, but the probe is not a complete oracle for requirement 1's claim. The four-site list reads as an incomplete enumeration rather than a deliberate limit.
 
-2. The spec's AC9 says "`v0.54.4` is the top section". That was true when the spec was written and is **false now**: while this prompt was being generated a releaser cut `## v0.55.0` and it is the topmost section. The load-bearing half of the claim — that `## Unreleased` does not exist — still holds (`grep -c '^## Unreleased'` returns 0). Requirement 4 therefore says "above the topmost released heading, whatever it is when you read the file" rather than naming a version, and requirement 4's context note records the observed move.
+2. The spec's AC9 says "`v0.54.4` is the top section". That was true when the spec was written and is **false now twice over**: a releaser cut `## v0.55.0` while this prompt was being generated, and then dark-factory's changelog suffix created `## Unreleased` and wrote this change's bullet while the PRECEDING prompt ran. So both halves of AC9's premise are stale — `grep -c '^## Unreleased'` now returns **`1`**, not 0. Requirement 4 was rewritten from "create the heading and add the bullet" to "verify the heading and the bullet", because the old wording would have produced a duplicate heading and a second bullet for one logical change.
 
 3. The spec's AC9 evidence is `awk` (kept verbatim) plus a diff against `origin/master` showing no `+## vX.Y.Z` line. The second half cannot run in the container (`.git` masked), so `<verification>` uses the non-git equivalent already established by this repo's spec-007 changelog prompt: the `^## v` heading count must be unchanged from the pre-edit baseline, recorded before the edit.
 
@@ -177,8 +185,8 @@ Run inside the repo root. ⚠️ **No `git` command** (the container's `.git` is
 
 - `grep -c '^## Unreleased' CHANGELOG.md` — prints exactly `1`.
 - `grep -m1 '^## ' CHANGELOG.md` — prints `## Unreleased`. ⚠️ `-m1` is load-bearing: it reads the **first** section heading, so a bullet placed under a released section cannot satisfy this together with the probe above.
-- `awk '/^## /{sec=$0} /^- fix: .*Allow \/ Deny pair renders on every/{print "sits under: " sec}' CHANGELOG.md` — prints **exactly one** line, and it names `## Unreleased`. ⚠️ **This pattern is verified discriminating:** on the un-edited file it prints nothing, because the released sections carry `Allow / Deny` but never `Allow / Deny pair renders on every` — so a phrase-only pattern would have passed on a no-op run.
-- `grep -c -F 'Allow / Deny pair renders on every' CHANGELOG.md` — prints `1` (the bullet landed with the exact wording the probe above keys on).
+- `awk '/^## /{sec=$0} /Allow \/ Deny pair now renders on every/{print "sits under: " sec}' CHANGELOG.md` — prints **exactly one** line, and it names `## Unreleased`. ⚠️ **The phrase is the discriminating anchor, and the pattern was verified against the real file:** `grep -c 'Allow / Deny pair now renders on every'` reads **`1`**, while the bare `Allow / Deny pair` reads **`8`** because released sections carry it too — so a looser pattern could not tell this change's bullet from an older one. ⚠️ An earlier draft keyed on `Allow / Deny pair renders on every`, which reads **`0`** against the bullet dark-factory actually wrote — it says the pair **now** renders on every card.
+- `grep -c -F 'Allow / Deny pair now renders on every' CHANGELOG.md` — prints `1` (the bullet carries the exact wording the probe above keys on).
 - `grep -c '^## v' CHANGELOG.md` — **unchanged from the Step 0 baseline** (no version heading was added). ⚠️ If a releaser fires between your edit and this read, the count rises by one and `^## Unreleased` drops to 0 — that is the releaser being correct, not your edit being wrong; confirm by reading the new `## vX.Y.Z` section for your bullet.
 - `grep -c '^\* MAJOR version when you make incompatible API changes,' CHANGELOG.md` — prints `1`, and `grep -c '^# Changelog\|^All notable changes to this project' CHANGELOG.md` prints `2` (the whole preamble, not one line, was left intact above the new heading).
 
