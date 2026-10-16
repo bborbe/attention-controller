@@ -260,7 +260,26 @@ func (h *httpRemoteAttentionStore) do(
 	}
 	resp, err := h.client.Do(req)
 	if err != nil {
-		return errors.Wrap(ctx, err, "call peer attention store failed")
+		// ⚠️ ErrPeerUnavailable, and this is the arm that matters MOST: a
+		// TRANSPORT failure never reaches remoteResponseError, because there is
+		// no response to classify. A refused connection, a DNS failure and a
+		// context deadline all land here — and a deadline is the failure the
+		// deployed store's own log actually shows ("federated read failed …
+		// context deadline exceeded").
+		//
+		// ⚠️ Without the sentinel this error carried none, so every handler
+		// mapping sent it to 409 VALIDATION_ERROR and a peer outage read to the
+		// caller as a malformed request. Fixing only remoteResponseError fixed
+		// the case an httptest peer can produce — it always answers — and left
+		// this one, the one that happens in production, untouched. Measured
+		// 2026-10-16 against a peer on a dead port, from a binary that already
+		// carried the remoteResponseError fix: 409 VALIDATION_ERROR.
+		return errors.Wrapf(
+			ctx,
+			ErrPeerUnavailable,
+			"call peer attention store failed: %s",
+			err.Error(),
+		)
 	}
 	defer func() {
 		_ = resp.Body.Close()
@@ -272,7 +291,17 @@ func (h *httpRemoteAttentionStore) do(
 		return nil
 	}
 	if err := json.NewDecoder(resp.Body).Decode(result); err != nil {
-		return errors.Wrap(ctx, err, "decode peer response failed")
+		// ⚠️ ErrPeerUnavailable for the same reason as the transport arm above:
+		// the peer answered, but not in the shape its own contract promises.
+		// That is a failure of the peer CALL, not of the caller's request, so
+		// 409 VALIDATION_ERROR was as wrong here as it was there — the same
+		// masking, reached by a third route.
+		return errors.Wrapf(
+			ctx,
+			ErrPeerUnavailable,
+			"decode peer response failed: %s",
+			err.Error(),
+		)
 	}
 	return nil
 }

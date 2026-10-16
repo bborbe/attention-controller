@@ -6,6 +6,7 @@ package handler_test
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -76,6 +77,35 @@ var _ = Describe("a federated peer failure reaching the client", func() {
 			local,
 			pkg.NewHTTPRemoteAttentionStore(peer.URL, "peer-token"),
 		)
+	}
+
+	// federatingOverURL is federatingOver for a peer that is not there at all —
+	// the transport case, where no response ever arrives to be classified.
+	federatingOverURL := func(rawURL string) pkg.AttentionStore {
+		sessionLivenessChecker := &mocks.SessionLivenessChecker{}
+		sessionLivenessChecker.IsLiveReturns(true)
+
+		local := pkg.NewAttentionStore(
+			db,
+			pkg.NewItemIDGenerator(),
+			sessionLivenessChecker,
+			libtime.NewCurrentDateTime(),
+			libtime.Duration(15*60*1e9),
+		)
+		return pkg.NewFederatingAttentionStore(
+			local,
+			pkg.NewHTTPRemoteAttentionStore(rawURL, "peer-token"),
+		)
+	}
+
+	// deadPeerURL binds a port and immediately releases it, so a connection to
+	// it is REFUSED rather than left to hang until the client's own timeout.
+	deadPeerURL := func() string {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		Expect(err).To(BeNil())
+		url := "http://" + listener.Addr().String()
+		Expect(listener.Close()).To(BeNil())
+		return url
 	}
 
 	// itemID is an id the local store does not hold, so the decorator proxies it.
@@ -156,6 +186,22 @@ var _ = Describe("a federated peer failure reaching the client", func() {
 			http.StatusUnauthorized,
 			`{"error":{"code":"UNAUTHORIZED","message":"bad token"}}`,
 		))
+
+		resp := call(h, http.MethodGet, "/api/1.0/attention/"+itemID.String(), "")
+
+		ExpectPeerUnavailable(resp)
+	})
+
+	It("answers an UNREACHABLE peer as 503, not as a validation failure", func() {
+		// ⚠️ The transport arm, and the one every spec above structurally cannot
+		// reach: each peer in this file ANSWERS, so each failure they raise is
+		// classified by remoteResponseError. A refused connection never produces
+		// a response to classify, so it took a live probe of the built binary
+		// against a dead port to find that this path was still sentinel-less —
+		// and it is the path production actually takes, since the deployed
+		// store's own log records `federated read failed … context deadline
+		// exceeded`.
+		h := handler.NewAttentionGetHandler(federatingOverURL(deadPeerURL()))
 
 		resp := call(h, http.MethodGet, "/api/1.0/attention/"+itemID.String(), "")
 
