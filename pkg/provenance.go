@@ -1150,6 +1150,12 @@ func (r *provenanceResolver) sessionModes(ctx context.Context) map[string]string
 		return modes
 	}
 	for _, entry := range entries {
+		select {
+		case <-ctx.Done():
+			glog.V(3).Infof("session ledger scan cancelled")
+			return modes
+		default:
+		}
 		if entry.SessionID == "" {
 			continue
 		}
