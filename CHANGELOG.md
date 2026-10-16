@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.54.3
 
 - fix: **a failed federated call now answers `503` on the TRANSPORT path too — the arm the previous fix missed, and the one production actually takes.** v0.54.2 fixed `remoteResponseError`, which classifies a peer that **answers** with a status no sentinel case recognises. It could not fix a peer that never answers at all: `h.client.Do` returning an error — a refused connection, a DNS failure, a **context deadline** — never reaches `remoteResponseError`, because there is no response to classify, and that error was still wrapped with **no sentinel**. Every handler mapping therefore still sent it to `409 VALIDATION_ERROR`, so the masking survived the fix for exactly the failure the deployed store's own log records (`federated read failed … context deadline exceeded`). Both arms now carry `ErrPeerUnavailable`. ⚠️ **Why the suite did not catch it:** every peer in these tests is an `httptest` server, and an `httptest` server always **answers** — so every failure the suite could construct arrived as a response and was classified by the already-fixed arm. The gap was found by probing the built binary against a peer on a **dead port**, and that probe is now a spec at both layers (`pkg/attention-remote_test.go`, `pkg/handler/attention-peer-unavailable_test.go`). ⚠️ `decode peer response failed` is fixed alongside it: a peer that answers `200` with a body its own contract does not describe is a failure of the peer CALL, not of the caller's request, and it masked as 409 by the same route.
 
