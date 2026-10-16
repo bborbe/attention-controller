@@ -80,7 +80,6 @@ type application struct {
 	// answer that is wrong whichever way it guesses.
 	SessionLiveness   string `required:"false" arg:"session-liveness"         env:"SESSION_LIVENESS"         usage:"how producer liveness is resolved: 'registry' prunes an item whose producer is gone from the session registry; 'off' never prunes (a cluster backend)"                  default:"registry"`
 	AttentionStateDir string `required:"false" arg:"attention-state-dir"      env:"ATTENTION_STATE_DIR"      usage:"directory holding the producers' event logs the page resolves item provenance from"`
-	SpawnStateDir     string `required:"false" arg:"spawn-state-dir"          env:"SPAWN_STATE_DIR"          usage:"directory holding the supervisor's spawn ledger the page reads each session's headless/interactive mode from"`
 	// VaultDir is the directory holding the vault whose task files record the
 	// session each task belongs to. ⚠️ Deliberately without a `default:`, unlike
 	// SessionsDir and AttentionStateDir: an unset vault is a legitimate state,
@@ -430,6 +429,7 @@ func (a *application) createProvenanceResolver(
 	ctx context.Context,
 	panes pkg.PaneLister,
 	tasks pkg.TaskIndex,
+	sessionLedger pkg.SessionLedgerStore,
 ) pkg.ProvenanceResolver {
 	stateDir := a.AttentionStateDir
 	if stateDir == "" {
@@ -449,14 +449,14 @@ func (a *application) createProvenanceResolver(
 		}
 		sessionsDir = resolved
 	}
-	spawnDir := a.SpawnStateDir
-	if spawnDir == "" {
-		resolved, err := defaultSpawnStateDir(ctx)
-		if err != nil {
-			glog.Warningf("resolve spawn state dir failed: %v", err)
-		}
-		spawnDir = resolved
-	}
+	// ⚠️ The session ledger is the store the /api/1.0/session-ledger endpoint
+	// serves, NOT the supervisor's retired file-backed directory under
+	// ~/.local/state/claude-supervisor/sessions. That directory took its last
+	// spawn on 2026-10-14T21:40:28Z; reading it leaves Headless false for every
+	// worker spawned since, which withholds the board's Allow / Deny pair from
+	// every recent headless park. The caller constructs the store once so this
+	// resolver and the endpoint share ONE handle on ONE bucket.
+	//
 	// ⚠️ The task index is built once in createHTTPServer and passed in here — it
 	// is never built per page, and never a second time for the watcher. The vault
 	// holds thousands of task files, and the page is served continuously by the
@@ -466,21 +466,11 @@ func (a *application) createProvenanceResolver(
 	return pkg.NewProvenanceResolver(
 		pkg.NewEventLogReader(stateDir),
 		sessionsDir,
-		spawnDir,
+		sessionLedger,
 		panes,
 		tasks,
 		libtime.NewCurrentDateTime(),
 	)
-}
-
-// defaultSpawnStateDir resolves ~/.local/state/claude-supervisor/sessions, the
-// directory holding the supervisor's spawn ledger.
-func defaultSpawnStateDir(ctx context.Context) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", errors.Wrap(ctx, err, "resolve home dir failed")
-	}
-	return filepath.Join(home, ".local", "state", "claude-supervisor", "sessions"), nil
 }
 
 // defaultAttentionStateDir resolves ~/.claude/state/attention, the directory
@@ -617,7 +607,16 @@ func (a *application) createHTTPServer(
 		// disagree about the same session.
 		tasks := pkg.NewTaskIndex(ctx, a.VaultDir, libtime.NewCurrentDateTime())
 		watcher := pkg.NewTaskIndexWatcher(tasks, a.VaultDir)
-		provenance := a.createProvenanceResolver(ctx, panes, tasks)
+		// ⚠️ One ledger store, two consumers: the /api/1.0/session-ledger
+		// endpoints read and write it, and the provenance resolver reads it to
+		// decide a session's headless / interactive mode. Constructed HERE, once,
+		// for the same reason the index above is: the store shares this process's
+		// single BoltDB handle, so a second NewSessionLedgerStore over the same db
+		// would be a second handle on the same file — which BoltDB refuses with a
+		// lock timeout rather than a readable error — and two stores would also be
+		// two views that could disagree about the same session.
+		sessionLedger := pkg.NewSessionLedgerStore(db)
+		provenance := a.createProvenanceResolver(ctx, panes, tasks, sessionLedger)
 		jumpTokens := a.createJumpTokenReader(ctx)
 		activator := a.createPaneActivator(panes)
 
@@ -709,7 +708,7 @@ func (a *application) createHTTPServer(
 		// BoltDB refuses, and the refusal arrives as a lock timeout rather than a
 		// readable error. The bucket is separate from the attention items', so
 		// the two lifetimes stay independent.
-		registerSessionLedgerRoutes(router, pkg.NewSessionLedgerStore(db))
+		registerSessionLedgerRoutes(router, sessionLedger)
 
 		// ⚠️ Two listeners, one process — this is the fold's whole claim, and it
 		// is why SC1's evidence is `lsof` naming ONE pid on both ports. Both run

@@ -195,15 +195,6 @@ type sessionName struct {
 // headless, the fail-closed direction.
 const headlessSessionMode = "headless"
 
-// spawnRecord is one `<session-id>.json` in the supervisor's spawn ledger,
-// reduced to the two fields the page reads. The ledger is written by the
-// supervisor and only read here; nothing about the headless/tab split is
-// stored on the item.
-type spawnRecord struct {
-	SessionID string `json:"session_id"`
-	Mode      string `json:"mode"`
-}
-
 //counterfeiter:generate -o ../mocks/provenance-resolver.go --fake-name ProvenanceResolver . ProvenanceResolver
 
 // ProvenanceResolver resolves where each item came from.
@@ -218,8 +209,17 @@ type ProvenanceResolver interface {
 
 // NewProvenanceResolver creates a resolver reading the producers' event logs
 // through eventLogs, the session registry under sessionsDir, the supervisor's
-// spawn ledger under spawnDir, panes from the lister, and the vault tasks from
-// the index.
+// session ledger through sessionLedger, panes from the lister, and the vault
+// tasks from the index.
+//
+// ⚠️ The session ledger arrives as an injected store rather than as a directory
+// of JSON files, and the difference is not stylistic. The supervisor's
+// file-backed spawn ledger is RETIRED — its newest `spawned_at` is
+// 2026-10-14T21:40:28Z — and every spawn since lives only in the
+// session-ledger store the `/api/1.0/session-ledger` endpoint serves. A
+// directory read therefore resolves no worker spawned after that date, which
+// leaves `Headless` false for every recent headless park and withholds the
+// board's only answering control from it.
 //
 // ⚠️ The event logs are read through the injected reader rather than a bare
 // state directory, so the read path's cost is observable: the reader is asked
@@ -233,7 +233,7 @@ type ProvenanceResolver interface {
 func NewProvenanceResolver(
 	eventLogs EventLogReader,
 	sessionsDir string,
-	spawnDir string,
+	sessionLedger SessionLedgerStore,
 	panes PaneLister,
 	tasks TaskIndex,
 	currentDateTimeGetter libtime.CurrentDateTimeGetter,
@@ -241,7 +241,7 @@ func NewProvenanceResolver(
 	return &provenanceResolver{
 		eventLogs:             eventLogs,
 		sessionsDir:           sessionsDir,
-		spawnDir:              spawnDir,
+		sessionLedger:         sessionLedger,
 		panes:                 panes,
 		tasks:                 tasks,
 		currentDateTimeGetter: currentDateTimeGetter,
@@ -261,7 +261,7 @@ const provenanceCacheWindow = libtime.Duration(2 * time.Second)
 type provenanceResolver struct {
 	eventLogs             EventLogReader
 	sessionsDir           string
-	spawnDir              string
+	sessionLedger         SessionLedgerStore
 	panes                 PaneLister
 	tasks                 TaskIndex
 	currentDateTimeGetter libtime.CurrentDateTimeGetter
@@ -1117,70 +1117,43 @@ func (r *provenanceResolver) sessionNames(ctx context.Context) map[string]sessio
 	return names
 }
 
-// sessionModes reads the supervisor's spawn ledger as `session id -> mode`.
+// sessionModes reads the supervisor's session ledger as `session id -> mode`.
 //
 // ⚠️ This is the only source that separates a headless worker from a tab
 // worker: nothing on the item does. A headless worker inherits its spawner's
 // WEZTERM_PANE, so its item carries the spawner's pane id and reads as
 // routable exactly like a tab worker's.
 //
-// It fails closed in every direction: an absent or unreadable directory, a
-// missing record, an unparseable record and a mode outside the ledger's known
-// set all leave the session absent from the map, and an absent session
-// renders no control. The read is confined beneath spawnDir through an
-// os.Root handle, so a name taken from the directory listing can never walk
-// out of it; the item's session id is only ever a map key, never a path
-// segment.
+// ⚠️ It reads the store the `/api/1.0/session-ledger` endpoint serves, NOT the
+// supervisor's retired file-backed directory. That directory received its last
+// spawn on 2026-10-14T21:40:28Z; every spawn since lives only in this store, so
+// a directory read leaves `Headless` false for every recent headless park and
+// withholds the board's only answering control from it.
 //
-// ⚠️ It calls `os.ReadDir` / `os.OpenRoot` / `json.Unmarshal` directly rather
-// than taking them as injected dependencies, and that is deliberate rather than
-// an oversight: this file **is** the I/O boundary. `sessionNames`, `readEvents`
-// and `readGoalTopics` beside it all read their own directory the same way, and
-// the resolver takes the whole page at once precisely so those host-wide reads
-// happen once per refresh instead of once per row. Injecting a filesystem
-// abstraction here would make this method the only one of the four that is
-// shaped differently, and would move the seam away from the place the batching
-// argument lives.
+// It fails closed in every direction: a nil store, a store that cannot be read,
+// a missing row, and a mode outside the ledger's known set all leave the
+// session absent from the map, and an absent session renders no control.
+//
+// ⚠️ It reads the whole store once per page load rather than one row per card,
+// matching `sessionNames` and the event-log reads beside it: the resolver takes
+// the whole page at once precisely so those host-wide reads happen once per
+// refresh instead of once per row. The store is a libkv bucket in this
+// process's own BoltDB handle, so the read is local and opens no second handle.
 func (r *provenanceResolver) sessionModes(ctx context.Context) map[string]string {
 	modes := map[string]string{}
-	if r.spawnDir == "" {
+	if r.sessionLedger == nil {
 		return modes
 	}
-	entries, err := os.ReadDir(r.spawnDir)
+	entries, err := r.sessionLedger.List(ctx)
 	if err != nil {
-		glog.V(2).Infof("read spawn ledger %s failed: %v", r.spawnDir, err)
+		glog.V(2).Infof("read session ledger failed: %v", err)
 		return modes
 	}
-	root, err := os.OpenRoot(r.spawnDir)
-	if err != nil {
-		glog.V(2).Infof("open spawn ledger %s failed: %v", r.spawnDir, err)
-		return modes
-	}
-	defer root.Close()
 	for _, entry := range entries {
-		select {
-		case <-ctx.Done():
-			glog.V(3).Infof("spawn ledger scan cancelled")
-			return modes
-		default:
-		}
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+		if entry.SessionID == "" {
 			continue
 		}
-		content, err := root.ReadFile(entry.Name())
-		if err != nil {
-			glog.V(3).Infof("read spawn ledger entry %s failed: %v", entry.Name(), err)
-			continue
-		}
-		var record spawnRecord
-		if err := json.Unmarshal(content, &record); err != nil {
-			glog.V(3).Infof("parse spawn ledger entry %s failed: %v", entry.Name(), err)
-			continue
-		}
-		if record.SessionID == "" {
-			continue
-		}
-		modes[record.SessionID] = record.Mode
+		modes[entry.SessionID] = entry.Mode
 	}
 	return modes
 }

@@ -48,7 +48,9 @@ var _ = Describe("the goal and topic spans on the served page", func() {
 	// event log and no session-registry entry is written by any case here.
 	var stateDir string
 	var sessionsDir string
-	var spawnDir string
+	// sessionLedger is the supervisor's spawn ledger as the real store, sharing
+	// the attention store's own db — one BoltDB handle, two buckets.
+	var sessionLedger pkg.SessionLedgerStore
 	// clock is frozen in BeforeEach and never advanced, so the task index's
 	// refresh window never lapses during a spec. That keeps the "reads the vault
 	// once" case deterministic: its two page loads must both be served from the
@@ -103,7 +105,9 @@ var _ = Describe("the goal and topic spans on the served page", func() {
 		vault = filepath.Join(GinkgoT().TempDir(), "Personal")
 		stateDir = GinkgoT().TempDir()
 		sessionsDir = GinkgoT().TempDir()
-		spawnDir = GinkgoT().TempDir()
+		// ⚠️ The ledger store reuses the attention store's own db — one BoltDB
+		// handle, two buckets, which is exactly the production wiring.
+		sessionLedger = pkg.NewSessionLedgerStore(db)
 		clock = libtime.NewCurrentDateTime()
 		clock.SetNow(clock.Now())
 	})
@@ -174,7 +178,7 @@ var _ = Describe("the goal and topic spans on the served page", func() {
 			pkg.NewProvenanceResolver(
 				pkg.NewEventLogReader(stateDir),
 				sessionsDir,
-				spawnDir,
+				sessionLedger,
 				panes,
 				index,
 				libtime.NewCurrentDateTime(),
@@ -382,7 +386,7 @@ var _ = Describe("the goal and topic spans on the served page", func() {
 			pkg.NewProvenanceResolver(
 				pkg.NewEventLogReader(stateDir),
 				sessionsDir,
-				spawnDir,
+				sessionLedger,
 				panes,
 				pkg.NewTaskIndex(ctx, "", clock),
 				libtime.NewCurrentDateTime(),
