@@ -815,6 +815,28 @@ li.item {
 .actions .dismiss:hover { color: var(--text); border-color: var(--muted); }
 .actions .next { background: var(--green-bg); color: var(--green); border-color: var(--green-bg); font-weight: 500; }
 .actions .next:hover { border-color: var(--green); }
+/* A permission card's pair is a DECISION, not a walk step, so it deliberately
+   borrows neither affordance above. Measured 2026-10-16: a board walk — the
+   operator moving down the board clicking the green advance control on each
+   card — recorded allow on every permission card it passed, including one it
+   had been told to Deny seconds earlier. The next class is the green filled
+   forward move and the dismiss class is the muted skip, so a walk clicking
+   "the forward move" was answering gates it never read.
+   ⚠️ The pair's markup is FROZEN (specs 004 and 012, and in-progress 007 whose
+   AC5 asserts the literal is unchanged), so this restyles it through the
+   data-decision attribute instead of new classes. The attribute selector wins
+   on specificity — (0,2,1) against the .actions .next rule's (0,2,0) — so the
+   pair reads as two explicit, equally weighted choices and neither is the
+   board's forward move. No new palette token: --green and --warn already
+   exist, and widening the palette is exactly what the two-green note above
+   rules out.
+   ⚠️ No backticks anywhere in this block: the whole page is one Go raw-string
+   literal, so a backtick closes it and the file stops compiling. */
+.actions button[data-decision] { background: transparent; font-weight: 500; }
+.actions button[data-decision="allow"] { color: var(--green); border-color: var(--green); }
+.actions button[data-decision="allow"]:hover { background: var(--panel); }
+.actions button[data-decision="deny"] { color: var(--warn); border-color: var(--warn); }
+.actions button[data-decision="deny"]:hover { background: var(--panel); }
 /* Read aloud is a utility, not a decision, so it does not sit in the actions
    row beside the two controls that answer the card — it sits in the card's
    top-right corner beside the X. That leaves the actions row carrying exactly
