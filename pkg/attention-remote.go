@@ -352,6 +352,13 @@ func remoteResponseError(ctx context.Context, resp *http.Response) error {
 			"peer attention store: item is not open (%s)",
 			errorResponse.Error.Message,
 		)
+	case code == ErrorCodePermissionCloseWithoutDecision:
+		return errors.Wrapf(
+			ctx,
+			ErrPermissionCloseWithoutDecision,
+			"peer attention store: permission close without decision (%s)",
+			errorResponse.Error.Message,
+		)
 	case code == libhttp.ErrorCodeNotFound || resp.StatusCode == http.StatusNotFound:
 		return errors.Wrapf(
 			ctx,

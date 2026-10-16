@@ -7,6 +7,7 @@ package pkg_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -160,6 +161,26 @@ var _ = Describe("HTTP remote attention store", func() {
 			)
 			_, err = remote.Escalate(ctx, "peer-1", "session-1")
 			Expect(errors.Is(err, pkg.ErrItemNotOpen)).Should(BeTrue())
+		})
+
+		It("maps the peer's decision-less permission refusal back to its own sentinel", func() {
+			// ⚠️ The body is built from the constant rather than typed as a literal, so
+			// the code this client reads and the code the peer writes cannot drift: the
+			// wire string is the contract the mapping round-trips.
+			respondWith(
+				http.StatusConflict,
+				fmt.Sprintf(
+					`{"error":{"code":%q,"message":"records no decision"}}`,
+					pkg.ErrorCodePermissionCloseWithoutDecision,
+				),
+			)
+
+			_, err := remote.Close(ctx, "peer-1", "attention-board", nil)
+
+			Expect(errors.Is(err, pkg.ErrPermissionCloseWithoutDecision)).Should(BeTrue())
+			// ⚠️ Not ErrPeerUnavailable: a deterministic refusal is not a retryable
+			// outage, and reporting it as one is the one instruction that is wrong here.
+			Expect(errors.Is(err, pkg.ErrPeerUnavailable)).Should(BeFalse())
 		})
 
 		It("maps an unclassified peer failure to ErrPeerUnavailable", func() {

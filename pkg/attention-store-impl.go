@@ -1462,6 +1462,19 @@ func (a *attentionStore) Close(
 		// a client for it would put a causer on the record that the schema does
 		// not name.
 		if from == OpenState {
+			// A `permission` item leaves `open` only through a write that records a
+			// decision. This route's arm-caused body carries no decision field at
+			// all, so an arm-caused close of an open gate is not an answer to it —
+			// and `closed` is terminal, so accepting it would consume the gate.
+			if item.AnswerMechanism == PermissionAnswerMechanism && answeredBy != "" {
+				return errors.Wrapf(
+					ctx,
+					ErrPermissionCloseWithoutDecision,
+					"item %s is a permission gate and a close naming arm %q records no decision",
+					itemID,
+					answeredBy,
+				)
+			}
 			item.AnsweredBy = answeredBy
 			if answeredBy != "" {
 				item.AnsweredClient = answeredClient
