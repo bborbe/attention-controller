@@ -1,8 +1,13 @@
 ---
-status: approved
+status: completed
 spec: [012-bug-permission-close-without-decision]
+summary: Taught the federating client's remoteResponseError to map the peer's PERMISSION_CLOSE_WITHOUT_DECISION code back to ErrPermissionCloseWithoutDecision, added the round-trip spec and the CHANGELOG entry
+execution_id: attention-controller-refuse-decisionless-close-exec-047-spec-012-federation-roundtrip
+dark-factory-version: v0.198.7
 created: "2026-10-16T09:37:00Z"
 queued: "2026-10-16T09:59:47Z"
+started: "2026-10-16T10:09:51Z"
+completed: "2026-10-16T10:14:49Z"
 branch: dark-factory/bug-permission-close-without-decision
 ---
 
