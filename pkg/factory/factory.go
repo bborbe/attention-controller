@@ -58,6 +58,12 @@ func CreateSessionLedgerPostHandler(store pkg.SessionLedgerStore) http.Handler {
 	return handler.NewSessionLedgerPostHandler(store)
 }
 
+// CreateSessionLedgerPatchHandler creates the handler a supervisor calls to add
+// fields to a row it did not create.
+func CreateSessionLedgerPatchHandler(store pkg.SessionLedgerStore) http.Handler {
+	return handler.NewSessionLedgerPatchHandler(store)
+}
+
 // CreateSessionLedgerGetHandler creates the handler that answers one session's
 // ledger row.
 func CreateSessionLedgerGetHandler(store pkg.SessionLedgerStore) http.Handler {

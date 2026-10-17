@@ -52,6 +52,23 @@ type SessionLedgerStore struct {
 		result1 pkg.SessionLedgerEntries
 		result2 error
 	}
+	PatchStub        func(context.Context, string, pkg.SessionLedgerPatch) (pkg.SessionLedgerEntry, bool, error)
+	patchMutex       sync.RWMutex
+	patchArgsForCall []struct {
+		arg1 context.Context
+		arg2 string
+		arg3 pkg.SessionLedgerPatch
+	}
+	patchReturns struct {
+		result1 pkg.SessionLedgerEntry
+		result2 bool
+		result3 error
+	}
+	patchReturnsOnCall map[int]struct {
+		result1 pkg.SessionLedgerEntry
+		result2 bool
+		result3 error
+	}
 	PostStub        func(context.Context, pkg.SessionLedgerEntry) error
 	postMutex       sync.RWMutex
 	postArgsForCall []struct {
@@ -263,6 +280,75 @@ func (fake *SessionLedgerStore) ListReturnsOnCall(i int, result1 pkg.SessionLedg
 		result1 pkg.SessionLedgerEntries
 		result2 error
 	}{result1, result2}
+}
+
+func (fake *SessionLedgerStore) Patch(arg1 context.Context, arg2 string, arg3 pkg.SessionLedgerPatch) (pkg.SessionLedgerEntry, bool, error) {
+	fake.patchMutex.Lock()
+	ret, specificReturn := fake.patchReturnsOnCall[len(fake.patchArgsForCall)]
+	fake.patchArgsForCall = append(fake.patchArgsForCall, struct {
+		arg1 context.Context
+		arg2 string
+		arg3 pkg.SessionLedgerPatch
+	}{arg1, arg2, arg3})
+	stub := fake.PatchStub
+	fakeReturns := fake.patchReturns
+	fake.recordInvocation("Patch", []interface{}{arg1, arg2, arg3})
+	fake.patchMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2, arg3)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2, ret.result3
+	}
+	return fakeReturns.result1, fakeReturns.result2, fakeReturns.result3
+}
+
+func (fake *SessionLedgerStore) PatchCallCount() int {
+	fake.patchMutex.RLock()
+	defer fake.patchMutex.RUnlock()
+	return len(fake.patchArgsForCall)
+}
+
+func (fake *SessionLedgerStore) PatchCalls(stub func(context.Context, string, pkg.SessionLedgerPatch) (pkg.SessionLedgerEntry, bool, error)) {
+	fake.patchMutex.Lock()
+	defer fake.patchMutex.Unlock()
+	fake.PatchStub = stub
+}
+
+func (fake *SessionLedgerStore) PatchArgsForCall(i int) (context.Context, string, pkg.SessionLedgerPatch) {
+	fake.patchMutex.RLock()
+	defer fake.patchMutex.RUnlock()
+	argsForCall := fake.patchArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3
+}
+
+func (fake *SessionLedgerStore) PatchReturns(result1 pkg.SessionLedgerEntry, result2 bool, result3 error) {
+	fake.patchMutex.Lock()
+	defer fake.patchMutex.Unlock()
+	fake.PatchStub = nil
+	fake.patchReturns = struct {
+		result1 pkg.SessionLedgerEntry
+		result2 bool
+		result3 error
+	}{result1, result2, result3}
+}
+
+func (fake *SessionLedgerStore) PatchReturnsOnCall(i int, result1 pkg.SessionLedgerEntry, result2 bool, result3 error) {
+	fake.patchMutex.Lock()
+	defer fake.patchMutex.Unlock()
+	fake.PatchStub = nil
+	if fake.patchReturnsOnCall == nil {
+		fake.patchReturnsOnCall = make(map[int]struct {
+			result1 pkg.SessionLedgerEntry
+			result2 bool
+			result3 error
+		})
+	}
+	fake.patchReturnsOnCall[i] = struct {
+		result1 pkg.SessionLedgerEntry
+		result2 bool
+		result3 error
+	}{result1, result2, result3}
 }
 
 func (fake *SessionLedgerStore) Post(arg1 context.Context, arg2 pkg.SessionLedgerEntry) error {
