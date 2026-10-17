@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.57.0
 
 - feat: `make install` now enforces the launchd baseline on the installed plist (`ThrottleInterval` 30, `SoftResourceLimits.NumberOfFiles` 4096) through a new idempotent `launchd-baseline` target, and restarts with `bootout` + `bootstrap` (new `launchd-reload` target, which waits for the asynchronous bootout) instead of `kickstart -k`, which kept the cached plist so a baseline edit never applied. Motivated by the 2026-10-17 kernel panic, preceded by a sibling `KeepAlive` job relaunching an invalidly signed binary at launchd's 10 s default throttle. The plist itself stays hand-installed because it carries secrets.
 
