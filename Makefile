@@ -63,6 +63,31 @@ INSTALL_BIN ?= $(HOME)/.local/bin/attention-controller
 # once signed and verified, so a failed codesign never leaves an unsigned binary
 # where the plist will load it on the next start.
 LAUNCHD_LABEL ?= com.bborbe.attention-controller
+LAUNCHD_PLIST ?= $(HOME)/Library/LaunchAgents/$(LAUNCHD_LABEL).plist
+
+# Enforces the launchd baseline on the installed plist, which stays hand-installed
+# because it carries secrets: ThrottleInterval 30 and NumberOfFiles 4096. A
+# KeepAlive job relaunching an invalidly signed binary at launchd's 10 s default
+# preceded the 2026-10-17 kernel panic. Idempotent; touches only these two keys.
+.PHONY: launchd-baseline
+launchd-baseline:
+	@test -f "$(LAUNCHD_PLIST)" || { echo "plist not installed: $(LAUNCHD_PLIST)" >&2; exit 1; }
+	/usr/libexec/PlistBuddy -c 'Delete :ThrottleInterval' "$(LAUNCHD_PLIST)" 2>/dev/null || true
+	/usr/libexec/PlistBuddy -c 'Add :ThrottleInterval integer 30' "$(LAUNCHD_PLIST)"
+	/usr/libexec/PlistBuddy -c 'Delete :SoftResourceLimits' "$(LAUNCHD_PLIST)" 2>/dev/null || true
+	/usr/libexec/PlistBuddy -c 'Add :SoftResourceLimits:NumberOfFiles integer 4096' "$(LAUNCHD_PLIST)"
+	plutil -lint "$(LAUNCHD_PLIST)"
+
+# bootout + bootstrap, never `kickstart -k`: kickstart keeps the plist launchd
+# cached at bootstrap, so a baseline edit would not apply. bootout is
+# asynchronous, so wait (max 20 s) for the job to be gone before bootstrapping,
+# or bootstrap fails with `5: Input/output error`.
+.PHONY: launchd-reload
+launchd-reload:
+	-launchctl bootout gui/$$(id -u)/$(LAUNCHD_LABEL)
+	@i=0; while launchctl print gui/$$(id -u)/$(LAUNCHD_LABEL) >/dev/null 2>&1; do \
+		i=$$((i+1)); [ $$i -le 40 ] || { echo "bootout did not finish" >&2; exit 1; }; sleep 0.5; done
+	launchctl bootstrap gui/$$(id -u) "$(LAUNCHD_PLIST)"
 
 .PHONY: install
 install:
@@ -74,7 +99,8 @@ install:
 	codesign --verify --strict "$(INSTALL_BIN).new"
 	codesign -d -r- "$(INSTALL_BIN).new" 2>&1 | grep -q 'identifier "de.bborbe.attention-controller" and certificate leaf = H"'
 	mv -f "$(INSTALL_BIN).new" "$(INSTALL_BIN)"
-	launchctl kickstart -k gui/$$(id -u)/$(LAUNCHD_LABEL)
+	$(MAKE) launchd-baseline
+	$(MAKE) launchd-reload
 
 deps:
 	go install github.com/bborbe/teamvault-utils/cmd/teamvault-config-parser@latest
