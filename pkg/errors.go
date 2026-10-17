@@ -101,6 +101,26 @@ var (
 	// manager reads to decide whether a worker exists at all.
 	ErrSessionLedgerEntryNotFound = stderrors.New("session ledger entry not found")
 
+	// ErrSessionLedgerPatchInvalid is the write path's "this patch cannot be
+	// applied" sentinel, and it is a CLIENT error (400), never a 500.
+	//
+	// ⚠️ It covers three refusals that would each otherwise be a SILENT NO-OP, and
+	// silence is what makes them worth a sentinel of their own:
+	//
+	//   - a patch naming `session_id`, which the path owns — accepting it would
+	//     mean either discarding the caller's value or moving the row;
+	//   - a patch naming a field the row does not have, where a typo would
+	//     otherwise be dropped by the decode and the unchanged row returned as a
+	//     successful write;
+	//   - a patch that would leave the row failing its own validation, which is
+	//     the one way to store a row `Post` would have refused.
+	//
+	// ⚠️ It is deliberately NOT ErrSessionLedgerEntryNotFound: a patch against a
+	// row that does not exist is `absent` (404), which is a different answer from
+	// a patch that is malformed. Folding them would tell a caller its payload was
+	// bad when the real answer is that the worker was never spawned.
+	ErrSessionLedgerPatchInvalid = stderrors.New("session ledger patch invalid")
+
 	// ErrPermissionCloseWithoutDecision is returned when an arm-caused close is
 	// attempted on an open `permission` item.
 	//

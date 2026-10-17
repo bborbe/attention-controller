@@ -36,6 +36,7 @@ Wire shape (snake_case), as served by the read routes:
 | `worker_id` | The A2A controller's id for a container or pod worker, empty for local and cluster modes. ⚠️ **Nothing else maps a controller worker back to its session**, so dropping it makes every A2A worker read dead after a supervisor restart. |
 | `target` | The spawn target whose name doubles as an A2A worker's status (`docker` / `k8s`). |
 | `ended_at` | When the worker was observed to end, **absent** while it has not. |
+| `stopped_at` | When a supervisor **deliberately stopped** the worker, absent while no stop has been recorded. ⚠️ **A field of its own** — not `status` and not `ended_at` — see below. |
 | `status` | The supervisor's own last word on the worker. ⚠️ **NOT liveness** — see below. |
 | `supervisor_exited_at` | When the supervisor that owned the worker went away without observing its outcome, absent when that never happened. |
 | `unknown_reason` | Why the supervisor stopped watching. The half that makes `supervisor_exited_at` readable: a headless worker dies with its supervisor mid-turn while an interactive one outlives it, so the same `unknown` status means opposite things. |
@@ -51,7 +52,21 @@ drift from the one that wrote it.
 
 ⚠️ **`ended_at` and `supervisor_exited_at` are pointers so "still running" and "ended at the
 zero instant" stay distinguishable.** The same reason the single-row read returns a `found`
-flag: the store must be able to say *absent* without also saying *zero*.
+flag: the store must be able to say *absent* without also saying *zero*. `stopped_at` is a
+pointer for the same reason.
+
+⚠️ **`stopped_at` exists because neither neighbour could carry a stop.** `status` already reads
+`running` for **1480 of the 1891** legacy rows whose supervisor went away, so a reader
+filtering on it resurrects the whole fleet. `ended_at` is worse than unavailable — it is
+load-bearing elsewhere (`a2a-spawn.mjs` skips any record carrying it, and `supervisor.mjs`
+treats `!record.ended_at` as still-live), so setting it to record a stop would change the
+spawn-dedupe and mirror paths as a side effect. A new field changes exactly one thing.
+
+⚠️ **Its readers test PRESENCE, not truthiness.** The sweep's `stop_state`
+(`scripts/a2a-liveness.py`) reads absent, `null` and `""` alike as *not stopped*; a non-string
+or a non-ISO value is `malformed` and is refused rather than read as a stop; only an ISO stamp
+is `stopped`. That is why a cleared field is **removed from the row** rather than stored as
+`null` — see the PATCH route below.
 
 ## The key, and the trap
 
@@ -88,6 +103,7 @@ Registered on the board's router (`main.go`), so they are reachable wherever the
 | `POST /api/1.0/session-ledger` | Writes a row, replacing any row that session already holds — a session is spawned once, so it has one row and not a history. `200` with the **stored row read back**, never the request echoed, so a caller can tell the write landed. **`400`** for invalid JSON, a missing required field (`session_id`, `spawned_at`, `location`), a malformed `session_id`, an unknown `location`, or a **half-declared task anchor**. **`500`** for a store failure. |
 | `GET /api/1.0/session-ledger` | The whole store as a JSON array, in no guaranteed order. |
 | `GET /api/1.0/session-ledger/{sessionID}` | One row, or **`404`** when the id has no row. **`500`** for a store failure — never `404`. |
+| `PATCH /api/1.0/session-ledger/{sessionID}` | **Merges the named fields into the row**, leaving every field the patch does not name exactly as its owner wrote it. `200` with the **stored row read back**. **`400`** for invalid JSON, a patch naming `session_id` (the path owns it), a patch naming a field the row does not have, or a patch that would leave the row failing its own validation. **`404`** when the id has no row — the same `absent` answer the read gives. **`500`** for a store failure. |
 
 ⚠️ **`absent` and `ended` are different answers and must stay different.** `404` means *never
 spawned*; `200` with `ended_at` set means *spawned and ended*. Collapsing them would make the
@@ -106,6 +122,34 @@ ledger it always meant a writer bug.
 ⚠️ **`task` and `vault` are paired, not individually required.** Both empty is legal — a
 session with no task anchor is a real state — but declaring one without the other is a
 `400`, because task names collide across vaults and a half-anchor cannot be resolved later.
+
+⚠️ **PATCH is a merge, and it is the only route a supervisor that did NOT spawn the row can
+write with.** `POST` replaces a whole row, so a stop recorded through it by an adopting server
+would rebuild the row from identity alone and blank everything the owner had written — which
+is why the supervisor's `writeLedger` refused the write outright rather than lose the fields.
+The worker a manager stops is often the one it did not spawn, so that refusal meant the stop
+was never recorded anywhere durable and the sweep then read a deliberately stopped worker
+exactly as it reads a dead one. Merging is what lets the write land without the loss.
+
+The three cases a patch distinguishes:
+
+| The caller sends | The field becomes |
+|---|---|
+| *nothing* — the key is absent | left exactly as the owner wrote it |
+| `null` | **cleared** — the key is removed from the row, not stored as a null |
+| a value | set to that value |
+
+⚠️ **A patch may not name `session_id`.** The row is named by the path, so a body copy could
+only ever disagree with it, and the safe resolution (trust the path) would silently discard
+the caller's input. A `400` is the answer that cannot hide a bug.
+
+⚠️ **A patch naming a field the row does not have is a `400`, not a no-op.** A typo would
+otherwise be dropped by the decode and the unchanged row returned as a successful write.
+
+⚠️ **There is no caller identity on these routes, and the merge is not gated on one.** The
+ledger routes are wired only into the loopback listener, and the contract is that any
+supervisor may add a field to any row — that is the point of the endpoint. A caller that needs
+to attribute a write reads the row, not the request.
 
 ## The one-time import
 

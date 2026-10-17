@@ -107,6 +107,25 @@ type SessionLedgerEntry struct {
 	// ⚠️ It is a POINTER so "still running" and "ended at the zero instant" are
 	// distinguishable on the wire — the same reason Get returns a `found` bool.
 	EndedAt *libtime.DateTime `json:"ended_at,omitempty"`
+	// StoppedAt is when a supervisor deliberately stopped the worker, absent while
+	// no stop has been recorded.
+	//
+	// ⚠️ **It is a field of its own because neither neighbour could carry it.**
+	// `Status` already reads `running` for 1480 legacy rows whose supervisor went
+	// away, so a reader filtering on it resurrects the whole fleet. `EndedAt` is
+	// worse than unavailable — it is load-bearing elsewhere: `a2a-spawn.mjs` skips
+	// any record carrying it and `supervisor.mjs` treats `!record.ended_at` as
+	// still-live, so setting it here would change the spawn-dedupe and mirror paths
+	// as a side effect of recording a stop. A new field changes exactly one thing.
+	//
+	// ⚠️ **A POINTER, and the sweep's reader depends on the distinction.**
+	// `stop_state` (`scripts/a2a-liveness.py`) reads PRESENCE, not truthiness:
+	// absent, `null` and `""` all mean "not stopped", a non-string or non-ISO value
+	// is `malformed` and is refused rather than read as a stop, and only an ISO
+	// stamp is `stopped`. `omitempty` is what keeps a row with no stop from
+	// advertising one, and the pointer is what makes "stopped at the zero instant"
+	// unrepresentable.
+	StoppedAt *libtime.DateTime `json:"stopped_at,omitempty"`
 	// Status is the supervisor's own last word on the worker. ⚠️ NOT liveness:
 	// see the type comment. It is carried because the ledger carried it, and
 	// dropping it would make the import lossy.

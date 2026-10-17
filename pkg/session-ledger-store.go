@@ -36,6 +36,22 @@ type SessionLedgerStore interface {
 	// Post records one spawn, replacing any row that session already holds. A
 	// session is spawned once, so it has one row and not a history.
 	Post(ctx context.Context, entry SessionLedgerEntry) error
+	// Patch merges the named fields into the row for one session, leaving every
+	// field the patch does not name exactly as its owner wrote it. The bool is
+	// false when no row exists — the same `absent` answer Get gives, so a caller
+	// can tell "never spawned" from "spawned and patched".
+	//
+	// ⚠️ **It exists because Post REPLACES a whole row.** The worker a manager
+	// stops is often the one it did NOT spawn, so a stop recorded through Post by
+	// an adopting server would rebuild the row from identity alone and blank
+	// everything the owner had written — the loss the supervisor's single-writer
+	// guard prevents by refusing the write altogether, at the cost of never
+	// recording the stop. Merging is what lets the write land without the loss.
+	Patch(
+		ctx context.Context,
+		sessionID string,
+		patch SessionLedgerPatch,
+	) (SessionLedgerEntry, bool, error)
 	// Get returns the row for one session id. The bool is false when no row
 	// exists — a distinct answer from a row that exists and is stale, which is
 	// what lets a reader tell `absent` from `ended`.
@@ -81,6 +97,64 @@ func (s *sessionLedgerStore) Post(ctx context.Context, entry SessionLedgerEntry)
 		return errors.Wrap(ctx, err, "post session ledger entry failed")
 	}
 	return nil
+}
+
+// Patch merges the given fields into the row for one session id.
+//
+// ⚠️ **The read and the write share one transaction, and that is load-bearing
+// rather than tidy.** A merge is a read-modify-write, so a read outside the
+// transaction would let two patches that arrive together each merge into the
+// pre-write row and the later one silently drop the earlier one's field — the same
+// lost update the endpoint exists to prevent, reintroduced inside the store.
+func (s *sessionLedgerStore) Patch(
+	ctx context.Context,
+	sessionID string,
+	patch SessionLedgerPatch,
+) (SessionLedgerEntry, bool, error) {
+	var merged SessionLedgerEntry
+	found := false
+	err := s.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
+		merged = SessionLedgerEntry{}
+		found = false
+		got, err := s.entries.Get(ctx, tx, sessionID)
+		if err != nil {
+			// ⚠️ A missing key is a NORMAL answer here, not an error — the same
+			// rule Get states, and the reason this reports `found` instead of
+			// folding absence into the error branch. A patch against a row that was
+			// never spawned is `absent` (404), not a failure.
+			if isNotFound(err) {
+				return nil
+			}
+			return errors.Wrap(ctx, err, "get session ledger entry failed")
+		}
+		next, err := patch.Apply(ctx, *got)
+		if err != nil {
+			return err
+		}
+		// ⚠️ The MERGED row is validated even though the patch alone is not.
+		// `Post` validates every row it stores, so skipping this would make PATCH
+		// the one route able to write a row the store's own readers cannot use:
+		// clearing `spawned_at` would sort the row to the epoch and make every
+		// age-based read wrong in the same direction.
+		if err := next.Validate(ctx); err != nil {
+			return errors.Wrapf(
+				ctx,
+				ErrSessionLedgerPatchInvalid,
+				"merged row would be invalid: %v",
+				err,
+			)
+		}
+		if err := s.entries.Add(ctx, tx, sessionID, next); err != nil {
+			return errors.Wrap(ctx, err, "add session ledger entry failed")
+		}
+		merged = next
+		found = true
+		return nil
+	})
+	if err != nil {
+		return SessionLedgerEntry{}, false, err
+	}
+	return merged, found, nil
 }
 
 // Get returns the row for one session id.

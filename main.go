@@ -356,6 +356,12 @@ func registerSessionHeartbeatRoutes(
 // would collapse `never spawned` onto `ended`, which is the distinction a
 // manager deciding whether to resume a worker has to make.
 //
+// ⚠️ **The third route, PATCH, is what makes the ledger writable by a server that
+// did not spawn the row.** The worker a manager stops is often the one it did NOT
+// spawn, and until PATCH existed that stop had nowhere to land: POST replaces a
+// whole row, so an adopting server's write would have blanked the owner's fields,
+// and the supervisor's single-writer guard refused it rather than lose them.
+//
 // ⚠️ The two stores are deliberately SEPARATE endpoints rather than one joined
 // read. Identity comes from the ledger and liveness from the heartbeat, and a
 // service that joined them here would be inventing a third answer neither store
@@ -370,6 +376,13 @@ func registerSessionLedgerRoutes(router *mux.Router, store pkg.SessionLedgerStor
 	router.Path("/api/1.0/session-ledger/{sessionID}").
 		Methods(http.MethodGet).
 		Handler(factory.CreateSessionLedgerGetHandler(store))
+	// ⚠️ PATCH is the one write that is NOT a whole row, and it is what lets a
+	// supervisor that adopted a row record a field on it. POST stays a full
+	// replace: its callers hold the whole spawn record, and relaxing it would make
+	// every existing writer's payload ambiguous.
+	router.Path("/api/1.0/session-ledger/{sessionID}").
+		Methods(http.MethodPatch).
+		Handler(factory.CreateSessionLedgerPatchHandler(store))
 }
 
 // sessionLivenessChecker resolves the checker the store prunes through.
