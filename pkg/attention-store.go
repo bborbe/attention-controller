@@ -227,12 +227,24 @@ type Items []Item
 // PushRequest carries a producer's declaration. The store owns ItemID, State,
 // CreatedAt and the answer fields; the producer owns everything else.
 type PushRequest struct {
-	ProducerID        ProducerID        `json:"producer_id"`
-	ProducerKind      ProducerKind      `json:"producer_kind"`
-	ProvenanceClass   ProvenanceClass   `json:"provenance_class,omitempty"`
-	LivenessRef       LivenessRef       `json:"liveness_ref"`
-	DedupKey          DedupKey          `json:"dedup_key"`
-	InterruptClass    InterruptClass    `json:"interrupt_class"`
+	ProducerID      ProducerID      `json:"producer_id"`
+	ProducerKind    ProducerKind    `json:"producer_kind"`
+	ProvenanceClass ProvenanceClass `json:"provenance_class,omitempty"`
+	LivenessRef     LivenessRef     `json:"liveness_ref"`
+	DedupKey        DedupKey        `json:"dedup_key"`
+	InterruptClass  InterruptClass  `json:"interrupt_class"`
+	// Risk is the producer's declaration of how much care this deserves.
+	// Stored unchanged, exactly as InterruptClass is: the store reads it back
+	// and neither recomputes nor promotes it. Absent means DecisionRisk.
+	//
+	// ⚠️ Without this field on the REQUEST the declaration never reaches the
+	// store at all. The push body carried it, the Item had a place to put it,
+	// and nothing joined the two — so `--risk` on the poster was silently
+	// dropped. Caught by exercising the deployed board end to end, not by a unit
+	// test: the render-time derivation kept working, so every card still
+	// coloured correctly and the only symptom was that a producer could not
+	// declare anything at all.
+	Risk              Risk              `json:"risk,omitempty"`
 	Payload           Payload           `json:"payload"`
 	Context           ItemContext       `json:"context,omitempty"`
 	AnswerMechanism   AnswerMechanism   `json:"answer_mechanism"`
@@ -258,6 +270,7 @@ func (p PushRequest) Validate(ctx context.Context) error {
 		validation.Name("LivenessRef", p.LivenessRef),
 		validation.Name("DedupKey", validation.NotEmptyString(p.DedupKey)),
 		validation.Name("InterruptClass", validation.NotEmptyString(p.InterruptClass)),
+		validation.Name("Risk", p.Risk),
 		validation.Name("Payload", validation.NotEmptyString(p.Payload)),
 		validation.Name("Options", validation.HasValidationFunc(p.validateOptions)),
 		validation.Name(
