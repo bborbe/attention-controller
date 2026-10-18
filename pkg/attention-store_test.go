@@ -1384,22 +1384,29 @@ var _ = Describe("AttentionStore", func() {
 			Expect(got.State).To(Equal(pkg.AnsweredState))
 		})
 
-		// ⚠️ The operator's report, reproduced as a spec. Answer one card and the
-		// producer's next push of the SAME dedup_key writes a new row, which
-		// rendered as a fresh prompt — so one ask cost two answers. The store's
-		// suppression is open-scoped, so that second row is correct AT THE STORE'S
-		// LAYER; the repeat is refused at the board's. Measured live 2026-09-28:
-		// 710 (producer_id, dedup_key) groups held more than one row, 26 of them
-		// with two or more answered rows, and one ask was answered three times.
-		It("omits an open re-push whose ask was already answered", func() {
+		// ⚠️ The board renders EVERY open item, including one that repeats an ask
+		// already answered. This spec used to assert the opposite — the board
+		// withheld the re-raise — and that withholding was the defect: the row
+		// stayed `open` in the store, was returned by GET /api/1.0/attention, and
+		// was rendered NOWHERE, so the producer waited on a card the operator was
+		// never shown. Measured live 2026-10-18: a re-push left one row `open` in
+		// the API and absent from the board for as long as its twin stayed
+		// `answered`, i.e. up to answeredMaxAge.
+		//
+		// ⚠️ Rendering is half the fix. The other half is that the sweep CLOSES the
+		// re-raise, so the duplicate is visible for at most one sweep interval
+		// instead of for the twin's whole remaining lifetime — see the sweep spec
+		// below. Neither half alone satisfies the invariant: withholding hides a
+		// live row, and closing without rendering is a different mechanism.
+		It("renders an open re-push whose ask was already answered", func() {
 			answered, err := store.Push(ctx, pushRequest("session-a", "gate-answered"))
 			Expect(err).To(BeNil())
 			_, err = store.Answer(ctx, answered.ItemID, "attention-board", "", "", nil, nil, nil)
 			Expect(err).To(BeNil())
 
 			// The producer re-raises the same ask after the answer. The store writes
-			// a second row — that is the open-scoped suppression, and this spec does
-			// NOT ask the store to stop doing it.
+			// a second row — that is the open-scoped suppression, which this change
+			// deliberately does NOT touch.
 			repushed, err := store.Push(ctx, pushRequest("session-a", "gate-answered"))
 			Expect(err).To(BeNil())
 			Expect(repushed.ItemID).NotTo(Equal(answered.ItemID))
@@ -1408,14 +1415,15 @@ var _ = Describe("AttentionStore", func() {
 			board, err := store.ReadBoard(ctx)
 			Expect(err).To(BeNil())
 
-			// The answered record stands, and the re-push does not render as a prompt.
+			// Both render: the answered record as the dimmed history, and the
+			// re-raise as a live card the operator can actually act on.
 			Expect(itemIDs(board)).To(ContainElement(answered.ItemID))
-			Expect(itemIDs(board)).NotTo(ContainElement(repushed.ItemID))
+			Expect(itemIDs(board)).To(ContainElement(repushed.ItemID))
 
-			// ⚠️ Asserted against the STORE, not only against the returned slice: the
-			// row is withheld from the board, not deleted. A fix that removed it would
-			// pass the two assertions above while quietly pre-empting the schema
-			// change that owns the suppression rule.
+			// ⚠️ Still asserted against the STORE, because rendering is not closing.
+			// The row stays `open` until the sweep disposes of it, and a fix that
+			// deleted it here would satisfy the assertion above while removing the
+			// producer's row before it ever received an outcome.
 			got, err := store.Get(ctx, repushed.ItemID)
 			Expect(err).To(BeNil())
 			Expect(got.State).To(Equal(pkg.OpenState))

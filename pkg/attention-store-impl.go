@@ -366,15 +366,6 @@ func (a *attentionStore) read(ctx context.Context, includeAnswered bool) (Items,
 		}
 	}
 
-	if includeAnswered {
-		// The board is the surface that pays for a re-raised ask, so the board's
-		// own read is where the repeat is refused. Guarded on includeAnswered
-		// because the rule is about what the BOARD renders: Read never keeps an
-		// answered item, so it has no sibling to match against and a consumer
-		// acting on the store must keep seeing exactly what it saw before.
-		kept = suppressAnsweredTwins(kept)
-	}
-
 	if err := a.pruneDead(ctx, dead); err != nil {
 		return nil, err
 	}
@@ -401,63 +392,6 @@ func (a *attentionStore) read(ctx context.Context, includeAnswered bool) (Items,
 // time. So a redundant re-raise still matches, and a changed question does not.
 func askIdentity(item Item) string {
 	return item.ProducerID.String() + "\x00" + item.DedupKey.String() + "\x00" + item.Payload.String()
-}
-
-// suppressAnsweredTwins drops an open item whose ask has already been answered.
-//
-// ⚠️ The store's duplicate suppression is OPEN-SCOPED: updateExistingIfLive
-// collapses a dedup_key only while the matching item is still open, so once an
-// ask is answered the producer's next push of the SAME key finds nothing to
-// collapse against and writes a new row. That row then rendered as a fresh
-// prompt and the operator had to answer the same question again — reported
-// 2026-09-28 and measured the same day: 710 (producer_id, dedup_key) groups
-// held more than one row, 26 of them with two or more answered rows, and one
-// ask was answered three times (21:59→22:06, 23:10→05:13, 05:50→05:53).
-//
-// The board is the surface that charges that cost, so the board's own read is
-// where it is refused.
-//
-// ⚠️ The row is DROPPED, not dimmed. The answered sibling is kept by this same
-// read and already renders as the dimmed record of the answer, so a second
-// record of one ask would state it twice.
-//
-// ⚠️ This is deliberately NOT a change to the store's suppression rule. That
-// rule is the schema's, owned by [[Attention Item Schema]], and the store still
-// writes the second row — only ReadBoard's view is narrowed, and only for the
-// board. Read, and every consumer acting on the store, is untouched.
-//
-// ⚠️ Answered siblings only, never closed ones. § Answer routing rules that a
-// close is a clear and not an answer, so a cleared ask has NOT been answered
-// and re-raising it is legitimate. The distinction is load-bearing rather than
-// cosmetic: the measured population is dominated by closed pairs (665) over
-// answered ones (26), and suppressing on a close would silently drop re-raises
-// the operator never answered.
-//
-// ⚠️ The match is on askIdentity, not on the key alone. A row that reuses a key
-// for a DIFFERENT question is a new ask and is rendered: withholding it would
-// hide a gate the operator was never shown, which is the defect, not the cure.
-// The row it is withheld for is closed by closeRedundantReraises, so it stops
-// being `open` rather than lingering as an invisible one.
-func suppressAnsweredTwins(items Items) Items {
-	answered := make(map[string]struct{}, len(items))
-	for _, item := range items {
-		if item.State == AnsweredState {
-			answered[askIdentity(item)] = struct{}{}
-		}
-	}
-	if len(answered) == 0 {
-		return items
-	}
-	kept := make(Items, 0, len(items))
-	for _, item := range items {
-		if item.State == OpenState {
-			if _, ok := answered[askIdentity(item)]; ok {
-				continue
-			}
-		}
-		kept = append(kept, item)
-	}
-	return kept
 }
 
 // storedItem is an item together with the key it is stored under, so a prune
@@ -1656,14 +1590,15 @@ func (a *attentionStore) closeAnsweredItem(
 // closeRedundantReraises closes every open item that repeats an ask already
 // answered — the same producer, dedup key AND payload.
 //
-// ⚠️ This is the other half of the fix, and the read-side half alone is not
-// enough. suppressAnsweredTwins withholds such a row from the BOARD, but the
-// row stays `open` in the store: the producer polling its own item id waits on
-// a card the operator is never shown, and nothing in the store ever closes it
-// (SweepAnswered closed only `answered` items). The stranding was bounded only
-// because the sweep eventually closed the TWIN, at which point suppression
-// stopped applying and the row reappeared — measured 2026-10-18 at exactly
-// answeredMaxAge: twins answered 09:27:03Z/09:27:07Z, closed 10:27:48Z.
+// ⚠️ This is the whole of the fix, and it is a store-side one on purpose. The
+// alternative was to withhold such a row from the BOARD, which is what the
+// store did before — but a withheld row stays `open` in the store: the producer
+// polling its own item id waits on a card the operator is never shown, and
+// nothing in the store ever closed it (SweepAnswered closed only `answered`
+// items). The stranding was bounded only because the sweep eventually closed
+// the TWIN, at which point the withholding stopped applying and the row
+// reappeared — measured 2026-10-18 at exactly answeredMaxAge: twins answered
+// 09:27:03Z/09:27:07Z, closed 10:27:48Z.
 // Closing the re-raise itself gives the producer its outcome immediately
 // instead of parking it on the twin's remaining lifetime.
 //

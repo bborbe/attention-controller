@@ -136,8 +136,9 @@ var attentionDedupIndexBucketName = libkv.NewBucketName("attention-dedup-index")
 const dedupIndexMarkerKey = "!"
 
 // dedupIndexSeparator joins the producer id to the dedup key. It is the same
-// `"\x00"` `suppressAnsweredTwins` already joins this exact pair with, so the
-// two spellings of one identity cannot drift apart.
+// `"\x00"` `askIdentity` joins the producer, dedup key and payload with, so the
+// two spellings of identity in this package cannot drift apart on their
+// separator.
 //
 // ⚠️ The join is NOT injective — `("a\x00b", "c")` and `("a", "b\x00c")` produce
 // one key. The scan this index replaces compared the two FIELDS and could not
