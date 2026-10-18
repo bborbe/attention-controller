@@ -381,6 +381,28 @@ func (a *attentionStore) read(ctx context.Context, includeAnswered bool) (Items,
 	return kept, nil
 }
 
+// askIdentity is what two pushes must share to be the same ask: the producer,
+// the dedup key AND the payload.
+//
+// ⚠️ Payload is part of it, and that is the fix. The dedup key is the
+// producer's own claim that two pushes are one ask, and a producer can reuse a
+// key for a genuinely new question. The session-keyed form cannot produce a
+// distinct key at all — `compact-approval:<session-id>` is the same string for
+// every ask that session ever raises — so matching on the key alone withheld
+// questions the operator had never been shown, which is the defect this task
+// exists to remove (reported 2026-10-18: a card present in the store as `open`,
+// returned by `GET /api/1.0/attention`, and rendered nowhere on the board).
+//
+// ⚠️ The measured population says payload identity separates the two cases
+// cleanly rather than merely in principle. Re-derived against the live store on
+// 2026-10-18, the real re-raises are byte-identical to their answered twin in
+// payload, context, options, interrupt_class, answer_mechanism and
+// liveness_ref — only `expires_at` differs, because it is recomputed at push
+// time. So a redundant re-raise still matches, and a changed question does not.
+func askIdentity(item Item) string {
+	return item.ProducerID.String() + "\x00" + item.DedupKey.String() + "\x00" + item.Payload.String()
+}
+
 // suppressAnsweredTwins drops an open item whose ask has already been answered.
 //
 // ⚠️ The store's duplicate suppression is OPEN-SCOPED: updateExistingIfLive
@@ -410,11 +432,17 @@ func (a *attentionStore) read(ctx context.Context, includeAnswered bool) (Items,
 // cosmetic: the measured population is dominated by closed pairs (665) over
 // answered ones (26), and suppressing on a close would silently drop re-raises
 // the operator never answered.
+//
+// ⚠️ The match is on askIdentity, not on the key alone. A row that reuses a key
+// for a DIFFERENT question is a new ask and is rendered: withholding it would
+// hide a gate the operator was never shown, which is the defect, not the cure.
+// The row it is withheld for is closed by closeRedundantReraises, so it stops
+// being `open` rather than lingering as an invisible one.
 func suppressAnsweredTwins(items Items) Items {
 	answered := make(map[string]struct{}, len(items))
 	for _, item := range items {
 		if item.State == AnsweredState {
-			answered[item.ProducerID.String()+"\x00"+item.DedupKey.String()] = struct{}{}
+			answered[askIdentity(item)] = struct{}{}
 		}
 	}
 	if len(answered) == 0 {
@@ -423,7 +451,7 @@ func suppressAnsweredTwins(items Items) Items {
 	kept := make(Items, 0, len(items))
 	for _, item := range items {
 		if item.State == OpenState {
-			if _, ok := answered[item.ProducerID.String()+"\x00"+item.DedupKey.String()]; ok {
+			if _, ok := answered[askIdentity(item)]; ok {
 				continue
 			}
 		}
@@ -1493,11 +1521,19 @@ func (a *attentionStore) Close(
 	return result, nil
 }
 
-// SweepAnswered closes every answered item whose AnsweredAt is older than maxAge.
+// SweepAnswered closes every answered item whose AnsweredAt is older than
+// maxAge, and then every open item that repeats an ask already answered.
 //
 // ⚠️ It is an Update of its own, never a step inside Read: the read path stays
 // read-only, because a read that writes is the writer-lock-across-a-scan shape
 // v0.23.2 removed.
+//
+// ⚠️ The second pass is not an age rule and must not be read as one. An open
+// item repeating an already-answered ask is due the moment its twin is
+// answered, because the operator has already disposed of that question; waiting
+// for maxAge would leave the producer parked for the twin's whole remaining
+// lifetime, which is the stranding this pass removes. See
+// closeRedundantReraises.
 //
 // ⚠️ It scans the LIVE INDEX rather than the items bucket, so it decodes the
 // population it can act on and not the ~19,500 closed rows beside it. The index
@@ -1531,6 +1567,14 @@ func (a *attentionStore) SweepAnswered(
 				closed++
 			}
 		}
+		// ⚠️ Second pass, and it runs AFTER the max-age pass on purpose: see
+		// closeRedundantReraises. A twin closed just above leaves this scan's
+		// set, so its re-raise is correctly left open rather than closed.
+		reraises, err := a.closeRedundantReraises(ctx, tx)
+		if err != nil {
+			return err
+		}
+		closed += reraises
 		return nil
 	})
 	if err != nil {
@@ -1605,6 +1649,124 @@ func (a *attentionStore) closeAnsweredItem(
 	// here would replace the answerer with the sweeper.
 	if err := a.putItem(ctx, tx, *item); err != nil {
 		return false, errors.Wrapf(ctx, err, "close answered item %s failed", key)
+	}
+	return true, nil
+}
+
+// closeRedundantReraises closes every open item that repeats an ask already
+// answered — the same producer, dedup key AND payload.
+//
+// ⚠️ This is the other half of the fix, and the read-side half alone is not
+// enough. suppressAnsweredTwins withholds such a row from the BOARD, but the
+// row stays `open` in the store: the producer polling its own item id waits on
+// a card the operator is never shown, and nothing in the store ever closes it
+// (SweepAnswered closed only `answered` items). The stranding was bounded only
+// because the sweep eventually closed the TWIN, at which point suppression
+// stopped applying and the row reappeared — measured 2026-10-18 at exactly
+// answeredMaxAge: twins answered 09:27:03Z/09:27:07Z, closed 10:27:48Z.
+// Closing the re-raise itself gives the producer its outcome immediately
+// instead of parking it on the twin's remaining lifetime.
+//
+// ⚠️ `open -> closed` is the schema's own row for this — "the item is resolved
+// without an answer" — and it is the honest one. Answering the re-raise with
+// the twin's answer was the alternative and is worse: it would write
+// `answered_by` and `answer` onto a row the operator never acted on, recording
+// them as having answered a card they were never shown, and it would leave two
+// dimmed records of one ask on the board.
+//
+// ⚠️ Payload identity is what keeps this from discarding a real question. A
+// producer that reuses a key for a DIFFERENT payload is asking something new —
+// the session-keyed form makes that unavoidable, since every ask for one
+// session carries the same key — and such a row is left open and rendered. Only
+// a byte-identical repeat of an already-answered ask is closed.
+//
+// ⚠️ It must run AFTER the max-age pass in SweepAnswered. Closing an answered
+// twin removes it from this scan's set, so its re-raise is then no longer a
+// repeat of an ANSWERED ask and is correctly left alone: § Answer routing makes
+// re-raising a merely-cleared ask legitimate, and this scan must not quietly
+// close one.
+func (a *attentionStore) closeRedundantReraises(
+	ctx context.Context,
+	tx libkv.Tx,
+) (int, error) {
+	answered := make(map[string]struct{})
+	if err := a.liveIndex.Map(
+		ctx,
+		tx,
+		func(ctx context.Context, key string, item Item) error {
+			if key == liveIndexMarkerKey || item.State != AnsweredState {
+				return nil
+			}
+			answered[askIdentity(item)] = struct{}{}
+			return nil
+		},
+	); err != nil {
+		return 0, errors.Wrap(ctx, err, "scan live index for answered twins failed")
+	}
+	if len(answered) == 0 {
+		return 0, nil
+	}
+	due := make([]string, 0)
+	if err := a.liveIndex.Map(
+		ctx,
+		tx,
+		func(ctx context.Context, key string, item Item) error {
+			if key == liveIndexMarkerKey || item.State != OpenState {
+				return nil
+			}
+			if _, ok := answered[askIdentity(item)]; ok {
+				due = append(due, key)
+			}
+			return nil
+		},
+	); err != nil {
+		return 0, errors.Wrap(ctx, err, "scan live index for redundant re-raises failed")
+	}
+	closed := 0
+	for _, key := range due {
+		didClose, err := a.closeOpenItem(ctx, tx, key)
+		if err != nil {
+			return closed, err
+		}
+		if didClose {
+			closed++
+		}
+	}
+	return closed, nil
+}
+
+// closeOpenItem closes one open item, reporting whether it closed it.
+//
+// ⚠️ The state is re-read inside the transaction rather than trusted from the
+// index snapshot the scan produced, for the same reason closeAnsweredItem
+// re-reads: the scan and the close are two steps, and the item can have been
+// answered, closed or removed between them. A re-raise that has since been
+// ANSWERED must not be closed out from under its answer.
+func (a *attentionStore) closeOpenItem(
+	ctx context.Context,
+	tx libkv.Tx,
+	key string,
+) (bool, error) {
+	item, err := a.store.Get(ctx, tx, key)
+	if err != nil {
+		if isNotFound(err) {
+			return false, nil
+		}
+		return false, errors.Wrapf(ctx, err, "get item %s failed", key)
+	}
+	if item.State != OpenState {
+		return false, nil
+	}
+	if err := ValidateTransition(ctx, item.State, ClosedState); err != nil {
+		return false, err
+	}
+	now := a.currentDateTimeGetter.Now()
+	item.State = ClosedState
+	item.ClosedAt = &now
+	// answeredBy is deliberately NOT written: the row was resolved without an
+	// answer, and naming a sweeper as the answerer would be a false record.
+	if err := a.putItem(ctx, tx, *item); err != nil {
+		return false, errors.Wrapf(ctx, err, "close open item %s failed", key)
 	}
 	return true, nil
 }
