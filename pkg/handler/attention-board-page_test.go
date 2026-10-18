@@ -381,7 +381,7 @@ var _ = Describe("Attention page board controls", func() {
 		dimmedRow := func(body string, itemID pkg.ItemID) bool {
 			return strings.Contains(
 				body,
-				`class="item dimmed" data-item-id="`+itemID.String()+`"`,
+				` dimmed" data-item-id="`+itemID.String()+`"`,
 			)
 		}
 
@@ -951,7 +951,7 @@ var _ = Describe("Attention page board controls", func() {
 		dimmedRow := func(body string, itemID pkg.ItemID) bool {
 			return strings.Contains(
 				body,
-				`class="item dimmed" data-item-id="`+itemID.String()+`"`,
+				` dimmed" data-item-id="`+itemID.String()+`"`,
 			)
 		}
 

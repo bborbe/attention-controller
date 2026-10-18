@@ -118,6 +118,15 @@ type Item struct {
 	// InterruptClass is the producer's declaration of how much this deserves
 	// the operator. Stored, never derived.
 	InterruptClass InterruptClass `json:"interrupt_class"`
+	// Risk is the producer's declaration of how much care this item deserves.
+	// Stored, never derived, exactly as InterruptClass is: the store reads it
+	// back unchanged and neither recomputes nor promotes it.
+	//
+	// Absent means DecisionRisk. What the board renders from it is escalated at
+	// render time and never below the declaration, so a producer that
+	// under-declares cannot make a destructive card render green. See Risk and
+	// RiskOf.
+	Risk Risk `json:"risk,omitempty"`
 	// Payload is the operator-facing content.
 	Payload Payload `json:"payload"`
 	// Context is the operator-facing background for the ask. Optional, and the
@@ -247,6 +256,7 @@ func (i Item) Validate(ctx context.Context) error {
 		validation.Name("LivenessRef", i.LivenessRef),
 		validation.Name("DedupKey", validation.NotEmptyString(i.DedupKey)),
 		validation.Name("InterruptClass", validation.NotEmptyString(i.InterruptClass)),
+		validation.Name("Risk", i.Risk),
 		validation.Name("Payload", validation.NotEmptyString(i.Payload)),
 		validation.Name("Options", validation.HasValidationFunc(i.validateOptions)),
 		validation.Name(

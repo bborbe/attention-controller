@@ -223,7 +223,7 @@ var _ = Describe("AttentionStreamHandler", func() {
 		Expect(open["type"]).Should(Equal("upsert"))
 		Expect(open["item_id"]).Should(Equal(item.ItemID.String()))
 		Expect(open["html"]).Should(ContainSubstring(`data-item-id="` + item.ItemID.String() + `"`))
-		Expect(open["html"]).ShouldNot(ContainSubstring("item dimmed"))
+		Expect(open["html"]).ShouldNot(ContainSubstring(` dimmed"`))
 
 		answer := pkg.Answer{Kind: pkg.TextAnswerKind, Value: "yes"}
 		_, err := store.Answer(ctx, item.ItemID, "attention-board", "", "", &answer, nil, nil)
@@ -233,7 +233,7 @@ var _ = Describe("AttentionStreamHandler", func() {
 		Expect(event["type"]).Should(Equal("upsert"))
 		Expect(event["item_id"]).Should(Equal(item.ItemID.String()))
 		Expect(event["html"]).Should(ContainSubstring(
-			`class="item dimmed" data-item-id="` + item.ItemID.String() + `"`,
+			` dimmed" data-item-id="` + item.ItemID.String() + `"`,
 		))
 	})
 
@@ -629,7 +629,7 @@ var _ = Describe("AttentionStreamHandler render fan-out", func() {
 		event := readEvent(reader)
 		Expect(event["type"]).Should(Equal("upsert"))
 		Expect(event["item_id"]).Should(Equal(first.ItemID.String()))
-		Expect(event["html"]).Should(ContainSubstring("item dimmed"))
+		Expect(event["html"]).Should(ContainSubstring(` dimmed"`))
 
 		// The real write. Had the answer above also re-sent `second`, its event
 		// would be read here instead of this push's.

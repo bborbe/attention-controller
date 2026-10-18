@@ -1221,7 +1221,7 @@ function replayFailure(row) {
      — and it must be the SAME markup, not a second renderer that would drift
      from this one. The dollar sign inside a sub-template is the value passed to
      it, which is why Speak is carried on the row and read as dot-Speak here. */}}
-{{define "attention-row"}}<li class="item{{if .Dimmed}} dimmed{{end}}" data-item-id="{{ .Item.ItemID }}">
+{{define "attention-row"}}<li class="item risk-{{ .Risk }}{{if .Dimmed}} dimmed{{end}}" data-item-id="{{ .Item.ItemID }}" data-risk="{{ .Risk }}">
 {{/* The corner X renders on every OPEN row, ungated by mechanism, from
      2026-09-27 — message, ack and permission alike — and is withheld from the
      dimmed record card by the (not .Dimmed) conjunct, added 2026-10-01. It was
@@ -1375,6 +1375,17 @@ type attentionPageRow struct {
 	// the page's own script reads, so the strip and the wire shape cannot
 	// disagree about whether this item answers by `answer` or by `answers`.
 	Tabs bool
+	// Risk is the level the board RENDERS for this row — the higher of the
+	// item's declared risk and the rule its own content matches, computed by
+	// pkg.RiskOf at render time.
+	//
+	// ⚠️ It is deliberately not item.Risk. The declared value is stored
+	// unchanged and this field is the render-time escalation above it, so a
+	// producer that under-declares cannot make a destructive card render green.
+	// The two are separate values and must stay separate: reading item.Risk
+	// here would silently drop the derivation, and the row would colour itself
+	// by whatever the producer claimed.
+	Risk pkg.Risk
 	// Dimmed reports whether this row is the dimmed record of an item that has
 	// already been answered, rather than an open card. It is what the template
 	// branches on to render a record instead of a prompt: a dimmed row carries
