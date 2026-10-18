@@ -1421,6 +1421,87 @@ var _ = Describe("AttentionStore", func() {
 			Expect(got.State).To(Equal(pkg.OpenState))
 		})
 
+		// ⚠️ The defect this change exists for, reproduced 2026-10-18. The spec
+		// above matches a re-raise on the dedup key ALONE, so a producer that
+		// reuses a key for a DIFFERENT question had its new ask withheld too. The
+		// row stayed `open` in the store, was returned by GET /api/1.0/attention,
+		// and was rendered nowhere on the board — so the producer waited on a card
+		// the operator was never shown. The session-keyed form makes it structural
+		// rather than incidental: `compact-approval:<session-id>` is the same
+		// string for every ask that session ever raises, so a genuinely new
+		// question can never carry a distinct key.
+		//
+		// This is the spec that fails against the pre-fix source ON BEHAVIOUR:
+		// every assertion below is false while the match is key-only.
+		It("renders an open re-push whose key is reused for a different ask", func() {
+			answered, err := store.Push(ctx, pushRequest("session-reuse", "gate-reused"))
+			Expect(err).To(BeNil())
+			_, err = store.Answer(ctx, answered.ItemID, "attention-board", "", "", nil, nil, nil)
+			Expect(err).To(BeNil())
+
+			// The SAME producer and dedup key, a DIFFERENT question.
+			changed := pushRequest("session-reuse", "gate-reused")
+			changed.Payload = "deploy prod? (a genuinely new ask)"
+			repushed, err := store.Push(ctx, changed)
+			Expect(err).To(BeNil())
+			Expect(repushed.ItemID).NotTo(Equal(answered.ItemID))
+			Expect(repushed.State).To(Equal(pkg.OpenState))
+
+			board, err := store.ReadBoard(ctx)
+			Expect(err).To(BeNil())
+			Expect(itemIDs(board)).To(ContainElement(repushed.ItemID))
+		})
+
+		// ⚠️ Withholding the row from the board is only half the fix. The row is
+		// still `open`, and nothing in the store closed it: SweepAnswered closed
+		// only `answered` items, so the producer polling its own item id waited on
+		// a card the operator was never shown. The stranding ended only when the
+		// sweep closed the TWIN at maxAge and suppression stopped applying —
+		// measured 2026-10-18 at exactly answeredMaxAge (twins answered
+		// 09:27:03Z/09:27:07Z, closed 10:27:48Z).
+		It("closes an open re-push that repeats an already-answered ask", func() {
+			answered, err := store.Push(ctx, pushRequest("session-repeat", "gate-repeat"))
+			Expect(err).To(BeNil())
+			_, err = store.Answer(ctx, answered.ItemID, "attention-board", "", "", nil, nil, nil)
+			Expect(err).To(BeNil())
+
+			// The same question again, unchanged — a redundant re-raise.
+			repushed, err := store.Push(ctx, pushRequest("session-repeat", "gate-repeat"))
+			Expect(err).To(BeNil())
+			Expect(repushed.State).To(Equal(pkg.OpenState))
+
+			_, err = store.SweepAnswered(ctx, libtime.Duration(60*60*1e9))
+			Expect(err).To(BeNil())
+
+			got, err := store.Get(ctx, repushed.ItemID)
+			Expect(err).To(BeNil())
+			Expect(got.State).To(Equal(pkg.ClosedState))
+		})
+
+		// The negative control for the sweep pass: a re-push carrying a DIFFERENT
+		// question must be left open. Without this, a pass that closed every open
+		// row having an answered sibling would satisfy the spec above while
+		// silently discarding real asks — the failure mode the key-only match
+		// already exhibited, moved from the board to the store.
+		It("leaves an open re-push that asks something new under the reused key", func() {
+			answered, err := store.Push(ctx, pushRequest("session-new", "gate-reused-open"))
+			Expect(err).To(BeNil())
+			_, err = store.Answer(ctx, answered.ItemID, "attention-board", "", "", nil, nil, nil)
+			Expect(err).To(BeNil())
+
+			changed := pushRequest("session-new", "gate-reused-open")
+			changed.Payload = "deploy prod? (new)"
+			repushed, err := store.Push(ctx, changed)
+			Expect(err).To(BeNil())
+
+			_, err = store.SweepAnswered(ctx, libtime.Duration(60*60*1e9))
+			Expect(err).To(BeNil())
+
+			got, err := store.Get(ctx, repushed.ItemID)
+			Expect(err).To(BeNil())
+			Expect(got.State).To(Equal(pkg.OpenState))
+		})
+
 		// The first negative control: the rule is scoped to an ANSWERED sibling, so
 		// an open item with no answered twin must still render. Without this, a
 		// filter that dropped every open row would pass the spec above.

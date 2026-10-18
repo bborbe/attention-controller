@@ -67,7 +67,15 @@ type AttentionStore interface {
 	History(ctx context.Context, limit int, offset int) (Items, error)
 
 	// SweepAnswered closes every answered item whose AnsweredAt is older than
-	// maxAge, returning how many it closed.
+	// maxAge, and every open item that repeats an ask already answered,
+	// returning how many it closed in total.
+	//
+	// ⚠️ The second clause is not an age rule: an open row repeating an
+	// already-answered ask is due the moment its twin is answered, because the
+	// operator has already disposed of that question. Waiting for maxAge would
+	// leave its producer parked for the twin's whole remaining lifetime, which is
+	// the stranding this clause removes. It matches on producer, dedup key AND
+	// payload, so a row reusing a key for a DIFFERENT question is left open.
 	//
 	// ⚠️ The bound exists because the live index admits `answered` items —
 	// liveIndexWorthy is `State != ClosedState` — so an answered item that is

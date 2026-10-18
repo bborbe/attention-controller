@@ -869,7 +869,7 @@ func runAnsweredSweep(
 				}
 				if closed > 0 {
 					glog.V(2).Infof(
-						"swept %d answered items older than %s",
+						"swept %d items: answered past %s, or open rows repeating an already-answered ask",
 						closed,
 						time.Duration(maxAge),
 					)
