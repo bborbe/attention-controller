@@ -91,6 +91,14 @@ func newAttentionPageRow(
 		TopicURL:   vaultFileURL(vaultName, provenance.TopicPath),
 	}
 	row.Message, row.Ack = affordance(item.AnswerMechanism)
+	// Risk is derived here rather than read straight off the item. The declared
+	// level is stored unchanged, and this call is the render-time rule that may
+	// raise it and never lower it — the reason a producer that under-declares
+	// still cannot make a destructive card render green. The provenance's
+	// ProductionTouching is the resolved marker fact, and this is its first
+	// consumer: the read was parsed on every page load and consumed by nothing
+	// until now. See pkg.RiskOf.
+	row.Risk = pkg.RiskOf(item, provenance.ProductionTouching)
 	// Info is the single gate for both the info-toggle and its panel, so the
 	// control and the panel it opens cannot disagree about whether this row
 	// carries machine identity. It is the implementation of
@@ -576,6 +584,14 @@ const attentionPageStyles = `
      literals so the pair stays one decision. */
   --green: #8fd39a;
   --green-bg: #2c4a37;
+  /* The three risk tokens, in the operator's own vocabulary: gray for routine,
+     yellow for a decision, red for risk. They colour a card's left band and
+     nothing else — never its order. The board renders in the order the store's
+     read returns, and any ordering it adopts must stay neutral between
+     classes, per [[Attention Item Schema]] § The stack does not rank. */
+  --risk-routine: #6b7280;
+  --risk-decision: #d0a35b;
+  --risk-risk: #d05b5b;
   /* The corner band. The card's four corner controls occupy its rightmost
      148px within its top 38px: the X at right: 12px, the read-aloud control at
      right: 48px, the jump corner at right: 84px and the info toggle at
@@ -623,6 +639,20 @@ li.item {
   border-radius: 10px;
   padding: 16px;
   margin-bottom: 12px;
+}
+/* The rendered risk level, as a left band. It is per-card colour only: the
+   board's order stays the store's, so a red card is no higher than a green
+   one. The class is set from the DERIVED level, not the declared one, which is
+   what lets a card whose payload mentions a delete read red even though its
+   producer declared routine. See pkg.RiskOf. */
+li.item.risk-routine {
+  border-left: 4px solid var(--risk-routine);
+}
+li.item.risk-decision {
+  border-left: 4px solid var(--risk-decision);
+}
+li.item.risk-risk {
+  border-left: 4px solid var(--risk-risk);
 }
 .producer {
   color: var(--muted);
