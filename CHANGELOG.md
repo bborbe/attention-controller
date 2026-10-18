@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.58.1
 
 - fix: **a producer's declared `risk` level now actually reaches the store.** The field was added to the stored `Item` and the board reads it back, but the push REQUEST carried no `Risk` at all — so a declaration sent in the push body was dropped before it was ever persisted, and `attention-ask.py post --risk` silently did nothing. ⚠️ **No unit test caught it, and the reason is worth keeping.** The render-time derivation reads the item's own payload and the resolved marker, so every card still coloured correctly and every render-side spec passed; the only symptom was that a producer could not *declare* anything, which nothing exercised end to end. Found by posting through the deployed board and reading the item back from `GET /api/1.0/attention/<id>`, which returned no `risk` field at all. Change set: `pkg/attention-store.go` (the request field plus its validation), `pkg/attention-store-impl.go` (the request→Item copy), `pkg/attention-store_test.go` (push-and-read round trips for a declared value, an absent one, and an undeclared level), `CHANGELOG.md`.
 
