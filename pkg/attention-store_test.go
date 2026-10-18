@@ -210,6 +210,47 @@ var _ = Describe("AttentionStore", func() {
 		})
 	})
 
+	Describe("Risk", func() {
+		// ⚠️ These specs exist because the first cut of this feature shipped
+		// without them, and the gap was invisible. `Item` gained a Risk field and
+		// the board derived a colour from the payload, so every card rendered
+		// correctly and every render-side test passed — while the push REQUEST
+		// carried no Risk at all, so a producer's declaration was dropped and
+		// never persisted. Only exercising the deployed board end to end
+		// surfaced it. A push-and-read round trip is the shape that catches it.
+		It("round-trips a declared value via push and read", func() {
+			request := pushRequest("session-a", "gate-1")
+			request.Risk = pkg.ElevatedRisk
+			item, err := store.Push(ctx, request)
+			Expect(err).To(BeNil())
+			Expect(item.Risk).To(Equal(pkg.ElevatedRisk))
+
+			got, err := store.Get(ctx, item.ItemID)
+			Expect(err).To(BeNil())
+			Expect(got.Risk).To(Equal(pkg.ElevatedRisk))
+		})
+
+		It("stores an absent declaration as absent, so the board can default it", func() {
+			request := pushRequest("session-a", "gate-1")
+			request.Risk = ""
+			Expect(request.Validate(ctx)).To(BeNil())
+
+			item, err := store.Push(ctx, request)
+			Expect(err).To(BeNil())
+			Expect(item.Risk).To(Equal(pkg.Risk("")))
+
+			got, err := store.Get(ctx, item.ItemID)
+			Expect(err).To(BeNil())
+			Expect(got.Risk).To(Equal(pkg.Risk("")))
+		})
+
+		It("rejects a level the schema does not declare", func() {
+			request := pushRequest("session-a", "gate-1")
+			request.Risk = pkg.Risk("urgent")
+			Expect(request.Validate(ctx)).ToNot(BeNil())
+		})
+	})
+
 	Describe("Push", func() {
 		It("creates an open item carrying a stable id", func() {
 			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))

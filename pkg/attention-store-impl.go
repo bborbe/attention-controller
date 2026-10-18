@@ -120,6 +120,7 @@ func (a *attentionStore) newItem(ctx context.Context, request PushRequest) (*Ite
 		LivenessRef:       request.LivenessRef,
 		DedupKey:          request.DedupKey,
 		InterruptClass:    request.InterruptClass,
+		Risk:              request.Risk,
 		Payload:           request.Payload,
 		Context:           request.Context,
 		AnswerMechanism:   request.AnswerMechanism,
