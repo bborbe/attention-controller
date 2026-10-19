@@ -71,6 +71,7 @@ neither is an error.
 | **60 s** | `SESSION_HEARTBEAT_WINDOW` (env, default `60s`, `main.go`) | whether a **session** is live. Bounds death detection. |
 | **15 m** | `HEARTBEAT_WINDOW` (env, default `15m`, `main.go`) | the **mtime of a `heartbeat:<path>` file** — a different probe entirely. Stops a cron that runs every 10 minutes from being declared dead. |
 | `HEARTBEAT_TTL_MS` | `claude-supervisor`, `server/heartbeat.mjs` | **feeds the producer's timer**, not the read. |
+| **168 h** | `SESSION_HEARTBEAT_RETENTION` (env, default `168h`, `main.go`) | how long a **posted row** is kept before the store prunes it. ⚠️ **Not a liveness bound.** A row past the 60 s window still answers `stale` and is still matched by `session-liveness.py`'s prefix scan, so pruning at the window would make a posted-and-stale id read as never-posted (`404`) — the one distinction this endpoint exists to keep. Rows whose `at` is missing are left alone rather than deleted on no evidence. |
 
 The boundary is `≤`, not `<`: **60.0 s reads live, 61 s reads stale.** A process that is alive
 but has stopped posting reads stale — the store answers about the *heartbeat*, never about the
@@ -83,7 +84,7 @@ Registered on the board's router (`main.go`), so they are reachable wherever the
 | Route | Answers |
 |---|---|
 | `POST /api/1.0/session-heartbeat` | Writes a row. `200` with the stored row echoed; **`400`** for a missing required field (`session_id`, `location`, `state`, `source`) or a malformed `session_id`; **`500`** for a store I/O failure — a disk-full or permission error is the server's problem and must not be reported as a bad request. ⚠️ **`task` and `vault` are NOT required** — both empty is legal, because a session with no task anchor is a real state; they are **paired** instead, so declaring one without the other is a `400`, since the vault is what makes a task name unambiguous. |
-| `GET /api/1.0/session-heartbeat` | The whole store as a JSON array, live and stale rows alike, each with `age_seconds` and `live`. |
+| `GET /api/1.0/session-heartbeat` | The whole store as a JSON array, live and stale rows alike, each with `age_seconds` and `live`. Served from an in-memory snapshot kept current by a watcher — **not** a per-request disk scan (a scan cost ~0.95 s under load and serialised concurrent readers, which pushed the client's 5 s timeout into the spawn path; see `pkg/session-heartbeat-watcher.go`). |
 | `GET /api/1.0/session-heartbeat/{sessionID}` | One row, or **`404`** when the id has never been posted; **`400`** for a malformed id (`.`, `..` or a path separator) — the caller's input, not a store failure. |
 
 ⚠️ **`absent` and `stale` are different answers and must stay different.** `404` means *never
