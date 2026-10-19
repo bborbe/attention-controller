@@ -321,6 +321,10 @@ func (s *sessionHeartbeatStore) List(ctx context.Context) (SessionHeartbeats, er
 	s.mu.RLock()
 	heartbeats := make(SessionHeartbeats, 0, len(s.rows))
 	for _, heartbeat := range s.rows {
+		if ctx.Err() != nil {
+			s.mu.RUnlock()
+			return nil, errors.Wrap(ctx, ctx.Err(), "list heartbeats cancelled")
+		}
 		heartbeats = append(heartbeats, heartbeat)
 	}
 	s.mu.RUnlock()
@@ -388,6 +392,9 @@ func (s *sessionHeartbeatStore) readAll(
 	}
 	rows := make(map[string]SessionHeartbeat, len(entries))
 	for _, entry := range entries {
+		if ctx.Err() != nil {
+			return nil, errors.Wrap(ctx, ctx.Err(), "read heartbeat dir cancelled")
+		}
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), sessionHeartbeatFileSuffix) {
 			continue
 		}

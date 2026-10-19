@@ -172,6 +172,11 @@ func (s *sessionHeartbeatStore) applyPaths(ctx context.Context, paths []string) 
 	}
 	updates := make(map[string]update, len(paths))
 	for _, path := range paths {
+		if ctx.Err() != nil {
+			// A cancelled context abandons the burst; the backstop reconcile
+			// re-reads the directory on the next tick, so nothing is lost.
+			return
+		}
 		sessionID := strings.TrimSuffix(filepath.Base(path), sessionHeartbeatFileSuffix)
 		if sessionID == "" {
 			continue
@@ -230,7 +235,7 @@ func (s *sessionHeartbeatStore) reconcile(ctx context.Context) error {
 	if err != nil {
 		return errors.Wrap(ctx, err, "reconcile heartbeat snapshot failed")
 	}
-	s.pruneExpired(rows)
+	s.pruneExpired(ctx, rows)
 	s.mu.Lock()
 	s.rows = rows
 	s.loaded = true
@@ -250,12 +255,20 @@ func (s *sessionHeartbeatStore) reconcile(ctx context.Context) error {
 // ⚠️ A row whose timestamp is ZERO is left alone rather than deleted: it cannot
 // be dated, and deleting on no evidence is how a row a reader still needs
 // disappears.
-func (s *sessionHeartbeatStore) pruneExpired(rows map[string]SessionHeartbeat) {
+func (s *sessionHeartbeatStore) pruneExpired(
+	ctx context.Context,
+	rows map[string]SessionHeartbeat,
+) {
 	if s.retention.Duration() <= 0 {
 		return
 	}
 	cutoff := s.now.Now().Add(libtime.Duration(-s.retention.Duration()))
 	for sessionID, heartbeat := range rows {
+		if ctx.Err() != nil {
+			// Stop midway rather than holding shutdown; the next reconcile
+			// prunes whatever is left.
+			return
+		}
 		if heartbeat.At.IsZero() || !heartbeat.At.Before(cutoff) {
 			continue
 		}
