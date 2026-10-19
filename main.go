@@ -45,11 +45,11 @@ type application struct {
 	// reporting rather than failing startup. This repo has no deployed stage
 	// yet, so nothing here depends on the flag; a future deploy supplies
 	// SENTRY_DSN from its own secret.
-	SentryDSN       string `required:"false" arg:"sentry-dsn"               env:"SENTRY_DSN"               usage:"SentryDSN (empty disables error reporting)"                                                                                                            display:"length"`
-	SentryProxy     string `required:"false" arg:"sentry-proxy"             env:"SENTRY_PROXY"             usage:"Sentry Proxy"`
-	Listen          string `required:"true"  arg:"listen"                   env:"LISTEN"                   usage:"address to listen to"`
-	DataDir         string `required:"true"  arg:"datadir"                  env:"DATADIR"                  usage:"data directory"`
-	HeartbeatWindow string `required:"false" arg:"heartbeat-window"         env:"HEARTBEAT_WINDOW"         usage:"how stale a heartbeat:<path> mtime may be before the producer counts as finished"                                                                                       default:"15m"`
+	SentryDSN       string `required:"false" arg:"sentry-dsn"                  env:"SENTRY_DSN"                  usage:"SentryDSN (empty disables error reporting)"                                                                                                            display:"length"`
+	SentryProxy     string `required:"false" arg:"sentry-proxy"                env:"SENTRY_PROXY"                usage:"Sentry Proxy"`
+	Listen          string `required:"true"  arg:"listen"                      env:"LISTEN"                      usage:"address to listen to"`
+	DataDir         string `required:"true"  arg:"datadir"                     env:"DATADIR"                     usage:"data directory"`
+	HeartbeatWindow string `required:"false" arg:"heartbeat-window"            env:"HEARTBEAT_WINDOW"            usage:"how stale a heartbeat:<path> mtime may be before the producer counts as finished"                                                                                       default:"15m"`
 	// SessionHeartbeatWindow is how stale a SESSION heartbeat may be before the
 	// session counts as gone. ⚠️ It is deliberately NOT HeartbeatWindow, and
 	// the two must not be collapsed onto one number: this one bounds how long a
@@ -58,14 +58,26 @@ type application struct {
 	// minutes from being declared dead. One number cannot serve both.
 	//
 	// 60s against the 30s post interval is one whole missed tick of slack.
-	SessionHeartbeatWindow string `required:"false" arg:"session-heartbeat-window" env:"SESSION_HEARTBEAT_WINDOW" usage:"how stale a session heartbeat may be before the session counts as gone"                                                                                                 default:"60s"`
+	SessionHeartbeatWindow string `required:"false" arg:"session-heartbeat-window"    env:"SESSION_HEARTBEAT_WINDOW"    usage:"how stale a session heartbeat may be before the session counts as gone"                                                                                                 default:"60s"`
+	// SessionHeartbeatRetention is how long a heartbeat row is kept before the
+	// store prunes it from the snapshot and the directory.
+	//
+	// ⚠️ It is deliberately NOT SessionHeartbeatWindow. The window bounds
+	// liveness; retention bounds how long a POSTED row stays answerable. A row
+	// past the window still answers `stale`, and session-liveness.py resolves
+	// prefixes against it — pruning at the window would make a posted-and-stale
+	// id read as never-posted (404), collapsing the one distinction the
+	// endpoint exists to keep. Seven days keeps every row a resume could
+	// plausibly reach while stopping the unbounded accumulation that made the
+	// list 1,600 rows and 318 KB.
+	SessionHeartbeatRetention string `required:"false" arg:"session-heartbeat-retention" env:"SESSION_HEARTBEAT_RETENTION" usage:"how long a posted session heartbeat row is kept before the store prunes it"                                                                                             default:"168h"`
 	// SessionHeartbeatDir is the heartbeat store directory. ⚠️ Empty resolves
 	// to the EXISTING supervisor store (`~/.local/state/claude-supervisor/live`)
 	// rather than to a new one — this endpoint extends that store, and the
 	// supervisor scripts keep reading the same files.
-	SessionHeartbeatDir string `required:"false" arg:"session-heartbeat-dir"    env:"SESSION_HEARTBEAT_DIR"    usage:"directory holding the session heartbeat store (empty resolves to the supervisor's existing store)"`
-	AnsweredMaxAge      string `required:"false" arg:"answered-max-age"         env:"ANSWERED_MAX_AGE"         usage:"how old an answered item may be before the store closes it; must stay well above the slowest consumer's poll interval"                                                  default:"1h"`
-	SessionsDir         string `required:"false" arg:"sessions-dir"             env:"SESSIONS_DIR"             usage:"directory holding the session registry used to resolve session:<id> liveness"`
+	SessionHeartbeatDir string `required:"false" arg:"session-heartbeat-dir"       env:"SESSION_HEARTBEAT_DIR"       usage:"directory holding the session heartbeat store (empty resolves to the supervisor's existing store)"`
+	AnsweredMaxAge      string `required:"false" arg:"answered-max-age"            env:"ANSWERED_MAX_AGE"            usage:"how old an answered item may be before the store closes it; must stay well above the slowest consumer's poll interval"                                                  default:"1h"`
+	SessionsDir         string `required:"false" arg:"sessions-dir"                env:"SESSIONS_DIR"                usage:"directory holding the session registry used to resolve session:<id> liveness"`
 	// SessionLiveness selects how producer liveness is resolved, and therefore
 	// whether the store prunes an item whose producer it cannot find.
 	//
@@ -78,14 +90,14 @@ type application struct {
 	// ⚠️ An unrecognised value is a startup error, never a silent fallback. The
 	// two modes differ in whether stored data is deleted, so guessing is the one
 	// answer that is wrong whichever way it guesses.
-	SessionLiveness   string `required:"false" arg:"session-liveness"         env:"SESSION_LIVENESS"         usage:"how producer liveness is resolved: 'registry' prunes an item whose producer is gone from the session registry; 'off' never prunes (a cluster backend)"                  default:"registry"`
-	AttentionStateDir string `required:"false" arg:"attention-state-dir"      env:"ATTENTION_STATE_DIR"      usage:"directory holding the producers' event logs the page resolves item provenance from"`
+	SessionLiveness   string `required:"false" arg:"session-liveness"            env:"SESSION_LIVENESS"            usage:"how producer liveness is resolved: 'registry' prunes an item whose producer is gone from the session registry; 'off' never prunes (a cluster backend)"                  default:"registry"`
+	AttentionStateDir string `required:"false" arg:"attention-state-dir"         env:"ATTENTION_STATE_DIR"         usage:"directory holding the producers' event logs the page resolves item provenance from"`
 	// VaultDir is the directory holding the vault whose task files record the
 	// session each task belongs to. ⚠️ Deliberately without a `default:`, unlike
 	// SessionsDir and AttentionStateDir: an unset vault is a legitimate state,
 	// and defaulting it would point the board at a guessed path instead of
 	// simply rendering no task names.
-	VaultDir string `required:"false" arg:"vault-dir"                env:"VAULT_DIR"                usage:"directory holding the vault whose task files record the session each task belongs to (empty renders no task names)"`
+	VaultDir string `required:"false" arg:"vault-dir"                   env:"VAULT_DIR"                   usage:"directory holding the vault whose task files record the session each task belongs to (empty renders no task names)"`
 	// JumpListen is the address of the legacy pane-addressed jump listener.
 	//
 	// ⚠️ It is NOT the fleet-jump server's origin any more — that server is
@@ -99,7 +111,7 @@ type application struct {
 	// ⚠️ Empty disables the legacy listener entirely. That is the switch for the
 	// day the last consumer is re-pointed, and it is a configuration change
 	// rather than a code change on purpose.
-	JumpListen string `required:"false" arg:"jump-listen"              env:"JUMP_LISTEN"              usage:"address of the legacy pane-addressed jump listener (empty disables it)"                                                                                                 default:"127.0.0.1:1337"`
+	JumpListen string `required:"false" arg:"jump-listen"                 env:"JUMP_LISTEN"                 usage:"address of the legacy pane-addressed jump listener (empty disables it)"                                                                                                 default:"127.0.0.1:1337"`
 	// JumpTokenPath is the file holding the jump token the legacy pane-addressed
 	// route requires.
 	// Empty resolves to ~/.claude/secrets/jump-token, the same path
@@ -112,7 +124,7 @@ type application struct {
 	// rule, and the tag costs nothing but a less useful startup line. Both the
 	// local review funnel and the bot flagged the omission, and a tag that is
 	// correct for a credential-adjacent field is the cheaper default.
-	JumpTokenPath string `required:"false" arg:"jump-token-path"          env:"JUMP_TOKEN_PATH"          usage:"file holding the jump token the legacy pane-addressed jump route requires (empty resolves to ~/.claude/secrets/jump-token)"                            display:"length"`
+	JumpTokenPath string `required:"false" arg:"jump-token-path"             env:"JUMP_TOKEN_PATH"             usage:"file holding the jump token the legacy pane-addressed jump route requires (empty resolves to ~/.claude/secrets/jump-token)"                            display:"length"`
 	// AttentionStoreListen is the address of the second, cluster-reachable
 	// listener. It serves the business API only, and every request to it must
 	// carry the bearer token in AttentionStoreToken.
@@ -122,7 +134,7 @@ type application struct {
 	// has, and the store then serves exactly as it does today. It is logged
 	// rather than silent, so a client that stops reaching the store is traceable
 	// to the setting that disabled it instead of to a bug.
-	AttentionStoreListen string `required:"false" arg:"attention-store-listen"   env:"ATTENTION_STORE_LISTEN"   usage:"address of the second listener serving the business API behind a bearer token (empty disables it)"`
+	AttentionStoreListen string `required:"false" arg:"attention-store-listen"      env:"ATTENTION_STORE_LISTEN"      usage:"address of the second listener serving the business API behind a bearer token (empty disables it)"`
 	// AttentionStoreToken is the bearer token every request to the second
 	// listener must present.
 	//
@@ -132,7 +144,7 @@ type application struct {
 	// ⚠️ Empty disables the second listener entirely — the store never serves
 	// the API unauthenticated on a non-loopback address. That is the
 	// fail-closed default, not a degenerate configuration.
-	AttentionStoreToken string `required:"false" arg:"attention-store-token"    env:"ATTENTION_STORE_TOKEN"    usage:"bearer token every request to the second listener must present (empty disables the listener)"                                                          display:"length"`
+	AttentionStoreToken string `required:"false" arg:"attention-store-token"       env:"ATTENTION_STORE_TOKEN"       usage:"bearer token every request to the second listener must present (empty disables the listener)"                                                          display:"length"`
 	// AttentionUpstreamURL is the base URL of a PEER attention store whose open
 	// items this instance merges into its own board.
 	//
@@ -145,7 +157,7 @@ type application struct {
 	// ⚠️ It is the peer's BUSINESS API listener — the bearer-gated one — not its
 	// board. The board listener renders HTML and is deliberately not exposed; the
 	// business API is the surface a token can gate.
-	AttentionUpstreamURL string `required:"false" arg:"attention-upstream-url"   env:"ATTENTION_UPSTREAM_URL"   usage:"base URL of a peer attention store whose open items are merged into this instance's board (empty disables federation)"`
+	AttentionUpstreamURL string `required:"false" arg:"attention-upstream-url"      env:"ATTENTION_UPSTREAM_URL"      usage:"base URL of a peer attention store whose open items are merged into this instance's board (empty disables federation)"`
 	// AttentionUpstreamToken is the bearer token the peer's business API
 	// requires.
 	//
@@ -164,15 +176,15 @@ type application struct {
 	// are required TOGETHER: a URL with no token would call a gated API that
 	// answers 401, which is a configured-looking instance that silently federates
 	// nothing.
-	AttentionUpstreamToken string `required:"false"                                env:"ATTENTION_UPSTREAM_TOKEN" usage:"bearer token the peer attention store's business API requires (empty disables federation)"                                                             display:"length"`
+	AttentionUpstreamToken string `required:"false"                                   env:"ATTENTION_UPSTREAM_TOKEN"    usage:"bearer token the peer attention store's business API requires (empty disables federation)"                                                             display:"length"`
 	// TTSURL is the tts server's base URL. Optional: with no value the
 	// read-aloud route is not registered and the page renders no read-aloud
 	// control, so a host without a tts server serves the same page minus one
 	// control rather than one that always fails.
-	TTSURL          string            `required:"false" arg:"tts-url"                  env:"TTS_URL"                  usage:"base URL of the tts server the board's read-aloud control forwards to (empty disables it)"                                                                              default:"http://127.0.0.1:12000"`
-	BuildGitVersion string            `required:"false" arg:"build-git-version"        env:"BUILD_GIT_VERSION"        usage:"Build Git version"                                                                                                                                                      default:"dev"`
-	BuildGitCommit  string            `required:"false" arg:"build-git-commit"         env:"BUILD_GIT_COMMIT"         usage:"Build Git commit hash"                                                                                                                                                  default:"none"`
-	BuildDate       *libtime.DateTime `required:"false" arg:"build-date"               env:"BUILD_DATE"               usage:"Build timestamp (RFC3339)"`
+	TTSURL          string            `required:"false" arg:"tts-url"                     env:"TTS_URL"                     usage:"base URL of the tts server the board's read-aloud control forwards to (empty disables it)"                                                                              default:"http://127.0.0.1:12000"`
+	BuildGitVersion string            `required:"false" arg:"build-git-version"           env:"BUILD_GIT_VERSION"           usage:"Build Git version"                                                                                                                                                      default:"dev"`
+	BuildGitCommit  string            `required:"false" arg:"build-git-commit"            env:"BUILD_GIT_COMMIT"            usage:"Build Git commit hash"                                                                                                                                                  default:"none"`
+	BuildDate       *libtime.DateTime `required:"false" arg:"build-date"                  env:"BUILD_DATE"                  usage:"Build timestamp (RFC3339)"`
 }
 
 func (a *application) Run(ctx context.Context, sentryClient libsentry.Client) error {
@@ -268,25 +280,33 @@ func (a *application) createAttentionStore(
 }
 
 // createSessionHeartbeatStore builds the session-heartbeat store and resolves
-// its window.
+// its window and retention.
 //
 // ⚠️ The window is this store's OWN named setting and is deliberately not
 // HeartbeatWindow. The two bound different things: this one bounds how long a
 // killed session can still read Live, while HeartbeatWindow stops a cron job
 // that runs every ten minutes from being declared dead. One number cannot serve
 // both — see the config field.
+//
+// ⚠️ It returns the SERVICE, not the handler-facing store: `main` hands the same
+// instance to the router (Post/Get/List) and to the runner (Run). Two instances
+// would be two snapshots that could disagree about the same session.
 func (a *application) createSessionHeartbeatStore(
 	ctx context.Context,
-) (pkg.SessionHeartbeatStore, libtime.Duration, error) {
+) (pkg.SessionHeartbeatService, libtime.Duration, error) {
 	window, err := parseSessionHeartbeatWindow(ctx, a.SessionHeartbeatWindow)
+	if err != nil {
+		return nil, libtime.Duration(0), err
+	}
+	retention, err := parseSessionHeartbeatRetention(ctx, a.SessionHeartbeatRetention)
 	if err != nil {
 		return nil, libtime.Duration(0), err
 	}
 	now := libtime.NewCurrentDateTime()
 	if a.SessionHeartbeatDir != "" {
-		return pkg.NewSessionHeartbeatStore(a.SessionHeartbeatDir, now), window, nil
+		return pkg.NewSessionHeartbeatStore(a.SessionHeartbeatDir, now, *retention), window, nil
 	}
-	store, err := pkg.NewSessionHeartbeatStoreFromEnv(ctx, now)
+	store, err := pkg.NewSessionHeartbeatStoreFromEnv(ctx, now, *retention)
 	if err != nil {
 		return nil, libtime.Duration(0), err
 	}
@@ -319,6 +339,30 @@ func parseSessionHeartbeatWindow(ctx context.Context, raw string) (libtime.Durat
 		)
 	}
 	return *window, nil
+}
+
+// parseSessionHeartbeatRetention resolves the session-heartbeat retention bound
+// and refuses a non-positive one.
+//
+// ⚠️ **A zero or negative retention is a startup error, not a value to accept.**
+// The prune compares `at` against `now - retention`, so either value makes every
+// row expired on the first reconcile — deleting the whole store at startup,
+// including rows a reader still needs. Same rule, same reason as the sibling
+// window parser.
+func parseSessionHeartbeatRetention(
+	ctx context.Context,
+	raw string,
+) (*libtime.Duration, error) {
+	retention, err := libtime.ParseDuration(ctx, raw)
+	if err != nil {
+		return nil, errors.Wrapf(ctx, err, "parse session heartbeat retention '%s' failed", raw)
+	}
+	if *retention <= 0 {
+		return nil, errors.Errorf(
+			ctx, "session heartbeat retention must be positive, got '%s'", raw,
+		)
+	}
+	return retention, nil
 }
 
 // registerSessionHeartbeatRoutes wires the session-heartbeat endpoints under
@@ -728,10 +772,10 @@ func (a *application) createHTTPServer(
 		// under one context, so a failure in either takes the process down and
 		// launchd restarts both: a half-up state — board serving, jumps dead — is
 		// exactly the two-lifecycle problem the fold exists to remove.
-		// Five slots, not two: the legacy jump listener is a second long-running
+		// Six slots, not two: the legacy jump listener is a second long-running
 		// function under the same context, the bearer-token-gated business-API
-		// listener is a third, the task index watcher is a fourth, and the
-		// answered sweep is a fifth.
+		// listener is a third, the task index watcher is a fourth, the answered
+		// sweep is a fifth, and the session-heartbeat watcher is a sixth.
 		//
 		// ⚠️ It does NOT share the listeners' failure semantics, and saying so here
 		// matters because the difference is deliberate: the sweep returns nil on
@@ -742,7 +786,7 @@ func (a *application) createHTTPServer(
 		// slot is the same story: it returns nil on cancellation and logs-and-
 		// continues when it cannot watch at all, because an unwatchable vault
 		// costs a slower index and loses nothing.
-		runner := run.NewConcurrentRunner(5)
+		runner := run.NewConcurrentRunner(6)
 		defer runner.Close()
 
 		glog.V(2).Infof("starting http server listen on %s", a.Listen)
@@ -754,6 +798,10 @@ func (a *application) createHTTPServer(
 			return err
 		}
 		runner.Add(ctx, watcher.Run)
+		// ⚠️ The heartbeat store's watcher is the read path's whole point: it
+		// keeps the snapshot current OFF the request path, so a loaded host
+		// cannot make a liveness read serialise behind 1,600 file reads.
+		runner.Add(ctx, sessionHeartbeatStore.Run)
 
 		// ⚠️ This sweep is what keeps the live index bounded. The index admits
 		// `answered` items — liveIndexWorthy is `State != ClosedState` — so an

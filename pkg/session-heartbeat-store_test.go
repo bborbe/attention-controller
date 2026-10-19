@@ -55,7 +55,7 @@ var _ = Describe("Session heartbeat store", func() {
 		var err error
 		dir, err = os.MkdirTemp("", "session-heartbeat-store-*")
 		Expect(err).To(BeNil())
-		store = pkg.NewSessionHeartbeatStore(dir, clock())
+		store = pkg.NewSessionHeartbeatStore(dir, clock(), libtime.Duration(0))
 	})
 
 	AfterEach(func() {
@@ -311,7 +311,7 @@ var _ = Describe("Session heartbeat store", func() {
 
 		It("lists nothing for a directory that does not exist yet", func() {
 			missing := pkg.NewSessionHeartbeatStore(
-				filepath.Join(dir, "not-created"), clock(),
+				filepath.Join(dir, "not-created"), clock(), libtime.Duration(0),
 			)
 			listed, err := missing.List(ctx)
 			Expect(err).To(BeNil())

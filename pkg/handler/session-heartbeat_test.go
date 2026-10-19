@@ -78,7 +78,7 @@ var _ = Describe("Session heartbeat handlers", func() {
 		var err error
 		dir, err = os.MkdirTemp("", "session-heartbeat-*")
 		Expect(err).To(BeNil())
-		store = pkg.NewSessionHeartbeatStore(dir, clock())
+		store = pkg.NewSessionHeartbeatStore(dir, clock(), libtime.Duration(0))
 	})
 
 	AfterEach(func() {

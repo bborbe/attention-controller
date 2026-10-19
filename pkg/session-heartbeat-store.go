@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/bborbe/errors"
 	libtime "github.com/bborbe/time"
@@ -44,6 +45,26 @@ type SessionHeartbeatStore interface {
 	List(ctx context.Context) (SessionHeartbeats, error)
 }
 
+// SessionHeartbeatService is the store plus its lifecycle: the read/write path
+// the handlers need, and the background loop that keeps the in-memory snapshot
+// current.
+//
+// ⚠️ Run is NOT on SessionHeartbeatStore. The handlers never start or own the
+// loop, and a handler-facing interface that carried it would force every fake to
+// answer a question the handlers never ask. The constructor returns this wider
+// type so `main` can hand the same instance to both the router and the runner —
+// one store, two consumers, the pattern the task index and the ledger already
+// follow in this repo.
+type SessionHeartbeatService interface {
+	SessionHeartbeatStore
+	// Run watches the heartbeat directory until ctx is cancelled, keeping the
+	// in-memory snapshot current and pruning rows past the retention bound. It
+	// is fail-soft: a watcher that cannot be established logs and leaves the
+	// snapshot served as-is, because an unwatchable directory costs freshness
+	// and loses nothing.
+	Run(ctx context.Context) error
+}
+
 // NewSessionHeartbeatStore creates a file-backed store over the given
 // directory, stamping each row from the given clock.
 //
@@ -65,16 +86,48 @@ type SessionHeartbeatStore interface {
 // session's row already reads not-live by age. A `state` fallback would keep
 // the collision key alive on the READ path, which is the thing this rename
 // exists to remove. Pinned by a spec, so a later fallback refactor is visible.
+//
+// ⚠️ **List is served from an in-memory snapshot, not from a per-request disk
+// scan.** The directory is shared with the legacy Node writers and accumulated
+// 1,600 rows; reading every file per request cost ~0.95 s under load and
+// serialised concurrent readers, which pushed a 5 s client timeout into the
+// spawn path and refused spawns fleet-wide (2026-10-19). The snapshot is loaded
+// once, updated by Post, and kept current by Run's watcher.
+//
+// ⚠️ retention bounds the SNAPSHOT and the directory, not liveness. It is
+// deliberately not SessionHeartbeatWindow: a row past the 60 s window is still
+// a real row (it answers `stale`, and session-liveness.py resolves prefixes
+// against it), so pruning at that boundary would collapse `absent` onto `stale`
+// — the one distinction the endpoint exists to keep. Run deletes rows older
+// than retention; nothing about the liveness window changes.
 func NewSessionHeartbeatStore(
 	dir string,
 	now libtime.CurrentDateTimeGetter,
-) SessionHeartbeatStore {
-	return &sessionHeartbeatStore{dir: dir, now: now}
+	retention libtime.Duration,
+) SessionHeartbeatService {
+	return &sessionHeartbeatStore{
+		dir:       dir,
+		now:       now,
+		retention: retention,
+	}
 }
 
 type sessionHeartbeatStore struct {
-	dir string
-	now libtime.CurrentDateTimeGetter
+	dir       string
+	now       libtime.CurrentDateTimeGetter
+	retention libtime.Duration
+
+	// loadMu serialises the one-time snapshot load so a burst of first requests
+	// cannot each scan the directory. It is separate from mu because the load
+	// does I/O, which mu must never cover.
+	loadMu sync.Mutex
+
+	// mu guards rows and loaded. rows is the snapshot List serves; loaded is
+	// false until the first successful load, which is what keeps a store that
+	// cannot be read an ERROR rather than an empty answer.
+	mu     sync.RWMutex
+	rows   map[string]SessionHeartbeat
+	loaded bool
 }
 
 // sessionHeartbeatFile is the ON-DISK record.
@@ -168,7 +221,19 @@ func (s *sessionHeartbeatStore) Post(ctx context.Context, heartbeat SessionHeart
 	if err != nil {
 		return errors.Wrap(ctx, err, "marshal heartbeat failed")
 	}
-	return s.writeAtomic(ctx, heartbeat.SessionID, content)
+	if err := s.writeAtomic(ctx, heartbeat.SessionID, content); err != nil {
+		return errors.Wrap(ctx, err, "write heartbeat failed")
+	}
+	// ⚠️ The snapshot is updated only AFTER the write succeeds, so a failed post
+	// cannot leave the cache claiming a row the directory does not hold. A
+	// not-yet-loaded snapshot stays not-loaded: the lazy load re-reads the
+	// directory wholesale and would otherwise race this single-row update.
+	s.mu.Lock()
+	if s.loaded {
+		s.rows[heartbeat.SessionID] = record.toHeartbeat()
+	}
+	s.mu.Unlock()
+	return nil
 }
 
 // writeAtomic writes the record to a temp file in the store directory and
@@ -240,24 +305,88 @@ func (s *sessionHeartbeatStore) Get(
 	return record.toHeartbeat(), true, nil
 }
 
-// List returns every heartbeat row the store holds.
+// List returns every heartbeat row the store holds, from the in-memory snapshot.
+//
+// ⚠️ The snapshot is the whole point of this read path: a per-request directory
+// scan cost ~0.95 s under load and serialised concurrent readers, which pushed
+// a 5 s client timeout into the spawn path. The disk is read once (here, lazily)
+// and thereafter by the watcher — never by a request.
+//
+// ⚠️ A load failure is an ERROR, never an empty list. "No rows" is the answer
+// that renders a live session's card Resume.
+func (s *sessionHeartbeatStore) List(ctx context.Context) (SessionHeartbeats, error) {
+	if err := s.ensureLoaded(ctx); err != nil {
+		return nil, errors.Wrap(ctx, err, "ensure heartbeat snapshot loaded failed")
+	}
+	s.mu.RLock()
+	heartbeats := make(SessionHeartbeats, 0, len(s.rows))
+	for _, heartbeat := range s.rows {
+		heartbeats = append(heartbeats, heartbeat)
+	}
+	s.mu.RUnlock()
+	sort.Slice(heartbeats, func(i, j int) bool {
+		return heartbeats[i].SessionID < heartbeats[j].SessionID
+	})
+	return heartbeats, nil
+}
+
+// ensureLoaded loads the snapshot on first use, and returns the load's error on
+// every call until a load succeeds.
+//
+// ⚠️ A failed load is retried by the next List rather than latched. The
+// directory can be unreadable transiently (a permission flip, a full disk during
+// a rename), and a latched failure would make the endpoint answer 500 for the
+// rest of the process's life. It is also never turned into an empty answer:
+// "no rows" is what renders a live session's card Resume.
+func (s *sessionHeartbeatStore) ensureLoaded(ctx context.Context) error {
+	s.mu.RLock()
+	loaded := s.loaded
+	s.mu.RUnlock()
+	if loaded {
+		return nil
+	}
+	s.loadMu.Lock()
+	defer s.loadMu.Unlock()
+	// Re-check under the load lock: a burst of first requests must scan once,
+	// and the winner publishes a snapshot the rest then serve.
+	s.mu.RLock()
+	loaded = s.loaded
+	s.mu.RUnlock()
+	if loaded {
+		return nil
+	}
+	rows, err := s.readAll(ctx)
+	if err != nil {
+		return errors.Wrap(ctx, err, "load heartbeat snapshot failed")
+	}
+	s.mu.Lock()
+	s.rows = rows
+	s.loaded = true
+	s.mu.Unlock()
+	return nil
+}
+
+// readAll scans the directory into a fresh snapshot map. It is the ONLY place
+// that reads every row, and it runs off the request path after the first load.
 //
 // ⚠️ A file that cannot be parsed is skipped with a log line rather than
 // failing the listing. The directory is shared with the legacy writers and
 // holds non-heartbeat files (`_cluster-reachability.json`), so one unexpected
 // file must not take the whole read path down — but the skip is logged, so a
 // genuinely corrupt heartbeat is visible rather than silent.
-func (s *sessionHeartbeatStore) List(ctx context.Context) (SessionHeartbeats, error) {
+func (s *sessionHeartbeatStore) readAll(
+	ctx context.Context,
+) (map[string]SessionHeartbeat, error) {
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			// A store that has never been written to holds nothing. That is an
 			// empty answer, not a failure.
-			return SessionHeartbeats{}, nil
+			return map[string]SessionHeartbeat{}, nil
 		}
 		return nil, errors.Wrapf(ctx, err, "list heartbeat dir '%s' failed", s.dir)
 	}
-	heartbeats := make(SessionHeartbeats, 0, len(entries))
+	rows := make(map[string]SessionHeartbeat, len(entries))
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), sessionHeartbeatFileSuffix) {
 			continue
@@ -278,12 +407,9 @@ func (s *sessionHeartbeatStore) List(ctx context.Context) (SessionHeartbeats, er
 			// per poll would be noise about a file that is meant to be there.
 			continue
 		}
-		heartbeats = append(heartbeats, record.toHeartbeat())
+		rows[record.SessionID] = record.toHeartbeat()
 	}
-	sort.Slice(heartbeats, func(i, j int) bool {
-		return heartbeats[i].SessionID < heartbeats[j].SessionID
-	})
-	return heartbeats, nil
+	return rows, nil
 }
 
 // parseSessionHeartbeatFile parses one file's bytes, returning (nil, nil) when
@@ -376,10 +502,11 @@ func sessionHeartbeatDirFromEnv() string {
 func NewSessionHeartbeatStoreFromEnv(
 	ctx context.Context,
 	now libtime.CurrentDateTimeGetter,
-) (SessionHeartbeatStore, error) {
+	retention libtime.Duration,
+) (SessionHeartbeatService, error) {
 	dir := sessionHeartbeatDirFromEnv()
 	if dir == "" {
 		return nil, errors.New(ctx, "resolve heartbeat dir failed")
 	}
-	return NewSessionHeartbeatStore(dir, now), nil
+	return NewSessionHeartbeatStore(dir, now, retention), nil
 }
