@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.59.1
 
 - fix: **The recommended-option count is now judged against each unit's own `answer_cardinality`, so a multi-select question may mark every option it would take.** The at-most-one rule was unconditional, which contradicted the `/ask` rule telling a multi-select asker to mark each option it would take. `AnswerOptions.ValidateForCardinality` now takes the unit's cardinality and skips the bound only for `multiple`; `AnswerOptions.Validate` delegates with an absent cardinality, and all three call sites pass their own declaration — `Item.validateOptions` and `PushRequest.validateOptions` (the item-level field, so the push-time and store-time gates agree) and `Question.Validate` (the question unit's own `Cardinality`, so a `multiple` tab on a card does not make its `single` siblings permissive). `single`, an absent value and an unknown value keep today's bound and the unchanged message `"%d options are marked recommended, at most 1 is allowed"`, so items pushed before the field existed validate as they did. No schema change, no new field, no migration; the board renderer already draws every flag it is handed and is untouched, and the Claude Code hook that builds the option list is a separate change in another repo.
 
