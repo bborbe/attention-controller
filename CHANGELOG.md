@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.60.0
 
 - feat: **a card whose answer failed to reach its session now renders an `undeliverable` marker on the board.** The delivery trail already recorded the outcome, but the board rendered nothing about it, so an operator whose answer was dropped saw a card that looked like every other one. The row gains a `DeliveryStatus` field read at render time from `store.Delivery` — the derived `DeliveryReport.Status`, not the written `DeliveryAttempt.Outcome` — and the template renders `.delivery-undeliverable` only when that status is `pkg.FailedStatus`; it is absent for `delivered` and for `never_attempted`, so a card nothing has tried to deliver is not labelled a failure. ⚠️ **The read is deliberately fail-soft:** an attempt lookup that errors, or returns no report, renders no marker and the page still serves — a delivery trail that cannot be read must not take the board down with it. The streamed row goes through the same row builder and template, so a row that arrives over SSE matches a fresh page load; a second renderer would drift. Cost: one `store.Delivery` read per rendered item, page and stream. Change set: `pkg/handler/attention-page.go`, `pkg/handler/attention-page-helpers.go`, `pkg/handler/attention-stream.go`, `pkg/handler/attention-undeliverable-page_test.go` (new), `CHANGELOG.md`.
 
