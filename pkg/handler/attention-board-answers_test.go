@@ -136,7 +136,35 @@ var _ = Describe("Board answers over HTTP", func() {
 			)
 			rec := push(body)
 			Expect(rec.Code).To(Equal(http.StatusBadRequest))
+			Expect(rec.Body.String()).To(ContainSubstring("at most 1 is allowed"))
 		})
+
+		It(
+			"accepts a multiple-cardinality push carrying two recommended options over HTTP",
+			func() {
+				body := strings.Replace(
+					messageBody,
+					`"answer_mechanism": "message"`,
+					`"answer_mechanism": "message", "answer_cardinality": "multiple"`,
+					1,
+				)
+				body = strings.Replace(
+					body,
+					`{"label": "the tab"}`,
+					`{"label": "the tab", "recommended": true}`,
+					1,
+				)
+
+				rec := push(body)
+				Expect(rec.Code).To(Equal(http.StatusCreated))
+
+				var item pkg.Item
+				Expect(json.Unmarshal(rec.Body.Bytes(), &item)).To(BeNil())
+				Expect(item.Options).To(HaveLen(2))
+				Expect(item.Options[0].Recommended).To(BeTrue())
+				Expect(item.Options[1].Recommended).To(BeTrue())
+			},
+		)
 	})
 
 	Describe("Answer", func() {

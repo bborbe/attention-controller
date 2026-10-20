@@ -330,7 +330,7 @@ func (i Item) validateOptions(ctx context.Context) error {
 			i.AnswerMechanism,
 		)
 	}
-	return i.Options.Validate(ctx)
+	return i.Options.ValidateForCardinality(ctx, i.AnswerCardinality)
 }
 
 // validateAnswerCardinality enforces the schema's message-only rule for

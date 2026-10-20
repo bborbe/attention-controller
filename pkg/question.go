@@ -40,7 +40,12 @@ func (q Question) Validate(ctx context.Context) error {
 		validation.Name("Tab", validation.NotEmptyString(q.Tab)),
 		validation.Name("Payload", validation.NotEmptyString(q.Payload)),
 		validation.Name("Cardinality", q.Cardinality),
-		validation.Name("Options", q.Options),
+		validation.Name(
+			"Options",
+			validation.HasValidationFunc(func(ctx context.Context) error {
+				return q.Options.ValidateForCardinality(ctx, q.Cardinality)
+			}),
+		),
 	}.Validate(ctx)
 }
 

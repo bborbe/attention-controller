@@ -325,7 +325,7 @@ func (p PushRequest) validateOptions(ctx context.Context) error {
 			p.AnswerMechanism,
 		)
 	}
-	return p.Options.Validate(ctx)
+	return p.Options.ValidateForCardinality(ctx, p.AnswerCardinality)
 }
 
 // validateAnswerCardinality enforces the message-only rule for

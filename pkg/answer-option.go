@@ -30,8 +30,9 @@ type AnswerOption struct {
 	// options of one question carry different costs, and a single item-level
 	// line would have to describe both at once.
 	Description string `json:"description,omitempty"`
-	// Recommended marks the producer's recommendation. At most one option in a
-	// list may carry it.
+	// Recommended marks the producer's recommendation. At most one option may
+	// carry it when the question takes a single pick; a multiple-pick question
+	// may carry several, one per option the asker would take.
 	Recommended bool `json:"recommended"`
 }
 
@@ -46,19 +47,35 @@ func (o AnswerOption) Validate(ctx context.Context) error {
 type AnswerOptions []AnswerOption
 
 // Validate returns an error when any option carries no label, or when more than
-// one carries Recommended.
-//
-// The single-recommendation rule is the schema's: an ordered list of
-// {label, recommended} with at most one entry marked. Two recommendations
-// describe a `pick` shape whose recommended first option is ambiguous, which is
-// the one thing that shape exists to remove.
+// one carries Recommended on a list whose cardinality is absent — which reads
+// as `single`. A caller holding a cardinality calls ValidateForCardinality so
+// the rule sees the unit's own declaration.
 //
 // An empty list validates: `options` is optional, and an absent value is what
 // every `permission`- and `ack`-class item carries.
 func (o AnswerOptions) Validate(ctx context.Context) error {
+	return o.ValidateForCardinality(ctx, "")
+}
+
+// ValidateForCardinality returns an error when any option carries no label, or
+// when more than one carries Recommended on a unit that takes a single pick.
+//
+// A multiple-pick unit may carry any number of recommendations: the /ask rule
+// tells a multi-select asker to mark each option it would take, and the board
+// renders every flag it is handed. Only MultipleAnswerCardinality relaxes the
+// bound; `single`, an absent value and an unknown value all keep it.
+func (o AnswerOptions) ValidateForCardinality(
+	ctx context.Context,
+	cardinality AnswerCardinality,
+) error {
 	return validation.All{
 		validation.Name("Labels", validation.HasValidationFunc(o.validateLabels)),
-		validation.Name("Recommended", validation.HasValidationFunc(o.validateSingleRecommended)),
+		validation.Name(
+			"Recommended",
+			validation.HasValidationFunc(func(ctx context.Context) error {
+				return o.validateRecommended(ctx, cardinality)
+			}),
+		),
 	}.Validate(ctx)
 }
 
@@ -72,9 +89,17 @@ func (o AnswerOptions) validateLabels(ctx context.Context) error {
 	return nil
 }
 
-// validateSingleRecommended returns an error when more than one option carries
-// Recommended.
-func (o AnswerOptions) validateSingleRecommended(ctx context.Context) error {
+// validateRecommended returns an error when more than one option carries
+// Recommended on a unit that takes a single pick. A multiple-pick unit is
+// unconstrained: every option the asker marked is a recommendation the board
+// should show.
+func (o AnswerOptions) validateRecommended(
+	ctx context.Context,
+	cardinality AnswerCardinality,
+) error {
+	if cardinality == MultipleAnswerCardinality {
+		return nil
+	}
 	recommended := 0
 	for _, option := range o {
 		if option.Recommended {
