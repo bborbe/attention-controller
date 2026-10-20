@@ -1,8 +1,9 @@
 ---
-status: prompted
+status: verifying
 approved: "2026-10-20T12:39:45Z"
 generating: "2026-10-20T12:41:31Z"
 prompted: "2026-10-20T13:01:19Z"
+verifying: "2026-10-20T13:05:58Z"
 branch: dark-factory/bug-multi-select-recommended
 ---
 
