@@ -92,6 +92,18 @@ func (a Answer) validateValue(ctx context.Context) error {
 				a.Value,
 			)
 		}
+	case HiddenAnswerKind:
+		// A hidden answer records only that the card was handled elsewhere. Any
+		// content here would be a second, invisible answer beside the one the
+		// operator actually gave in the pane — the thing this kind exists to stop.
+		if a.Value != "" {
+			return errors.Wrapf(
+				ctx,
+				validation.Error,
+				"answerKind 'hidden' carries no value, got '%s'",
+				a.Value,
+			)
+		}
 	case "":
 		// Absent, not unknown: the schema declines to reject an omitted answer.
 	}

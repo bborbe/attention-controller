@@ -298,7 +298,17 @@ document.addEventListener('submit', function (event) {
   if (kind === 'skip') {
     /* Dismiss declines the whole card, so a multi-question item records a
        declined answer on every tab rather than on none. */
-    if (multi) { request.answers = skipAll(form); } else { request.answer = { kind: 'skip' }; }
+    if (multi) { request.answers = kindAll(form, 'skip'); } else { request.answer = { kind: 'skip' }; }
+    sendAnswer(form, request);
+    return;
+  }
+  if (kind === 'hidden') {
+    /* The corner X: the operator handled this card elsewhere — usually by
+       answering in the asking session's own pane — and only wants it off the
+       board. It records the kind and delivers nothing, which is the whole
+       difference from Dismiss directly above: a decline would tell the asking
+       session the opposite of what happened. */
+    if (multi) { request.answers = kindAll(form, 'hidden'); } else { request.answer = { kind: 'hidden' }; }
     sendAnswer(form, request);
     return;
   }
@@ -422,10 +432,15 @@ document.addEventListener('click', function (event) {
     showCloseNote(row, 'Could not reach the store: ' + error, true);
   });
 });
-function skipAll(form) {
+/* kindAll records one answer of the given kind on every tab. Dismiss uses it
+   with "skip" and the corner X with "hidden": both are whole-card acts, so a
+   multi-question item records the kind on every question rather than on none.
+   The two kinds stay distinct — see the X's dispatch comment — so this shares
+   the shape, never the meaning. */
+function kindAll(form, kind) {
   var entries = [];
   form.querySelectorAll('.panel').forEach(function (panel) {
-    entries.push({ question: panel.getAttribute('data-question') || '', kind: 'skip' });
+    entries.push({ question: panel.getAttribute('data-question') || '', kind: kind });
   });
   return entries;
 }
@@ -817,13 +832,20 @@ document.addEventListener('click', function (event) {
   var row = button.closest('li.item');
   if (!row) { return; }
   var form = row.querySelector('form.answer');
-  /* A message card's X is the Dismiss submit, dispatched rather than
-     re-implemented: the form's own submit handler owns the skip payload, the
+  /* A message card's X is the "hidden" submit, dispatched rather than
+     re-implemented: the form's own submit handler owns that payload, the
      ITEM_CLOSED branch and the note placement, and a second copy here would
-     be a second thing to keep in step. */
+     be a second thing to keep in step.
+     ⚠️ It is NOT the Dismiss submit any more, and the two are deliberately
+     different acts: Dismiss writes "skip" and the watcher delivers it to the
+     asking session as a decline, while this writes "hidden" and delivers
+     nothing — the operator answered in the pane and only wanted the card off
+     the board. Routing the X back to Dismiss re-creates exactly the defect it
+     was separated to fix. The button carries the hidden attribute so it
+     renders nothing; it exists only as this dispatch's target. */
   if (form) {
-    var dismiss = form.querySelector('button[value=skip]');
-    if (dismiss) { dismiss.click(); return; }
+    var hide = form.querySelector('button[value=hidden]');
+    if (hide) { hide.click(); return; }
   }
   /* A permission card's X is the Deny control, dispatched for the message
      branch's reason: the data-decision handler owns the payload, the stale-card
@@ -1248,7 +1270,7 @@ function replayFailure(row) {
      reaches it. ⚠️ Without the conjunct the X's fall-through below closes the
      item and deletes the record the dimmed card exists to preserve. See
      [[Attention Item Schema]] § The corner X, and the dispatch comment on the
-     data-corner-x handler below. */}}{{if not .Dimmed}}<button type="button" class="corner-x" data-corner-x aria-label="{{if .Decide}}Deny this request{{else}}Skip this item{{end}}">✕</button>{{end}}
+     data-corner-x handler below. */}}{{if not .Dimmed}}<button type="button" class="corner-x" data-corner-x aria-label="{{if .Decide}}Deny this request{{else}}Hide (handled elsewhere){{end}}">✕</button>{{end}}
 {{/* The read-aloud control renders on every row whose Speak is set, from
      2026-09-27 — except the dimmed record card, from 2026-09-27. It was gated on
      'and .Message .Speak', which excepted permission rows on the reasoning that
@@ -1291,7 +1313,7 @@ function replayFailure(row) {
 {{end}}<label class="option option-other"><input type="{{ if $question.Multi }}checkbox{{ else }}radio{{ end }}" name="{{ $question.Name }}" value="" data-other><span class="option-body"><span class="option-label">Other…</span><input class="other" type="text" name="text" placeholder="Type your answer"></span></label></div>
 {{else}}<input class="other" type="text" name="text" placeholder="Other...">{{end}}
 </div>
-{{end}}<div class="actions"><button type="submit" name="kind" value="skip" class="dismiss">✕ Dismiss</button><button type="submit" name="kind" value="send" class="next">✓ Submit answer</button></div>
+{{end}}<div class="actions"><button type="submit" name="kind" value="skip" class="dismiss">✕ Dismiss</button><button type="submit" name="kind" value="send" class="next">✓ Submit answer</button><button type="submit" name="kind" value="hidden" class="corner-hide" hidden>Hide</button></div>
 </form>
 {{end}}{{if and .Ack (not .Dimmed)}}<div class="actions"><button type="button" class="ack" data-ack>Acknowledge</button></div>
 {{end}}{{if and .Decide (not .Dimmed)}}<div class="actions"><button type="button" class="dismiss" data-decision="deny">✕ Deny</button><button type="button" class="next" data-decision="allow">✓ Allow</button></div>

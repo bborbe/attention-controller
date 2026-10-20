@@ -201,9 +201,14 @@ var _ = Describe("Attention page board controls", func() {
 			// name -> svg -> close with no text node anywhere inside the button.
 			Expect(block).To(ContainSubstring(`title="Read aloud"><svg`))
 			Expect(block).To(ContainSubstring(`</svg></button>`))
-			// And it is out of the actions row: that row now ends at Submit answer,
-			// so it carries exactly the two decisions the card offers.
-			Expect(block).To(ContainSubstring(`✓ Submit answer</button></div>`))
+			// And it is out of the actions row: that row now ends at the hidden
+			// submit the corner X dispatches, so it carries only the card's own
+			// answer controls. ⚠️ AMENDED 2026-10-20 — this read
+			// `✓ Submit answer</button></div>` until the X gained its own submit;
+			// the speak control's placement is unchanged, only the row's tail is.
+			Expect(
+				block,
+			).To(ContainSubstring(`✓ Submit answer</button><button type="submit" name="kind" value="hidden" class="corner-hide" hidden>Hide</button></div>`))
 		})
 	})
 

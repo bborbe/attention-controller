@@ -188,6 +188,11 @@ func answerText(answer pkg.Answer) string {
 	switch answer.Kind {
 	case pkg.SkipAnswerKind:
 		return "skipped"
+	case pkg.HiddenAnswerKind:
+		// Not "no answer recorded": the operator did answer — in the asking
+		// session's pane — and the board was only closed afterwards. The
+		// default's wording would assert the opposite of what happened.
+		return "hidden (handled elsewhere)"
 	case pkg.OptionAnswerKind, pkg.TextAnswerKind:
 		if len(answer.Values) > 0 {
 			return strings.Join(answer.Values, ", ")

@@ -1534,7 +1534,13 @@ var _ = Describe("AttentionPageHandler", func() {
 	// Schema]] § Answer routing, § The corner X. The browser click-through in the
 	// task's Definition of Done is the half these cannot supply.
 	Describe("the corner X", func() {
-		It("renders on a message row and dispatches the Dismiss the card already carries", func() {
+		// ⚠️ REWRITTEN 2026-10-20: the X's act on a message row is no longer
+		// Dismiss's act. It writes `answer.kind: hidden` and delivers nothing,
+		// because closing a card the operator had already answered in the pane
+		// was arriving at the asking session as a decline they never meant. The
+		// assertion that the X is a *different* act from the Dismiss button is
+		// the regression guard: re-aliasing the two must fail here.
+		It("renders on a message row and dispatches its own hidden submit, not Dismiss", func() {
 			message, err := store.Push(
 				ctx,
 				messageRequest("corner-x-message", pkg.SingleAnswerCardinality),
@@ -1545,15 +1551,22 @@ var _ = Describe("AttentionPageHandler", func() {
 			block := rowOf(body, message.ItemID)
 
 			Expect(block).To(ContainSubstring("data-corner-x"))
-			Expect(block).To(ContainSubstring(`aria-label="Skip this item"`))
+			// ⚠️ Parentheses, not an em dash: the page's own placeholder guard
+			// asserts it renders no "—" when nothing navigational resolves, and
+			// a dash in this label would break that invariant page-wide.
+			Expect(block).To(ContainSubstring(`aria-label="Hide (handled elsewhere)"`))
 
-			// The X's act is the Dismiss's act, and the assertion is on the
-			// mechanism rather than on the label: the card already carries the
-			// skip submit, so the X dispatches it instead of posting a second
-			// write that merely agrees with it.
+			// The card carries both submits and they mean opposite things: the
+			// Dismiss button writes `skip` (delivered as a decline), the hidden
+			// one writes `hidden` (delivered as nothing). The X dispatches the
+			// latter — and the selector assertion is what pins it, since a
+			// dispatch that still named `value=skip` would leave both controls
+			// producing the same write while every other assertion passed.
 			Expect(block).To(ContainSubstring(`value="skip"`))
+			Expect(block).To(ContainSubstring(`value="hidden"`))
 			Expect(body).To(ContainSubstring("button[data-corner-x]"))
-			Expect(body).To(ContainSubstring(`form.querySelector('button[value=skip]')`))
+			Expect(body).To(ContainSubstring(`form.querySelector('button[value=hidden]')`))
+			Expect(body).NotTo(ContainSubstring(`form.querySelector('button[value=skip]')`))
 		})
 
 		It("renders on an ack row and shares the acknowledge close", func() {
