@@ -8,9 +8,12 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## v0.60.0
+## Unreleased
 
 - feat: **an `AnswerOption` may now carry `exclusive`, and the board enforces it — the do-nothing escape of a combinable menu cannot be submitted beside a real pick.** A multi-pick card is a checkbox menu, so "nothing — close" sat beside the options it was meant to replace: the operator could tick both and the asking session received a set that described a contradiction. `pkg/answer-option.go` gains the field and a list-level rule — at most one option may carry it, because two escapes that clear each other leave no reachable "none of these" — and `pkg/handler/attention-page.go` renders `data-exclusive` on the input plus a `change` listener that clears every other box in the panel whenever one is checked. The rule is client-side on purpose: with an exclusive option present the menu admits exactly one pick, and the interaction is where that is true, not the markup. The flag is accepted on a single-pick unit rather than rejected — a radio group already admits one, and a rejected item is dropped by the pusher, so a redundant flag would delete a card the operator needed to see. No change for any item that carries no exclusive option; the field is omitted from the wire when false.
+
+## v0.60.0
+
 - feat: **a card whose answer failed to reach its session now renders an `undeliverable` marker on the board.** The delivery trail already recorded the outcome, but the board rendered nothing about it, so an operator whose answer was dropped saw a card that looked like every other one. The row gains a `DeliveryStatus` field read at render time from `store.Delivery` — the derived `DeliveryReport.Status`, not the written `DeliveryAttempt.Outcome` — and the template renders `.delivery-undeliverable` only when that status is `pkg.FailedStatus`; it is absent for `delivered` and for `never_attempted`, so a card nothing has tried to deliver is not labelled a failure. ⚠️ **The read is deliberately fail-soft:** an attempt lookup that errors, or returns no report, renders no marker and the page still serves — a delivery trail that cannot be read must not take the board down with it. The streamed row goes through the same row builder and template, so a row that arrives over SSE matches a fresh page load; a second renderer would drift. Cost: one `store.Delivery` read per rendered item, page and stream. Change set: `pkg/handler/attention-page.go`, `pkg/handler/attention-page-helpers.go`, `pkg/handler/attention-stream.go`, `pkg/handler/attention-undeliverable-page_test.go` (new), `CHANGELOG.md`.
 
 ## v0.59.1
