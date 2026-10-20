@@ -34,6 +34,18 @@ type AnswerOption struct {
 	// carry it when the question takes a single pick; a multiple-pick question
 	// may carry several, one per option the asker would take.
 	Recommended bool `json:"recommended"`
+	// Exclusive marks the option that CANNOT coexist with another pick. On a
+	// multiple-pick unit the board clears every other option when this one is
+	// selected, and clears this one when any other option is selected. It is
+	// the do-nothing escape in a combinable menu ("nothing — close"), where a
+	// set holding both the escape and a real pick would describe a
+	// contradiction the asking session has no rule for.
+	//
+	// At most one option may carry it. On a single-pick unit it is meaningless
+	// — a radio group already admits exactly one — and is accepted rather than
+	// rejected, because a rejected item is DROPPED by the pusher: a redundant
+	// flag must not delete a card the operator needed to see.
+	Exclusive bool `json:"exclusive"`
 }
 
 // Validate returns an error when the option carries no label.
@@ -76,6 +88,10 @@ func (o AnswerOptions) ValidateForCardinality(
 				return o.validateRecommended(ctx, cardinality)
 			}),
 		),
+		validation.Name(
+			"Exclusive",
+			validation.HasValidationFunc(o.validateExclusive),
+		),
 	}.Validate(ctx)
 }
 
@@ -112,6 +128,37 @@ func (o AnswerOptions) validateRecommended(
 			validation.Error,
 			"%d options are marked recommended, at most 1 is allowed",
 			recommended,
+		)
+	}
+	return nil
+}
+
+// validateExclusive returns an error when more than one option carries
+// Exclusive, which is a contradiction the board cannot render: two escapes that
+// clear each other leave no reachable "none of these".
+//
+// Cardinality plays no part. An exclusive option on a single-pick unit is
+// redundant — the radio group already admits one — and is accepted rather than
+// rejected, because the pusher DROPS a rejected item, so a redundant flag would
+// delete a card the operator needed to see.
+func (o AnswerOptions) validateExclusive(ctx context.Context) error {
+	exclusive := 0
+	for _, option := range o {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		if option.Exclusive {
+			exclusive++
+		}
+	}
+	if exclusive > 1 {
+		return errors.Wrapf(
+			ctx,
+			validation.Error,
+			"%d options are marked exclusive, at most 1 is allowed",
+			exclusive,
 		)
 	}
 	return nil

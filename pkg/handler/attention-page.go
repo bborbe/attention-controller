@@ -366,6 +366,29 @@ function collectAnswers(form) {
   });
   return entries;
 }
+/* The exclusive option is the do-nothing escape of a combinable menu
+   ("nothing — close"): it and a real pick cannot both be submitted, because the
+   pair describes a contradiction the asking session has no rule for. The server
+   renders the marker; the rule lives here because it is a property of the
+   interaction rather than of the markup, and it covers the Other control too —
+   a typed answer beside "nothing" is the same contradiction a pick beside it
+   would be. Clearing every other box when any one is checked is the whole rule:
+   with an exclusive option present the menu admits exactly one pick. */
+document.addEventListener('change', function (event) {
+  var input = event.target;
+  if (!input || input.type !== 'checkbox' || !input.closest) { return; }
+  var panel = input.closest('.panel');
+  if (!panel || !input.checked) { return; }
+  var boxes = panel.querySelectorAll('input[type=checkbox]');
+  var hasExclusive = false;
+  boxes.forEach(function (box) {
+    if (box.hasAttribute('data-exclusive')) { hasExclusive = true; }
+  });
+  if (!hasExclusive) { return; }
+  boxes.forEach(function (box) {
+    if (box !== input) { box.checked = false; }
+  });
+});
 /* A permission card's Allow / Deny. It writes the verdict as decision, the
    field the schema gives a permission answer; the row updates over the stream
    like every other answer, and a failure is shown on the card rather than
@@ -1309,7 +1332,7 @@ function replayFailure(row) {
      input listener below is the other half, and data-other is what keeps the
      control out of the collected picks. */}}
 {{if $question.Options}}<div class="options">
-{{range $question.Options}}<label class="option"><input type="{{ if $question.Multi }}checkbox{{ else }}radio{{ end }}" name="{{ $question.Name }}" value="{{ .Label }}" data-option="{{ .Label }}"><span class="option-body"><span class="option-label">{{ .Label }}{{if .Recommended}} <span class="recommended">(Recommended)</span>{{end}}</span>{{if .Description}}<span class="option-desc">{{ .Description }}</span>{{end}}</span></label>
+{{range $question.Options}}<label class="option"><input type="{{ if $question.Multi }}checkbox{{ else }}radio{{ end }}" name="{{ $question.Name }}" value="{{ .Label }}" data-option="{{ .Label }}"{{if .Exclusive}} data-exclusive{{end}}><span class="option-body"><span class="option-label">{{ .Label }}{{if .Recommended}} <span class="recommended">(Recommended)</span>{{end}}</span>{{if .Description}}<span class="option-desc">{{ .Description }}</span>{{end}}</span></label>
 {{end}}<label class="option option-other"><input type="{{ if $question.Multi }}checkbox{{ else }}radio{{ end }}" name="{{ $question.Name }}" value="" data-other><span class="option-body"><span class="option-label">Other…</span><input class="other" type="text" name="text" placeholder="Type your answer"></span></label></div>
 {{else}}<input class="other" type="text" name="text" placeholder="Other...">{{end}}
 </div>
