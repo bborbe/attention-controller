@@ -73,22 +73,30 @@ func affordance(mechanism pkg.AnswerMechanism) (message bool, ack bool) {
 // renders no card, so building units it would never render would be a value
 // carried for nothing — and, worse, one a later change could render by
 // accident.
+//
+// deliveryStatus is the store's derived delivery status for this item, read by
+// the caller rather than here: this function is a pure derivation and the read
+// needs a context and the store, which the two callers (the page handler and
+// the SSE stream) hold. Empty when that read failed, which renders no marker —
+// see attentionPageRow.DeliveryStatus.
 func newAttentionPageRow(
 	item pkg.Item,
 	provenance pkg.Provenance,
+	deliveryStatus pkg.DeliveryStatus,
 	speak bool,
 	vaultName string,
 ) attentionPageRow {
 	row := attentionPageRow{
-		Item:       item,
-		Provenance: provenance,
-		Jump:       jumpCommand(item, provenance),
-		JumpURL:    jumpURL(item, provenance),
-		NoJump:     noJumpReason(item, provenance),
-		Speak:      speak,
-		TaskURL:    vaultFileURL(vaultName, provenance.TaskPath),
-		GoalURL:    vaultFileURL(vaultName, provenance.GoalPath),
-		TopicURL:   vaultFileURL(vaultName, provenance.TopicPath),
+		Item:           item,
+		Provenance:     provenance,
+		DeliveryStatus: deliveryStatus,
+		Jump:           jumpCommand(item, provenance),
+		JumpURL:        jumpURL(item, provenance),
+		NoJump:         noJumpReason(item, provenance),
+		Speak:          speak,
+		TaskURL:        vaultFileURL(vaultName, provenance.TaskPath),
+		GoalURL:        vaultFileURL(vaultName, provenance.GoalPath),
+		TopicURL:       vaultFileURL(vaultName, provenance.TopicPath),
 	}
 	row.Message, row.Ack = affordance(item.AnswerMechanism)
 	// Risk is derived here rather than read straight off the item. The declared
@@ -806,6 +814,23 @@ li.item.risk-risk {
 .question,
 .record {
   margin-right: calc(var(--corner-band) - 12px);
+}
+/* The undeliverable marker. It is the board's only statement that an answer did
+   not reach the asking session, so it reads as a warning rather than as card
+   text: the warn token, a weight above the body copy and a line of its own
+   above the actions.
+   ⚠️ It is never hidden, collapsed or made zero-size. The defect it closes was
+   that a dropped answer left NO visible trace at all, so a marker that renders
+   but cannot be seen would reproduce that defect while passing a markup check —
+   which is why the spec asserts on the rendered element inside the card's own
+   row rather than on the class alone. */
+.delivery-undeliverable {
+  color: var(--warn);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin: 0 0 12px;
 }
 .options { display: flex; flex-direction: column; gap: 18px; margin: 0 0 22px; }
 .option { display: flex; align-items: flex-start; gap: 12px; cursor: pointer; }
