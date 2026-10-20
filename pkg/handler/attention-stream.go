@@ -425,6 +425,7 @@ func (a *attentionStreamHandler) render(ctx context.Context) (map[string]string,
 		row := newAttentionPageRow(
 			item,
 			provenances[item.ItemID],
+			deliveryStatusOf(ctx, a.store, item.ItemID),
 			a.speakEnabled,
 			a.vaultName,
 		)
