@@ -8,8 +8,10 @@ import (
 	"context"
 
 	libboltkv "github.com/bborbe/boltkv"
+	"github.com/bborbe/errors"
 	libkv "github.com/bborbe/kv"
 	libtime "github.com/bborbe/time"
+	"github.com/bborbe/validation"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -181,6 +183,62 @@ var _ = Describe("Questions and cardinality", func() {
 			Expect(read.Questions[0].Options[0].Description).To(ContainSubstring("low risk"))
 			Expect(read.Questions[0].Options[0].Recommended).To(BeTrue())
 			Expect(read.Questions[1].Tab).To(Equal("Priority"))
+		})
+
+		It("accepts two recommended options in a question unit declared multiple", func() {
+			request := pushRequest("card-per-unit-multiple")
+			request.Questions = pkg.Questions{
+				{
+					Tab:         "Chores",
+					Payload:     "Which chores should I queue?",
+					Cardinality: pkg.MultipleAnswerCardinality,
+					Options: pkg.AnswerOptions{
+						{Label: "Broken wikilinks", Recommended: true},
+						{Label: "Huge pages", Recommended: true},
+					},
+				},
+				{
+					Tab:     "Priority",
+					Payload: "How urgent is this?",
+					Options: pkg.AnswerOptions{
+						{Label: "This week", Recommended: true},
+					},
+				},
+			}
+
+			pushed, err := store.Push(ctx, request)
+			Expect(err).To(BeNil())
+
+			read, err := store.Get(ctx, pushed.ItemID)
+			Expect(err).To(BeNil())
+			Expect(read.Questions).To(HaveLen(2))
+			Expect(read.Questions[0].Options[0].Recommended).To(BeTrue())
+			Expect(read.Questions[0].Options[1].Recommended).To(BeTrue())
+			Expect(read.Questions[1].Options[0].Recommended).To(BeTrue())
+		})
+
+		It("rejects two recommended options in a question unit declared single", func() {
+			// The item-level cardinality is deliberately the permissive one: the
+			// question unit's own declaration is what must govern its options, so
+			// an item-level `multiple` must not leak into a `single` tab.
+			request := pushRequest("card-per-unit-single")
+			request.AnswerCardinality = pkg.MultipleAnswerCardinality
+			request.Questions = pkg.Questions{
+				{
+					Tab:         "Chores",
+					Payload:     "Which chore should I queue?",
+					Cardinality: pkg.SingleAnswerCardinality,
+					Options: pkg.AnswerOptions{
+						{Label: "Broken wikilinks", Recommended: true},
+						{Label: "Huge pages", Recommended: true},
+					},
+				},
+			}
+
+			_, err := store.Push(ctx, request)
+			Expect(err).NotTo(BeNil())
+			Expect(errors.Is(err, validation.Error)).To(BeTrue())
+			Expect(err.Error()).To(ContainSubstring("at most 1 is allowed"))
 		})
 
 		It("rejects an out-of-range cardinality", func() {

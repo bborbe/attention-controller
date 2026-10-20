@@ -137,6 +137,56 @@ var _ = Describe("Board answers", func() {
 			err := request.Validate(ctx)
 			Expect(err).NotTo(BeNil())
 			Expect(errors.Is(err, validation.Error)).To(BeTrue())
+			Expect(err.Error()).To(ContainSubstring("at most 1 is allowed"))
+		})
+
+		It(
+			"validates an option list's recommended count against the cardinality it is given",
+			func() {
+				options := pkg.AnswerOptions{
+					{Label: "the board", Recommended: true},
+					{Label: "the tab", Recommended: true},
+				}
+
+				Expect(
+					options.ValidateForCardinality(ctx, pkg.MultipleAnswerCardinality),
+				).To(BeNil())
+
+				err := options.ValidateForCardinality(ctx, pkg.SingleAnswerCardinality)
+				Expect(err).NotTo(BeNil())
+				Expect(errors.Is(err, validation.Error)).To(BeTrue())
+				Expect(err.Error()).To(ContainSubstring("at most 1 is allowed"))
+
+				err = options.ValidateForCardinality(ctx, "")
+				Expect(err).NotTo(BeNil())
+				Expect(errors.Is(err, validation.Error)).To(BeTrue())
+			},
+		)
+
+		It("accepts two recommended options on a message item declared multiple", func() {
+			request := messageRequest()
+			request.AnswerCardinality = pkg.MultipleAnswerCardinality
+			request.Options[1].Recommended = true
+
+			item, err := store.Push(ctx, request)
+			Expect(err).To(BeNil())
+
+			got, err := store.Get(ctx, item.ItemID)
+			Expect(err).To(BeNil())
+			Expect(got.Options).To(HaveLen(2))
+			Expect(got.Options[0].Recommended).To(BeTrue())
+			Expect(got.Options[1].Recommended).To(BeTrue())
+		})
+
+		It("rejects two recommended options on a message item declared single", func() {
+			request := messageRequest()
+			request.AnswerCardinality = pkg.SingleAnswerCardinality
+			request.Options[1].Recommended = true
+
+			_, err := store.Push(ctx, request)
+			Expect(err).NotTo(BeNil())
+			Expect(errors.Is(err, validation.Error)).To(BeTrue())
+			Expect(err.Error()).To(ContainSubstring("at most 1 is allowed"))
 		})
 
 		It("rejects an option carrying no label", func() {
