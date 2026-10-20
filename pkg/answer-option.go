@@ -144,6 +144,11 @@ func (o AnswerOptions) validateRecommended(
 func (o AnswerOptions) validateExclusive(ctx context.Context) error {
 	exclusive := 0
 	for _, option := range o {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
 		if option.Exclusive {
 			exclusive++
 		}
