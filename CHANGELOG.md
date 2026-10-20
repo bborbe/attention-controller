@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.61.0
 
 - feat: **an `AnswerOption` may now carry `exclusive`, and the board enforces it — the do-nothing escape of a combinable menu cannot be submitted beside a real pick.** A multi-pick card is a checkbox menu, so "nothing — close" sat beside the options it was meant to replace: the operator could tick both and the asking session received a set that described a contradiction. `pkg/answer-option.go` gains the field and a list-level rule — at most one option may carry it, because two escapes that clear each other leave no reachable "none of these" — and `pkg/handler/attention-page.go` renders `data-exclusive` on the input plus a `change` listener that clears every other box in the panel whenever one is checked. The rule is client-side on purpose: with an exclusive option present the menu admits exactly one pick, and the interaction is where that is true, not the markup. The flag is accepted on a single-pick unit rather than rejected — a radio group already admits one, and a rejected item is dropped by the pusher, so a redundant flag would delete a card the operator needed to see. No change for any item that carries no exclusive option; the field is omitted from the wire when false.
 
