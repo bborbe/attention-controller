@@ -121,6 +121,60 @@ var _ = Describe("AttentionAnswerHandler", func() {
 		Expect(got.Decision).To(Equal(pkg.DenyDecision))
 	})
 
+	// `hidden` is what the board's corner X writes on a message card: the
+	// operator handled the card elsewhere and only wanted it off the board. It
+	// is a fourth legal kind, and it is a KIND rather than a state — the store
+	// holds three states and gains no fourth, so the item makes the ordinary
+	// open -> answered transition and the distinction lives in `answer.kind`.
+	pushMessage := func(dedupKey pkg.DedupKey) *pkg.Item {
+		item, err := store.Push(ctx, pkg.PushRequest{
+			ProducerID:      "session-a",
+			ProducerKind:    pkg.SessionProducerKind,
+			LivenessRef:     pkg.LivenessRef("session:session-a"),
+			DedupKey:        dedupKey,
+			InterruptClass:  "pick",
+			Payload:         "which one?",
+			Options:         pkg.AnswerOptions{{Label: "alpha"}, {Label: "beta"}},
+			AnswerMechanism: pkg.MessageAnswerMechanism,
+		})
+		Expect(err).To(BeNil())
+		return item
+	}
+
+	It("records a hidden answer as a kind, leaving the state at answered", func() {
+		item := pushMessage("hidden-1")
+
+		rec := answer(
+			item.ItemID,
+			`{"answered_by":"attention-board","answer":{"kind":"hidden"}}`,
+		)
+		Expect(rec.Code).To(Equal(http.StatusOK))
+
+		got, err := store.Get(ctx, item.ItemID)
+		Expect(err).To(BeNil())
+		Expect(got.Answer).NotTo(BeNil())
+		Expect(got.Answer.Kind).To(Equal(pkg.HiddenAnswerKind))
+		Expect(got.Answer.Value).To(BeEmpty())
+		Expect(got.State).To(Equal(pkg.AnsweredState))
+	})
+
+	// Negative control: `hidden` carries no content, and a value here would be a
+	// second, invisible answer beside the one the operator actually gave in the
+	// pane — the ambiguity the kind exists to remove.
+	It("rejects a hidden answer carrying a value and leaves the item open", func() {
+		item := pushMessage("hidden-2")
+
+		rec := answer(
+			item.ItemID,
+			`{"answered_by":"attention-board","answer":{"kind":"hidden","value":"sneaky"}}`,
+		)
+		Expect(rec.Code).To(Equal(http.StatusBadRequest))
+
+		got, err := store.Get(ctx, item.ItemID)
+		Expect(err).To(BeNil())
+		Expect(got.State).To(Equal(pkg.OpenState))
+	})
+
 	// The schema adds no write-time rejection for an omitted decision, so a body
 	// without one must still answer the item — it records no verdict rather than
 	// failing the request.

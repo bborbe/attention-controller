@@ -29,6 +29,18 @@ const (
 	SkipAnswerKind AnswerKind = "skip"
 	// TextAnswerKind is free text. Value carries it.
 	TextAnswerKind AnswerKind = "text"
+	// HiddenAnswerKind is a close that delivers nothing: the operator handled
+	// the card elsewhere — usually by answering in the asking session's own
+	// pane — and only wanted it off the board. Value is empty.
+	//
+	// It is distinct from `skip` because the two say opposite things to the
+	// asking session: a `skip` is the operator declining, and an arm delivers it
+	// as such, while a `hidden` means the question was answered somewhere the
+	// board cannot see, so delivering a decline would assert the reverse of what
+	// happened. It is distinct from a `closed` state for the same reason — a
+	// clear records that nothing was answered, which reads as "the operator never
+	// responded" rather than "the operator responded elsewhere".
+	HiddenAnswerKind AnswerKind = "hidden"
 )
 
 // AnswerKinds is a collection of AnswerKind.
@@ -39,6 +51,7 @@ var AvailableAnswerKinds = AnswerKinds{
 	OptionAnswerKind,
 	SkipAnswerKind,
 	TextAnswerKind,
+	HiddenAnswerKind,
 }
 
 // String returns the answer kind as a string.
