@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.61.1
 
 - fix: **the exclusive option now clears only itself, so a combinable menu stays combinable.** v0.61.0's listener cleared every other box whenever ANY box was checked, which made a card carrying a `nothing — close` escape single-pick: the operator could tick the escape or one command, never two — the exact defect the card shape exists to remove. The rule is two directions: checking the escape clears every other box, and checking any other option clears only the escape. Measured 2026-10-20 on the live board before the fix — checking `/vault-cli:reflect` then `/coding:self-improve` left only the second checked. Change set: `pkg/handler/attention-page.go`, `CHANGELOG.md`.
 
