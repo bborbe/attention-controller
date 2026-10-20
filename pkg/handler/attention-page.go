@@ -1338,6 +1338,16 @@ function replayFailure(row) {
 </div>
 {{end}}<div class="actions"><button type="submit" name="kind" value="skip" class="dismiss">✕ Dismiss</button><button type="submit" name="kind" value="send" class="next">✓ Submit answer</button><button type="submit" name="kind" value="hidden" class="corner-hide" hidden>Hide</button></div>
 </form>
+{{end}}{{/* The undeliverable marker renders on a card whose answer a recorded
+     attempt says did NOT reach the asking session, and on no other status:
+     "delivered" is the good case, "never_attempted" and "pre_trail_unknown" are
+     absences of an attempt rather than failures of one, and the empty status is
+     a read that failed. The gate is the row's own Undeliverable method, so the
+     comparison against the status constant stays in Go rather than becoming a
+     string literal here that could drift from it. It is a marker, not a control
+     — the board cannot retry a delivery — so it carries no handler and sits
+     outside the actions row. ⚠️ No backticks anywhere in this block: the whole
+     page is one Go raw-string literal, so a backtick closes it. */}}{{if .Undeliverable}}<div class="delivery-undeliverable">undeliverable</div>
 {{end}}{{if and .Ack (not .Dimmed)}}<div class="actions"><button type="button" class="ack" data-ack>Acknowledge</button></div>
 {{end}}{{if and .Decide (not .Dimmed)}}<div class="actions"><button type="button" class="dismiss" data-decision="deny">✕ Deny</button><button type="button" class="next" data-decision="allow">✓ Allow</button></div>
 {{end}}{{if or .Jump .JumpURL}}<div class="jump">{{if .Jump}}<span>Approve in the session that asked: <code>{{ .Jump }}</code></span>{{end}}</div>
@@ -1444,6 +1454,26 @@ type attentionPageRow struct {
 	// Record is the answer the store recorded, rendered for the dimmed card by
 	// recordAnswer. Empty on every row that is not dimmed.
 	Record string
+	// DeliveryStatus is what the store's Delivery report says happened to this
+	// card's answer — `delivered`, `failed`, `never_attempted` or
+	// `pre_trail_unknown` — and is what the template reads to mark an answer
+	// that never reached the asking session.
+	//
+	// ⚠️ It is the DERIVED status, never the raw DeliveryAttempt record, for the
+	// reason pkg.DeliveryReport carries the derivation: an absent record means
+	// `never_attempted` or `pre_trail_unknown` depending on the item's own
+	// timestamps, and a row that had to know the epoch rule to tell the two apart
+	// would hold a second copy of it. That is also why it is read at RENDER time
+	// rather than carried on the item: an attempt is written by a different arm
+	// after the answer, so the value the store holds changes without the item
+	// changing.
+	//
+	// ⚠️ Empty means the read failed, and empty renders no marker — the same
+	// fail-soft rule the provenance read follows. It is deliberately not one of
+	// the four statuses, so a failed read can never be mistaken for
+	// `never_attempted`, which is a real answer about the item rather than about
+	// this render.
+	DeliveryStatus pkg.DeliveryStatus
 	// Jump is the copyable command handing a non-`message` item back to the
 	// session that raised it. Empty when no pane resolved — an unresolvable
 	// value renders absent rather than as a stand-in, per the schema's silence 7.
@@ -1527,6 +1557,20 @@ type attentionPageRow struct {
 	TopicURL template.URL
 }
 
+// Undeliverable reports whether this card's answer failed to reach the asking
+// session, and so renders the marker that says so.
+//
+// ⚠️ It is a method rather than a second boolean field on purpose. The template
+// and the row would then carry two values that could disagree about one fact,
+// and the constant it compares against stays in Go rather than being spelled as
+// a string literal in the template — the same reason the row carries no
+// mechanism comparison. A `delivered`, `never_attempted` or `pre_trail_unknown`
+// answer renders nothing: only a recorded failure is something the operator can
+// act on, and the other three would put a marker on every card.
+func (r attentionPageRow) Undeliverable() bool {
+	return r.DeliveryStatus == pkg.FailedStatus
+}
+
 // attentionPageData is what the template renders: the items the store's read
 // path returned, in the order it returned them. It carries no ordering of its
 // own — the store never ranks, so the page must not either.
@@ -1594,6 +1638,39 @@ const (
 	boardHideAnswered = "answered"
 	boardHideNone     = "none"
 )
+
+// deliveryStatusOf reads one card's derived delivery status for its row, and
+// answers the zero value when the read fails.
+//
+// ⚠️ The failure is swallowed deliberately, and it is the same fail-soft rule
+// provenance.Resolve follows one function up: the status DECORATES a card that
+// is already on the board, so a read that fails — a bbolt View error, or an item
+// removed between ReadBoard and this call — must not turn the whole page into a
+// 500. The card itself is still readable, and the marker is an addition to it,
+// never a precondition for rendering it.
+//
+// ⚠️ The zero value is what makes that safe rather than merely quiet: it is no
+// status the store ever returns, so the row renders no marker and degrades to
+// exactly what it rendered before the marker existed. Returning
+// NeverAttemptedStatus here instead would assert something about the item that
+// this call did not learn.
+func deliveryStatusOf(
+	ctx context.Context,
+	store pkg.AttentionStore,
+	itemID pkg.ItemID,
+) pkg.DeliveryStatus {
+	report, err := store.Delivery(ctx, itemID)
+	// ⚠️ The nil check is part of the same fail-soft rule rather than
+	// defensiveness for its own sake: a store that answers no report and no
+	// error has told this row nothing, and dereferencing it would take the whole
+	// page down for one card. The mock store in the identity spec is exactly
+	// such a caller, and it is right to be — the read it is faking is not the
+	// subject of that spec.
+	if err != nil || report == nil {
+		return ""
+	}
+	return report.Status
+}
 
 // NewAttentionPageHandler creates the read-only HTML page a human opens to see
 // what currently needs attention.
@@ -1688,6 +1765,7 @@ func NewAttentionPageHandler(store pkg.AttentionStore,
 						newAttentionPageRow(
 							item,
 							provenances[item.ItemID],
+							deliveryStatusOf(ctx, store, item.ItemID),
 							speakEnabled,
 							vaultName,
 						),
