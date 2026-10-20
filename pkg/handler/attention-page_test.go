@@ -1182,6 +1182,18 @@ var _ = Describe("AttentionPageHandler", func() {
 			Expect(block).To(ContainSubstring("(Recommended)"))
 		})
 
+		It("renders a marker for every recommended option on a multi-select card", func() {
+			request := messageRequest("gate-two-recommended", pkg.MultipleAnswerCardinality)
+			request.Options[1].Recommended = true
+			item, err := store.Push(ctx, request)
+			Expect(err).To(BeNil())
+
+			block := rowOf(get("GET").Body.String(), item.ItemID)
+
+			Expect(strings.Count(block, "(Recommended)")).To(Equal(2))
+			Expect(strings.Count(block, `class="recommended"`)).To(Equal(2))
+		})
+
 		It("renders an option's muted description under its label", func() {
 			item, err := store.Push(
 				ctx,
