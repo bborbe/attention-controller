@@ -372,21 +372,25 @@ function collectAnswers(form) {
    renders the marker; the rule lives here because it is a property of the
    interaction rather than of the markup, and it covers the Other control too —
    a typed answer beside "nothing" is the same contradiction a pick beside it
-   would be. Clearing every other box when any one is checked is the whole rule:
-   with an exclusive option present the menu admits exactly one pick. */
+   would be.
+
+   ⚠️ TWO directions, not one. Checking the escape clears every other box;
+   checking any OTHER option clears only the escape. The rest of the menu stays
+   combinable, which is the whole point of a multi-pick card. Clearing every
+   other box on ANY check was the first version, and it made a card carrying an
+   escape single-pick — the operator could not tick both commands, which is the
+   defect this card shape exists to remove. Measured 2026-10-20 on the live
+   board: with that rule, checking reflect then self-improve left only the
+   second checked. */
 document.addEventListener('change', function (event) {
   var input = event.target;
   if (!input || input.type !== 'checkbox' || !input.closest) { return; }
   var panel = input.closest('.panel');
   if (!panel || !input.checked) { return; }
-  var boxes = panel.querySelectorAll('input[type=checkbox]');
-  var hasExclusive = false;
-  boxes.forEach(function (box) {
-    if (box.hasAttribute('data-exclusive')) { hasExclusive = true; }
-  });
-  if (!hasExclusive) { return; }
-  boxes.forEach(function (box) {
-    if (box !== input) { box.checked = false; }
+  var isEscape = input.hasAttribute('data-exclusive');
+  panel.querySelectorAll('input[type=checkbox]').forEach(function (box) {
+    if (box === input) { return; }
+    if (isEscape || box.hasAttribute('data-exclusive')) { box.checked = false; }
   });
 });
 /* A permission card's Allow / Deny. It writes the verdict as decision, the
