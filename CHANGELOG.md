@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.61.3
 
 - fix: bump `golang.org/x/net` to v0.62.0, clearing GO-2026-6860 (quadratic complexity when coalescing text nodes in html) and GO-2026-6866 (ancestor namespace transitions when rendering raw text in html). Both were reachable from the board's HTML parsing path, and together they turned `make vulncheck` red on master — which failed every dark-factory preflight and blocked the prompt pipeline in every worktree.
 
