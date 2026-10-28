@@ -12,6 +12,44 @@ vault page wins and the disagreement is a finding to report — not a choice to 
 | `flag_reason` | optional | store | Why the operator flagged this card as misrouted — free text, and the flag is rejected with HTTP 400 when it is empty, absent or whitespace-only. A flag is **not** an answer: the item stays `open` with `answered_at` absent, and remains answerable afterwards. It records that the question should not have been asked, so the routing defect can be counted per producer instead of disappearing when the card is answered. Rendered as a flag control separate from approve / deny / hide. |
 | `flagged_at` | optional | store | When the item was flagged as misrouted — stamped from the store's own clock inside the same compare-and-set that writes `flag_reason`, never supplied by the caller. Present exactly when `flag_reason` is present, and shares its lifetime: unflagging clears both. Its reader is the weekly per-producer misroute count. Distinct from `answered_at`, which records that a question was answered — a flag records that the question should not have been asked. |
 
+## Two filters, and how they compose
+
+The board hides two independent kinds of row: answered records and flagged cards. Each has its own
+query parameter, and each parameter names the set that is **hidden** — the board's existing
+convention, which is why the values are `none` rather than `show`.
+
+| Parameter | Governs | Default | Off value |
+|---|---|---|---|
+| `hide` | answered records | on (`hide=answered`) | `hide=none` |
+| `flags` | flagged cards | on (`flags=flagged`) | `flags=none` |
+
+**A row is visible only when both filters let it through.** The predicate is per row and is
+re-evaluated on every change:
+
+```
+visible(row) = (hideOff || !row.answered) && (flagsOff || !row.flagged)
+hideOff      = (hide == "none")
+flagsOff     = (flags == "none") || hideOff
+```
+
+`hide=none` is the **union view**: it disables both filters, so it reveals flagged cards as well as
+answered ones. That is why `flagsOff` also reads `hideOff` — the alternative is a URL that claims to
+hide nothing while still hiding something.
+
+Consequences that follow from this and must not drift:
+
+- **Absent and `flags=flagged` render identically for every `hide` value**, because at `hide=none`
+  both are overridden equally. There is no state where the two disagree.
+- **The flag switch cannot be switched on at `?hide=none`.** Clicking it there writes `hide=answered`
+  (re-enabling the answered filter) together with `flags=flagged`, because the union view and the
+  flag filter cannot both be active. It is never rendered disabled — a disabled control with no
+  explanation reads as broken.
+- **Restoring must be per row, not a global unpark.** A row hidden by one filter stays hidden while
+  the other is still on. Turning the flag filter off must not restore answered rows, which is the
+  flood `flags=none` exists to prevent.
+- **A row that is both flagged and answered** is governed by both: `flags=none` leaves it parked
+  while the answered filter is on; `hide=none` restores it.
+
 ## Flagging
 
 A flag records that the operator believes the card should never have reached them. It is **not an
