@@ -166,7 +166,7 @@ var _ = Describe("Attention jump handover", func() {
 		})
 
 		renderPage := func() *httptest.ResponseRecorder {
-			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req := httptest.NewRequest(http.MethodGet, "/?producer_kind=all", nil)
 			resp := httptest.NewRecorder()
 			pageHandler.ServeHTTP(resp, req)
 			return resp

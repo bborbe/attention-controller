@@ -139,10 +139,10 @@ const attentionPageTemplate = `<!DOCTYPE html>
      item — the same reason the switch sits here. It ships hidden and is shown
      only by the stream's own onerror, so a healthy board, a quiet board and an
      empty board all render exactly what they rendered before. */}}
-<div class="board-controls"><button type="button" class="board-filter" data-board-filter role="switch" aria-checked="{{if .HideAnswered}}true{{else}}false{{end}}"><svg class="switch" viewBox="0 0 44 24" aria-hidden="true" focusable="false"><rect class="switch-track" x="1" y="1" width="42" height="22" rx="11"/><circle class="switch-knob" cx="12" cy="12" r="8"/></svg><span class="switch-label">Hide answered</span></button><span class="stream-stale" data-stream-stale hidden>Not tracking the store - showing the last known state.</span></div>
+<div class="board-controls"><a class="board-filter" data-board-kind href="{{ .KindHref }}" data-all-kinds="{{if .AllKinds}}true{{else}}false{{end}}" data-hidden-open="{{ .HiddenOpen }}" data-hidden-all="{{ .HiddenAll }}"><svg class="switch" viewBox="0 0 44 24" aria-hidden="true" focusable="false"><rect class="switch-track" x="1" y="1" width="42" height="22" rx="11"/><circle class="switch-knob" cx="12" cy="12" r="8"/></svg><span class="switch-label">{{if .AllKinds}}Managers only{{else}}Show all kinds{{end}}</span></a>{{if .HiddenCount}}<span class="kind-hidden" data-kind-hidden>{{ .HiddenCount }} hidden</span>{{end}}<button type="button" class="board-filter" data-board-filter role="switch" aria-checked="{{if .HideAnswered}}true{{else}}false{{end}}"><svg class="switch" viewBox="0 0 44 24" aria-hidden="true" focusable="false"><rect class="switch-track" x="1" y="1" width="42" height="22" rx="11"/><circle class="switch-knob" cx="12" cy="12" r="8"/></svg><span class="switch-label">Hide answered</span></button><span class="stream-stale" data-stream-stale hidden>Not tracking the store - showing the last known state.</span></div>
 {{if .Items}}<ul class="items">
 {{range .Items}}{{template "attention-row" .}}{{end}}</ul>
-{{else}}<p class="empty">Nothing needs attention.</p>
+{{else}}<p class="empty">{{if .HiddenCount}}No cards of this kind need attention. The others are hidden by the kind filter above.{{else}}Nothing needs attention.{{end}}</p>
 {{end}}
 {{/* The board's own provenance: the answer to "which build am I looking at",
      on the surface a human is already reading. It exists because that question
@@ -1056,6 +1056,108 @@ function replayFailure(row) {
     for (var i = 0; i < rows.length; i++) { park(rows[i]); }
     showEmptyStatement();
   }
+  /* Mirrors boardProducerKindParam / boardProducerKindAll in Go. The server
+     already renders only the matching rows, so this exists for the STREAM
+     path: a frame carries a rendered row for whatever was just pushed, and a
+     card of another kind would otherwise appear on a filtered board — the same
+     leak the answered filter had to close on this same path.
+     ⚠️ A non-matching row is REMOVED rather than parked: an item's producer
+     kind is immutable, so nothing can ever bring it back, and the parked list
+     is the answered filter's restore buffer rather than a second one. */
+  var KIND_PARAM = 'producer_kind';
+  var KIND_ALL = 'all';
+  var KIND_DEFAULT = 'manager';
+  /* The empty state's kind-aware copy. The server renders the same sentence,
+     but both collapseIfEmpty() and showEmptyStatement() rebuild the paragraph
+     from scratch when the list empties, so a client-side "Nothing needs
+     attention." would put the lie back on a board whose switch names the hidden
+     cards — the production state, since no producer emits manager. */
+  /* ⚠️ No em dash: sibling specs use "—" as a sentinel for "a placeholder was
+     rendered where an unresolvable value belongs", and prose punctuation would
+     trip that guard on a correct page. */
+  var KIND_EMPTY_COPY = 'No cards of this kind need attention. The others are hidden by the kind filter above.';
+  var kind = new URLSearchParams(window.location.search).get(KIND_PARAM) || KIND_DEFAULT;
+  /* The count beside the switch, kept true after load. Both populations arrive
+     on the kind link, because the rows the server withheld were never sent — the
+     document cannot count them, and only the server knows how many of them are
+     answered. What the script adds is the rows the STREAM delivers: applyKindFilter
+     removes them, so the board ends up withholding more than the load-time count
+     names. The span itself is rendered only when there is something to say, so
+     this both updates it and creates or removes it.
+     ⚠️ Read from the link rather than captured into variables at parse time: the
+     link is resolved further down this script, and a captured value would be
+     read before that assignment. The attributes never change after load.
+     ⚠️ Streamed rows are keyed by item id rather than tallied: a card's update
+     arrives as a second frame, and an id-keyed map makes the recount idempotent
+     where a counter would inflate. The value is the row's dimmed state, which
+     decides whether it counts at all — and which changes when the card is
+     answered. */
+  function kindHiddenBase(attribute) {
+    if (!kindLink) { return 0; }
+    return parseInt(kindLink.getAttribute(attribute), 10) || 0;
+  }
+  var kindStreamed = {};
+  function updateKindCount() {
+    var total = 0;
+    if (kind !== KIND_ALL) {
+      total = on ? kindHiddenBase('data-hidden-open') : kindHiddenBase('data-hidden-all');
+      for (var id in kindStreamed) {
+        /* The same rule the server applies: an answered row is already withheld
+           by the answered filter, so the kind filter is not what hides it. */
+        if (!kindStreamed[id] || !on) { total++; }
+      }
+    }
+    if (total === 0) {
+      var stale = document.querySelector('[data-kind-hidden]');
+      if (stale) { stale.remove(); }
+      return;
+    }
+    var el = document.querySelector('[data-kind-hidden]');
+    if (!el) {
+      if (!kindLink) { return; }
+      /* Built rather than inserted as markup: the rendered span and a markup
+         string would be the same text, and the Go suite asserts on the served
+         markup to prove the all-kinds view renders no count. */
+      el = document.createElement('span');
+      el.className = 'kind-hidden';
+      el.setAttribute('data-kind-hidden', '');
+      kindLink.parentNode.insertBefore(el, kindLink.nextSibling);
+    }
+    el.textContent = total + ' hidden';
+  }
+  function applyKindFilter() {
+    if (kind !== KIND_ALL) {
+      var rows = document.querySelectorAll('li.item');
+      for (var i = 0; i < rows.length; i++) {
+        if (rows[i].getAttribute('data-producer-kind') === kind) { continue; }
+        /* Recorded before the row leaves the document: whether it counts depends
+           on whether it was dimmed, which only the node knows. */
+        kindStreamed[rows[i].getAttribute('data-item-id')] =
+          rows[i].classList.contains('dimmed');
+        rows[i].remove();
+      }
+    }
+    updateKindCount();
+  }
+  /* ⚠️ The kind link's href is SERVER-RENDERED from the request, while the
+     answered toggle below rewrites the query with history.replaceState. Left
+     alone the link keeps its load-time query, so following it after a toggle
+     silently resets the other filter: toggling Hide answered OFF (URL gains
+     hide=none) and then clicking the kind link would navigate to the stale
+     query, drop hide=none and re-hide the answered records — precisely the
+     mutual reset the server-side KindHref comment claims is prevented. The
+     Go test could not see it because it requests ?hide=none directly rather
+     than toggling.
+     Recomputed after every URL write; the server-rendered href stays as the
+     no-JS fallback, which is the only case where it can still be right. */
+  var kindLink = document.querySelector('[data-board-kind]');
+  function syncKindHref() {
+    if (!kindLink) { return; }
+    var target = kindLink.getAttribute('data-all-kinds') === 'true' ? KIND_DEFAULT : KIND_ALL;
+    var next = new URL(window.location.href);
+    next.searchParams.set(KIND_PARAM, target);
+    kindLink.setAttribute('href', next.pathname + next.search);
+  }
   function forget(itemID) {
     parked = parked.filter(function (entry) { return entry.id !== itemID; });
   }
@@ -1081,7 +1183,14 @@ function replayFailure(row) {
         url.searchParams.set(HIDE_PARAM, HIDE_NONE);
       }
       window.history.replaceState(null, '', url);
+      /* The kind link carries the query it was rendered from, so it has to be
+         rebuilt from the URL that just changed — see syncKindHref. */
+      syncKindHref();
       applyFilter();
+      /* The answered toggle moves which of the two counts applies: with the
+         filter ON the answered records are withheld anyway, so the kind filter
+         is not what hides them. */
+      updateKindCount();
     });
   }
   /* Applied at load as well as on click, so a URL that arrived carrying the
@@ -1089,6 +1198,13 @@ function replayFailure(row) {
      script runs while the parser is still inside the body, so this lands before
      the first paint rather than as a correction to it. */
   if (on) { applyFilter(); }
+  syncKindHref();
+  updateKindCount();
+  /* The toggle writes the URL with replaceState, so it rebuilds the link
+     itself; this covers every OTHER way the URL can change under the page — a
+     Back/Forward restore out of bfcache, or any future in-page writer that
+     forgets to call syncKindHref. Cheap, and the failure it prevents is silent. */
+  window.addEventListener('popstate', syncKindHref);
   function collapseIfEmpty() {
     var list = document.querySelector('ul.items');
     if (!list || list.querySelector('li.item')) { return; }
@@ -1098,7 +1214,7 @@ function replayFailure(row) {
     if (parked.length > 0) { return; }
     var empty = document.createElement('p');
     empty.className = 'empty';
-    empty.textContent = 'Nothing needs attention.';
+    empty.textContent = (kind === KIND_ALL) ? 'Nothing needs attention.' : KIND_EMPTY_COPY;
     list.parentNode.replaceChild(empty, list);
   }
   /* Renders the board's empty-state paragraph in place of an emptied list
@@ -1112,7 +1228,7 @@ function replayFailure(row) {
     if (document.querySelector('p.empty')) { return; }
     var empty = document.createElement('p');
     empty.className = 'empty';
-    empty.textContent = 'Nothing needs attention.';
+    empty.textContent = (kind === KIND_ALL) ? 'Nothing needs attention.' : KIND_EMPTY_COPY;
     list.parentNode.replaceChild(empty, list);
   }
   /* A row's update is PREPARED on a detached node and only then committed.
@@ -1164,7 +1280,17 @@ function replayFailure(row) {
       list.insertAdjacentHTML('beforeend', prepared);
     }
     /* The row is complete as committed, so nothing is re-applied to it here.
-       The filter still runs after: it is a board-level view over every row. */
+       The filters still run after: they are board-level views over every row.
+
+       ⚠️ KIND FIRST, and the order is load bearing rather than stylistic.
+       applyFilter PARKS a dimmed row — it detaches it and holds its markup in
+       the answered filter's restore buffer — so a kind filter running second
+       would never see it: the row is already out of the document, and
+       unpark() would put a non-manager answered card back on a manager-only
+       board when the operator toggles Hide answered off. Running the kind
+       filter first removes it while it is still in the document, which is the
+       only moment the kind is readable. */
+    applyKindFilter();
     applyFilter();
   }
   /* The filter is wired above this guard rather than below it. It is plain DOM
@@ -1270,7 +1396,7 @@ function replayFailure(row) {
      — and it must be the SAME markup, not a second renderer that would drift
      from this one. The dollar sign inside a sub-template is the value passed to
      it, which is why Speak is carried on the row and read as dot-Speak here. */}}
-{{define "attention-row"}}<li class="item risk-{{ .Risk }}{{if .Dimmed}} dimmed{{end}}" data-item-id="{{ .Item.ItemID }}" data-risk="{{ .Risk }}">
+{{define "attention-row"}}<li class="item risk-{{ .Risk }}{{if .Dimmed}} dimmed{{end}}" data-item-id="{{ .Item.ItemID }}" data-risk="{{ .Risk }}" data-producer-kind="{{ .Item.ProducerKind }}">
 {{/* The corner X renders on every OPEN row, ungated by mechanism, from
      2026-09-27 — message, ack and permission alike — and is withheld from the
      dimmed record card by the (not .Dimmed) conjunct, added 2026-10-01. It was
@@ -1594,6 +1720,35 @@ type attentionPageData struct {
 	// fresh load of the board shows what is left rather than mixing the dimmed
 	// answered records in with the cards that still need the operator.
 	HideAnswered bool
+	// AllKinds reports whether the kind filter is off. Rendered so the switch's
+	// initial position and the URL it writes agree with the request — the same
+	// contract HideAnswered keeps, and for the same reason. The active kind
+	// itself is not carried here: the switch's link is the whole state, and a
+	// second copy on the page would be a value that could disagree with it.
+	AllKinds bool
+	// KindHref is where the kind switch points: this request with only
+	// `producer_kind` replaced. Computed here rather than assembled in the
+	// template so every other view parameter — `hide` above all — survives the
+	// toggle instead of being dropped by a hand-built query string.
+	KindHref string
+	// HiddenCount is how many of the rows the store returned this filter is not
+	// showing, on the view this request rendered. ⚠️ It is computed from the full
+	// row set the page was built from, not read back from the store, so it costs
+	// no second read and cannot disagree with the rows it describes.
+	HiddenCount int
+	// HiddenOpen and HiddenAll are the same count on the two positions of the
+	// answered filter: HiddenOpen excludes the answered records (the `hide` ON
+	// view, where that filter already withholds them), HiddenAll includes them
+	// (the `hide=none` view, where they are on screen and the kind filter is what
+	// hides them).
+	//
+	// ⚠️ Both are rendered so the script can keep the count true after load.
+	// Neither is derivable from the other on the client: the rows the server
+	// withheld were never sent, so only the server knows how many of them are
+	// answered — and the answered toggle and the stream both move which position
+	// applies.
+	HiddenOpen int
+	HiddenAll  int
 	// BuildIdentity is what the running binary can say about the source it was
 	// built from, rendered in the page's footer.
 	//
@@ -1604,6 +1759,19 @@ type attentionPageData struct {
 	// carries no identity renders an explicit line saying so — see
 	// buildidentity.Identity.Known.
 	BuildIdentity buildidentity.Identity
+}
+
+// setKindCount picks the hidden count the view being rendered is showing.
+//
+// It lives here rather than in the template so the rule is stated once: the
+// count follows the answered filter's position, and a template condition would
+// be a second copy of it — the kind of duplicate that agrees until one side is
+// changed.
+func (d *attentionPageData) setKindCount(hideAnswered bool) {
+	d.HiddenCount = d.HiddenAll
+	if hideAnswered {
+		d.HiddenCount = d.HiddenOpen
+	}
 }
 
 // boardHideParam is the query parameter carrying the board's view state, and
@@ -1739,6 +1907,16 @@ func NewAttentionPageHandler(store pkg.AttentionStore,
 			func(ctx context.Context, resp http.ResponseWriter, req *http.Request) error {
 				// ⚠️ Per request, before the store read: a failed render still counts.
 				metrics.BoardPageRequestsTotalCounterInc()
+				// Parsed before the store read: a rejected parameter must cost a
+				// 400, not a full board read that is then thrown away.
+				producerKind, allKinds, err := boardProducerKindOf(ctx, req)
+				if err != nil {
+					return libhttp.WrapWithCode(
+						err,
+						libhttp.ErrorCodeValidation,
+						http.StatusBadRequest,
+					)
+				}
 				// ReadBoard, not Read: the board renders the answered items as
 				// dimmed records as well as the open ones. Read stays as it is
 				// for the JSON read API, whose consumers act on what they are
@@ -1789,15 +1967,21 @@ func NewAttentionPageHandler(store pkg.AttentionStore,
 				// filter off, and absence (or any unrecognised value) leaves it
 				// on.
 				hideAnswered := req.URL.Query().Get(boardHideParam) != boardHideNone
-				if err := page.Execute(
-					&body,
-					attentionPageData{
-						Items:         rows,
-						Speak:         speakEnabled,
-						HideAnswered:  hideAnswered,
-						BuildIdentity: buildIdentity,
-					},
-				); err != nil {
+				shown, hiddenOpen, hiddenAll := filterByProducerKind(
+					rows, producerKind, allKinds,
+				)
+				data := attentionPageData{
+					Items:         shown,
+					Speak:         speakEnabled,
+					HideAnswered:  hideAnswered,
+					AllKinds:      allKinds,
+					KindHref:      boardProducerKindHref(req.URL, allKinds),
+					HiddenOpen:    hiddenOpen,
+					HiddenAll:     hiddenAll,
+					BuildIdentity: buildIdentity,
+				}
+				data.setKindCount(hideAnswered)
+				if err := page.Execute(&body, data); err != nil {
 					return errors.Wrap(ctx, err, "render page failed")
 				}
 				resp.Header().Set(

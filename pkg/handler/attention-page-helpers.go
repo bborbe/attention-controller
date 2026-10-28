@@ -1027,6 +1027,14 @@ li.item.risk-risk {
   color: var(--text);
   cursor: pointer;
 }
+/* The kind control is an <a> while the answered control is a <button>: without
+   this the anchor's label carries the browser's underline and the two controls
+   in one row disagree about being links. */
+.board-filter { text-decoration: none; }
+/* The hidden count sits beside the controls, so it takes their size rather than
+   the body's. Muted, because it annotates the switch instead of competing with
+   the cards. */
+.kind-hidden { color: var(--muted); font-size: 13px; }
 .board-filter .switch { width: 44px; height: 24px; display: block; flex: none; }
 .board-filter .switch-track {
   fill: var(--panel);
@@ -1039,11 +1047,13 @@ li.item.risk-risk {
 /* Ordered after :hover deliberately. The two rules have equal specificity, so
    source order is what stops the on-state colour being flattened on hover —
    the state has to outrank the pointer, not the other way round. */
-.board-filter[aria-checked="true"] .switch-track {
+.board-filter[aria-checked="true"] .switch-track,
+.board-filter[data-all-kinds="true"] .switch-track {
   fill: var(--green-bg);
   stroke: var(--green);
 }
-.board-filter[aria-checked="true"] .switch-knob { transform: translateX(20px); }
+.board-filter[aria-checked="true"] .switch-knob,
+.board-filter[data-all-kinds="true"] .switch-knob { transform: translateX(20px); }
 /* The focus ring outranks the state deliberately — the opposite precedence from
    the hover rule above, and for the opposite reason. Hover is the pointer
    passing over, which must not obscure what the control is set to; focus is the

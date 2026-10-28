@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- feat: the board defaults to manager-kind cards, with a one-click all-kinds view. A new `producer_kind` query parameter selects the population (`manager` / `session` / `agent` / `cron` / `dark-factory`, or `all`), defaults to `manager`, and rejects an unknown kind with a 400 rather than silently ignoring it — a typo would otherwise render the wrong population and read as "no cards of that kind". The switch carries the current `hide` state, so the two view filters cannot reset each other, and names how many cards it is hiding — a count the page keeps true as cards stream in and as the answered filter moves. ⚠️ That count is necessary rather than decorative: **no producer can emit `producer_kind: manager` today** (`attention-ask.py --producer-kind` accepts only session/agent/cron/dark-factory), so the managers-only default starts empty and hides the entire current queue — measured 2026-10-28, 978 of the last 1000 items were `session` and none were `manager`. The stream path applies the same filter, so a card pushed while the board is open cannot leak onto a filtered view.
+
 ## v0.61.3
 
 - fix: bump `golang.org/x/net` to v0.62.0, clearing GO-2026-6860 (quadratic complexity when coalescing text nodes in html) and GO-2026-6866 (ancestor namespace transitions when rendering raw text in html). Both were reachable from the board's HTML parsing path, and together they turned `make vulncheck` red on master — which failed every dark-factory preflight and blocked the prompt pipeline in every worktree.

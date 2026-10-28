@@ -100,7 +100,7 @@ var _ = Describe("the card's information affordance on the served page", func() 
 
 	// get renders the page and returns the recorder.
 	get := func(method string) *httptest.ResponseRecorder {
-		req := httptest.NewRequest(method, "/", nil)
+		req := httptest.NewRequest(method, "/?producer_kind=all", nil)
 		resp := httptest.NewRecorder()
 		httpHandler.ServeHTTP(resp, req)
 		return resp
@@ -421,7 +421,7 @@ var _ = Describe("the card's information affordance on the served page", func() 
 			boardmetrics.NewMetrics(prometheus.NewRegistry()),
 		)
 
-		req := httptest.NewRequest("GET", "/", nil)
+		req := httptest.NewRequest("GET", "/?producer_kind=all", nil)
 		resp := httptest.NewRecorder()
 		handlerUnderTest.ServeHTTP(resp, req)
 
