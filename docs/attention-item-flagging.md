@@ -1,22 +1,26 @@
 # Attention Item Flagging
 
-The in-repo contract for `flag_reason` and `flagged_at`. This is a **copy** of the authoritative
-`Attention Item Schema` § Flagging (vault: `50 Knowledge Base/Attention Item Schema.md`), placed
-here because the implementing container cannot resolve a vault wikilink. If the two disagree, the
-vault page wins and the disagreement is a finding to report — not a choice to make in code.
+The in-repo contract for `flag_reason` and `flagged_at`. **§ Fields and § Flagging mirror the
+authoritative `Attention Item Schema` § Flagging** (vault: `50 Knowledge Base/Attention Item
+Schema.md`), placed here because the implementing container cannot resolve a vault wikilink; if
+those two sections disagree with the vault page, the vault page wins and the disagreement is a
+finding to report — not a choice to make in code.
+
+**§ Two filters is repo-local board contract with no vault counterpart, and this file is its sole
+authority.**
 
 ## Fields
 
 | Field | Req. | Writer | Purpose |
 |---|---|---|---|
-| `flag_reason` | optional | store | Why the operator flagged this card as misrouted — free text, and the flag is rejected with HTTP 400 when it is empty, absent or whitespace-only. A flag is **not** an answer: the item stays `open` with `answered_at` absent, and remains answerable afterwards. It records that the question should not have been asked, so the routing defect can be counted per producer instead of disappearing when the card is answered. Rendered as a flag control separate from approve / deny / hide. |
+| `flag_reason` | optional on the item — required when flagging | store | Why the operator flagged this card as misrouted — free text, and the flag is rejected with HTTP 400 when it is empty, absent or whitespace-only. A flag is **not** an answer: the item stays `open` with `answered_at` absent, and remains answerable afterwards. It records that the question should not have been asked, so the routing defect can be counted per producer instead of disappearing when the card is answered. Rendered as a flag control separate from approve / deny / hide. |
 | `flagged_at` | optional | store | When the item was flagged as misrouted — stamped from the store's own clock inside the same compare-and-set that writes `flag_reason`, never supplied by the caller. Present exactly when `flag_reason` is present, and shares its lifetime: unflagging clears both. Its reader is the weekly per-producer misroute count. Distinct from `answered_at`, which records that a question was answered — a flag records that the question should not have been asked. |
 
 ## Two filters, and how they compose
 
-The board hides two independent kinds of row: answered records and flagged cards. Each has its own
-query parameter, and each parameter names the set that is **hidden** — the board's existing
-convention, which is why the values are `none` rather than `show`.
+The board hides two kinds of row — answered records and flagged cards — with one documented coupling
+between them. Each has its own query parameter, and each parameter names the set that is **hidden** —
+the board's existing convention, which is why the values are `none` rather than `show`.
 
 | Parameter | Governs | Default | Off value |
 |---|---|---|---|
