@@ -144,11 +144,22 @@ var _ = Describe("the board's producer-kind filter", func() {
 			Expect(body).NotTo(ContainSubstring("data-kind-hidden"))
 		})
 
-		It("keeps hide=none on the switch's own link", func() {
+		It("keeps hide=none on the switch's own link, and points it at all kinds", func() {
 			body := get("/?hide=none").Body.String()
 
 			// Two independent default-on view filters must not reset each other:
-			// the kind switch has to carry the hide state it was rendered under.
+			// the kind link has to carry the hide state it was rendered under,
+			// and the managers-only view's link has to offer the all-kinds view.
+			Expect(body).To(ContainSubstring("hide=none"))
+			Expect(body).To(ContainSubstring("producer_kind=all"))
+		})
+
+		It("points the all-kinds view's link back at managers only, keeping hide=none", func() {
+			body := get("/?producer_kind=all&hide=none").Body.String()
+
+			// The reverse direction: a one-way assertion would pass on a link
+			// that always writes `all`, leaving no way back to the default.
+			Expect(body).To(ContainSubstring("producer_kind=manager"))
 			Expect(body).To(ContainSubstring("hide=none"))
 		})
 	})

@@ -531,7 +531,21 @@ func emptyStateCount(page playwright.Page) int {
 
 // newPage opens a fresh page on the board. A page per spec keeps the parked-set
 // and filter state from leaking between cases.
+//
+// ⚠️ It opts into the all-kinds view unless the caller names a kind itself.
+// Every fixture these specs push is session-kind, and the board now defaults to
+// manager-kind only, so the bare board renders no rows and every row assertion
+// fails for a reason unrelated to the spec. The default view has its own
+// coverage in the producer-kind suite; the kind link's own URL is what a spec
+// passes when it wants that view here.
 func newPage(path string) playwright.Page {
+	if !strings.Contains(path, "producer_kind=") {
+		if strings.Contains(path, "?") {
+			path += "&producer_kind=all"
+		} else {
+			path += "?producer_kind=all"
+		}
+	}
 	page, err := browser.NewPage()
 	Expect(err).NotTo(HaveOccurred())
 	_, err = page.Goto(baseURL+strings.TrimPrefix(path, "/"), playwright.PageGotoOptions{

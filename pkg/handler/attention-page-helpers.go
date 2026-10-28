@@ -1039,11 +1039,13 @@ li.item.risk-risk {
 /* Ordered after :hover deliberately. The two rules have equal specificity, so
    source order is what stops the on-state colour being flattened on hover —
    the state has to outrank the pointer, not the other way round. */
-.board-filter[aria-checked="true"] .switch-track {
+.board-filter[aria-checked="true"] .switch-track,
+.board-filter[data-all-kinds="true"] .switch-track {
   fill: var(--green-bg);
   stroke: var(--green);
 }
-.board-filter[aria-checked="true"] .switch-knob { transform: translateX(20px); }
+.board-filter[aria-checked="true"] .switch-knob,
+.board-filter[data-all-kinds="true"] .switch-knob { transform: translateX(20px); }
 /* The focus ring outranks the state deliberately — the opposite precedence from
    the hover rule above, and for the opposite reason. Hover is the pointer
    passing over, which must not obscure what the control is set to; focus is the
