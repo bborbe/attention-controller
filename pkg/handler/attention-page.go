@@ -9,6 +9,7 @@ import (
 	"context"
 	"html/template"
 	"net/http"
+	"net/url"
 
 	"github.com/bborbe/errors"
 	libhttp "github.com/bborbe/http"
@@ -139,7 +140,7 @@ const attentionPageTemplate = `<!DOCTYPE html>
      item — the same reason the switch sits here. It ships hidden and is shown
      only by the stream's own onerror, so a healthy board, a quiet board and an
      empty board all render exactly what they rendered before. */}}
-<div class="board-controls"><button type="button" class="board-filter" data-board-filter role="switch" aria-checked="{{if .HideAnswered}}true{{else}}false{{end}}"><svg class="switch" viewBox="0 0 44 24" aria-hidden="true" focusable="false"><rect class="switch-track" x="1" y="1" width="42" height="22" rx="11"/><circle class="switch-knob" cx="12" cy="12" r="8"/></svg><span class="switch-label">Hide answered</span></button><span class="stream-stale" data-stream-stale hidden>Not tracking the store - showing the last known state.</span></div>
+<div class="board-controls"><a class="board-filter" data-board-kind href="{{ .KindHref }}" role="switch" aria-checked="{{if .AllKinds}}true{{else}}false{{end}}"><svg class="switch" viewBox="0 0 44 24" aria-hidden="true" focusable="false"><rect class="switch-track" x="1" y="1" width="42" height="22" rx="11"/><circle class="switch-knob" cx="12" cy="12" r="8"/></svg><span class="switch-label">Show all kinds</span></a>{{if .HiddenCount}}<span class="kind-hidden" data-kind-hidden>{{ .HiddenCount }} hidden</span>{{end}}<button type="button" class="board-filter" data-board-filter role="switch" aria-checked="{{if .HideAnswered}}true{{else}}false{{end}}"><svg class="switch" viewBox="0 0 44 24" aria-hidden="true" focusable="false"><rect class="switch-track" x="1" y="1" width="42" height="22" rx="11"/><circle class="switch-knob" cx="12" cy="12" r="8"/></svg><span class="switch-label">Hide answered</span></button><span class="stream-stale" data-stream-stale hidden>Not tracking the store - showing the last known state.</span></div>
 {{if .Items}}<ul class="items">
 {{range .Items}}{{template "attention-row" .}}{{end}}</ul>
 {{else}}<p class="empty">Nothing needs attention.</p>
@@ -1056,6 +1057,25 @@ function replayFailure(row) {
     for (var i = 0; i < rows.length; i++) { park(rows[i]); }
     showEmptyStatement();
   }
+  /* Mirrors boardProducerKindParam / boardProducerKindAll in Go. The server
+     already renders only the matching rows, so this exists for the STREAM
+     path: a frame carries a rendered row for whatever was just pushed, and a
+     card of another kind would otherwise appear on a filtered board — the same
+     leak the answered filter had to close on this same path.
+     ⚠️ A non-matching row is REMOVED rather than parked: an item's producer
+     kind is immutable, so nothing can ever bring it back, and the parked list
+     is the answered filter's restore buffer rather than a second one. */
+  var KIND_PARAM = 'producer_kind';
+  var KIND_ALL = 'all';
+  var KIND_DEFAULT = 'manager';
+  var kind = new URLSearchParams(window.location.search).get(KIND_PARAM) || KIND_DEFAULT;
+  function applyKindFilter() {
+    if (kind === KIND_ALL) { return; }
+    var rows = document.querySelectorAll('li.item');
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].getAttribute('data-producer-kind') !== kind) { rows[i].remove(); }
+    }
+  }
   function forget(itemID) {
     parked = parked.filter(function (entry) { return entry.id !== itemID; });
   }
@@ -1166,6 +1186,7 @@ function replayFailure(row) {
     /* The row is complete as committed, so nothing is re-applied to it here.
        The filter still runs after: it is a board-level view over every row. */
     applyFilter();
+    applyKindFilter();
   }
   /* The filter is wired above this guard rather than below it. It is plain DOM
      work, and a browser with no EventSource still renders the board and still
@@ -1270,7 +1291,7 @@ function replayFailure(row) {
      — and it must be the SAME markup, not a second renderer that would drift
      from this one. The dollar sign inside a sub-template is the value passed to
      it, which is why Speak is carried on the row and read as dot-Speak here. */}}
-{{define "attention-row"}}<li class="item risk-{{ .Risk }}{{if .Dimmed}} dimmed{{end}}" data-item-id="{{ .Item.ItemID }}" data-risk="{{ .Risk }}">
+{{define "attention-row"}}<li class="item risk-{{ .Risk }}{{if .Dimmed}} dimmed{{end}}" data-item-id="{{ .Item.ItemID }}" data-risk="{{ .Risk }}" data-producer-kind="{{ .Item.ProducerKind }}">
 {{/* The corner X renders on every OPEN row, ungated by mechanism, from
      2026-09-27 — message, ack and permission alike — and is withheld from the
      dimmed record card by the (not .Dimmed) conjunct, added 2026-10-01. It was
@@ -1594,6 +1615,22 @@ type attentionPageData struct {
 	// fresh load of the board shows what is left rather than mixing the dimmed
 	// answered records in with the cards that still need the operator.
 	HideAnswered bool
+	// AllKinds reports whether the kind filter is off. Rendered so the switch's
+	// initial position and the URL it writes agree with the request — the same
+	// contract HideAnswered keeps, and for the same reason. The active kind
+	// itself is not carried here: the switch's link is the whole state, and a
+	// second copy on the page would be a value that could disagree with it.
+	AllKinds bool
+	// KindHref is where the kind switch points: this request with only
+	// `producer_kind` replaced. Computed here rather than assembled in the
+	// template so every other view parameter — `hide` above all — survives the
+	// toggle instead of being dropped by a hand-built query string.
+	KindHref string
+	// HiddenCount is how many of the rows the store returned this filter is not
+	// showing. ⚠️ It is computed from the full row set the page was built from,
+	// not read back from the store, so it costs no second read and cannot
+	// disagree with the rows it describes.
+	HiddenCount int
 	// BuildIdentity is what the running binary can say about the source it was
 	// built from, rendered in the page's footer.
 	//
@@ -1642,6 +1679,101 @@ const (
 	boardHideAnswered = "answered"
 	boardHideNone     = "none"
 )
+
+// boardProducerKindParam is the query parameter carrying the board's
+// producer-kind filter, and boardProducerKindAll is the value that turns it
+// off. The parameter follows boardHideParam's shape on purpose — the same
+// parse-validate-default reading, the same write-back by its switch — so the
+// two view controls compose instead of each owning a private convention.
+//
+// ⚠️ The default is `manager`, and it is the operator's decision rather than a
+// guess: card `7ca5385d5d226b1463778ac2e5f18b56`, 2026-10-28 — *"filter on
+// producer_kind (manager kind only)"*. The axis is a KIND, not a manager-tier
+// list, because `producer_kind` is the field an item actually carries; there is
+// no `roles=` vocabulary anywhere in the store.
+//
+// ⚠️ `all` rather than an absent parameter is the show-everything spelling, for
+// the same reason boardHideNone exists: a deleted parameter is indistinguishable
+// from a defaulted one, so the switch needs a value it can write back into the
+// URL and a reload must reproduce the view.
+const (
+	boardProducerKindParam = "producer_kind"
+	boardProducerKindAll   = "all"
+)
+
+// boardProducerKindOf reads the board's producer-kind filter from the request.
+//
+// It answers allKinds=true for the explicit `all` value and the default kind
+// otherwise. ⚠️ An unrecognised value is an ERROR rather than a silent
+// fallback, which is the opposite of boardHideParam's rule and deliberately so:
+// a typo in `hide` costs the operator a filter they did not ask for, while a
+// typo here would render the wrong population and read as "no cards of that
+// kind" — a claim the board never checked.
+// boardProducerKindHref is the URL the kind switch points at: the current
+// request with only `producer_kind` replaced, so every other view parameter —
+// `hide` above all — survives the toggle. ⚠️ That preservation is load bearing
+// rather than tidy: two independent default-on view filters each rewriting the
+// query string would silently reset each other, and "show all kinds" would then
+// also un-hide the answered records.
+func boardProducerKindHref(current *url.URL, allKinds bool) string {
+	next := current.Query()
+	if allKinds {
+		next.Set(boardProducerKindParam, pkg.ManagerProducerKind.String())
+	} else {
+		next.Set(boardProducerKindParam, boardProducerKindAll)
+	}
+	clone := *current
+	clone.RawQuery = next.Encode()
+	return clone.RequestURI()
+}
+
+func boardProducerKindOf(
+	ctx context.Context,
+	req *http.Request,
+) (pkg.ProducerKind, bool, error) {
+	raw := req.URL.Query().Get(boardProducerKindParam)
+	if raw == "" {
+		return pkg.ManagerProducerKind, false, nil
+	}
+	if raw == boardProducerKindAll {
+		return "", true, nil
+	}
+	kind := pkg.ProducerKind(raw)
+	if err := kind.Validate(ctx); err != nil {
+		return "", false, errors.Wrap(ctx, err, "validate producer_kind failed")
+	}
+	return kind, false, nil
+}
+
+// filterByProducerKind splits the rendered rows into the ones the board shows
+// and the count it is hiding.
+//
+// ⚠️ It runs over the rows the store returned rather than being pushed into the
+// store query: the hidden count has to describe the same population the page
+// renders, and a second read would let the two disagree. boardHideParam is a
+// rendering input for exactly the same reason.
+//
+// The rows themselves are returned untouched when the filter is off, so the
+// all-kinds view allocates nothing and cannot reorder what the store gave.
+func filterByProducerKind(
+	rows []attentionPageRow,
+	kind pkg.ProducerKind,
+	allKinds bool,
+) ([]attentionPageRow, int) {
+	if allKinds {
+		return rows, 0
+	}
+	shown := make([]attentionPageRow, 0, len(rows))
+	hidden := 0
+	for _, row := range rows {
+		if row.Item.ProducerKind == kind {
+			shown = append(shown, row)
+			continue
+		}
+		hidden++
+	}
+	return shown, hidden
+}
 
 // deliveryStatusOf reads one card's derived delivery status for its row, and
 // answers the zero value when the read fails.
@@ -1739,6 +1871,16 @@ func NewAttentionPageHandler(store pkg.AttentionStore,
 			func(ctx context.Context, resp http.ResponseWriter, req *http.Request) error {
 				// ⚠️ Per request, before the store read: a failed render still counts.
 				metrics.BoardPageRequestsTotalCounterInc()
+				// Parsed before the store read: a rejected parameter must cost a
+				// 400, not a full board read that is then thrown away.
+				producerKind, allKinds, err := boardProducerKindOf(ctx, req)
+				if err != nil {
+					return libhttp.WrapWithCode(
+						err,
+						libhttp.ErrorCodeValidation,
+						http.StatusBadRequest,
+					)
+				}
 				// ReadBoard, not Read: the board renders the answered items as
 				// dimmed records as well as the open ones. Read stays as it is
 				// for the JSON read API, whose consumers act on what they are
@@ -1789,12 +1931,16 @@ func NewAttentionPageHandler(store pkg.AttentionStore,
 				// filter off, and absence (or any unrecognised value) leaves it
 				// on.
 				hideAnswered := req.URL.Query().Get(boardHideParam) != boardHideNone
+				shown, hiddenCount := filterByProducerKind(rows, producerKind, allKinds)
 				if err := page.Execute(
 					&body,
 					attentionPageData{
-						Items:         rows,
+						Items:         shown,
 						Speak:         speakEnabled,
 						HideAnswered:  hideAnswered,
+						AllKinds:      allKinds,
+						KindHref:      boardProducerKindHref(req.URL, allKinds),
+						HiddenCount:   hiddenCount,
 						BuildIdentity: buildIdentity,
 					},
 				); err != nil {

@@ -101,7 +101,7 @@ var _ = Describe("the card's navigation line on the served page", func() {
 
 	// get renders the page and returns the recorder.
 	get := func() *httptest.ResponseRecorder {
-		req := httptest.NewRequest("GET", "/", nil)
+		req := httptest.NewRequest("GET", "/?producer_kind=all", nil)
 		resp := httptest.NewRecorder()
 		httpHandler.ServeHTTP(resp, req)
 		return resp

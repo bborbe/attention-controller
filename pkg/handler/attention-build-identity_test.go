@@ -74,7 +74,7 @@ var _ = Describe("Attention page build identity footer", func() {
 			identity,
 			boardmetrics.NewMetrics(prometheus.NewRegistry()),
 		)
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req := httptest.NewRequest(http.MethodGet, "/?producer_kind=all", nil)
 		resp := httptest.NewRecorder()
 		httpHandler.ServeHTTP(resp, req)
 		Expect(resp.Code).To(Equal(http.StatusOK))
