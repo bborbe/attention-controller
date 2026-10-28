@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- feat: Add `GET /api/1.0/attention/misroutes?week=YYYYWww`, the weekly per-producer misroute count the item schema names as a flag's reader — one row per (producer, reason) with its count, the window's start and end dates, and an empty row list for a quiet week. Grouping is on the producer id and the reason with surrounding whitespace trimmed, so a repeated pair reads as a count above one rather than as separate rows, and a card flagged outside the requested week is absent.
+
 ## v0.63.0
 
 - feat: Let the operator flag an attention card as misrouted with a required reason, recording `flag_reason` and a store-stamped `flagged_at` on the item while leaving it `open` and answerable; a flagged card leaves the board's default view and stays reachable behind the new "Hide flagged" switch or `?flags=none`, and carries its own Unflag control so the flag is reversible from the card it was written on.
