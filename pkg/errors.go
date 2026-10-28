@@ -141,6 +141,15 @@ var (
 	// anything: a flag without a reason is indistinguishable from a grumble and
 	// cannot be counted, so the record is left exactly as it was.
 	ErrFlagReasonRequired = stderrors.New("flag reason required")
+
+	// ErrMisrouteWeekInvalid is returned when the weekly misroute count is asked
+	// for a window that is not an ISO-8601 week in the `YYYYWww` form.
+	//
+	// ⚠️ It exists so a malformed week is a 400 rather than an empty count. A
+	// count of zero is a real answer — a week nobody flagged in — so a fallback
+	// on an unparseable value would make a caller's typo indistinguishable from
+	// a quiet week, which is the one reading a weekly count must never confuse.
+	ErrMisrouteWeekInvalid = stderrors.New("misroute week invalid")
 )
 
 // isNotFound reports whether a libkv read failed because the thing asked for

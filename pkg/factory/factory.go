@@ -111,6 +111,12 @@ func CreateAttentionHistoryHandler(store pkg.AttentionStore) http.Handler {
 	return handler.NewAttentionHistoryHandler(store)
 }
 
+// CreateAttentionMisroutesHandler creates the handler that answers the weekly
+// per-producer misroute count — the reader the item schema names for a flag.
+func CreateAttentionMisroutesHandler(store pkg.AttentionStore) http.Handler {
+	return handler.NewAttentionMisroutesHandler(store)
+}
+
 // CreateAttentionGetHandler creates the handler that returns a single item by
 // id, whatever its state.
 func CreateAttentionGetHandler(store pkg.AttentionStore) http.Handler {

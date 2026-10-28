@@ -955,6 +955,13 @@ func registerAttentionAPIRoutes(
 	router.Path("/api/1.0/attention/history").
 		Methods(http.MethodGet).
 		Handler(factory.CreateAttentionHistoryHandler(store))
+	// The weekly per-producer misroute count — the reader the item schema names
+	// for a flag. Registered before /{itemID} for the same reason "history" is:
+	// after it, "misroutes" would resolve as an item whose id is literally
+	// `misroutes`, and the endpoint would 404 while looking correctly wired.
+	router.Path("/api/1.0/attention/misroutes").
+		Methods(http.MethodGet).
+		Handler(factory.CreateAttentionMisroutesHandler(store))
 	router.Path("/api/1.0/attention/{itemID}/answer").
 		Methods(http.MethodPost).
 		Handler(factory.CreateAttentionAnswerHandler(store))
