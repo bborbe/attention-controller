@@ -1,8 +1,13 @@
 ---
-status: approved
+status: completed
 spec: [014-flag-misrouted-cards]
+summary: Added the flag round-trip integration spec over the real store, handlers and router, plus the `## Unreleased` changelog entry.
+execution_id: attention-controller-flag-exec-052-flag-integration-changelog
+dark-factory-version: v0.198.7
 created: "2026-10-28T13:53:32Z"
 queued: "2026-10-28T14:15:11Z"
+started: "2026-10-28T14:43:47Z"
+completed: "2026-10-28T14:48:37Z"
 branch: dark-factory/flag-misrouted-cards
 ---
 
