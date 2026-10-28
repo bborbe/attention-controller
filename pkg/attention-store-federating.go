@@ -192,6 +192,23 @@ func (f *federatingAttentionStore) Escalate(
 	return f.local.Escalate(ctx, itemID, escalatedBy)
 }
 
+// Flag delegates to the local store. ⚠️ Peer proxying lands in the next
+// prompt, together with the remote client's own route; until then a
+// peer-owned item is absent locally and this call answers ErrItemNotFound —
+// a loud 404, never a flag written to the wrong store.
+func (f *federatingAttentionStore) Flag(
+	ctx context.Context,
+	itemID ItemID,
+	reason string,
+) (*Item, error) {
+	return f.local.Flag(ctx, itemID, reason)
+}
+
+// Unflag delegates to the local store, on the same reasoning as Flag.
+func (f *federatingAttentionStore) Unflag(ctx context.Context, itemID ItemID) (*Item, error) {
+	return f.local.Unflag(ctx, itemID)
+}
+
 // Close proxies to the peer when the peer owns the item, and applies locally
 // otherwise.
 func (f *federatingAttentionStore) Close(

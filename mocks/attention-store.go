@@ -75,6 +75,21 @@ type AttentionStore struct {
 		result1 *pkg.Item
 		result2 error
 	}
+	FlagStub        func(context.Context, pkg.ItemID, string) (*pkg.Item, error)
+	flagMutex       sync.RWMutex
+	flagArgsForCall []struct {
+		arg1 context.Context
+		arg2 pkg.ItemID
+		arg3 string
+	}
+	flagReturns struct {
+		result1 *pkg.Item
+		result2 error
+	}
+	flagReturnsOnCall map[int]struct {
+		result1 *pkg.Item
+		result2 error
+	}
 	GetStub        func(context.Context, pkg.ItemID) (*pkg.Item, error)
 	getMutex       sync.RWMutex
 	getArgsForCall []struct {
@@ -172,6 +187,20 @@ type AttentionStore struct {
 	}
 	sweepAnsweredReturnsOnCall map[int]struct {
 		result1 int
+		result2 error
+	}
+	UnflagStub        func(context.Context, pkg.ItemID) (*pkg.Item, error)
+	unflagMutex       sync.RWMutex
+	unflagArgsForCall []struct {
+		arg1 context.Context
+		arg2 pkg.ItemID
+	}
+	unflagReturns struct {
+		result1 *pkg.Item
+		result2 error
+	}
+	unflagReturnsOnCall map[int]struct {
+		result1 *pkg.Item
 		result2 error
 	}
 	invocations      map[string][][]interface{}
@@ -442,6 +471,72 @@ func (fake *AttentionStore) EscalateReturnsOnCall(i int, result1 *pkg.Item, resu
 		})
 	}
 	fake.escalateReturnsOnCall[i] = struct {
+		result1 *pkg.Item
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *AttentionStore) Flag(arg1 context.Context, arg2 pkg.ItemID, arg3 string) (*pkg.Item, error) {
+	fake.flagMutex.Lock()
+	ret, specificReturn := fake.flagReturnsOnCall[len(fake.flagArgsForCall)]
+	fake.flagArgsForCall = append(fake.flagArgsForCall, struct {
+		arg1 context.Context
+		arg2 pkg.ItemID
+		arg3 string
+	}{arg1, arg2, arg3})
+	stub := fake.FlagStub
+	fakeReturns := fake.flagReturns
+	fake.recordInvocation("Flag", []interface{}{arg1, arg2, arg3})
+	fake.flagMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2, arg3)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *AttentionStore) FlagCallCount() int {
+	fake.flagMutex.RLock()
+	defer fake.flagMutex.RUnlock()
+	return len(fake.flagArgsForCall)
+}
+
+func (fake *AttentionStore) FlagCalls(stub func(context.Context, pkg.ItemID, string) (*pkg.Item, error)) {
+	fake.flagMutex.Lock()
+	defer fake.flagMutex.Unlock()
+	fake.FlagStub = stub
+}
+
+func (fake *AttentionStore) FlagArgsForCall(i int) (context.Context, pkg.ItemID, string) {
+	fake.flagMutex.RLock()
+	defer fake.flagMutex.RUnlock()
+	argsForCall := fake.flagArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3
+}
+
+func (fake *AttentionStore) FlagReturns(result1 *pkg.Item, result2 error) {
+	fake.flagMutex.Lock()
+	defer fake.flagMutex.Unlock()
+	fake.FlagStub = nil
+	fake.flagReturns = struct {
+		result1 *pkg.Item
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *AttentionStore) FlagReturnsOnCall(i int, result1 *pkg.Item, result2 error) {
+	fake.flagMutex.Lock()
+	defer fake.flagMutex.Unlock()
+	fake.FlagStub = nil
+	if fake.flagReturnsOnCall == nil {
+		fake.flagReturnsOnCall = make(map[int]struct {
+			result1 *pkg.Item
+			result2 error
+		})
+	}
+	fake.flagReturnsOnCall[i] = struct {
 		result1 *pkg.Item
 		result2 error
 	}{result1, result2}
@@ -899,6 +994,71 @@ func (fake *AttentionStore) SweepAnsweredReturnsOnCall(i int, result1 int, resul
 	}
 	fake.sweepAnsweredReturnsOnCall[i] = struct {
 		result1 int
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *AttentionStore) Unflag(arg1 context.Context, arg2 pkg.ItemID) (*pkg.Item, error) {
+	fake.unflagMutex.Lock()
+	ret, specificReturn := fake.unflagReturnsOnCall[len(fake.unflagArgsForCall)]
+	fake.unflagArgsForCall = append(fake.unflagArgsForCall, struct {
+		arg1 context.Context
+		arg2 pkg.ItemID
+	}{arg1, arg2})
+	stub := fake.UnflagStub
+	fakeReturns := fake.unflagReturns
+	fake.recordInvocation("Unflag", []interface{}{arg1, arg2})
+	fake.unflagMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *AttentionStore) UnflagCallCount() int {
+	fake.unflagMutex.RLock()
+	defer fake.unflagMutex.RUnlock()
+	return len(fake.unflagArgsForCall)
+}
+
+func (fake *AttentionStore) UnflagCalls(stub func(context.Context, pkg.ItemID) (*pkg.Item, error)) {
+	fake.unflagMutex.Lock()
+	defer fake.unflagMutex.Unlock()
+	fake.UnflagStub = stub
+}
+
+func (fake *AttentionStore) UnflagArgsForCall(i int) (context.Context, pkg.ItemID) {
+	fake.unflagMutex.RLock()
+	defer fake.unflagMutex.RUnlock()
+	argsForCall := fake.unflagArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2
+}
+
+func (fake *AttentionStore) UnflagReturns(result1 *pkg.Item, result2 error) {
+	fake.unflagMutex.Lock()
+	defer fake.unflagMutex.Unlock()
+	fake.UnflagStub = nil
+	fake.unflagReturns = struct {
+		result1 *pkg.Item
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *AttentionStore) UnflagReturnsOnCall(i int, result1 *pkg.Item, result2 error) {
+	fake.unflagMutex.Lock()
+	defer fake.unflagMutex.Unlock()
+	fake.UnflagStub = nil
+	if fake.unflagReturnsOnCall == nil {
+		fake.unflagReturnsOnCall = make(map[int]struct {
+			result1 *pkg.Item
+			result2 error
+		})
+	}
+	fake.unflagReturnsOnCall[i] = struct {
+		result1 *pkg.Item
 		result2 error
 	}{result1, result2}
 }

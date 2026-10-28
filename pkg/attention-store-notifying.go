@@ -115,6 +115,30 @@ func (n *notifyingAttentionStore) Escalate(
 	return item, nil
 }
 
+// Flag delegates and signals on success.
+func (n *notifyingAttentionStore) Flag(
+	ctx context.Context,
+	itemID ItemID,
+	reason string,
+) (*Item, error) {
+	item, err := n.store.Flag(ctx, itemID, reason)
+	if err != nil {
+		return nil, err
+	}
+	n.notifier.Notify()
+	return item, nil
+}
+
+// Unflag delegates and signals on success.
+func (n *notifyingAttentionStore) Unflag(ctx context.Context, itemID ItemID) (*Item, error) {
+	item, err := n.store.Unflag(ctx, itemID)
+	if err != nil {
+		return nil, err
+	}
+	n.notifier.Notify()
+	return item, nil
+}
+
 // Close delegates and signals on success.
 func (n *notifyingAttentionStore) Close(
 	ctx context.Context,

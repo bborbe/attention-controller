@@ -198,6 +198,19 @@ type Item struct {
 	// field had no reader; the latency measure is one. See the schema page's
 	// silence 13, resolved 2026-09-25.
 	EscalatedAt *libtime.DateTime `json:"escalated_at,omitempty"`
+	// FlagReason is why the operator flagged this card as misrouted — free text
+	// supplied by the operator's flag call and written by the store. A flag is
+	// not an answer: the item stays open with AnsweredAt absent and remains
+	// answerable afterwards, so the routing defect can be counted instead of
+	// disappearing when the card is answered. See docs/attention-item-flagging.md.
+	FlagReason string `json:"flag_reason,omitempty"`
+	// FlaggedAt is when the item was flagged as misrouted, stamped by the store
+	// from its own clock inside the same compare-and-set that writes FlagReason —
+	// never supplied by the caller, so the two are always present together.
+	// Present exactly when FlagReason is present, and shares its lifetime:
+	// unflagging clears both. Distinct from AnsweredAt, which records that a
+	// question was answered — a flag records that it should not have been asked.
+	FlaggedAt *libtime.DateTime `json:"flagged_at,omitempty"`
 	// ResolvedBy is which session resolved this item — a session id, never a
 	// pane id and never a boolean, supplied by the caller of the answer path
 	// exactly as AnsweredBy is. It is distinct from AnsweredBy, which names the

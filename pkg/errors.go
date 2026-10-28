@@ -135,6 +135,12 @@ var (
 	// the wrong thing — and could not tell "this transition does not exist" from
 	// "this close is not an acceptable way to end a gate".
 	ErrPermissionCloseWithoutDecision = stderrors.New("permission close without decision")
+
+	// ErrFlagReasonRequired is returned when a flag carries no usable reason —
+	// empty, absent or whitespace-only. The store refuses before writing
+	// anything: a flag without a reason is indistinguishable from a grumble and
+	// cannot be counted, so the record is left exactly as it was.
+	ErrFlagReasonRequired = stderrors.New("flag reason required")
 )
 
 // isNotFound reports whether a libkv read failed because the thing asked for
