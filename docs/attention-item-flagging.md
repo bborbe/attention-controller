@@ -9,7 +9,7 @@ vault page wins and the disagreement is a finding to report — not a choice to 
 
 | Field | Req. | Writer | Purpose |
 |---|---|---|---|
-| `flag_reason` | optional | store | Why the operator flagged this card as misrouted — free text, and the flag is rejected with HTTP 400 when it is empty or absent. A flag is **not** an answer: the item stays `open` with `answered_at` absent, and remains answerable afterwards. It records that the question should not have been asked, so the routing defect can be counted per producer instead of disappearing when the card is answered. Rendered as a flag control separate from approve / deny / hide. |
+| `flag_reason` | optional | store | Why the operator flagged this card as misrouted — free text, and the flag is rejected with HTTP 400 when it is empty, absent or whitespace-only. A flag is **not** an answer: the item stays `open` with `answered_at` absent, and remains answerable afterwards. It records that the question should not have been asked, so the routing defect can be counted per producer instead of disappearing when the card is answered. Rendered as a flag control separate from approve / deny / hide. |
 | `flagged_at` | optional | store | When the item was flagged as misrouted — stamped from the store's own clock inside the same compare-and-set that writes `flag_reason`, never supplied by the caller. Present exactly when `flag_reason` is present, and shares its lifetime: unflagging clears both. Its reader is the weekly per-producer misroute count. Distinct from `answered_at`, which records that a question was answered — a flag records that the question should not have been asked. |
 
 ## Flagging
@@ -22,7 +22,7 @@ answer and not a transition**: `flag_reason` and `flagged_at` are written onto a
 |---|---|
 | Is it a transition? | **No.** The lifecycle's transition table gains no row. A flag is a field write on an `open` item. |
 | Does it answer the gate? | **No.** `state` stays `open` and `answered_at` stays absent, so a flagged `permission` gate is still answerable and the flag releases nothing. |
-| Is a reason required? | **Yes.** An empty or absent reason is rejected with HTTP 400 and the record is left unchanged — a flag without a reason is indistinguishable from a grumble and cannot be counted. |
+| Is a reason required? | **Yes.** An empty, absent or whitespace-only reason is rejected with HTTP 400 and the record is left unchanged — a flag without a reason is indistinguishable from a grumble and cannot be counted. |
 | Who writes it? | The **store**, from the operator's flag call. `flagged_at` comes from the store's own clock inside the same compare-and-set that writes `flag_reason`, exactly as `escalated_at` pairs with `escalated_by`. |
 | Does it hide the card? | It leaves the board's **default view**, stays reachable with the `hide` filter off (`?hide=none`), and sits behind an explicit flag toggle. Hiding is a render decision; the record is untouched. |
 | Can it be undone? | **Yes.** Unflagging clears both fields and the card returns to the default view. Unlike `closed`, a flag is not terminal. |
