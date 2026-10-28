@@ -182,7 +182,14 @@ func CountMisroutes(items Items, week MisrouteWeek, loc *stdtime.Location) Misro
 	counts := make(map[misrouteBucketKey]int, len(items))
 	kinds := make(map[misrouteBucketKey]ProducerKind, len(items))
 	for _, item := range items {
-		if !flaggedInside(item, start, end) {
+		// An unset FlaggedAt means the item carries no flag at all: the schema
+		// writes FlagReason and FlaggedAt together or not at all, so a nil
+		// timestamp is the absence of a flag rather than a flag of unknown date.
+		if item.FlaggedAt == nil {
+			continue
+		}
+		flaggedAt := item.FlaggedAt.Time()
+		if flaggedAt.Before(start) || !flaggedAt.Before(end) {
 			continue
 		}
 		key := misrouteBucketKey{
@@ -218,17 +225,4 @@ func CountMisroutes(items Items, week MisrouteWeek, loc *stdtime.Location) Misro
 		End:   libtime.ToDate(end.Add(-stdtime.Nanosecond)),
 		Rows:  rows,
 	}
-}
-
-// flaggedInside reports whether an item was flagged inside [start, end).
-//
-// An unset FlaggedAt means the item carries no flag at all: the schema writes
-// FlagReason and FlaggedAt together or not at all, so a nil timestamp is the
-// absence of a flag rather than a flag of unknown date.
-func flaggedInside(item Item, start stdtime.Time, end stdtime.Time) bool {
-	if item.FlaggedAt == nil {
-		return false
-	}
-	flaggedAt := item.FlaggedAt.Time()
-	return !flaggedAt.Before(start) && flaggedAt.Before(end)
 }
