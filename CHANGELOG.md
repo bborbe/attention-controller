@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.64.0
 
 - feat: Add `GET /api/1.0/attention/misroutes?week=YYYYWww`, the weekly per-producer misroute count the item schema names as a flag's reader — one row per (producer, reason) with its count, the window's start and end dates, and an empty row list for a quiet week. Grouping is on the producer id and the reason with surrounding whitespace trimmed, so a repeated pair reads as a count above one rather than as separate rows, and a card flagged outside the requested week is absent.
 
