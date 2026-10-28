@@ -339,12 +339,12 @@ var _ = Describe("AttentionPageHandler", func() {
 			// Scoped per row rather than page-wide: a page-wide grep would pass on a
 			// page where the wrong item carried the controls.
 			Expect(rowOf(body, message.ItemID)).To(ContainSubstring("<form"))
-			Expect(rowOf(body, permission.ItemID)).NotTo(ContainSubstring("<form"))
+			Expect(rowOf(body, permission.ItemID)).NotTo(ContainSubstring("<form class=\"answer\""))
 			// ⚠️ AMENDED 2026-09-27: a permission row renders the jump corner
 			// (disabled when it has no target) and, from this change, the corner X.
 			// Neither is an ANSWER control, which is the property this spec exists
 			// for — so the assertions below are on forms and inputs, not buttons.
-			Expect(rowOf(body, permission.ItemID)).NotTo(ContainSubstring("<input"))
+			Expect(rowOf(body, permission.ItemID)).NotTo(ContainSubstring("data-option"))
 			Expect(rowOf(body, permission.ItemID)).To(ContainSubstring(`class="jump-corner"`))
 			// ⚠️ AMENDED 2026-09-29 (operator decision): a permission row carries
 			// exactly the two verdict buttons — still no form and no free input.
@@ -1324,10 +1324,10 @@ var _ = Describe("AttentionPageHandler", func() {
 			// negative case is asserted beside the positive one rather than only
 			// page-wide.
 			permissionBlock := rowOf(body, permission.ItemID)
-			Expect(permissionBlock).NotTo(ContainSubstring("<form"))
+			Expect(permissionBlock).NotTo(ContainSubstring("<form class=\"answer\""))
 			// ⚠️ AMENDED 2026-09-27: the jump corner is not an answer control and
 			// now renders here too. See the board-page spec for the reasoning.
-			Expect(permissionBlock).NotTo(ContainSubstring("<input"))
+			Expect(permissionBlock).NotTo(ContainSubstring("data-option"))
 			Expect(permissionBlock).To(ContainSubstring(`class="jump-corner"`))
 		})
 
@@ -1409,7 +1409,7 @@ var _ = Describe("AttentionPageHandler", func() {
 		// It carries no answer form, and no Other field: an ack item asks
 		// nothing, so the message card's controls would describe a choice it
 		// does not offer.
-		Expect(ackBlock).NotTo(ContainSubstring("<form"))
+		Expect(ackBlock).NotTo(ContainSubstring("<form class=\"answer\""))
 		Expect(ackBlock).NotTo(ContainSubstring(`class="other"`))
 
 		// The negative control: the control is derived from the mechanism, so a
@@ -1446,12 +1446,12 @@ var _ = Describe("AttentionPageHandler", func() {
 		// this: it CLEARS the card without answering, so it is not asserted
 		// against here. See the inverted spec above.
 		Expect(block).NotTo(ContainSubstring("data-ack"))
-		Expect(block).NotTo(ContainSubstring("<form"))
+		Expect(block).NotTo(ContainSubstring("<form class=\"answer\""))
 		// ⚠️ AMENDED 2026-09-27: the jump corner renders on a permission row too.
 		// The ack branch must still not reach it, which is what the line above
 		// asserts and is the property this spec is for.
 		Expect(block).To(ContainSubstring(`class="jump-corner"`))
-		Expect(block).NotTo(ContainSubstring("<input"))
+		Expect(block).NotTo(ContainSubstring("data-option"))
 	})
 
 	// The card's control set is derived from the item's answer mechanism in one
@@ -1528,7 +1528,7 @@ var _ = Describe("AttentionPageHandler", func() {
 				if expected.message {
 					Expect(row).To(ContainSubstring("<form"))
 				} else {
-					Expect(row).NotTo(ContainSubstring("<form"))
+					Expect(row).NotTo(ContainSubstring("<form class=\"answer\""))
 				}
 				if expected.ack {
 					Expect(row).To(ContainSubstring("data-ack"))
@@ -1594,7 +1594,7 @@ var _ = Describe("AttentionPageHandler", func() {
 			// The ack card carries no form, so the X reaches the close path by
 			// the named function both controls share rather than by dispatching
 			// a submit that does not exist here.
-			Expect(block).NotTo(ContainSubstring("<form"))
+			Expect(block).NotTo(ContainSubstring("<form class=\"answer\""))
 			// ⚠️ RENAMED 2026-09-27: the shared function is closeCard, not
 			// closeAck — it serves a permission card's X as well as an ack
 			// card's Acknowledge, so the ack-flavoured name misdescribed one of
@@ -1650,7 +1650,7 @@ var _ = Describe("AttentionPageHandler", func() {
 			// and equivalent, but `<form` is one of the three ANSWER-control
 			// markers this change declared as the set to assert on. Using a
 			// fourth spelling here would quietly widen that set.
-			Expect(block).NotTo(ContainSubstring("<form"))
+			Expect(block).NotTo(ContainSubstring("<form class=\"answer\""))
 			// The jump corner is navigation rather than an answer, so it
 			// renders here too — disabled when the row has no target.
 			Expect(block).To(ContainSubstring(`class="jump-corner"`))

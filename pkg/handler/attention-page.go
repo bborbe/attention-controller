@@ -139,7 +139,7 @@ const attentionPageTemplate = `<!DOCTYPE html>
      item — the same reason the switch sits here. It ships hidden and is shown
      only by the stream's own onerror, so a healthy board, a quiet board and an
      empty board all render exactly what they rendered before. */}}
-<div class="board-controls"><button type="button" class="board-filter" data-board-filter role="switch" aria-checked="{{if .HideAnswered}}true{{else}}false{{end}}"><svg class="switch" viewBox="0 0 44 24" aria-hidden="true" focusable="false"><rect class="switch-track" x="1" y="1" width="42" height="22" rx="11"/><circle class="switch-knob" cx="12" cy="12" r="8"/></svg><span class="switch-label">Hide answered</span></button><span class="stream-stale" data-stream-stale hidden>Not tracking the store - showing the last known state.</span></div>
+<div class="board-controls"><button type="button" class="board-filter" data-board-filter role="switch" aria-checked="{{if .HideAnswered}}true{{else}}false{{end}}"><svg class="switch" viewBox="0 0 44 24" aria-hidden="true" focusable="false"><rect class="switch-track" x="1" y="1" width="42" height="22" rx="11"/><circle class="switch-knob" cx="12" cy="12" r="8"/></svg><span class="switch-label">Hide answered</span></button><button type="button" class="board-filter flag-filter" data-flag-filter role="switch" aria-checked="{{if .FlagFilter}}true{{else}}false{{end}}"><svg class="switch" viewBox="0 0 44 24" aria-hidden="true" focusable="false"><rect class="switch-track" x="1" y="1" width="42" height="22" rx="11"/><circle class="switch-knob" cx="12" cy="12" r="8"/></svg><span class="switch-label">Hide flagged</span></button><span class="stream-stale" data-stream-stale hidden>Not tracking the store - showing the last known state.</span></div>
 {{if .Items}}<ul class="items">
 {{range .Items}}{{template "attention-row" .}}{{end}}</ul>
 {{else}}<p class="empty">Nothing needs attention.</p>
@@ -319,6 +319,40 @@ document.addEventListener('submit', function (event) {
   }
   if (multi) { request.answers = entries; } else { request.answer = singleAnswer(entries[0]); }
   sendAnswer(form, request);
+});
+/* The flag control is its OWN form with its OWN listener. ⚠️ Load bearing: the
+   answer listener above resolves form.answer and would preventDefault, find no
+   answer entries, and dispatch a 'send' answer — answering the card instead of
+   flagging it. A flag form is not an answer form, and this listener is the only
+   one that handles it. It is a top-level listener rather than part of the
+   filter IIFE, which returns early when EventSource is undefined; the flag form
+   is plain DOM work. The row's new state arrives over the SSE stream exactly as
+   an answer's does, so this makes no request to /answer. */
+document.addEventListener('submit', function (event) {
+  var form = event.target && event.target.closest ? event.target.closest('form[data-flag-control]') : null;
+  if (!form) { return; }
+  event.preventDefault();
+  var row = form.closest('li.item');
+  if (!row) { return; }
+  var field = form.querySelector('input[name=reason]');
+  var reason = field ? field.value.trim() : '';
+  if (!reason) {
+    showNote(form, 'Say why this card should not have reached you.', true);
+    return;
+  }
+  var itemID = row.getAttribute('data-item-id');
+  fetch('/api/1.0/attention/' + encodeURIComponent(itemID) + '/flag', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason: reason })
+  }).then(function (response) {
+    if (!response.ok) { throw new Error('flag failed: ' + response.status); }
+    return response.json();
+  }).then(function () {
+    if (field) { field.value = ''; }
+  }).catch(function (err) {
+    showNote(form, 'Could not flag this card: ' + err.message, true);
+  });
 });
 /* singleAnswer maps one collected entry onto the item-level answer shape.
    It carries values when the question took several picks: a single-question item
@@ -958,10 +992,11 @@ function replayFailure(row) {
    — with the stream blocked, a reload would make the row change anyway, and the
    control could not then tell the channel from a coincidence. */
 (function () {
-  /* The board's own view filter. It hides the dimmed record cards — the
-     answered items the board keeps as evidence — so the page answers "what is
-     left" rather than showing records beside open prompts. Two properties are
-     load bearing and neither is cosmetic.
+  /* The board's own view filter. It hides two kinds of row — the dimmed record
+     cards (answered items the board keeps as evidence) and flagged cards — so
+     the page answers "what is left" rather than showing records or parked
+     misroutes beside open prompts. Two properties are load bearing and neither
+     is cosmetic.
 
      A filtered row is REMOVED, not hidden. A display:none rule leaves the node
      in the document, so a selector, a script or the operator's own assistive
@@ -970,32 +1005,39 @@ function replayFailure(row) {
      And the filter runs on the stream path too, not only at first paint. The
      channel sends a rendered row and this page swaps it in, so a filter that
      ran once at load would leak every row that arrived afterwards — including
-     a card that becomes answered while the board is open, which is exactly
-     the row the filter exists to hide. */
+     a card that becomes answered or flagged while the board is open, which is
+     exactly the row a filter exists to hide. */
   var button = document.querySelector('button[data-board-filter]');
+  var flagButton = document.querySelector('button[data-flag-filter]');
   /* The board's stream health, the other control in this row. It ships hidden
      and only the stream's own handlers move it, so nothing about a board whose
      stream is healthy changes. */
   var stale = document.querySelector('[data-stream-stale]');
-  /* Mirrors boardHideParam / boardHideAnswered / boardHideNone in Go — the one
-     thing in this file that exists in two languages. The server renders the
-     switch's initial position from the same parameter; this reads it to apply
-     the filter and writes it back on every change, so the URL and the page
-     cannot disagree about what is being shown. */
+  /* Mirrors boardHideParam / boardFlagsParam and their values in Go — the one
+     thing in this file that exists in two languages. */
   var HIDE_PARAM = 'hide';
   var HIDE_ANSWERED = 'answered';
   var HIDE_NONE = 'none';
-  /* The default is ON: only an explicit hide=none turns the filter off, and
+  var FLAGS_PARAM = 'flags';
+  var FLAGS_FLAGGED = 'flagged';
+  var FLAGS_NONE = 'none';
+  /* Both defaults are ON: only an explicit off-spelling turns a filter off, and
      absence (or any unrecognised value) leaves it on. Read as "not none"
      rather than "is answered" so an unrecognised value falls back to the
-     default instead of silently disabling the filter. */
-  var on = new URLSearchParams(window.location.search).get(HIDE_PARAM) !== HIDE_NONE;
-  /* The rows the filter is hiding, in board order. Each entry carries the id
+     default instead of silently disabling the filter. The flag filter can only
+     be on while the answered filter is on, because hide=none is the union view
+     that disables both. */
+  var params = new URLSearchParams(window.location.search);
+  var hideOn = params.get(HIDE_PARAM) !== HIDE_NONE;
+  var flagsOn = hideOn && params.get(FLAGS_PARAM) !== FLAGS_NONE;
+  /* The rows the filters are hiding, in board order. Each entry carries the id
      of the row that followed it, so a restore returns it to its own place
      rather than to the foot of the board. It holds rendered HTML rather than
-     a detached node: a dimmed row carries no form and no typed state, so a
-     round trip through markup loses nothing, and the markup is the server's
-     own renderer output either way. */
+     a detached node: a parked row is either a dimmed record or a flagged open
+     card whose typed state the operator is not looking at, and the markup is
+     the server's own renderer output either way. Each entry also carries the
+     two marks the predicate reads, so a row can be re-evaluated without
+     reparsing its HTML. */
   var parked = [];
 
   function findRow(itemID) {
@@ -1026,69 +1068,119 @@ function replayFailure(row) {
     while (next && !next.classList.contains('item')) { next = next.nextElementSibling; }
     return next ? next.getAttribute('data-item-id') : null;
   }
+  function isAnswered(row) { return row.classList.contains('dimmed'); }
+  function isFlagged(row) { return row.getAttribute('data-flagged') === 'true'; }
+  /* The contract's predicate, verbatim:
+       visible(row) = (hideOff || !row.answered) && (flagsOff || !row.flagged)
+       hideOff      = (hide == "none")
+       flagsOff     = (flags == "none") || hideOff */
+  function visible(answered, flagged) {
+    var hideOff = !hideOn;
+    var flagsOff = !flagsOn || hideOff;
+    return (hideOff || !answered) && (flagsOff || !flagged);
+  }
   function park(row) {
     var id = row.getAttribute('data-item-id');
     /* Re-parking replaces rather than appends: a row that streams an update
        while hidden arrives here a second time, and two entries for one id
        would restore it twice. */
     parked = parked.filter(function (entry) { return entry.id !== id; });
-    parked.push({ id: id, html: row.outerHTML, next: nextRowID(row) });
+    parked.push({
+      id: id,
+      html: row.outerHTML,
+      next: nextRowID(row),
+      answered: isAnswered(row),
+      flagged: isFlagged(row)
+    });
     row.remove();
   }
-  function unpark() {
+  function unparkEntry(entry) {
     var list = ensureList();
     if (!list) { return; }
-    /* Restored back to front, so an entry whose anchor is itself still parked
-       is placed after that anchor rather than appended past it — parking a run
-       of adjacent dimmed rows records each one's anchor as the next, and a
-       forward walk would not find any of them yet. */
+    var anchor = entry.next ? findRow(entry.next) : null;
+    if (anchor) { anchor.insertAdjacentHTML('beforebegin', entry.html); return; }
+    list.insertAdjacentHTML('beforeend', entry.html);
+  }
+  /* Re-evaluated on EVERY change and PER ROW. Restoring is never a global
+     unpark: a row hidden by one filter stays hidden while the other is still
+     on, which is the flood flags=none exists to prevent. */
+  function applyFilter() {
+    var keep = [];
     for (var i = parked.length - 1; i >= 0; i--) {
       var entry = parked[i];
-      var anchor = entry.next ? findRow(entry.next) : null;
-      if (anchor) { anchor.insertAdjacentHTML('beforebegin', entry.html); continue; }
-      list.insertAdjacentHTML('beforeend', entry.html);
+      if (visible(entry.answered, entry.flagged)) { unparkEntry(entry); } else { keep.unshift(entry); }
     }
-    parked = [];
-  }
-  function applyFilter() {
-    if (!on) { unpark(); return; }
-    var rows = document.querySelectorAll('li.item.dimmed');
-    for (var i = 0; i < rows.length; i++) { park(rows[i]); }
+    parked = keep;
+    var rows = document.querySelectorAll('li.item');
+    for (var j = 0; j < rows.length; j++) {
+      if (!visible(isAnswered(rows[j]), isFlagged(rows[j]))) { park(rows[j]); }
+    }
     showEmptyStatement();
   }
   function forget(itemID) {
     parked = parked.filter(function (entry) { return entry.id !== itemID; });
   }
+  function syncFromURL(url) {
+    hideOn = url.searchParams.get(HIDE_PARAM) !== HIDE_NONE;
+    flagsOn = hideOn && url.searchParams.get(FLAGS_PARAM) !== FLAGS_NONE;
+  }
+  function renderSwitchState() {
+    if (button) { button.setAttribute('aria-checked', hideOn ? 'true' : 'false'); }
+    if (flagButton) { flagButton.setAttribute('aria-checked', flagsOn ? 'true' : 'false'); }
+  }
+  /* replaceState, not pushState. The filters are a view, and a view that
+     filled the Back stack would make Back mean "undo my filter" on some
+     presses and "leave the page" on others — and with no popstate handler a
+     pushState entry would also leave the URL and the page disagreeing after a
+     Back. This changes the URL without a navigation, which is what keeps the
+     no-reload property intact. */
   if (button) {
     button.addEventListener('click', function () {
-      on = !on;
-      button.setAttribute('aria-checked', on ? 'true' : 'false');
-      /* replaceState, not pushState. The filter is a view, and a view that
-         filled the Back stack would make Back mean "undo my filter" on some
-         presses and "leave the page" on others — and with no popstate handler
-         a pushState entry would also leave the URL and the page disagreeing
-         after a Back. This changes the URL without a navigation, which is what
-         keeps the no-reload property intact. */
       var url = new URL(window.location.href);
-      /* The URL carries the parameter only when the view departs from the
-         default, which is now the filtered view: turning the filter off writes
-         the off-spelling, and turning it back on returns the URL to the
-         parameter-free default. A deleted parameter can no longer mean "off",
-         so absence and HIDE_NONE must not be confused. */
-      if (on) {
+      if (url.searchParams.get(HIDE_PARAM) === HIDE_NONE) {
+        /* Turning the answered filter back on: absence is the default spelling. */
         url.searchParams.delete(HIDE_PARAM);
       } else {
+        /* hide=none is the union view — it disables both filters — so the flag
+           parameter has no meaning there and is dropped rather than left
+           describing a set the URL does not hide. */
         url.searchParams.set(HIDE_PARAM, HIDE_NONE);
+        url.searchParams.delete(FLAGS_PARAM);
       }
       window.history.replaceState(null, '', url);
+      syncFromURL(url);
+      renderSwitchState();
       applyFilter();
     });
   }
-  /* Applied at load as well as on click, so a URL that arrived carrying the
-     filter renders the filtered view instead of flashing the full one. The
-     script runs while the parser is still inside the body, so this lands before
-     the first paint rather than as a correction to it. */
-  if (on) { applyFilter(); }
+  if (flagButton) {
+    flagButton.addEventListener('click', function () {
+      var url = new URL(window.location.href);
+      var hideOff = url.searchParams.get(HIDE_PARAM) === HIDE_NONE;
+      var flagsOff = url.searchParams.get(FLAGS_PARAM) === FLAGS_NONE || hideOff;
+      if (flagsOff) {
+        /* Turning the flag filter ON. The union view and the flag filter cannot
+           both be active, so hide=none re-enables the answered filter. The
+           switch is never rendered disabled — a disabled control with no
+           explanation reads as broken. */
+        url.searchParams.set(HIDE_PARAM, HIDE_ANSWERED);
+        url.searchParams.set(FLAGS_PARAM, FLAGS_FLAGGED);
+      } else {
+        url.searchParams.set(FLAGS_PARAM, FLAGS_NONE);
+      }
+      window.history.replaceState(null, '', url);
+      syncFromURL(url);
+      renderSwitchState();
+      applyFilter();
+    });
+  }
+  /* Applied at load as well as on click, so a URL that arrived carrying either
+     filter renders the filtered view instead of flashing the full one, and so
+     a page that starts unfiltered still establishes the predicate for rows
+     that arrive later. The script runs while the parser is still inside the
+     body, so this lands before the first paint rather than as a correction to
+     it. */
+  applyFilter();
   function collapseIfEmpty() {
     var list = document.querySelector('ul.items');
     if (!list || list.querySelector('li.item')) { return; }
@@ -1153,6 +1245,18 @@ function replayFailure(row) {
          stays hidden because a parked row is answered, and an answered item
          never returns to open (§ Lifecycle), so its update is dimmed too. */
       parked[hidden].html = prepared;
+      /* The entry's own marks are re-derived from the prepared markup and the
+         filter re-run, so a parked card that is unflagged (or answered) while
+         the page is open returns to the board instead of staying parked at its
+         stale mark. */
+      var detached = document.createElement('div');
+      detached.innerHTML = prepared;
+      var node = detached.firstElementChild;
+      if (node) {
+        parked[hidden].answered = isAnswered(node);
+        parked[hidden].flagged = isFlagged(node);
+      }
+      applyFilter();
       return;
     }
     var row = findRow(itemID);
@@ -1270,7 +1374,7 @@ function replayFailure(row) {
      — and it must be the SAME markup, not a second renderer that would drift
      from this one. The dollar sign inside a sub-template is the value passed to
      it, which is why Speak is carried on the row and read as dot-Speak here. */}}
-{{define "attention-row"}}<li class="item risk-{{ .Risk }}{{if .Dimmed}} dimmed{{end}}" data-item-id="{{ .Item.ItemID }}" data-risk="{{ .Risk }}">
+{{define "attention-row"}}<li class="item risk-{{ .Risk }}{{if .Dimmed}} dimmed{{end}}" data-item-id="{{ .Item.ItemID }}" data-risk="{{ .Risk }}" data-flagged="{{if .Flagged}}true{{else}}false{{end}}">
 {{/* The corner X renders on every OPEN row, ungated by mechanism, from
      2026-09-27 — message, ack and permission alike — and is withheld from the
      dimmed record card by the (not .Dimmed) conjunct, added 2026-10-01. It was
@@ -1342,6 +1446,16 @@ function replayFailure(row) {
 </div>
 {{end}}<div class="actions"><button type="submit" name="kind" value="skip" class="dismiss">✕ Dismiss</button><button type="submit" name="kind" value="send" class="next">✓ Submit answer</button><button type="submit" name="kind" value="hidden" class="corner-hide" hidden>Hide</button></div>
 </form>
+{{end}}{{/* The flag control is its OWN form, never nested inside form.answer: nested
+     forms are invalid HTML and the browser drops the inner <form>, which would
+     leave the flag field and submit button owned by the answer form. It carries
+     no action and no method, so it cannot navigate the board away; the page's
+     delegated listener handles it. The class is "flag", never "answer", so
+     row.querySelector('form.answer') keeps resolving the answer form alone.
+     ⚠️ Withheld from the dimmed record card: a flag is a field write on an open
+     item and the endpoint answers 409 for an answered one, so a control here
+     would always fail. */}}{{if not .Dimmed}}<form class="flag" data-flag-control><input class="flag-reason-input" type="text" name="reason" placeholder="Why should this not have reached you?" aria-label="Reason this card was misrouted"><button type="submit" class="flag-submit">⚑ Flag as misrouted</button></form>
+{{end}}{{if .Flagged}}<div class="flag-reason-shown">flagged: {{ cardtext .Item.FlagReason }}</div>
 {{end}}{{/* The undeliverable marker renders on a card whose answer a recorded
      attempt says did NOT reach the asking session, and on no other status:
      "delivered" is the good case, "never_attempted" and "pre_trail_unknown" are
@@ -1458,6 +1572,11 @@ type attentionPageRow struct {
 	// Record is the answer the store recorded, rendered for the dimmed card by
 	// recordAnswer. Empty on every row that is not dimmed.
 	Record string
+	// Flagged reports whether this row carries a flag and is therefore parked by
+	// the flag filter's default position. The template reads it for the row's
+	// data-flagged mark and for the flag-reason line; the page's script reads the
+	// rendered mark, never this field.
+	Flagged bool
 	// DeliveryStatus is what the store's Delivery report says happened to this
 	// card's answer — `delivered`, `failed`, `never_attempted` or
 	// `pre_trail_unknown` — and is what the template reads to mark an answer
@@ -1594,6 +1713,12 @@ type attentionPageData struct {
 	// fresh load of the board shows what is left rather than mixing the dimmed
 	// answered records in with the cards that still need the operator.
 	HideAnswered bool
+	// FlagFilter is the flag filter's initial position, read from the request's
+	// `flags` parameter and composed with `hide` exactly as § Two filters
+	// defines: the flag filter can only be on when the answered filter is on,
+	// because `hide=none` is the union view. It is a rendering input, never a
+	// store input — the page still renders every row it was given.
+	FlagFilter bool
 	// BuildIdentity is what the running binary can say about the source it was
 	// built from, rendered in the page's footer.
 	//
@@ -1641,6 +1766,15 @@ const (
 	boardHideParam    = "hide"
 	boardHideAnswered = "answered"
 	boardHideNone     = "none"
+
+	// boardFlagsParam carries the flag filter's view state, on the same
+	// convention as boardHideParam: the value names the SET that is hidden,
+	// so `none` is the only value that turns it off. boardFlagsFlagged is the
+	// default spelling the script writes; it is declared here so the Go and
+	// script copies are greppable together.
+	boardFlagsParam   = "flags"
+	boardFlagsFlagged = "flagged"
+	boardFlagsNone    = "none"
 )
 
 // deliveryStatusOf reads one card's derived delivery status for its row, and
@@ -1788,13 +1922,16 @@ func NewAttentionPageHandler(store pkg.AttentionStore,
 				// The default is ON: only an explicit `?hide=none` turns the
 				// filter off, and absence (or any unrecognised value) leaves it
 				// on.
+				flagsParam := req.URL.Query().Get(boardFlagsParam)
 				hideAnswered := req.URL.Query().Get(boardHideParam) != boardHideNone
+				flagFilter := hideAnswered && flagsParam != boardFlagsNone
 				if err := page.Execute(
 					&body,
 					attentionPageData{
 						Items:         rows,
 						Speak:         speakEnabled,
 						HideAnswered:  hideAnswered,
+						FlagFilter:    flagFilter,
 						BuildIdentity: buildIdentity,
 					},
 				); err != nil {

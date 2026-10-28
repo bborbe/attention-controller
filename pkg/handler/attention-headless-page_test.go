@@ -451,8 +451,8 @@ var _ = Describe("the Allow / Deny pair on the served page", func() {
 			Expect(tabRow).To(ContainSubstring("data-corner-x"))
 			Expect(tabRow).To(ContainSubstring(`class="provenance"`))
 			Expect(tabRow).To(ContainSubstring(`<span class="task">`))
-			Expect(tabRow).NotTo(ContainSubstring("<form"))
-			Expect(tabRow).NotTo(ContainSubstring("<input"))
+			Expect(tabRow).NotTo(ContainSubstring("<form class=\"answer\""))
+			Expect(tabRow).NotTo(ContainSubstring("data-option"))
 			// And the pair renders on the tab worker's card too: the mode is no longer
 			// part of the gate.
 			Expect(strings.Count(tabRow, `data-decision="allow"`)).To(Equal(1))

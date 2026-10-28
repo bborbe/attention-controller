@@ -410,8 +410,8 @@ var _ = Describe("the production-touching marker on the served page", func() {
 			Expect(markedRow).To(ContainSubstring("data-corner-x"))
 			Expect(markedRow).To(ContainSubstring(`class="provenance"`))
 			Expect(markedRow).To(ContainSubstring(`<span class="task">`))
-			Expect(markedRow).NotTo(ContainSubstring("<form"))
-			Expect(markedRow).NotTo(ContainSubstring("<input"))
+			Expect(markedRow).NotTo(ContainSubstring("<form class=\"answer\""))
+			Expect(markedRow).NotTo(ContainSubstring("data-option"))
 			Expect(strings.Count(markedRow, `data-decision="allow"`)).To(Equal(1))
 			Expect(strings.Count(markedRow, `data-decision="deny"`)).To(Equal(1))
 

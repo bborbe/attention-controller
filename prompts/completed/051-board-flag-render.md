@@ -1,8 +1,13 @@
 ---
-status: approved
+status: completed
 spec: [014-flag-misrouted-cards]
+summary: Rendered the per-card flag form, the data-flagged row mark, the second Hide flagged switch, and the composed per-row two-filter client predicate, with handler/board/stream specs and three browser cases plus the scenario count update.
+execution_id: attention-controller-flag-exec-051-board-flag-render
+dark-factory-version: v0.198.7
 created: "2026-10-28T13:53:31Z"
 queued: "2026-10-28T14:15:11Z"
+started: "2026-10-28T14:34:33Z"
+completed: "2026-10-28T14:43:44Z"
 branch: dark-factory/flag-misrouted-cards
 ---
 

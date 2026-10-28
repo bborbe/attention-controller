@@ -237,6 +237,28 @@ var _ = Describe("AttentionStreamHandler", func() {
 		))
 	})
 
+	// A flagged row must carry the same mark over the stream as on a fresh load,
+	// or the page's filter would read a stale mark on the row it swapped in and
+	// park the wrong cards.
+	It("carries the flag mark in a streamed row", func() {
+		reader, cancel := connect()
+		defer cancel()
+
+		item := push("misrouted?")
+		// The push's own upsert arrives first and is unflagged.
+		open := readEvent(reader)
+		Expect(open["type"]).Should(Equal("upsert"))
+		Expect(open["html"]).Should(ContainSubstring(`data-flagged="false"`))
+
+		_, err := store.Flag(ctx, item.ItemID, "asked the wrong team")
+		Expect(err).Should(BeNil())
+
+		event := readEvent(reader)
+		Expect(event["type"]).Should(Equal("upsert"))
+		Expect(event["item_id"]).Should(Equal(item.ItemID.String()))
+		Expect(event["html"]).Should(ContainSubstring(`data-flagged="true"`))
+	})
+
 	It("sends a removal when the item is resolved elsewhere", func() {
 		reader, cancel := connect()
 		defer cancel()

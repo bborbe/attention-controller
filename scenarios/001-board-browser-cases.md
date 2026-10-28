@@ -4,7 +4,7 @@ status: active
 
 # Scenario 001: the board's post-load behaviour holds in a real browser
 
-Validates that the attention board's twenty post-load JS behaviours still work, by driving the real binary in a real browser.
+Validates that the attention board's twenty-three post-load JS behaviours still work, by driving the real binary in a real browser.
 
 This is the **pre-release gate**. It is deliberately not part of `make precommit` and is never run per commit or per PR: the suite starts a browser, and the regression class it retires reaches users through a release, not through a commit.
 
@@ -21,11 +21,14 @@ The suite is not a client of the running service. It builds its own binary, runs
 
 ## Expected
 
-- [ ] Suite reports `36 of 36 Specs` and `ok github.com/bborbe/attention-controller/e2e`. ⚠️ **Moved `28` → `36` on 2026-10-16:** one of the eight is the corner X's new permission act; the other **seven landed before it and left this total stale**, so the gate read red on master until this edit. ⚠️ **This is the package total** — the board's cases plus the answer-shape cases in `e2e/answer-shapes_test.go`. ⚠️ **Read it with `go test -mod=mod -tags e2e -count=1 -v ./e2e/`, not with `make e2e`:** that target runs `go test -tags e2e ./e2e/` **without `-v`**, and `go test` discards a passing package's stdout, so the run prints only `ok github.com/bborbe/attention-controller/e2e` and Ginkgo's `Ran N of N Specs` summary never appears. A count asserted against a line the operator cannot see is a verification command that cannot fail.
+- [ ] Suite reports `39 of 39 Specs` and `ok github.com/bborbe/attention-controller/e2e`. ⚠️ **Moved `36` → `39` on 2026-10-28** with the three flag cases below; the intro's literal behaviour count moved `twenty` → `twenty-three` in the same edit. ⚠️ **Moved `28` → `36` on 2026-10-16:** one of the eight is the corner X's new permission act; the other **seven landed before it and left this total stale**, so the gate read red on master until this edit. ⚠️ **This is the package total** — the board's cases plus the answer-shape cases in `e2e/answer-shapes_test.go`. ⚠️ **Read it with `go test -mod=mod -tags e2e -count=1 -v ./e2e/`, not with `make e2e`:** that target runs `go test -tags e2e ./e2e/` **without `-v`**, and `go test` discards a passing package's stdout, so the run prints only `ok github.com/bborbe/attention-controller/e2e` and Ginkgo's `Ran N of N Specs` summary never appears. A count asserted against a line the operator cannot see is a verification command that cannot fail.
 - [ ] `returns a parked answered card to the DOM when the Hide answered switch is clicked` — the click *handler* ran, not merely the server-rendered switch's presence
 - [ ] `renders the open card and not the answered one on a fresh load` — the default view filters
 - [ ] `says nothing needs the operator rather than rendering a blank region when every item is answered` — with every record answered and the default view on, the board renders exactly one `p.empty` carrying the text `Nothing needs attention.` and zero item rows, so the region below the control row is never blank
 - [ ] `renders the answered card too when the view is hide=none` — the one value that still discriminates, since `?hide=answered` and no-parameter resolve identically
+- [ ] `flags a misrouted card without answering it, so the item stays open` — the answer endpoint received zero requests, and the item reads back `open` with `flag_reason` set and `answered_at` absent, so the flag did not reuse the answer path
+- [ ] `restores only the flagged card when the flag filter is turned off, leaving answered rows parked` — the answered-and-flagged card stays parked, which a global unpark would restore
+- [ ] `writes hide=answered when the flag switch is turned on at hide=none` — the union view and the flag filter cannot both be active: the answered card is parked, the open one stays visible, and the switch is not disabled
 - [ ] `removes a row from the DOM when the item is answered over the SSE stream` — present after load, absent once the answer arrives over the SSE stream
 - [ ] `does not claim nothing needs the operator while an open card is rendered` — the absence half: while exactly one open card is rendered, the empty-state statement is absent; and when that last open card is answered over the stream on the already-open board, the statement appears without a reload
 - [ ] `replaces the empty statement with the parked record when the Hide answered switch is clicked` — the all-answered board shows the statement, and clicking the switch restores the parked record and removes the statement, so reaching the empty state never discharges the parked set
