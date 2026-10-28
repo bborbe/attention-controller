@@ -111,7 +111,7 @@ var _ = Describe("Attention page board controls", func() {
 		Expect(err).To(BeNil())
 		provenance.ResolveReturns(pkg.Provenances{item.ItemID: resolved})
 
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req := httptest.NewRequest(http.MethodGet, "/?producer_kind=all", nil)
 		resp := httptest.NewRecorder()
 		httpHandler.ServeHTTP(resp, req)
 		Expect(resp.Code).To(Equal(http.StatusOK))
@@ -308,7 +308,7 @@ var _ = Describe("Attention page board controls", func() {
 				permission.ItemID: pkg.Provenance{Pane: "1907", PaneRecorded: true, Routable: true},
 			})
 
-			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req := httptest.NewRequest(http.MethodGet, "/?producer_kind=all", nil)
 			resp := httptest.NewRecorder()
 			httpHandler.ServeHTTP(resp, req)
 			body := resp.Body.String()
@@ -354,7 +354,7 @@ var _ = Describe("Attention page board controls", func() {
 			boardmetrics.NewMetrics(prometheus.NewRegistry()),
 		)
 
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req := httptest.NewRequest(http.MethodGet, "/?producer_kind=all", nil)
 		resp := httptest.NewRecorder()
 		noSpeakHandler.ServeHTTP(resp, req)
 		Expect(resp.Code).To(Equal(http.StatusOK))
@@ -380,7 +380,7 @@ var _ = Describe("Attention page board controls", func() {
 		// render serves the board once and returns the document, so a case can
 		// push several items and assert on the single page they share.
 		render := func() string {
-			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req := httptest.NewRequest(http.MethodGet, "/?producer_kind=all", nil)
 			resp := httptest.NewRecorder()
 			httpHandler.ServeHTTP(resp, req)
 			Expect(resp.Code).To(Equal(http.StatusOK))
@@ -949,7 +949,19 @@ var _ = Describe("Attention page board controls", func() {
 	// rows its selector matches. The filter's own behaviour in both positions
 	// is measured on the running page, not here.
 	Describe("the answerable filter", func() {
+		// ⚠️ These specs predate the producer-kind filter and assert on rows the
+		// answered filter serves, so they opt into the all-kinds view. Without it
+		// the board's default (manager-kind only) removes every fixture row and
+		// each "no row rendered" failure reads as a broken control rather than a
+		// filtered one. The default itself is pinned in the producer-kind suite.
 		renderAt := func(target string) string {
+			if !strings.Contains(target, "producer_kind=") {
+				if strings.Contains(target, "?") {
+					target += "&producer_kind=all"
+				} else {
+					target += "?producer_kind=all"
+				}
+			}
 			req := httptest.NewRequest(http.MethodGet, target, nil)
 			resp := httptest.NewRecorder()
 			httpHandler.ServeHTTP(resp, req)

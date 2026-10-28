@@ -74,7 +74,7 @@ var _ = Describe("the card's corner band", func() {
 
 	// get renders the page and returns the recorder.
 	get := func(method string) *httptest.ResponseRecorder {
-		req := httptest.NewRequest(method, "/", nil)
+		req := httptest.NewRequest(method, "/?producer_kind=all", nil)
 		resp := httptest.NewRecorder()
 		httpHandler.ServeHTTP(resp, req)
 		return resp

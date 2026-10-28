@@ -7,7 +7,6 @@ package handler
 import (
 	"bytes"
 	"context"
-	"html/template"
 	"net/http"
 
 	"github.com/bborbe/errors"
@@ -139,10 +138,10 @@ const attentionPageTemplate = `<!DOCTYPE html>
      item — the same reason the switch sits here. It ships hidden and is shown
      only by the stream's own onerror, so a healthy board, a quiet board and an
      empty board all render exactly what they rendered before. */}}
-<div class="board-controls"><button type="button" class="board-filter" data-board-filter role="switch" aria-checked="{{if .HideAnswered}}true{{else}}false{{end}}"><svg class="switch" viewBox="0 0 44 24" aria-hidden="true" focusable="false"><rect class="switch-track" x="1" y="1" width="42" height="22" rx="11"/><circle class="switch-knob" cx="12" cy="12" r="8"/></svg><span class="switch-label">Hide answered</span></button><button type="button" class="board-filter flag-filter" data-flag-filter role="switch" aria-checked="{{if .FlagFilter}}true{{else}}false{{end}}"><svg class="switch" viewBox="0 0 44 24" aria-hidden="true" focusable="false"><rect class="switch-track" x="1" y="1" width="42" height="22" rx="11"/><circle class="switch-knob" cx="12" cy="12" r="8"/></svg><span class="switch-label">Hide flagged</span></button><span class="stream-stale" data-stream-stale hidden>Not tracking the store - showing the last known state.</span></div>
+<div class="board-controls"><a class="board-filter" data-board-kind href="{{ .KindHref }}" data-all-kinds="{{if .AllKinds}}true{{else}}false{{end}}" data-hidden-open="{{ .HiddenOpen }}" data-hidden-all="{{ .HiddenAll }}"><svg class="switch" viewBox="0 0 44 24" aria-hidden="true" focusable="false"><rect class="switch-track" x="1" y="1" width="42" height="22" rx="11"/><circle class="switch-knob" cx="12" cy="12" r="8"/></svg><span class="switch-label">{{if .AllKinds}}Managers only{{else}}Show all kinds{{end}}</span></a>{{if .HiddenCount}}<span class="kind-hidden" data-kind-hidden>{{ .HiddenCount }} hidden</span>{{end}}<button type="button" class="board-filter" data-board-filter role="switch" aria-checked="{{if .HideAnswered}}true{{else}}false{{end}}"><svg class="switch" viewBox="0 0 44 24" aria-hidden="true" focusable="false"><rect class="switch-track" x="1" y="1" width="42" height="22" rx="11"/><circle class="switch-knob" cx="12" cy="12" r="8"/></svg><span class="switch-label">Hide answered</span></button><button type="button" class="board-filter flag-filter" data-flag-filter role="switch" aria-checked="{{if .FlagFilter}}true{{else}}false{{end}}"><svg class="switch" viewBox="0 0 44 24" aria-hidden="true" focusable="false"><rect class="switch-track" x="1" y="1" width="42" height="22" rx="11"/><circle class="switch-knob" cx="12" cy="12" r="8"/></svg><span class="switch-label">Hide flagged</span></button><span class="stream-stale" data-stream-stale hidden>Not tracking the store - showing the last known state.</span></div>
 {{if .Items}}<ul class="items">
 {{range .Items}}{{template "attention-row" .}}{{end}}</ul>
-{{else}}<p class="empty">Nothing needs attention.</p>
+{{else}}<p class="empty">{{if .HiddenCount}}No cards of this kind need attention. The others are hidden by the kind filter above.{{else}}Nothing needs attention.{{end}}</p>
 {{end}}
 {{/* The board's own provenance: the answer to "which build am I looking at",
      on the surface a human is already reading. It exists because that question
@@ -1142,6 +1141,111 @@ function replayFailure(row) {
     }
     showEmptyStatement();
   }
+  /* Mirrors boardProducerKindParam / boardProducerKindAll in Go. The server
+     already renders only the matching rows, so this exists for the STREAM
+     path: a frame carries a rendered row for whatever was just pushed, and a
+     card of another kind would otherwise appear on a filtered board — the same
+     leak the answered filter had to close on this same path.
+     ⚠️ A non-matching row is REMOVED rather than parked: an item's producer
+     kind is immutable, so nothing can ever bring it back, and the parked list
+     is the answered filter's restore buffer rather than a second one. */
+  var KIND_PARAM = 'producer_kind';
+  var KIND_ALL = 'all';
+  var KIND_DEFAULT = 'manager';
+  /* The empty state's kind-aware copy. The server renders the same sentence,
+     but both collapseIfEmpty() and showEmptyStatement() rebuild the paragraph
+     from scratch when the list empties, so a client-side "Nothing needs
+     attention." would put the lie back on a board whose switch names the hidden
+     cards — the production state, since no producer emits manager. */
+  /* ⚠️ No em dash: sibling specs use "—" as a sentinel for "a placeholder was
+     rendered where an unresolvable value belongs", and prose punctuation would
+     trip that guard on a correct page. */
+  var KIND_EMPTY_COPY = 'No cards of this kind need attention. The others are hidden by the kind filter above.';
+  var kind = new URLSearchParams(window.location.search).get(KIND_PARAM) || KIND_DEFAULT;
+  /* The count beside the switch, kept true after load. Both populations arrive
+     on the kind link, because the rows the server withheld were never sent — the
+     document cannot count them, and only the server knows how many of them are
+     answered. What the script adds is the rows the STREAM delivers: applyKindFilter
+     removes them, so the board ends up withholding more than the load-time count
+     names. The span itself is rendered only when there is something to say, so
+     this both updates it and creates or removes it.
+     ⚠️ Read from the link rather than captured into variables at parse time: the
+     link is resolved further down this script, and a captured value would be
+     read before that assignment. The attributes never change after load.
+     ⚠️ Streamed rows are keyed by item id rather than tallied: a card's update
+     arrives as a second frame, and an id-keyed map makes the recount idempotent
+     where a counter would inflate. The value is the row's dimmed state, which
+     decides whether it counts at all — and which changes when the card is
+     answered. */
+  function kindHiddenBase(attribute) {
+    if (!kindLink) { return 0; }
+    return parseInt(kindLink.getAttribute(attribute), 10) || 0;
+  }
+  var kindStreamed = {};
+  function updateKindCount() {
+    var total = 0;
+    if (kind !== KIND_ALL) {
+      /* hideOn rather than a load-time constant: syncFromURL re-reads it on
+         every URL write, so the count follows the answered toggle instead of
+         describing the view the page was served with. */
+      total = hideOn ? kindHiddenBase('data-hidden-open') : kindHiddenBase('data-hidden-all');
+      for (var id in kindStreamed) {
+        /* The same rule the server applies: an answered row is already withheld
+           by the answered filter, so the kind filter is not what hides it. */
+        if (!kindStreamed[id] || !hideOn) { total++; }
+      }
+    }
+    if (total === 0) {
+      var stale = document.querySelector('[data-kind-hidden]');
+      if (stale) { stale.remove(); }
+      return;
+    }
+    var el = document.querySelector('[data-kind-hidden]');
+    if (!el) {
+      if (!kindLink) { return; }
+      /* Built rather than inserted as markup: the rendered span and a markup
+         string would be the same text, and the Go suite asserts on the served
+         markup to prove the all-kinds view renders no count. */
+      el = document.createElement('span');
+      el.className = 'kind-hidden';
+      el.setAttribute('data-kind-hidden', '');
+      kindLink.parentNode.insertBefore(el, kindLink.nextSibling);
+    }
+    el.textContent = total + ' hidden';
+  }
+  function applyKindFilter() {
+    if (kind !== KIND_ALL) {
+      var rows = document.querySelectorAll('li.item');
+      for (var i = 0; i < rows.length; i++) {
+        if (rows[i].getAttribute('data-producer-kind') === kind) { continue; }
+        /* Recorded before the row leaves the document: whether it counts depends
+           on whether it was dimmed, which only the node knows. */
+        kindStreamed[rows[i].getAttribute('data-item-id')] =
+          rows[i].classList.contains('dimmed');
+        rows[i].remove();
+      }
+    }
+    updateKindCount();
+  }
+  /* ⚠️ The kind link's href is SERVER-RENDERED from the request, while the
+     answered toggle below rewrites the query with history.replaceState. Left
+     alone the link keeps its load-time query, so following it after a toggle
+     silently resets the other filter: toggling Hide answered OFF (URL gains
+     hide=none) and then clicking the kind link would navigate to the stale
+     query, drop hide=none and re-hide the answered records — precisely the
+     mutual reset the server-side KindHref comment claims is prevented. The
+     Go test could not see it because it requests ?hide=none directly rather
+     than toggling.
+     Recomputed after every URL write; the server-rendered href stays as the
+     no-JS fallback, which is the only case where it can still be right. */
+  var kindLink = document.querySelector('[data-board-kind]');
+  function syncKindHref() {
+    if (!kindLink) { return; }
+    var target = kindLink.getAttribute('data-all-kinds') === 'true' ? KIND_DEFAULT : KIND_ALL;
+    var next = new URL(window.location.href);
+    next.searchParams.set(KIND_PARAM, target);
+    kindLink.setAttribute('href', next.pathname + next.search);
+  }
   function forget(itemID) {
     parked = parked.filter(function (entry) { return entry.id !== itemID; });
   }
@@ -1175,7 +1279,14 @@ function replayFailure(row) {
       window.history.replaceState(null, '', url);
       syncFromURL(url);
       renderSwitchState();
+      /* The kind link carries the query it was rendered from, so it has to be
+         rebuilt from the URL that just changed — see syncKindHref. */
+      syncKindHref();
       applyFilter();
+      /* The answered toggle moves which of the two counts applies: with the
+         filter ON the answered records are withheld anyway, so the kind filter
+         is not what hides them. */
+      updateKindCount();
     });
   }
   if (flagButton) {
@@ -1196,7 +1307,13 @@ function replayFailure(row) {
       window.history.replaceState(null, '', url);
       syncFromURL(url);
       renderSwitchState();
+      /* The kind link carries the query it was rendered from, so it has to be
+         rebuilt from the URL that just changed — see syncKindHref. */
+      syncKindHref();
       applyFilter();
+      /* A flagged row that is also a manager card leaves the board when this
+         filter turns on, so the kind count would overstate what is hidden. */
+      updateKindCount();
     });
   }
   /* Applied at load as well as on click, so a URL that arrived carrying either
@@ -1206,6 +1323,13 @@ function replayFailure(row) {
      body, so this lands before the first paint rather than as a correction to
      it. */
   applyFilter();
+  syncKindHref();
+  updateKindCount();
+  /* The toggle writes the URL with replaceState, so it rebuilds the link
+     itself; this covers every OTHER way the URL can change under the page — a
+     Back/Forward restore out of bfcache, or any future in-page writer that
+     forgets to call syncKindHref. Cheap, and the failure it prevents is silent. */
+  window.addEventListener('popstate', syncKindHref);
   function collapseIfEmpty() {
     var list = document.querySelector('ul.items');
     if (!list || list.querySelector('li.item')) { return; }
@@ -1215,7 +1339,7 @@ function replayFailure(row) {
     if (parked.length > 0) { return; }
     var empty = document.createElement('p');
     empty.className = 'empty';
-    empty.textContent = 'Nothing needs attention.';
+    empty.textContent = (kind === KIND_ALL) ? 'Nothing needs attention.' : KIND_EMPTY_COPY;
     list.parentNode.replaceChild(empty, list);
   }
   /* Renders the board's empty-state paragraph in place of an emptied list
@@ -1229,7 +1353,7 @@ function replayFailure(row) {
     if (document.querySelector('p.empty')) { return; }
     var empty = document.createElement('p');
     empty.className = 'empty';
-    empty.textContent = 'Nothing needs attention.';
+    empty.textContent = (kind === KIND_ALL) ? 'Nothing needs attention.' : KIND_EMPTY_COPY;
     list.parentNode.replaceChild(empty, list);
   }
   /* A row's update is PREPARED on a detached node and only then committed.
@@ -1293,7 +1417,17 @@ function replayFailure(row) {
       list.insertAdjacentHTML('beforeend', prepared);
     }
     /* The row is complete as committed, so nothing is re-applied to it here.
-       The filter still runs after: it is a board-level view over every row. */
+       The filters still run after: they are board-level views over every row.
+
+       ⚠️ KIND FIRST, and the order is load bearing rather than stylistic.
+       applyFilter PARKS a dimmed row — it detaches it and holds its markup in
+       the answered filter's restore buffer — so a kind filter running second
+       would never see it: the row is already out of the document, and
+       unpark() would put a non-manager answered card back on a manager-only
+       board when the operator toggles Hide answered off. Running the kind
+       filter first removes it while it is still in the document, which is the
+       only moment the kind is readable. */
+    applyKindFilter();
     applyFilter();
   }
   /* The filter is wired above this guard rather than below it. It is plain DOM
@@ -1399,7 +1533,7 @@ function replayFailure(row) {
      — and it must be the SAME markup, not a second renderer that would drift
      from this one. The dollar sign inside a sub-template is the value passed to
      it, which is why Speak is carried on the row and read as dot-Speak here. */}}
-{{define "attention-row"}}<li class="item risk-{{ .Risk }}{{if .Dimmed}} dimmed{{end}}" data-item-id="{{ .Item.ItemID }}" data-risk="{{ .Risk }}" data-flagged="{{if .Flagged}}true{{else}}false{{end}}">
+{{define "attention-row"}}<li class="item risk-{{ .Risk }}{{if .Dimmed}} dimmed{{end}}" data-item-id="{{ .Item.ItemID }}" data-risk="{{ .Risk }}" data-producer-kind="{{ .Item.ProducerKind }}" data-flagged="{{if .Flagged}}true{{else}}false{{end}}">
 {{/* The corner X renders on every OPEN row, ungated by mechanism, from
      2026-09-27 — message, ack and permission alike — and is withheld from the
      dimmed record card by the (not .Dimmed) conjunct, added 2026-10-01. It was
@@ -1507,334 +1641,6 @@ function replayFailure(row) {
 {{end}}</li>{{end}}
 `
 
-// attentionPageRow is one item paired with what could be resolved about its
-// origin. Pairing here rather than in the template keeps the lookup out of the
-// template language: a map indexed by item id inside `range` is exactly the
-// kind of indirection html/template makes awkward, and it would put a silent
-// zero-value Provenance one typo away from a rendered row.
-type attentionPageRow struct {
-	Item       pkg.Item
-	Provenance pkg.Provenance
-	// Message reports whether this row renders answer controls. True for
-	// `message` items only: a `permission` item is approve-shaped and only the
-	// operator may answer it in the session that raised it, so a control there
-	// would be the permission laundering the schema forbids.
-	Message bool
-	// Ack reports whether this row renders the acknowledge control. True for
-	// `ack` items only.
-	//
-	// ⚠️ This is the second half of an affordance that used to be a single
-	// boolean, and the gap it closes was not cosmetic. An `ack` item is a
-	// condition report: it asks nothing and routes nothing back, so the schema
-	// closes it by acknowledgement — `open` → `closed` with `answered_at`
-	// unset — and names an arm as a causer of that row. With no branch for it,
-	// an `ack` row fell through the same `not .Message` path as a `permission`
-	// row and rendered its payload and a state line and nothing else, so it sat
-	// on the only surface that showed it and could not be cleared from there.
-	//
-	// A `permission` row is deliberately still in that position: it is
-	// approve-shaped, only the operator may answer it in the session that
-	// raised it, and a control here would be the permission laundering the
-	// schema forbids. The two classes rendering identically was the accident;
-	// they are separated by this field rather than by a shared absence.
-	Ack bool
-	// Decide reports whether this row renders the Allow / Deny controls. True
-	// for `permission` items only.
-	//
-	// ⚠️ REVERSES the "no control on a permission row" ruling above, on the
-	// operator's decision 2026-09-29: the board is where the operator answers,
-	// and a permission card with no control left every tab-session prompt
-	// unanswerable from it. The click is the operator's own verdict, written as
-	// `decision`; the attention watcher delivers it by pressing that prompt's
-	// own Yes / No row in the session's pane, re-proving the pane is the
-	// session's first. A headless worker's park is settled by the supervisor's
-	// poll from the same `decision`, as before.
-	Decide bool
-	// ⚠️ There was a `Permission bool` here for exactly one release, read by the
-	// jump corner to except permission rows from the disabled control. It was
-	// removed 2026-09-27 on the operator's own read of the live board: with the
-	// exception in place, **2 of 77 open cards rendered no jump control at all**,
-	// and the operator's ask is that the control be in the same place on every
-	// card. The exception was mine to propose and theirs to overrule; the field
-	// went with it rather than being left as a dead gate. See
-	// [[Attention Item Schema]] silence 20.
-	// Questions are the question units this row's card renders: the item's own
-	// when it carries several, otherwise a single unit built from the item's own
-	// Payload, Options and AnswerCardinality. Empty when the row renders no card,
-	// which is what keeps the template's card a single `if .Message` away from a
-	// `permission` row rather than a second thing to remember.
-	//
-	// Precomputed here for the reason Provenance is: html/template cannot index a
-	// map inside `range`, and a zero-value question one typo away would render a
-	// card with no controls at all.
-	Questions []attentionPageQuestion
-	// Tabs reports whether the card renders a tab strip — true when the item
-	// carries several questions. It is the flag the template reads and the flag
-	// the page's own script reads, so the strip and the wire shape cannot
-	// disagree about whether this item answers by `answer` or by `answers`.
-	Tabs bool
-	// Risk is the level the board RENDERS for this row — the higher of the
-	// item's declared risk and the rule its own content matches, computed by
-	// pkg.RiskOf at render time.
-	//
-	// ⚠️ It is deliberately not item.Risk. The declared value is stored
-	// unchanged and this field is the render-time escalation above it, so a
-	// producer that under-declares cannot make a destructive card render green.
-	// The two are separate values and must stay separate: reading item.Risk
-	// here would silently drop the derivation, and the row would colour itself
-	// by whatever the producer claimed.
-	Risk pkg.Risk
-	// Dimmed reports whether this row is the dimmed record of an item that has
-	// already been answered, rather than an open card. It is what the template
-	// branches on to render a record instead of a prompt: a dimmed row carries
-	// no form, no option row, no Dismiss and no Next, because a control there
-	// would offer an answer to a question that already has one.
-	//
-	// It is derived from the item's state, never from the answer's presence: an
-	// item answered before `answer` existed carries no content and is still a
-	// record.
-	Dimmed bool
-	// Record is the answer the store recorded, rendered for the dimmed card by
-	// recordAnswer. Empty on every row that is not dimmed.
-	Record string
-	// Flagged reports whether this row carries a flag and is therefore parked by
-	// the flag filter's default position. The template reads it for the row's
-	// data-flagged mark and for the flag-reason line; the page's script reads the
-	// rendered mark, never this field.
-	Flagged bool
-	// DeliveryStatus is what the store's Delivery report says happened to this
-	// card's answer — `delivered`, `failed`, `never_attempted` or
-	// `pre_trail_unknown` — and is what the template reads to mark an answer
-	// that never reached the asking session.
-	//
-	// ⚠️ It is the DERIVED status, never the raw DeliveryAttempt record, for the
-	// reason pkg.DeliveryReport carries the derivation: an absent record means
-	// `never_attempted` or `pre_trail_unknown` depending on the item's own
-	// timestamps, and a row that had to know the epoch rule to tell the two apart
-	// would hold a second copy of it. That is also why it is read at RENDER time
-	// rather than carried on the item: an attempt is written by a different arm
-	// after the answer, so the value the store holds changes without the item
-	// changing.
-	//
-	// ⚠️ Empty means the read failed, and empty renders no marker — the same
-	// fail-soft rule the provenance read follows. It is deliberately not one of
-	// the four statuses, so a failed read can never be mistaken for
-	// `never_attempted`, which is a real answer about the item rather than about
-	// this render.
-	DeliveryStatus pkg.DeliveryStatus
-	// Jump is the copyable command handing a non-`message` item back to the
-	// session that raised it. Empty when no pane resolved — an unresolvable
-	// value renders absent rather than as a stand-in, per the schema's silence 7.
-	//
-	// It is empty for a `message` item as well, which renders the button without
-	// the command: the div's label is false for an item the board may answer in
-	// place, and the command text is redundant beside the button.
-	Jump string
-	// JumpURL is the board-relative path that hands this row back to its
-	// session, rendered as the Jump button. Set for every class, `message`
-	// included. Empty when no pane resolved, on the same rule as Jump.
-	//
-	// It is also empty when the token is unreadable, and ⚠️ that must degrade
-	// the button *alone*: the template renders the div when either field is
-	// set, so a host with no token still gets the copyable command exactly as
-	// it rendered before this change. Gating the whole div on JumpURL would
-	// silently drop the command too.
-	JumpURL string
-	// NoJump explains why this row carries no jump control, and is empty
-	// whenever it carries one — the template reads it in the `else` of the same
-	// condition, so the explanation and the control are one decision rather than
-	// two that could drift apart.
-	//
-	// It is a rendering of an absence, never a stand-in for a value: it names no
-	// pane, host or cwd, so it does not present an unresolvable value as
-	// resolved. See [[Attention Item Schema]] silence 20 for the one case it
-	// covers that the schema does not yet state a rule for.
-	NoJump string
-	// Speak reports whether this row renders the read-aloud control. It is
-	// carried on the row rather than read from the page root because the row is
-	// a sub-template: `{{template "attention-row" .}}` passes the row as the
-	// data, so `$` inside it is the row and not the page, and a `$.Speak` left
-	// in place would resolve against the wrong value.
-	Speak bool
-	// Info reports whether this row carries machine identity — a producer id or
-	// kind, a machine provenance value, or a state/timestamp — and therefore
-	// renders the info-toggle and its panel. A row carrying none of them renders
-	// no control at all, never a control that opens onto nothing.
-	Info bool
-	// Meta is the panel's state-and-timestamp line. Empty when the item carries
-	// neither, so the panel draws no element for an absent value.
-	Meta string
-	// TaskURL is the link that opens this item's vault task, rendered as the
-	// first element of the provenance line. Empty when no task resolved — an
-	// unresolvable value renders absent rather than as a stand-in, the same rule
-	// Jump and JumpURL follow.
-	//
-	// ⚠️ It is a template.URL rather than a string, and the type is load-bearing
-	// rather than decorative. html/template's URL filter admits only `http`,
-	// `https`, `mailto` and relative URLs, so a plain-string `href="{{ .TaskURL }}"`
-	// renders `href="#ZgotmplZ"`: the link is dead in the browser while every test
-	// that asserts on the row field still passes. `obsidian://` is exactly the
-	// scheme that filter refuses, so the conversion is what makes the href emit at
-	// all — and its cost is that the value is trusted unescaped, which is why
-	// vaultFileURL escapes both halves before building it.
-	TaskURL template.URL
-	// GoalURL is the link that opens the goal this item's task names first in its
-	// `goals:` list, drawn beside the task span. Empty when no goal resolved — an
-	// unresolvable value renders absent rather than as a stand-in, the same rule
-	// TaskURL follows.
-	//
-	// ⚠️ It is a template.URL rather than a string for the same load-bearing
-	// reason TaskURL is: html/template's URL filter admits only `http`, `https`,
-	// `mailto` and relative URLs, so a plain-string `href="{{ .GoalURL }}"` renders
-	// `href="#ZgotmplZ"` — the link dead in the browser while every test that
-	// asserts on the row field still passes. `obsidian://` is exactly the scheme
-	// that filter refuses, so the conversion is what makes the href emit at all.
-	GoalURL template.URL
-	// TopicURL is the link that opens the topic page that lists this item's goal
-	// under its `## Goals` heading, drawn beside the goal span. Empty when no topic
-	// lists that goal, which is the common case — an unresolvable value renders
-	// absent rather than as a stand-in, the same rule TaskURL follows.
-	//
-	// ⚠️ It is a template.URL rather than a string for the same load-bearing
-	// reason TaskURL is: html/template's URL filter admits only `http`, `https`,
-	// `mailto` and relative URLs, so a plain-string `href="{{ .TopicURL }}"`
-	// renders `href="#ZgotmplZ"` — the link dead in the browser while every test
-	// that asserts on the row field still passes. `obsidian://` is exactly the
-	// scheme that filter refuses, so the conversion is what makes the href emit at
-	// all.
-	TopicURL template.URL
-}
-
-// Undeliverable reports whether this card's answer failed to reach the asking
-// session, and so renders the marker that says so.
-//
-// ⚠️ It is a method rather than a second boolean field on purpose. The template
-// and the row would then carry two values that could disagree about one fact,
-// and the constant it compares against stays in Go rather than being spelled as
-// a string literal in the template — the same reason the row carries no
-// mechanism comparison. A `delivered`, `never_attempted` or `pre_trail_unknown`
-// answer renders nothing: only a recorded failure is something the operator can
-// act on, and the other three would put a marker on every card.
-func (r attentionPageRow) Undeliverable() bool {
-	return r.DeliveryStatus == pkg.FailedStatus
-}
-
-// attentionPageData is what the template renders: the items the store's read
-// path returned, in the order it returned them. It carries no ordering of its
-// own — the store never ranks, so the page must not either.
-type attentionPageData struct {
-	Items []attentionPageRow
-	// Speak reports whether a read-aloud control should render. False when no
-	// tts server is configured, so the page never offers a control whose
-	// endpoint is unrouted.
-	Speak bool
-	// HideAnswered is the filter's initial position, read from the request's
-	// `hide` parameter. It renders the switch's aria-checked so the served
-	// markup agrees with the URL; the script applies the same reading to the
-	// rows. It is a rendering input, never a store input — the page still
-	// renders every row it was given.
-	//
-	// The default is true: only an explicit `?hide=none` renders it false, so a
-	// fresh load of the board shows what is left rather than mixing the dimmed
-	// answered records in with the cards that still need the operator.
-	HideAnswered bool
-	// FlagFilter is the flag filter's initial position, read from the request's
-	// `flags` parameter and composed with `hide` exactly as § Two filters
-	// defines: the flag filter can only be on when the answered filter is on,
-	// because `hide=none` is the union view. It is a rendering input, never a
-	// store input — the page still renders every row it was given.
-	FlagFilter bool
-	// BuildIdentity is what the running binary can say about the source it was
-	// built from, rendered in the page's footer.
-	//
-	// It is a rendering input like Speak, and it is read from the BINARY rather
-	// than from the repo on purpose: the footer answers "which build is
-	// running", and a value read from the checkout answers a different question
-	// that agrees with this one only while the two are in step. A build that
-	// carries no identity renders an explicit line saying so — see
-	// buildidentity.Identity.Known.
-	BuildIdentity buildidentity.Identity
-}
-
-// boardHideParam is the query parameter carrying the board's view state, and
-// boardHideAnswered / boardHideNone are the two values it recognises. Together
-// they make the view addressable — `?hide=none` survives a reload, a bookmark
-// and a shared link instead of resetting — which is what the operator asked
-// for: *"The hide button at the top should be a URL parameter, so a reload of
-// the page keeps the preview setting."*
-//
-// ⚠️ The value names the SET that is hidden rather than being a boolean, so the
-// parameter can describe a different view later without a second parameter
-// name, and so the URL reads as an instruction rather than as a flag whose
-// meaning depends on knowing what it refers to. `answered` hides the dimmed
-// answered records; `none` hides nothing.
-//
-// ⚠️ **The default is ON, and absence is how it is spelled.** From 2026-09-27
-// the operator asked for the reverse of the position this parameter was built
-// with — *"can we make hide answers the default — so open
-// http://127.0.0.1:18080/ ... show no answer?"* — so a request carrying no
-// `hide` value renders the filtered view, and `none` is the value that turns it
-// back off. That is why the test is `!= boardHideNone` rather than
-// `== boardHideAnswered`: an unrecognised value falls back to the default
-// instead of silently disabling the filter, and "off" needs a spelling the
-// script can write back, which a deleted parameter can no longer be.
-//
-// ⚠️ All three are mirrored as HIDE_PARAM, HIDE_ANSWERED and HIDE_NONE in the
-// page's script, because the server renders the switch's initial position while
-// the script applies the filter and writes the parameter back. That mirror is
-// the only thing in this file that exists in two languages, so a spec asserts
-// the script carries the same literals: drift there would leave the server
-// rendering from one parameter while the script writes another, and the
-// reload-reproduces-the-view property would stop working with every other test
-// still green.
-const (
-	boardHideParam    = "hide"
-	boardHideAnswered = "answered"
-	boardHideNone     = "none"
-
-	// boardFlagsParam carries the flag filter's view state, on the same
-	// convention as boardHideParam: the value names the SET that is hidden,
-	// so `none` is the only value that turns it off. boardFlagsFlagged is the
-	// default spelling the script writes; it is declared here so the Go and
-	// script copies are greppable together.
-	boardFlagsParam   = "flags"
-	boardFlagsFlagged = "flagged"
-	boardFlagsNone    = "none"
-)
-
-// deliveryStatusOf reads one card's derived delivery status for its row, and
-// answers the zero value when the read fails.
-//
-// ⚠️ The failure is swallowed deliberately, and it is the same fail-soft rule
-// provenance.Resolve follows one function up: the status DECORATES a card that
-// is already on the board, so a read that fails — a bbolt View error, or an item
-// removed between ReadBoard and this call — must not turn the whole page into a
-// 500. The card itself is still readable, and the marker is an addition to it,
-// never a precondition for rendering it.
-//
-// ⚠️ The zero value is what makes that safe rather than merely quiet: it is no
-// status the store ever returns, so the row renders no marker and degrades to
-// exactly what it rendered before the marker existed. Returning
-// NeverAttemptedStatus here instead would assert something about the item that
-// this call did not learn.
-func deliveryStatusOf(
-	ctx context.Context,
-	store pkg.AttentionStore,
-	itemID pkg.ItemID,
-) pkg.DeliveryStatus {
-	report, err := store.Delivery(ctx, itemID)
-	// ⚠️ The nil check is part of the same fail-soft rule rather than
-	// defensiveness for its own sake: a store that answers no report and no
-	// error has told this row nothing, and dereferencing it would take the whole
-	// page down for one card. The mock store in the identity spec is exactly
-	// such a caller, and it is right to be — the read it is faking is not the
-	// subject of that spec.
-	if err != nil || report == nil {
-		return ""
-	}
-	return report.Status
-}
-
 // NewAttentionPageHandler creates the read-only HTML page a human opens to see
 // what currently needs attention.
 //
@@ -1898,6 +1704,16 @@ func NewAttentionPageHandler(store pkg.AttentionStore,
 			func(ctx context.Context, resp http.ResponseWriter, req *http.Request) error {
 				// ⚠️ Per request, before the store read: a failed render still counts.
 				metrics.BoardPageRequestsTotalCounterInc()
+				// Parsed before the store read: a rejected parameter must cost a
+				// 400, not a full board read that is then thrown away.
+				producerKind, allKinds, err := boardProducerKindOf(ctx, req)
+				if err != nil {
+					return libhttp.WrapWithCode(
+						err,
+						libhttp.ErrorCodeValidation,
+						http.StatusBadRequest,
+					)
+				}
 				// ReadBoard, not Read: the board renders the answered items as
 				// dimmed records as well as the open ones. Read stays as it is
 				// for the JSON read API, whose consumers act on what they are
@@ -1950,16 +1766,22 @@ func NewAttentionPageHandler(store pkg.AttentionStore,
 				flagsParam := req.URL.Query().Get(boardFlagsParam)
 				hideAnswered := req.URL.Query().Get(boardHideParam) != boardHideNone
 				flagFilter := hideAnswered && flagsParam != boardFlagsNone
-				if err := page.Execute(
-					&body,
-					attentionPageData{
-						Items:         rows,
-						Speak:         speakEnabled,
-						HideAnswered:  hideAnswered,
-						FlagFilter:    flagFilter,
-						BuildIdentity: buildIdentity,
-					},
-				); err != nil {
+				shown, hiddenOpen, hiddenAll := filterByProducerKind(
+					rows, producerKind, allKinds,
+				)
+				data := attentionPageData{
+					Items:         shown,
+					Speak:         speakEnabled,
+					HideAnswered:  hideAnswered,
+					FlagFilter:    flagFilter,
+					AllKinds:      allKinds,
+					KindHref:      boardProducerKindHref(req.URL, allKinds),
+					HiddenOpen:    hiddenOpen,
+					HiddenAll:     hiddenAll,
+					BuildIdentity: buildIdentity,
+				}
+				data.setKindCount(hideAnswered)
+				if err := page.Execute(&body, data); err != nil {
 					return errors.Wrap(ctx, err, "render page failed")
 				}
 				resp.Header().Set(

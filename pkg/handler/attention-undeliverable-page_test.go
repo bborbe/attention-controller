@@ -118,7 +118,7 @@ var _ = Describe("the undeliverable marker on the served page", func() {
 	// render serves the board once and returns the document, so a case can push
 	// several items and assert on the single page they share.
 	render := func() string {
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req := httptest.NewRequest(http.MethodGet, "/?producer_kind=all", nil)
 		resp := httptest.NewRecorder()
 		httpHandler.ServeHTTP(resp, req)
 		Expect(resp.Code).To(Equal(http.StatusOK))
@@ -192,7 +192,7 @@ var _ = Describe("the undeliverable marker on the served page", func() {
 			boardmetrics.NewMetrics(prometheus.NewRegistry()),
 		)
 
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req := httptest.NewRequest(http.MethodGet, "/?producer_kind=all", nil)
 		resp := httptest.NewRecorder()
 		handlerUnderTest.ServeHTTP(resp, req)
 

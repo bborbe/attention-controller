@@ -69,8 +69,11 @@ var _ = Describe("Attention page flag control", func() {
 		Expect(db.Close()).To(BeNil())
 	})
 
+	// producer_kind=all because the board defaults to manager-kind rows and
+	// these fixtures are session cards: without it the page renders no row at
+	// all and every assertion below would pass vacuously on a missing subtree.
 	render := func() string {
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req := httptest.NewRequest(http.MethodGet, "/?producer_kind=all", nil)
 		resp := httptest.NewRecorder()
 		httpHandler.ServeHTTP(resp, req)
 		Expect(resp.Code).To(Equal(http.StatusOK))

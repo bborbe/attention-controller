@@ -114,7 +114,7 @@ var _ = Describe("AttentionPageHandler", func() {
 
 	// get renders the page and returns the recorder.
 	get := func(method string) *httptest.ResponseRecorder {
-		req := httptest.NewRequest(method, "/", nil)
+		req := httptest.NewRequest(method, "/?producer_kind=all", nil)
 		resp := httptest.NewRecorder()
 		httpHandler.ServeHTTP(resp, req)
 		return resp
@@ -203,12 +203,18 @@ var _ = Describe("AttentionPageHandler", func() {
 	// incremented once at construction.
 	It("moves the page-request counter once per request through the real handler", func() {
 		first := httptest.NewRecorder()
-		httpHandler.ServeHTTP(first, httptest.NewRequest(http.MethodGet, "/", nil))
+		httpHandler.ServeHTTP(
+			first,
+			httptest.NewRequest(http.MethodGet, "/?producer_kind=all", nil),
+		)
 		Expect(first.Code).To(Equal(http.StatusOK))
 		Expect(counterValue(registry, "attention_board_page_requests_total")).To(Equal(1.0))
 
 		second := httptest.NewRecorder()
-		httpHandler.ServeHTTP(second, httptest.NewRequest(http.MethodGet, "/", nil))
+		httpHandler.ServeHTTP(
+			second,
+			httptest.NewRequest(http.MethodGet, "/?producer_kind=all", nil),
+		)
 		Expect(second.Code).To(Equal(http.StatusOK))
 		Expect(counterValue(registry, "attention_board_page_requests_total")).To(Equal(2.0))
 	})

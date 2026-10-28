@@ -610,7 +610,10 @@ var _ = Describe("an answer given on the rendered board", func() {
 		// card. Under the default filter that row is parked out of the DOM, so
 		// the return-to-queue assertion below would find nothing however well the
 		// reload had worked.
-		_, err = page.Goto(baseURL+"?hide=none", playwright.PageGotoOptions{
+		// ?producer_kind=all for the same reason newPage opts in: this fixture is
+		// session-kind, and the board's default view is manager-kind only, so the
+		// card would never draw the control the positive control below counts.
+		_, err = page.Goto(baseURL+"?hide=none&producer_kind=all", playwright.PageGotoOptions{
 			WaitUntil: playwright.WaitUntilStateLoad,
 		})
 		Expect(err).NotTo(HaveOccurred())

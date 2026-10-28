@@ -399,11 +399,18 @@ func post(path string, body any) map[string]any {
 	return decoded
 }
 
-// push seeds one card and returns the item id the store assigned.
+// push seeds one session-kind card and returns the item id the store assigned.
 func push(payload, dedupKey string) string {
+	return pushOfKind(payload, dedupKey, pkg.SessionProducerKind)
+}
+
+// pushOfKind seeds one card of the given producer kind. The kind is a parameter
+// rather than a second helper because the board's filter reads exactly this
+// field, so a spec about the filter has to be able to choose it.
+func pushOfKind(payload, dedupKey string, kind pkg.ProducerKind) string {
 	request := pkg.PushRequest{
 		ProducerID:      pkg.ProducerID(e2eProducerID),
-		ProducerKind:    pkg.SessionProducerKind,
+		ProducerKind:    kind,
 		LivenessRef:     pkg.LivenessRef("session:" + e2eSessionID),
 		DedupKey:        pkg.DedupKey(dedupKey),
 		InterruptClass:  pkg.InterruptClass("pick"),
@@ -505,6 +512,25 @@ func rowCount(page playwright.Page, itemID string) int {
 	return count
 }
 
+// kindHiddenCount reads the number the kind switch says it is hiding. The span
+// is rendered only when there is something to name, so absence is the zero
+// state rather than a failure.
+func kindHiddenCount(page playwright.Page) int {
+	loc := page.Locator("[data-kind-hidden]")
+	if count, err := loc.Count(); err != nil || count == 0 {
+		return 0
+	}
+	text, err := loc.First().TextContent()
+	Expect(err).NotTo(HaveOccurred())
+	fields := strings.Fields(text)
+	if len(fields) == 0 {
+		return 0
+	}
+	value, err := strconv.Atoi(fields[0])
+	Expect(err).NotTo(HaveOccurred())
+	return value
+}
+
 // openItemIDs returns the ids the store still counts as open, read through the
 // list API an arm reads rather than through the board.
 //
@@ -551,7 +577,21 @@ func emptyStateCount(page playwright.Page) int {
 
 // newPage opens a fresh page on the board. A page per spec keeps the parked-set
 // and filter state from leaking between cases.
+//
+// ⚠️ It opts into the all-kinds view unless the caller names a kind itself.
+// Every fixture these specs push is session-kind, and the board now defaults to
+// manager-kind only, so the bare board renders no rows and every row assertion
+// fails for a reason unrelated to the spec. The default view has its own
+// coverage in the producer-kind suite; the kind link's own URL is what a spec
+// passes when it wants that view here.
 func newPage(path string) playwright.Page {
+	if !strings.Contains(path, "producer_kind=") {
+		if strings.Contains(path, "?") {
+			path += "&producer_kind=all"
+		} else {
+			path += "?producer_kind=all"
+		}
+	}
 	page, err := browser.NewPage()
 	Expect(err).NotTo(HaveOccurred())
 	_, err = page.Goto(baseURL+strings.TrimPrefix(path, "/"), playwright.PageGotoOptions{
@@ -749,6 +789,101 @@ var _ = Describe("the attention board", func() {
 			Expect(page.Locator(switchSelector).Click()).To(Succeed())
 
 			Eventually(func() int { return rowCount(page, itemID) }).Should(Equal(1))
+		},
+	)
+
+	It(
+		"rebuilds the kind link after the Hide answered switch rewrites the URL",
+		func() {
+			// ⚠️ The kind link's href is server-rendered from the load-time
+			// request, while the answered switch rewrites the query with
+			// replaceState. A link left holding the stale query silently resets
+			// the other filter when it is followed — the mutual reset both the
+			// Go comment and the CHANGELOG claim is prevented. Only a browser
+			// can see this: the Go suite requests ?hide=none directly instead of
+			// toggling into it, so it passes either way.
+			itemID := push("e2e: the kind link case", "e2e-kind-link")
+			answer(itemID)
+
+			page := newPage("")
+			defer func() { _ = page.Close() }()
+
+			// Toggle Hide answered OFF: the URL gains hide=none, and the kind
+			// link must be rebuilt from it.
+			Expect(page.Locator(switchSelector).Click()).To(Succeed())
+			Eventually(func() string { return page.URL() }).Should(ContainSubstring("hide=none"))
+
+			// ⚠️ The assertion that actually catches the defect: FOLLOW the
+			// link. Reading its href would pass on a link that is stale in the
+			// same direction it was rendered, and the reset only shows up after
+			// the navigation. newPage("") starts in the all-kinds view, so the
+			// link on this page reads "Managers only" and must go there.
+			Expect(page.Locator(`[data-board-kind]`).Click()).To(Succeed())
+			Eventually(
+				func() string { return page.URL() },
+			).Should(ContainSubstring("producer_kind=manager"))
+			Expect(page.URL()).To(ContainSubstring("hide=none"))
+		},
+	)
+
+	It(
+		"keeps the hide choice when the kind link is followed from the managers-only view",
+		func() {
+			// The other direction, and the one the review named second: from the
+			// managers-only view, toggling Hide answered OFF and then following
+			// the link must land on the all-kinds view with the answered records
+			// still showing, not silently re-hide them.
+			itemID := push("e2e: the kind link back", "e2e-kind-link-back")
+			answer(itemID)
+
+			page := newPage("?producer_kind=manager")
+			defer func() { _ = page.Close() }()
+
+			Expect(page.Locator(switchSelector).Click()).To(Succeed())
+			Eventually(func() string { return page.URL() }).Should(ContainSubstring("hide=none"))
+
+			Expect(page.Locator(`[data-board-kind]`).Click()).To(Succeed())
+			Eventually(
+				func() string { return page.URL() },
+			).Should(ContainSubstring("producer_kind=all"))
+			Expect(page.URL()).To(ContainSubstring("hide=none"))
+		},
+	)
+
+	It(
+		"keeps a session-kind card pushed while the page is open off the managers-only view",
+		func() {
+			// ⚠️ The one half the Go suite cannot reach: the stream path's kind
+			// filter is client-side JS, and the CHANGELOG claims a card pushed
+			// while the board is open cannot leak onto a filtered view. Without
+			// this spec that claim is untested, and the failure is silent — the
+			// row simply appears.
+			page := newPage("?producer_kind=manager")
+			defer func() { _ = page.Close() }()
+
+			// Read before the push: the store carries cards from earlier specs, so
+			// the count has a non-zero starting point and an absolute assertion
+			// would encode the suite's ordering.
+			hiddenBefore := kindHiddenCount(page)
+
+			sessionID := push("e2e: streamed session card", "e2e-kind-stream-session")
+			Consistently(func() int { return rowCount(page, sessionID) }).Should(Equal(0))
+			// The count follows the stream. The server renders it once at load, so
+			// without the script recomputing it a card that arrives later is
+			// withheld by a board that does not say so — on the element that stops
+			// a managers-only view reading as an empty queue.
+			Eventually(func() int { return kindHiddenCount(page) }).
+				Should(Equal(hiddenBefore + 1))
+
+			// The positive control: the same stream, same page, a matching kind.
+			// Without it this spec passes on a board whose stream is dead.
+			managerID := pushOfKind(
+				"e2e: streamed manager card", "e2e-kind-stream-manager", pkg.ManagerProducerKind,
+			)
+			Eventually(func() int { return rowCount(page, managerID) }).Should(Equal(1))
+			// A matching card is not hidden, so the count must not move for it.
+			Consistently(func() int { return kindHiddenCount(page) }).
+				Should(Equal(hiddenBefore + 1))
 		},
 	)
 

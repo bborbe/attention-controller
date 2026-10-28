@@ -178,7 +178,7 @@ var _ = Describe("the production-touching marker on the served page", func() {
 
 	// get renders the page through the given handler and returns the recorder.
 	get := func(httpHandler http.Handler) *httptest.ResponseRecorder {
-		req := httptest.NewRequest("GET", "/", nil)
+		req := httptest.NewRequest("GET", "/?producer_kind=all", nil)
 		resp := httptest.NewRecorder()
 		httpHandler.ServeHTTP(resp, req)
 		return resp

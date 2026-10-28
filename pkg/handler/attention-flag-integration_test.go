@@ -118,7 +118,19 @@ var _ = Describe("Attention flag round trip", func() {
 		return &item
 	}
 
+	// producer_kind=all is appended unless the target already names one: the
+	// board defaults to manager-kind rows and these fixtures are session cards,
+	// so without it every case below would render no row and pass vacuously on
+	// a missing subtree. The filter axes under test here are `hide` and
+	// `flags`, never the kind.
 	renderAt := func(target string) string {
+		if !strings.Contains(target, "producer_kind=") {
+			if strings.Contains(target, "?") {
+				target += "&producer_kind=all"
+			} else {
+				target += "?producer_kind=all"
+			}
+		}
 		req := httptest.NewRequest(http.MethodGet, target, nil)
 		rec := httptest.NewRecorder()
 		pageHandler.ServeHTTP(rec, req)
