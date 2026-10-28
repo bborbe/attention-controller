@@ -1027,6 +1027,14 @@ li.item.risk-risk {
   color: var(--text);
   cursor: pointer;
 }
+/* The kind control is an <a> while the answered control is a <button>: without
+   this the anchor's label carries the browser's underline and the two controls
+   in one row disagree about being links. */
+.board-filter { text-decoration: none; }
+/* The hidden count sits beside the controls, so it takes their size rather than
+   the body's. Muted, because it annotates the switch instead of competing with
+   the cards. */
+.kind-hidden { color: var(--muted); font-size: 13px; }
 .board-filter .switch { width: 44px; height: 24px; display: block; flex: none; }
 .board-filter .switch-track {
   fill: var(--panel);

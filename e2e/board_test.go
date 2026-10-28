@@ -394,11 +394,18 @@ func post(path string, body any) map[string]any {
 	return decoded
 }
 
-// push seeds one card and returns the item id the store assigned.
+// push seeds one session-kind card and returns the item id the store assigned.
 func push(payload, dedupKey string) string {
+	return pushOfKind(payload, dedupKey, pkg.SessionProducerKind)
+}
+
+// pushOfKind seeds one card of the given producer kind. The kind is a parameter
+// rather than a second helper because the board's filter reads exactly this
+// field, so a spec about the filter has to be able to choose it.
+func pushOfKind(payload, dedupKey string, kind pkg.ProducerKind) string {
 	request := pkg.PushRequest{
 		ProducerID:      pkg.ProducerID(e2eProducerID),
-		ProducerKind:    pkg.SessionProducerKind,
+		ProducerKind:    kind,
 		LivenessRef:     pkg.LivenessRef("session:" + e2eSessionID),
 		DedupKey:        pkg.DedupKey(dedupKey),
 		InterruptClass:  pkg.InterruptClass("pick"),
@@ -801,6 +808,29 @@ var _ = Describe("the attention board", func() {
 				func() string { return page.URL() },
 			).Should(ContainSubstring("producer_kind=all"))
 			Expect(page.URL()).To(ContainSubstring("hide=none"))
+		},
+	)
+
+	It(
+		"keeps a session-kind card pushed while the page is open off the managers-only view",
+		func() {
+			// ⚠️ The one half the Go suite cannot reach: the stream path's kind
+			// filter is client-side JS, and the CHANGELOG claims a card pushed
+			// while the board is open cannot leak onto a filtered view. Without
+			// this spec that claim is untested, and the failure is silent — the
+			// row simply appears.
+			page := newPage("?producer_kind=manager")
+			defer func() { _ = page.Close() }()
+
+			sessionID := push("e2e: streamed session card", "e2e-kind-stream-session")
+			Consistently(func() int { return rowCount(page, sessionID) }).Should(Equal(0))
+
+			// The positive control: the same stream, same page, a matching kind.
+			// Without it this spec passes on a board whose stream is dead.
+			managerID := pushOfKind(
+				"e2e: streamed manager card", "e2e-kind-stream-manager", pkg.ManagerProducerKind,
+			)
+			Eventually(func() int { return rowCount(page, managerID) }).Should(Equal(1))
 		},
 	)
 
