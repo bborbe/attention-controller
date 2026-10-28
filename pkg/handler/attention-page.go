@@ -9,7 +9,6 @@ import (
 	"context"
 	"html/template"
 	"net/http"
-	"net/url"
 
 	"github.com/bborbe/errors"
 	libhttp "github.com/bborbe/http"
@@ -143,7 +142,7 @@ const attentionPageTemplate = `<!DOCTYPE html>
 <div class="board-controls"><a class="board-filter" data-board-kind href="{{ .KindHref }}" data-all-kinds="{{if .AllKinds}}true{{else}}false{{end}}"><svg class="switch" viewBox="0 0 44 24" aria-hidden="true" focusable="false"><rect class="switch-track" x="1" y="1" width="42" height="22" rx="11"/><circle class="switch-knob" cx="12" cy="12" r="8"/></svg><span class="switch-label">{{if .AllKinds}}Managers only{{else}}Show all kinds{{end}}</span></a>{{if .HiddenCount}}<span class="kind-hidden" data-kind-hidden>{{ .HiddenCount }} hidden</span>{{end}}<button type="button" class="board-filter" data-board-filter role="switch" aria-checked="{{if .HideAnswered}}true{{else}}false{{end}}"><svg class="switch" viewBox="0 0 44 24" aria-hidden="true" focusable="false"><rect class="switch-track" x="1" y="1" width="42" height="22" rx="11"/><circle class="switch-knob" cx="12" cy="12" r="8"/></svg><span class="switch-label">Hide answered</span></button><span class="stream-stale" data-stream-stale hidden>Not tracking the store - showing the last known state.</span></div>
 {{if .Items}}<ul class="items">
 {{range .Items}}{{template "attention-row" .}}{{end}}</ul>
-{{else}}<p class="empty">Nothing needs attention.</p>
+{{else}}<p class="empty">{{if .HiddenCount}}No cards of this kind need attention. The others are hidden by the kind filter above.{{else}}Nothing needs attention.{{end}}</p>
 {{end}}
 {{/* The board's own provenance: the answer to "which build am I looking at",
      on the surface a human is already reading. It exists because that question
@@ -1068,6 +1067,15 @@ function replayFailure(row) {
   var KIND_PARAM = 'producer_kind';
   var KIND_ALL = 'all';
   var KIND_DEFAULT = 'manager';
+  /* The empty state's kind-aware copy. The server renders the same sentence,
+     but both collapseIfEmpty() and showEmptyStatement() rebuild the paragraph
+     from scratch when the list empties, so a client-side "Nothing needs
+     attention." would put the lie back on a board whose switch names the hidden
+     cards — the production state, since no producer emits manager. */
+  /* ⚠️ No em dash: sibling specs use "—" as a sentinel for "a placeholder was
+     rendered where an unresolvable value belongs", and prose punctuation would
+     trip that guard on a correct page. */
+  var KIND_EMPTY_COPY = 'No cards of this kind need attention. The others are hidden by the kind filter above.';
   var kind = new URLSearchParams(window.location.search).get(KIND_PARAM) || KIND_DEFAULT;
   function applyKindFilter() {
     if (kind === KIND_ALL) { return; }
@@ -1075,6 +1083,25 @@ function replayFailure(row) {
     for (var i = 0; i < rows.length; i++) {
       if (rows[i].getAttribute('data-producer-kind') !== kind) { rows[i].remove(); }
     }
+  }
+  /* ⚠️ The kind link's href is SERVER-RENDERED from the request, while the
+     answered toggle below rewrites the query with history.replaceState. Left
+     alone the link keeps its load-time query, so following it after a toggle
+     silently resets the other filter: toggling Hide answered OFF (URL gains
+     hide=none) and then clicking the kind link would navigate to the stale
+     query, drop hide=none and re-hide the answered records — precisely the
+     mutual reset the server-side KindHref comment claims is prevented. The
+     Go test could not see it because it requests ?hide=none directly rather
+     than toggling.
+     Recomputed after every URL write; the server-rendered href stays as the
+     no-JS fallback, which is the only case where it can still be right. */
+  var kindLink = document.querySelector('[data-board-kind]');
+  function syncKindHref() {
+    if (!kindLink) { return; }
+    var target = kindLink.getAttribute('data-all-kinds') === 'true' ? KIND_DEFAULT : KIND_ALL;
+    var next = new URL(window.location.href);
+    next.searchParams.set(KIND_PARAM, target);
+    kindLink.setAttribute('href', next.pathname + next.search);
   }
   function forget(itemID) {
     parked = parked.filter(function (entry) { return entry.id !== itemID; });
@@ -1101,6 +1128,9 @@ function replayFailure(row) {
         url.searchParams.set(HIDE_PARAM, HIDE_NONE);
       }
       window.history.replaceState(null, '', url);
+      /* The kind link carries the query it was rendered from, so it has to be
+         rebuilt from the URL that just changed — see syncKindHref. */
+      syncKindHref();
       applyFilter();
     });
   }
@@ -1109,6 +1139,12 @@ function replayFailure(row) {
      script runs while the parser is still inside the body, so this lands before
      the first paint rather than as a correction to it. */
   if (on) { applyFilter(); }
+  syncKindHref();
+  /* The toggle writes the URL with replaceState, so it rebuilds the link
+     itself; this covers every OTHER way the URL can change under the page — a
+     Back/Forward restore out of bfcache, or any future in-page writer that
+     forgets to call syncKindHref. Cheap, and the failure it prevents is silent. */
+  window.addEventListener('popstate', syncKindHref);
   function collapseIfEmpty() {
     var list = document.querySelector('ul.items');
     if (!list || list.querySelector('li.item')) { return; }
@@ -1118,7 +1154,7 @@ function replayFailure(row) {
     if (parked.length > 0) { return; }
     var empty = document.createElement('p');
     empty.className = 'empty';
-    empty.textContent = 'Nothing needs attention.';
+    empty.textContent = (kind === KIND_ALL) ? 'Nothing needs attention.' : KIND_EMPTY_COPY;
     list.parentNode.replaceChild(empty, list);
   }
   /* Renders the board's empty-state paragraph in place of an emptied list
@@ -1132,7 +1168,7 @@ function replayFailure(row) {
     if (document.querySelector('p.empty')) { return; }
     var empty = document.createElement('p');
     empty.className = 'empty';
-    empty.textContent = 'Nothing needs attention.';
+    empty.textContent = (kind === KIND_ALL) ? 'Nothing needs attention.' : KIND_EMPTY_COPY;
     list.parentNode.replaceChild(empty, list);
   }
   /* A row's update is PREPARED on a detached node and only then committed.
@@ -1689,110 +1725,6 @@ const (
 	boardHideNone     = "none"
 )
 
-// boardProducerKindParam is the query parameter carrying the board's
-// producer-kind filter, and boardProducerKindAll is the value that turns it
-// off. The parameter follows boardHideParam's shape on purpose — the same
-// parse-validate-default reading, the same write-back by its switch — so the
-// two view controls compose instead of each owning a private convention.
-//
-// ⚠️ The default is `manager`, and it is the operator's decision rather than a
-// guess: card `7ca5385d5d226b1463778ac2e5f18b56`, 2026-10-28 — *"filter on
-// producer_kind (manager kind only)"*. The axis is a KIND, not a manager-tier
-// list, because `producer_kind` is the field an item actually carries; there is
-// no `roles=` vocabulary anywhere in the store.
-//
-// ⚠️ `all` rather than an absent parameter is the show-everything spelling, for
-// the same reason boardHideNone exists: a deleted parameter is indistinguishable
-// from a defaulted one, so the switch needs a value it can write back into the
-// URL and a reload must reproduce the view.
-const (
-	boardProducerKindParam = "producer_kind"
-	boardProducerKindAll   = "all"
-)
-
-// boardProducerKindHref is the URL the kind link points at: the current request
-// with only `producer_kind` replaced, so every other view parameter — `hide`
-// above all — survives the toggle. ⚠️ That preservation is load bearing rather
-// than tidy: two independent default-on view filters each rewriting the query
-// string would silently reset each other, and "show all kinds" would then also
-// un-hide the answered records.
-func boardProducerKindHref(current *url.URL, allKinds bool) string {
-	next := current.Query()
-	if allKinds {
-		next.Set(boardProducerKindParam, pkg.ManagerProducerKind.String())
-	} else {
-		next.Set(boardProducerKindParam, boardProducerKindAll)
-	}
-	clone := *current
-	clone.RawQuery = next.Encode()
-	return clone.RequestURI()
-}
-
-// boardProducerKindOf reads the board's producer-kind filter from the request.
-//
-// It answers allKinds=true for the explicit `all` value and the default kind
-// otherwise. ⚠️ An unrecognised value is an ERROR rather than a silent
-// fallback, which is the opposite of boardHideParam's rule and deliberately so:
-// a typo in `hide` costs the operator a filter they did not ask for, while a
-// typo here would render the wrong population and read as "no cards of that
-// kind" — a claim the board never checked.
-func boardProducerKindOf(
-	ctx context.Context,
-	req *http.Request,
-) (pkg.ProducerKind, bool, error) {
-	raw := req.URL.Query().Get(boardProducerKindParam)
-	if raw == "" {
-		return pkg.ManagerProducerKind, false, nil
-	}
-	if raw == boardProducerKindAll {
-		return "", true, nil
-	}
-	kind := pkg.ProducerKind(raw)
-	if err := kind.Validate(ctx); err != nil {
-		return "", false, errors.Wrap(ctx, err, "validate producer_kind failed")
-	}
-	return kind, false, nil
-}
-
-// filterByProducerKind splits the rendered rows into the ones the board shows
-// and the count it is hiding.
-//
-// ⚠️ It runs over the rows the store returned rather than being pushed into the
-// store query: the hidden count has to describe the same population the page
-// renders, and a second read would let the two disagree. boardHideParam is a
-// rendering input for exactly the same reason.
-//
-// The rows themselves are returned untouched when the filter is off, so the
-// all-kinds view allocates nothing and cannot reorder what the store gave.
-//
-// ⚠️ The count covers OPEN rows only. ReadBoard also returns answered items,
-// which the page renders dimmed and the `hide` switch parks — counting those
-// would report "6 hidden" on a board whose all-kinds view reveals one open
-// card, because the answered filter still hides the other five. The number is
-// the operator's answer to "what am I not seeing because of the kind filter",
-// so a row another filter is already hiding must not inflate it.
-func filterByProducerKind(
-	rows []attentionPageRow,
-	kind pkg.ProducerKind,
-	allKinds bool,
-) ([]attentionPageRow, int) {
-	if allKinds {
-		return rows, 0
-	}
-	shown := make([]attentionPageRow, 0, len(rows))
-	hidden := 0
-	for _, row := range rows {
-		if row.Item.ProducerKind == kind {
-			shown = append(shown, row)
-			continue
-		}
-		if !row.Dimmed {
-			hidden++
-		}
-	}
-	return shown, hidden
-}
-
 // deliveryStatusOf reads one card's derived delivery status for its row, and
 // answers the zero value when the read fails.
 //
@@ -1949,7 +1881,9 @@ func NewAttentionPageHandler(store pkg.AttentionStore,
 				// filter off, and absence (or any unrecognised value) leaves it
 				// on.
 				hideAnswered := req.URL.Query().Get(boardHideParam) != boardHideNone
-				shown, hiddenCount := filterByProducerKind(rows, producerKind, allKinds)
+				shown, hiddenCount := filterByProducerKind(
+					rows, producerKind, allKinds, hideAnswered,
+				)
 				if err := page.Execute(
 					&body,
 					attentionPageData{

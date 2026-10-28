@@ -746,6 +746,64 @@ var _ = Describe("the attention board", func() {
 		},
 	)
 
+	It(
+		"rebuilds the kind link after the Hide answered switch rewrites the URL",
+		func() {
+			// ⚠️ The kind link's href is server-rendered from the load-time
+			// request, while the answered switch rewrites the query with
+			// replaceState. A link left holding the stale query silently resets
+			// the other filter when it is followed — the mutual reset both the
+			// Go comment and the CHANGELOG claim is prevented. Only a browser
+			// can see this: the Go suite requests ?hide=none directly instead of
+			// toggling into it, so it passes either way.
+			itemID := push("e2e: the kind link case", "e2e-kind-link")
+			answer(itemID)
+
+			page := newPage("")
+			defer func() { _ = page.Close() }()
+
+			// Toggle Hide answered OFF: the URL gains hide=none, and the kind
+			// link must be rebuilt from it.
+			Expect(page.Locator(switchSelector).Click()).To(Succeed())
+			Eventually(func() string { return page.URL() }).Should(ContainSubstring("hide=none"))
+
+			// ⚠️ The assertion that actually catches the defect: FOLLOW the
+			// link. Reading its href would pass on a link that is stale in the
+			// same direction it was rendered, and the reset only shows up after
+			// the navigation. newPage("") starts in the all-kinds view, so the
+			// link on this page reads "Managers only" and must go there.
+			Expect(page.Locator(`[data-board-kind]`).Click()).To(Succeed())
+			Eventually(
+				func() string { return page.URL() },
+			).Should(ContainSubstring("producer_kind=manager"))
+			Expect(page.URL()).To(ContainSubstring("hide=none"))
+		},
+	)
+
+	It(
+		"keeps the hide choice when the kind link is followed from the managers-only view",
+		func() {
+			// The other direction, and the one the review named second: from the
+			// managers-only view, toggling Hide answered OFF and then following
+			// the link must land on the all-kinds view with the answered records
+			// still showing, not silently re-hide them.
+			itemID := push("e2e: the kind link back", "e2e-kind-link-back")
+			answer(itemID)
+
+			page := newPage("?producer_kind=manager")
+			defer func() { _ = page.Close() }()
+
+			Expect(page.Locator(switchSelector).Click()).To(Succeed())
+			Eventually(func() string { return page.URL() }).Should(ContainSubstring("hide=none"))
+
+			Expect(page.Locator(`[data-board-kind]`).Click()).To(Succeed())
+			Eventually(
+				func() string { return page.URL() },
+			).Should(ContainSubstring("producer_kind=all"))
+			Expect(page.URL()).To(ContainSubstring("hide=none"))
+		},
+	)
+
 	It("renders the open card and not the answered one on a fresh load", func() {
 		openID := push("e2e: the open card", "e2e-default-open")
 		answeredID := push("e2e: the answered card", "e2e-default-answered")

@@ -164,6 +164,40 @@ var _ = Describe("the board's producer-kind filter", func() {
 		})
 	})
 
+	Context("with only session-kind cards open", func() {
+		BeforeEach(func() {
+			pushCard(pkg.SessionProducerKind, "session-only-producer")
+		})
+
+		It("says no cards of this kind, rather than claiming nothing needs attention", func() {
+			body := get("/").Body.String()
+
+			// ⚠️ The production state: no producer can emit `manager`, so the
+			// default view is empty while the switch beside it names the hidden
+			// cards. "Nothing needs attention." there is a lie the hidden count
+			// directly above it contradicts.
+			// Scoped to the rendered paragraph, not to the phrase: the script
+			// carries the same sentence as the all-kinds fallback, so a bare
+			// substring assertion fails on a correct page.
+			Expect(body).NotTo(ContainSubstring(`<p class="empty">Nothing needs attention.</p>`))
+			Expect(body).To(ContainSubstring("No cards of this kind need attention"))
+			Expect(body).To(ContainSubstring("1 hidden"))
+		})
+	})
+
+	It("pins the script's own copy of the kind parameter", func() {
+		body := get("/?producer_kind=all").Body.String()
+
+		// The same mirror the hide parameter keeps: the server renders from the
+		// Go constants while the script filters the stream path and rebuilds the
+		// kind link. Drift is silent in the direction that matters — the script
+		// would remove every row for a kind the server never sends, and the rest
+		// of the suite would stay green.
+		Expect(body).To(ContainSubstring(`var KIND_PARAM = 'producer_kind';`))
+		Expect(body).To(ContainSubstring(`var KIND_ALL = 'all';`))
+		Expect(body).To(ContainSubstring(`var KIND_DEFAULT = 'manager';`))
+	})
+
 	It("rejects an unknown producer kind instead of silently ignoring it", func() {
 		resp := get("/?producer_kind=bogus")
 
