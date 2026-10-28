@@ -1,0 +1,41 @@
+# Attention Item Flagging
+
+The in-repo contract for `flag_reason` and `flagged_at`. This is a **copy** of the authoritative
+`Attention Item Schema` § Flagging (vault: `50 Knowledge Base/Attention Item Schema.md`), placed
+here because the implementing container cannot resolve a vault wikilink. If the two disagree, the
+vault page wins and the disagreement is a finding to report — not a choice to make in code.
+
+## Fields
+
+| Field | Req. | Writer | Purpose |
+|---|---|---|---|
+| `flag_reason` | optional | store | Why the operator flagged this card as misrouted — free text, and the flag is rejected with HTTP 400 when it is empty or absent. A flag is **not** an answer: the item stays `open` with `answered_at` absent, and remains answerable afterwards. It records that the question should not have been asked, so the routing defect can be counted per producer instead of disappearing when the card is answered. Rendered as a flag control separate from approve / deny / hide. |
+| `flagged_at` | optional | store | When the item was flagged as misrouted — stamped from the store's own clock inside the same compare-and-set that writes `flag_reason`, never supplied by the caller. Present exactly when `flag_reason` is present, and shares its lifetime: unflagging clears both. Its reader is the weekly per-producer misroute count. Distinct from `answered_at`, which records that a question was answered — a flag records that the question should not have been asked. |
+
+## Flagging
+
+A flag records that the operator believes the card should never have reached them. It is **not an
+answer and not a transition**: `flag_reason` and `flagged_at` are written onto an item that stays
+`open` with `answered_at` absent, so its lifecycle is unchanged and it remains answerable afterwards.
+
+| Concern | Rule |
+|---|---|
+| Is it a transition? | **No.** The lifecycle's transition table gains no row. A flag is a field write on an `open` item. |
+| Does it answer the gate? | **No.** `state` stays `open` and `answered_at` stays absent, so a flagged `permission` gate is still answerable and the flag releases nothing. |
+| Is a reason required? | **Yes.** An empty or absent reason is rejected with HTTP 400 and the record is left unchanged — a flag without a reason is indistinguishable from a grumble and cannot be counted. |
+| Who writes it? | The **store**, from the operator's flag call. `flagged_at` comes from the store's own clock inside the same compare-and-set that writes `flag_reason`, exactly as `escalated_at` pairs with `escalated_by`. |
+| Does it hide the card? | It leaves the board's **default view**, stays reachable with the `hide` filter off (`?hide=none`), and sits behind an explicit flag toggle. Hiding is a render decision; the record is untouched. |
+| Can it be undone? | **Yes.** Unflagging clears both fields and the card returns to the default view. Unlike `closed`, a flag is not terminal. |
+| What reads it? | The weekly per-producer misroute count, grouped by `producer_id` / `producer_kind` and by reason. Flags are **evidence for a routing fix, never triggers** — nothing reroutes automatically off a flag. |
+
+## Two rulings an implementer is most likely to get wrong
+
+**A flag is not the `hidden` answer kind.** `answer.kind: hidden` makes `open` → `answered` and tells
+the asking session the question was handled elsewhere. A flag asserts the opposite — the question
+should not have been asked — and leaves the item `open`. Reusing the answer path for a flag would set
+`answered_at` and destroy the very distinction this feature exists to create, so the flag needs its
+own endpoint and its own fields.
+
+**A flag is not an escalation either.** `escalated_by` / `escalated_at` record that a manager carried
+an item *to* the operator; a flag records that the operator did not want it carried at all. The two
+answer different questions and must not share a field.
