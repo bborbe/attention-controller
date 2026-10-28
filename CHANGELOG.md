@@ -12,6 +12,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 
 - feat: the board defaults to manager-kind cards, with a one-click all-kinds view. A new `producer_kind` query parameter selects the population (`manager` / `session` / `agent` / `cron` / `dark-factory`, or `all`), defaults to `manager`, and rejects an unknown kind with a 400 rather than silently ignoring it — a typo would otherwise render the wrong population and read as "no cards of that kind". The switch carries the current `hide` state, so the two view filters cannot reset each other, and names how many open cards it is hiding. ⚠️ That count is necessary rather than decorative: **no producer can emit `producer_kind: manager` today** (`attention-ask.py --producer-kind` accepts only session/agent/cron/dark-factory), so the managers-only default starts empty and hides the entire current queue — measured 2026-10-28, 978 of the last 1000 items were `session` and none were `manager`. The stream path applies the same filter, so a card pushed while the board is open cannot leak onto a filtered view.
 
+## v0.61.3
+
+- fix: bump `golang.org/x/net` to v0.62.0, clearing GO-2026-6860 (quadratic complexity when coalescing text nodes in html) and GO-2026-6866 (ancestor namespace transitions when rendering raw text in html). Both were reachable from the board's HTML parsing path, and together they turned `make vulncheck` red on master — which failed every dark-factory preflight and blocked the prompt pipeline in every worktree.
+
 ## v0.61.2
 
 - chore: update Go to 1.27.3 and github.com/bborbe/argument/v2 to v2.13.7, github.com/bborbe/collection to v1.21.3, github.com/bborbe/errors to v1.6.4, github.com/bborbe/http to v1.26.31, github.com/bborbe/kv to v1.21.19, github.com/bborbe/log to v1.7.5, github.com/bborbe/metrics to v0.6.8, github.com/bborbe/sentry to v1.10.6, github.com/bborbe/service to v1.11.1, github.com/bborbe/time to v1.27.18, github.com/bborbe/validation to v1.5.6
