@@ -967,6 +967,15 @@ func registerAttentionAPIRoutes(
 	router.Path("/api/1.0/attention/{itemID}/close").
 		Methods(http.MethodPost).
 		Handler(factory.CreateAttentionCloseHandler(store))
+	// A flag is a field write on an open item, not a transition and not an
+	// answer: the item stays open and answerable. Unflag clears both fields and
+	// is reversible, unlike `closed`.
+	router.Path("/api/1.0/attention/{itemID}/flag").
+		Methods(http.MethodPost).
+		Handler(factory.CreateAttentionFlagHandler(store))
+	router.Path("/api/1.0/attention/{itemID}/unflag").
+		Methods(http.MethodPost).
+		Handler(factory.CreateAttentionUnflagHandler(store))
 	// The delivery trail. The GET is the one query that answers "did this
 	// item's answer reach the session?"; the POST is called by the arm that
 	// ATTEMPTS delivery — never by the arm that records the answer, which

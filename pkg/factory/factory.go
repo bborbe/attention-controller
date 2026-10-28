@@ -94,6 +94,17 @@ func CreateAttentionCloseHandler(store pkg.AttentionStore) http.Handler {
 	return handler.NewAttentionCloseHandler(store)
 }
 
+// CreateAttentionFlagHandler creates the handler that records that the
+// operator believes an item should never have reached them.
+func CreateAttentionFlagHandler(store pkg.AttentionStore) http.Handler {
+	return handler.NewAttentionFlagHandler(store)
+}
+
+// CreateAttentionUnflagHandler creates the handler that clears an item's flag.
+func CreateAttentionUnflagHandler(store pkg.AttentionStore) http.Handler {
+	return handler.NewAttentionUnflagHandler(store)
+}
+
 // CreateAttentionHistoryHandler creates the handler that returns every item
 // regardless of state, for counting resolutions rather than rendering.
 func CreateAttentionHistoryHandler(store pkg.AttentionStore) http.Handler {

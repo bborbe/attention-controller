@@ -1,8 +1,13 @@
 ---
-status: approved
+status: completed
 spec: [014-flag-misrouted-cards]
+summary: Added POST flag/unflag HTTP handlers, factories, route registration on both listeners, remote client methods, and federating proxy with full Ginkgo specs; make precommit exits 0
+execution_id: attention-controller-flag-exec-050-attention-flag-http
+dark-factory-version: v0.198.7
 created: "2026-10-28T13:53:30Z"
 queued: "2026-10-28T14:15:11Z"
+started: "2026-10-28T14:24:16Z"
+completed: "2026-10-28T14:34:30Z"
 branch: dark-factory/flag-misrouted-cards
 ---
 

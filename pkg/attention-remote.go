@@ -74,6 +74,13 @@ type RemoteAttentionStore interface {
 
 	// Escalate records on the peer which session is carrying one of its items.
 	Escalate(ctx context.Context, itemID ItemID, escalatedBy string) (*Item, error)
+
+	// Flag records on the peer that the operator believes one of its items
+	// should never have reached them.
+	Flag(ctx context.Context, itemID ItemID, reason string) (*Item, error)
+
+	// Unflag clears a flag on one of the peer's items.
+	Unflag(ctx context.Context, itemID ItemID) (*Item, error)
 }
 
 // NewHTTPRemoteAttentionStore returns a RemoteAttentionStore backed by a peer
@@ -230,6 +237,45 @@ func (h *httpRemoteAttentionStore) Escalate(
 	return &item, nil
 }
 
+// remoteFlagRequest is the peer's flag body, mirrored field for field.
+type remoteFlagRequest struct {
+	Reason string `json:"reason"`
+}
+
+// Flag proxies a flag to the peer and returns the peer's item.
+func (h *httpRemoteAttentionStore) Flag(
+	ctx context.Context,
+	itemID ItemID,
+	reason string,
+) (*Item, error) {
+	var item Item
+	err := h.do(
+		ctx,
+		http.MethodPost,
+		remoteItemPath(itemID)+"/flag",
+		remoteFlagRequest{Reason: reason},
+		&item,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &item, nil
+}
+
+// Unflag proxies an unflag to the peer and returns the peer's item. The route
+// takes no body, so nil is passed and no Content-Type is sent.
+func (h *httpRemoteAttentionStore) Unflag(
+	ctx context.Context,
+	itemID ItemID,
+) (*Item, error) {
+	var item Item
+	err := h.do(ctx, http.MethodPost, remoteItemPath(itemID)+"/unflag", nil, &item)
+	if err != nil {
+		return nil, err
+	}
+	return &item, nil
+}
+
 // do performs one call against the peer and decodes a successful response into
 // result. A nil result means the caller wants only the failure signal.
 func (h *httpRemoteAttentionStore) do(
@@ -357,6 +403,13 @@ func remoteResponseError(ctx context.Context, resp *http.Response) error {
 			ctx,
 			ErrPermissionCloseWithoutDecision,
 			"peer attention store: permission close without decision (%s)",
+			errorResponse.Error.Message,
+		)
+	case code == ErrorCodeFlagReasonRequired:
+		return errors.Wrapf(
+			ctx,
+			ErrFlagReasonRequired,
+			"peer attention store: flag reason required (%s)",
 			errorResponse.Error.Message,
 		)
 	case code == libhttp.ErrorCodeNotFound || resp.StatusCode == http.StatusNotFound:
