@@ -92,4 +92,10 @@ const (
 	// merely not one that records a decision. The refusal is keyed on the
 	// stored item's mechanism, never on anything the caller supplied.
 	ErrorCodePermissionCloseWithoutDecision = "PERMISSION_CLOSE_WITHOUT_DECISION"
+
+	// ErrorCodeFlagReasonRequired is the code a caller receives when a flag
+	// carries no usable reason. Distinct from ErrorCodeValidation: the request
+	// may be well-formed JSON and still name no reason, and the caller's fix is
+	// to supply the reason rather than to correct a malformed body.
+	ErrorCodeFlagReasonRequired = "FLAG_REASON_REQUIRED"
 )

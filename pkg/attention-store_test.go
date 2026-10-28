@@ -1028,6 +1028,148 @@ var _ = Describe("AttentionStore", func() {
 		})
 	})
 
+	Describe("Flagging", func() {
+		It("records the reason and a timestamp while leaving the item open", func() {
+			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
+			Expect(err).To(BeNil())
+
+			_, err = store.Flag(ctx, item.ItemID, "asked the wrong team")
+			Expect(err).To(BeNil())
+
+			read, err := store.Get(ctx, item.ItemID)
+			Expect(err).To(BeNil())
+			Expect(read.State).To(Equal(pkg.OpenState))
+			Expect(read.AnsweredAt).To(BeNil())
+			Expect(read.FlagReason).To(Equal("asked the wrong team"))
+			Expect(read.FlaggedAt).NotTo(BeNil())
+			Expect(read.FlaggedAt.Time().IsZero()).To(BeFalse())
+		})
+
+		// The lifecycle half is AC1; the coexistence half is the contract's
+		// failure-mode row 10. Asserting only the state would not catch an answer
+		// path that rebuilt the item and dropped the flag.
+		It("leaves the item answerable and keeps the flag", func() {
+			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
+			Expect(err).To(BeNil())
+			_, err = store.Flag(ctx, item.ItemID, "asked the wrong team")
+			Expect(err).To(BeNil())
+
+			_, err = store.Answer(ctx, item.ItemID, "attention-board", "", "", nil, nil, nil)
+			Expect(err).To(BeNil())
+
+			read, err := store.Get(ctx, item.ItemID)
+			Expect(err).To(BeNil())
+			Expect(read.State).To(Equal(pkg.AnsweredState))
+			Expect(read.FlagReason).To(Equal("asked the wrong team"))
+			Expect(read.FlaggedAt).NotTo(BeNil())
+		})
+
+		It("refuses an empty reason and writes nothing", func() {
+			for _, reason := range []string{"", "   ", "\t\n "} {
+				item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
+				Expect(err).To(BeNil())
+
+				_, err = store.Flag(ctx, item.ItemID, reason)
+				Expect(err).NotTo(BeNil())
+				Expect(errors.Is(err, pkg.ErrFlagReasonRequired)).To(BeTrue())
+
+				read, err := store.Get(ctx, item.ItemID)
+				Expect(err).To(BeNil())
+				Expect(read.FlagReason).To(BeEmpty())
+				Expect(read.FlaggedAt).To(BeNil())
+			}
+		})
+
+		It("refuses an unknown item", func() {
+			_, err := store.Flag(ctx, pkg.ItemID("no-such-item"), "reason")
+			Expect(err).NotTo(BeNil())
+			Expect(errors.Is(err, pkg.ErrItemNotFound)).To(BeTrue())
+		})
+
+		It("refuses an answered item and leaves the record unchanged", func() {
+			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
+			Expect(err).To(BeNil())
+			_, err = store.Answer(ctx, item.ItemID, "telegram", "", "", nil, nil, nil)
+			Expect(err).To(BeNil())
+
+			_, err = store.Flag(ctx, item.ItemID, "asked the wrong team")
+			Expect(err).NotTo(BeNil())
+			Expect(errors.Is(err, pkg.ErrItemNotOpen)).To(BeTrue())
+
+			read, err := store.Get(ctx, item.ItemID)
+			Expect(err).To(BeNil())
+			Expect(read.State).To(Equal(pkg.AnsweredState))
+			Expect(read.FlagReason).To(BeEmpty())
+			Expect(read.FlaggedAt).To(BeNil())
+		})
+
+		It("lets the later of two flags win", func() {
+			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
+			Expect(err).To(BeNil())
+
+			_, err = store.Flag(ctx, item.ItemID, "first")
+			Expect(err).To(BeNil())
+			_, err = store.Flag(ctx, item.ItemID, "second")
+			Expect(err).To(BeNil())
+
+			read, err := store.Get(ctx, item.ItemID)
+			Expect(err).To(BeNil())
+			Expect(read.FlagReason).To(Equal("second"))
+			Expect(read.FlaggedAt).NotTo(BeNil())
+		})
+
+		It("clears both fields on unflag", func() {
+			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
+			Expect(err).To(BeNil())
+			_, err = store.Flag(ctx, item.ItemID, "asked the wrong team")
+			Expect(err).To(BeNil())
+
+			unflagged, err := store.Unflag(ctx, item.ItemID)
+			Expect(err).To(BeNil())
+			Expect(unflagged).NotTo(BeNil())
+
+			read, err := store.Get(ctx, item.ItemID)
+			Expect(err).To(BeNil())
+			Expect(read.FlagReason).To(BeEmpty())
+			Expect(read.FlaggedAt).To(BeNil())
+			Expect(read.State).To(Equal(pkg.OpenState))
+			Expect(read.AnsweredAt).To(BeNil())
+		})
+
+		It("unflags an item that carries no flag as a no-op success", func() {
+			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
+			Expect(err).To(BeNil())
+
+			_, err = store.Unflag(ctx, item.ItemID)
+			Expect(err).To(BeNil())
+
+			read, err := store.Get(ctx, item.ItemID)
+			Expect(err).To(BeNil())
+			Expect(read.FlagReason).To(BeEmpty())
+			Expect(read.FlaggedAt).To(BeNil())
+		})
+
+		// TrimSpace is the emptiness check only; the contract declares no
+		// normalization, so the stored reason is the caller's text verbatim.
+		It("stores the reason verbatim", func() {
+			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
+			Expect(err).To(BeNil())
+
+			_, err = store.Flag(ctx, item.ItemID, "  asked the wrong team  ")
+			Expect(err).To(BeNil())
+
+			read, err := store.Get(ctx, item.ItemID)
+			Expect(err).To(BeNil())
+			Expect(read.FlagReason).To(Equal("  asked the wrong team  "))
+		})
+
+		It("refuses to unflag an unknown item", func() {
+			_, err := store.Unflag(ctx, pkg.ItemID("no-such-item"))
+			Expect(err).NotTo(BeNil())
+			Expect(errors.Is(err, pkg.ErrItemNotFound)).To(BeTrue())
+		})
+	})
+
 	Describe("Close", func() {
 		It("applies open -> closed", func() {
 			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))

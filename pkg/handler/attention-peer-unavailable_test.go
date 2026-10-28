@@ -175,6 +175,36 @@ var _ = Describe("a federated peer failure reaching the client", func() {
 
 			ExpectPeerUnavailable(resp)
 		})
+
+		It("answers a failed peer FLAG as 503, not as a validation failure", func() {
+			h := handler.NewAttentionFlagHandler(
+				federatingOver(http.StatusServiceUnavailable, unavailableBody),
+			)
+
+			resp := call(
+				h,
+				http.MethodPost,
+				"/api/1.0/attention/"+itemID.String()+"/flag",
+				`{"reason":"asked the wrong team"}`,
+			)
+
+			ExpectPeerUnavailable(resp)
+		})
+
+		It("answers a failed peer UNFLAG as 503, not as a validation failure", func() {
+			h := handler.NewAttentionUnflagHandler(
+				federatingOver(http.StatusServiceUnavailable, unavailableBody),
+			)
+
+			resp := call(
+				h,
+				http.MethodPost,
+				"/api/1.0/attention/"+itemID.String()+"/unflag",
+				"",
+			)
+
+			ExpectPeerUnavailable(resp)
+		})
 	})
 
 	It("answers a rejected peer token as 503 too, and never as 404", func() {

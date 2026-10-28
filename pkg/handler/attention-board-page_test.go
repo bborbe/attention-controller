@@ -55,7 +55,12 @@ const (
 // condition left. ⚠️ Three specs below used `NotTo("<button")` as a proxy for
 // "carries no control" and have been amended for it — twice when the jump corner
 // and the X landed, once more when the read-aloud control did. Assert on the
-// ANSWER-control markers (`data-ack`, `<form`, `<input`), never on `<button`.
+// ANSWER-control markers (`data-ack`, `<form class="answer"`, `data-option`),
+// never on `<button`. ⚠️ AMENDED 2026-10-28: this read `<form`, `<input`, which
+// stopped meaning "answer control" when the flag form landed — every open row
+// now carries a `form.flag` with its own input. The markers are now the
+// answer form's own class and its option inputs, which the flag form does not
+// carry.
 var _ = Describe("Attention page board controls", func() {
 	var ctx context.Context
 	var db libkv.DB
@@ -217,7 +222,7 @@ var _ = Describe("Attention page board controls", func() {
 			body, item := renderPage(permissionRequest(), pkg.Provenance{})
 			block := rowBlock(body, item.ItemID)
 
-			Expect(block).NotTo(ContainSubstring("<form"))
+			Expect(block).NotTo(ContainSubstring("<form class=\"answer\""))
 			// ⚠️ AMENDED 2026-09-27 — a permission row now DOES render one
 			// button: the jump corner, disabled, because the operator's ask is
 			// that the control sit in the same place on every card, and with the
@@ -225,7 +230,7 @@ var _ = Describe("Attention page board controls", func() {
 			// true, and is what this spec is for, is that a permission row
 			// carries no ANSWER control.
 			Expect(block).NotTo(ContainSubstring("data-ack"))
-			Expect(block).NotTo(ContainSubstring("<input"))
+			Expect(block).NotTo(ContainSubstring("data-option"))
 			Expect(block).To(ContainSubstring(`class="jump-corner"`))
 			Expect(block).To(ContainSubstring(`disabled`))
 			Expect(block).NotTo(ContainSubstring(`data-jump`))
@@ -240,7 +245,7 @@ var _ = Describe("Attention page board controls", func() {
 			block := rowBlock(body, item.ItemID)
 
 			Expect(block).To(ContainSubstring("/supervisor:jump 1907"))
-			Expect(block).NotTo(ContainSubstring("<form"))
+			Expect(block).NotTo(ContainSubstring("<form class=\"answer\""))
 			// ⚠️ AMENDED 2026-09-27 (second time) — this asserted
 			// NotTo("<button"), a proxy for "carries no control". A permission
 			// row now renders THREE buttons: the jump corner, the corner X, and
@@ -248,7 +253,7 @@ var _ = Describe("Attention page board controls", func() {
 			// so it is replaced by the property: none of them is an ANSWER
 			// control.
 			Expect(block).NotTo(ContainSubstring("data-ack"))
-			Expect(block).NotTo(ContainSubstring("<input"))
+			Expect(block).NotTo(ContainSubstring("data-option"))
 			Expect(block).NotTo(ContainSubstring(`value="skip"`))
 		})
 
@@ -279,7 +284,7 @@ var _ = Describe("Attention page board controls", func() {
 			Expect(block).To(ContainSubstring(`aria-label="Read aloud"`))
 			Expect(block).To(ContainSubstring(`class="speak-icon"`))
 			// The negative half: the control is a utility, not an answer control.
-			Expect(block).NotTo(ContainSubstring("<form"))
+			Expect(block).NotTo(ContainSubstring("<form class=\"answer\""))
 			Expect(block).NotTo(ContainSubstring("data-ack"))
 			Expect(block).NotTo(ContainSubstring(`value="skip"`))
 		})
@@ -309,13 +314,15 @@ var _ = Describe("Attention page board controls", func() {
 			body := resp.Body.String()
 
 			Expect(rowBlock(body, message.ItemID)).To(ContainSubstring("<form"))
-			Expect(rowBlock(body, permission.ItemID)).NotTo(ContainSubstring("<form"))
+			Expect(
+				rowBlock(body, permission.ItemID),
+			).NotTo(ContainSubstring("<form class=\"answer\""))
 			// ⚠️ AMENDED 2026-09-27 (second time) — the `<button` proxy again.
 			// The permission row renders the jump corner, the corner X and the
 			// read-aloud control; what must not reach it is an ANSWER control.
 			Expect(rowBlock(body, permission.ItemID)).To(ContainSubstring("data-speak"))
 			Expect(rowBlock(body, permission.ItemID)).NotTo(ContainSubstring("data-ack"))
-			Expect(rowBlock(body, permission.ItemID)).NotTo(ContainSubstring("<input"))
+			Expect(rowBlock(body, permission.ItemID)).NotTo(ContainSubstring("data-option"))
 			Expect(rowBlock(body, permission.ItemID)).NotTo(ContainSubstring(`value="skip"`))
 		},
 	)
@@ -440,7 +447,7 @@ var _ = Describe("Attention page board controls", func() {
 				Expect(err).To(BeNil())
 
 				block := rowBlock(render(), item.ItemID)
-				Expect(block).NotTo(ContainSubstring("<form"))
+				Expect(block).NotTo(ContainSubstring("<form class=\"answer\""))
 				Expect(block).NotTo(ContainSubstring("Acknowledge"))
 				Expect(block).NotTo(ContainSubstring("Dismiss"))
 				Expect(block).NotTo(ContainSubstring("Next"))
@@ -758,7 +765,9 @@ var _ = Describe("Attention page board controls", func() {
 			body := render()
 
 			Expect(dimmedRow(body, answered.ItemID)).To(BeTrue())
-			Expect(rowBlock(body, answered.ItemID)).NotTo(ContainSubstring("<form"))
+			Expect(
+				rowBlock(body, answered.ItemID),
+			).NotTo(ContainSubstring("<form class=\"answer\""))
 
 			Expect(dimmedRow(body, open.ItemID)).To(BeFalse())
 			Expect(rowBlock(body, open.ItemID)).To(ContainSubstring("<form"))
@@ -1160,6 +1169,92 @@ var _ = Describe("Attention page board controls", func() {
 			body := render()
 			Expect(body).To(ContainSubstring(`data-board-filter`))
 			Expect(body).To(ContainSubstring("Nothing needs attention."))
+		})
+
+		// The second filter: flagged cards are parked by default, exactly as
+		// answered records are. The coupling is § Two filters — hide=none
+		// disables both, and the flag parameter cannot be on while hide is off.
+		Describe("the flag filter", func() {
+			It("renders the flag switch on by default and off at flags=none", func() {
+				item, err := store.Push(ctx, messageRequest())
+				Expect(err).To(BeNil())
+				provenance.ResolveReturns(pkg.Provenances{item.ItemID: pkg.Provenance{}})
+
+				Expect(renderAt("/")).To(ContainSubstring(
+					`data-flag-filter role="switch" aria-checked="true"`,
+				))
+				Expect(renderAt("/?flags=none")).To(ContainSubstring(
+					`data-flag-filter role="switch" aria-checked="false"`,
+				))
+				// The answered filter is unaffected by the flag parameter.
+				Expect(renderAt("/?flags=none")).To(ContainSubstring(filterSwitchOn))
+			})
+
+			It("renders both switches off at hide=none", func() {
+				item, err := store.Push(ctx, messageRequest())
+				Expect(err).To(BeNil())
+				provenance.ResolveReturns(pkg.Provenances{item.ItemID: pkg.Provenance{}})
+
+				body := renderAt("/?hide=none")
+				Expect(body).To(ContainSubstring(filterSwitchOff))
+				Expect(body).To(ContainSubstring(
+					`data-flag-filter role="switch" aria-checked="false"`,
+				))
+			})
+
+			It("still serves the flagged row under every view", func() {
+				item, err := store.Push(ctx, messageRequest())
+				Expect(err).To(BeNil())
+				_, err = store.Flag(ctx, item.ItemID, "misrouted")
+				Expect(err).To(BeNil())
+				provenance.ResolveReturns(pkg.Provenances{item.ItemID: pkg.Provenance{}})
+
+				// The filter is client-side, so body absence is never the
+				// evidence: every view must still serve the row for the switch
+				// to be able to restore it.
+				for _, target := range []string{"/", "/?flags=none", "/?hide=none"} {
+					Expect(renderAt(target)).To(ContainSubstring(
+						`data-item-id="`+item.ItemID.String()+`"`,
+					), "row absent at %s", target)
+				}
+			})
+
+			It("escapes the flag reason on both views", func() {
+				item, err := store.Push(ctx, messageRequest())
+				Expect(err).To(BeNil())
+				_, err = store.Flag(ctx, item.ItemID, `<script>alert(1)</script>`)
+				Expect(err).To(BeNil())
+				provenance.ResolveReturns(pkg.Provenances{item.ItemID: pkg.Provenance{}})
+
+				for _, target := range []string{"/?flags=none", "/?hide=none"} {
+					body := renderAt(target)
+					Expect(body).To(ContainSubstring(`&lt;script&gt;alert(1)`), target)
+					Expect(body).NotTo(ContainSubstring(`<script>alert(1)`), target)
+				}
+			})
+
+			It("pins the script's copy of the flag parameter", func() {
+				item, err := store.Push(ctx, messageRequest())
+				Expect(err).To(BeNil())
+				provenance.ResolveReturns(pkg.Provenances{item.ItemID: pkg.Provenance{}})
+
+				body := renderAt("/")
+				Expect(body).To(ContainSubstring(`var FLAGS_PARAM = 'flags';`))
+				Expect(body).To(ContainSubstring(`var FLAGS_FLAGGED = 'flagged';`))
+				Expect(body).To(ContainSubstring(`var FLAGS_NONE = 'none';`))
+			})
+
+			It("pins the per-row predicate", func() {
+				item, err := store.Push(ctx, messageRequest())
+				Expect(err).To(BeNil())
+				provenance.ResolveReturns(pkg.Provenances{item.ItemID: pkg.Provenance{}})
+
+				// The composition and the per-row half, so a rewrite that
+				// restores globally or drops the coupling fails here.
+				body := renderAt("/")
+				Expect(body).To(ContainSubstring(`!flagsOn || hideOff`))
+				Expect(body).To(ContainSubstring(`hideOff || !answered`))
+			})
 		})
 	})
 })

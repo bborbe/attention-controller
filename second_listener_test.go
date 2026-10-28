@@ -49,6 +49,8 @@ var businessRoutes = []struct{ method, path string }{
 	{http.MethodPost, "/api/1.0/attention/item-1/answer"},
 	{http.MethodPost, "/api/1.0/attention/item-1/escalate"},
 	{http.MethodPost, "/api/1.0/attention/item-1/close"},
+	{http.MethodPost, "/api/1.0/attention/item-1/flag"},
+	{http.MethodPost, "/api/1.0/attention/item-1/unflag"},
 	{http.MethodGet, "/api/1.0/attention/item-1/attempt"},
 	{http.MethodPost, "/api/1.0/attention/item-1/attempt"},
 	{http.MethodGet, "/api/1.0/attention/item-1"},

@@ -164,6 +164,30 @@ type AttentionStore interface {
 	// identity, not merely against the field's presence.
 	Escalate(ctx context.Context, itemID ItemID, escalatedBy string) (*Item, error)
 
+	// Flag records that the operator believes this item should never have
+	// reached them, as a field write on an open item. It is NOT a transition and
+	// NOT an answer: State and every answer field are left untouched, so a
+	// flagged permission gate is still answerable and the flag releases nothing.
+	//
+	// The reason is required. An empty, absent or whitespace-only reason is
+	// rejected with ErrFlagReasonRequired before any write is attempted.
+	//
+	// FlaggedAt is stamped from the store's own clock inside the same
+	// compare-and-set that writes FlagReason, so the pair is always present
+	// together or absent together. Two flags racing on one item leave the later
+	// reason in place: both writes are valid flags.
+	//
+	// Flagging an item that is not open is rejected with ErrItemNotOpen — the
+	// item has left the queue, and the misroute signal for an already-answered
+	// card is deliberately out of scope.
+	Flag(ctx context.Context, itemID ItemID, reason string) (*Item, error)
+
+	// Unflag clears FlagReason and FlaggedAt and returns the item. It is
+	// idempotent: unflagging an item that carries no flag succeeds and changes
+	// nothing, because the caller's intent already holds. An unknown id is
+	// ErrItemNotFound.
+	Unflag(ctx context.Context, itemID ItemID) (*Item, error)
+
 	// Close applies open -> closed or answered -> closed. Closing an item that
 	// is already closed is rejected with ErrIllegalTransition.
 	//

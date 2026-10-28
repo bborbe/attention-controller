@@ -283,4 +283,82 @@ var _ = Describe("HTTP remote attention store", func() {
 			Expect(body).ShouldNot(HaveKey("remote_addr"))
 		})
 	})
+
+	Context("flagging", func() {
+		It("sends the reason to the peer's flag route", func() {
+			respondWith(http.StatusOK, `{"item_id":"peer-1","state":"open"}`)
+
+			item, err := remote.Flag(ctx, "peer-1", "asked the wrong team")
+
+			Expect(err).Should(BeNil())
+			Expect(item.ItemID).Should(Equal(pkg.ItemID("peer-1")))
+			Expect(lastRequest.Method).Should(Equal(http.MethodPost))
+			Expect(lastRequest.URL.Path).Should(Equal("/api/1.0/attention/peer-1/flag"))
+			Expect(lastRequest.Header.Get("Authorization")).Should(Equal("Bearer peer-token"))
+
+			var body map[string]any
+			Expect(json.Unmarshal(lastBody, &body)).Should(Succeed())
+			Expect(body["reason"]).Should(Equal("asked the wrong team"))
+		})
+
+		It("sends no body to the peer's unflag route", func() {
+			respondWith(http.StatusOK, `{"item_id":"peer-1","state":"open"}`)
+
+			item, err := remote.Unflag(ctx, "peer-1")
+
+			Expect(err).Should(BeNil())
+			Expect(item.ItemID).Should(Equal(pkg.ItemID("peer-1")))
+			Expect(lastRequest.Method).Should(Equal(http.MethodPost))
+			Expect(lastRequest.URL.Path).Should(Equal("/api/1.0/attention/peer-1/unflag"))
+			Expect(lastBody).Should(BeEmpty())
+		})
+
+		It("maps the peer's ITEM_NOT_OPEN to ErrItemNotOpen", func() {
+			respondWith(
+				http.StatusConflict,
+				`{"error":{"code":"ITEM_NOT_OPEN","message":"not open"}}`,
+			)
+
+			_, err := remote.Flag(ctx, "peer-1", "asked the wrong team")
+
+			Expect(errors.Is(err, pkg.ErrItemNotOpen)).Should(BeTrue())
+		})
+
+		It("maps the peer's 404 to ErrItemNotFound", func() {
+			respondWith(
+				http.StatusNotFound,
+				`{"error":{"code":"NOT_FOUND","message":"no such item"}}`,
+			)
+
+			_, err := remote.Unflag(ctx, "peer-1")
+
+			Expect(errors.Is(err, pkg.ErrItemNotFound)).Should(BeTrue())
+		})
+
+		It("maps the peer's FLAG_REASON_REQUIRED to ErrFlagReasonRequired", func() {
+			respondWith(
+				http.StatusBadRequest,
+				`{"error":{"code":"FLAG_REASON_REQUIRED","message":"reason required"}}`,
+			)
+
+			_, err := remote.Flag(ctx, "peer-1", "")
+
+			Expect(errors.Is(err, pkg.ErrFlagReasonRequired)).Should(BeTrue())
+		})
+
+		It("maps an unreachable peer to ErrPeerUnavailable", func() {
+			// The port is bound and then released, so the connection is refused
+			// promptly rather than hanging until the client's own timeout.
+			listener, listenErr := net.Listen("tcp", "127.0.0.1:0")
+			Expect(listenErr).To(BeNil())
+			deadURL := "http://" + listener.Addr().String()
+			Expect(listener.Close()).To(BeNil())
+
+			remote = pkg.NewHTTPRemoteAttentionStore(deadURL, "peer-token")
+
+			_, err := remote.Flag(ctx, "peer-1", "asked the wrong team")
+
+			Expect(errors.Is(err, pkg.ErrPeerUnavailable)).Should(BeTrue())
+		})
+	})
 })

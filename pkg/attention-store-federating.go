@@ -192,6 +192,30 @@ func (f *federatingAttentionStore) Escalate(
 	return f.local.Escalate(ctx, itemID, escalatedBy)
 }
 
+// Flag proxies to the peer when the peer owns the item, and applies locally
+// otherwise. The peer's own record is the only one written for a peer-owned
+// item: nothing is written locally, so a failed peer call leaves this store
+// exactly as it was.
+func (f *federatingAttentionStore) Flag(
+	ctx context.Context,
+	itemID ItemID,
+	reason string,
+) (*Item, error) {
+	if f.isRemote(ctx, itemID) {
+		return f.remote.Flag(ctx, itemID, reason)
+	}
+	return f.local.Flag(ctx, itemID, reason)
+}
+
+// Unflag proxies to the peer when the peer owns the item, and applies locally
+// otherwise.
+func (f *federatingAttentionStore) Unflag(ctx context.Context, itemID ItemID) (*Item, error) {
+	if f.isRemote(ctx, itemID) {
+		return f.remote.Unflag(ctx, itemID)
+	}
+	return f.local.Unflag(ctx, itemID)
+}
+
 // Close proxies to the peer when the peer owns the item, and applies locally
 // otherwise.
 func (f *federatingAttentionStore) Close(

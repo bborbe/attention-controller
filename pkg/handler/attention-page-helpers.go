@@ -99,6 +99,11 @@ func newAttentionPageRow(
 		TopicURL:       vaultFileURL(vaultName, provenance.TopicPath),
 	}
 	row.Message, row.Ack = affordance(item.AnswerMechanism)
+	// Flagged reports whether this row is parked by the flag filter. It is
+	// derived from the stored flag alone — the reason's presence — because the
+	// pair is written together and cleared together, so the timestamp cannot
+	// disagree with it.
+	row.Flagged = item.FlagReason != ""
 	// Risk is derived here rather than read straight off the item. The declared
 	// level is stored unchanged, and this call is the render-time rule that may
 	// raise it and never lower it — the reason a producer that under-declares
@@ -1093,4 +1098,11 @@ li.item.risk-risk {
    naming this one "unknown" reddens a guard about provenance from a footer that
    has nothing to do with it — which is exactly what it did, once. */
 .build-identity .bi-absent { color: var(--warn); }
+/* The flag control is its own form beside the answer form, never inside it: a
+   flag is not an answer, and a nested form is invalid HTML the browser drops —
+   which would leave the flag field owned by the answer form. The reason line is
+   a record of the stored flag, rendered on the card it was written on. */
+.flag { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0 0; }
+.flag input { flex: 1 1 220px; }
+.flag-reason-shown { margin: 8px 0 0; color: var(--muted); }
 `

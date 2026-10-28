@@ -1455,7 +1455,7 @@ func (a *attentionStore) Escalate(
 	return result, nil
 }
 
-// Close applies open -> closed or answered -> closed.
+// Flag records that the operator believes this item should never have reached
 func (a *attentionStore) Close(
 	ctx context.Context,
 	itemID ItemID,

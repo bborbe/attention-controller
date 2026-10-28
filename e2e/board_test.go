@@ -102,6 +102,11 @@ const (
 	// outcome — which is the very race the second case asserts against, so it
 	// must not be the case's own setup.
 	speakPattern = "**/api/1.0/attention/*/speak"
+	// answerPattern is one item's answer endpoint, as a route glob. The flag
+	// case registers it to prove the flag form made no answer request: a flag
+	// that reused the answer path would set answered_at and destroy the very
+	// distinction the feature exists to create.
+	answerPattern = "**/api/1.0/attention/*/answer"
 	// failedNoteSelector is the class the page gives a note reporting a
 	// failure, whichever of its helpers rendered it.
 	failedNoteSelector = ".note.failed"
@@ -482,6 +487,21 @@ func answer(itemID string) {
 		"answered_by": "e2e",
 		"answer":      map[string]string{"kind": "text", "value": "e2e answer"},
 	})
+}
+
+// getItem reads one item through the read API, decoding into pkg.Item so a case
+// can assert the stored state and flag fields rather than the rendered DOM. The
+// read API is the same one an arm uses, and it returns the item whatever its
+// state.
+func getItem(itemID string) pkg.Item {
+	resp, err := http.Get(baseURL + "api/1.0/attention/" + itemID)
+	Expect(err).NotTo(HaveOccurred())
+	defer resp.Body.Close()
+	content, _ := io.ReadAll(resp.Body)
+	Expect(resp.StatusCode).To(Equal(http.StatusOK), "get failed: %s", string(content))
+	var item pkg.Item
+	Expect(json.Unmarshal(content, &item)).To(Succeed())
+	return item
 }
 
 // rowCount returns how many rows the board currently renders for an item. Zero
@@ -1777,5 +1797,142 @@ var _ = Describe("the attention board", func() {
 
 		// The rendered top offset, in the same row.
 		Expect(provBox.Y).To(BeNumerically("<", askBox.Y))
+	})
+
+	// The flag control: a per-card form wired to its own endpoint. The
+	// discriminating half is that it does NOT answer — the item stays open and
+	// answered_at stays absent — so the case counts requests to the answer
+	// endpoint as well as reading the stored item back.
+	It("flags a misrouted card without answering it, so the item stays open", func() {
+		itemID := push("e2e: the misrouted card", "e2e-flag-misrouted")
+
+		page := newPage("")
+		defer func() { _ = page.Close() }()
+
+		var answers int64
+		Expect(page.Route(answerPattern, func(route playwright.Route) {
+			atomic.AddInt64(&answers, 1)
+			_ = route.Continue()
+		})).To(Succeed())
+
+		Eventually(func() int { return rowCount(page, itemID) }).Should(Equal(1))
+
+		flagForm := rowSelector(itemID) + " form[data-flag-control]"
+		Expect(page.Locator(flagForm + " input[name=reason]").Fill("asked the wrong team")).
+			To(Succeed())
+		Expect(page.Locator(flagForm + " button[type=submit]").Click()).To(Succeed())
+
+		// The row leaves the default view, which is the client filter reacting
+		// to the mark the streamed row carries.
+		Eventually(func() int { return rowCount(page, itemID) }).Should(Equal(0))
+		Consistently(func() int64 { return atomic.LoadInt64(&answers) }).
+			Should(Equal(int64(0)), "the flag form made an answer request")
+
+		item := getItem(itemID)
+		Expect(item.State).To(Equal(pkg.OpenState))
+		Expect(item.FlagReason).To(Equal("asked the wrong team"))
+		Expect(item.AnsweredAt).To(BeNil())
+	})
+
+	// The per-row restore, which a global unpark cannot satisfy. The answered
+	// card is flagged while still open and then answered, so it carries BOTH
+	// marks: turning the flag filter off must not restore it while the answered
+	// filter is still on.
+	It(
+		"restores only the flagged card when the flag filter is turned off, leaving answered rows parked",
+		func() {
+			openID := push("e2e: the open flagged card", "e2e-flag-restore-open")
+			answeredID := push("e2e: the answered flagged card", "e2e-flag-restore-answered")
+
+			// Flag first, then answer: a flag is refused on an answered item, and
+			// the pair must coexist for the both-marks row.
+			post("api/1.0/attention/"+answeredID+"/flag", map[string]any{"reason": "misrouted"})
+			answer(answeredID)
+
+			page := newPage("")
+			defer func() { _ = page.Close() }()
+
+			Eventually(func() int { return rowCount(page, openID) }).Should(Equal(1))
+			Eventually(func() int { return rowCount(page, answeredID) }).Should(Equal(0))
+
+			// The open card is flagged through the API so the case isolates the
+			// switch click rather than driving a second form.
+			post("api/1.0/attention/"+openID+"/flag", map[string]any{"reason": "misrouted"})
+			Eventually(func() int { return rowCount(page, openID) }).Should(Equal(0))
+
+			// Flag filter off. The open flagged card returns; the answered-and-flagged
+			// card stays parked, which is visible(false, true) beside
+			// visible(true, true).
+			Expect(page.Locator("[data-flag-filter]").Click()).To(Succeed())
+			Eventually(func() int { return rowCount(page, openID) }).Should(Equal(1))
+			Consistently(func() int { return rowCount(page, answeredID) }).Should(Equal(0))
+
+			// Flag filter back on, then unflag: the parked entry's own mark is
+			// re-derived from the streamed row and the filter re-run, so the card
+			// returns rather than staying parked at a stale mark.
+			Expect(page.Locator("[data-flag-filter]").Click()).To(Succeed())
+			post("api/1.0/attention/"+openID+"/unflag", map[string]any{})
+			Eventually(func() int { return rowCount(page, openID) }).Should(Equal(1))
+		},
+	)
+
+	// The union view and the flag filter cannot both be active. Turning the flag
+	// switch on at hide=none must re-enable the answered filter, and the switch
+	// must not be disabled: a disabled control with no explanation reads as
+	// broken.
+	It("writes hide=answered when the flag switch is turned on at hide=none", func() {
+		openID := push("e2e: the open card at the union view", "e2e-flag-union-open")
+		answeredID := push("e2e: the answered card at the union view", "e2e-flag-union-answered")
+		answer(answeredID)
+
+		page := newPage("/?hide=none")
+		defer func() { _ = page.Close() }()
+
+		Eventually(func() int { return rowCount(page, openID) }).Should(Equal(1))
+		Eventually(func() int { return rowCount(page, answeredID) }).Should(Equal(1))
+
+		flagSwitch := page.Locator("[data-flag-filter]")
+		Expect(flagSwitch.Click()).To(Succeed())
+
+		Eventually(func() string { return page.URL() }).
+			Should(And(ContainSubstring("hide=answered"), ContainSubstring("flags=flagged")))
+		Eventually(func() int { return rowCount(page, answeredID) }).Should(Equal(0))
+		Consistently(func() int { return rowCount(page, openID) }).Should(Equal(1))
+
+		disabled, err := flagSwitch.IsDisabled()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(disabled).To(BeFalse())
+	})
+
+	// The flag is reversible from the card it was written on, and that card is
+	// the only place the undo can be reached: the default view parks it, so the
+	// control lives behind the flag filter's off position. The round trip is
+	// asserted through the stored record AND the render — the record proves the
+	// endpoint ran, and the switch proves the card is no longer parked.
+	It("unflags a misrouted card from its own control and returns it to the default view", func() {
+		itemID := push("e2e: the card to unflag", "e2e-unflag-control")
+
+		page := newPage("")
+		defer func() { _ = page.Close() }()
+
+		flagForm := rowSelector(itemID) + " form[data-flag-control]"
+		Eventually(func() int { return rowCount(page, itemID) }).Should(Equal(1))
+		Expect(page.Locator(flagForm + " input[name=reason]").Fill("asked the wrong team")).
+			To(Succeed())
+		Expect(page.Locator(flagForm + " button[type=submit]").Click()).To(Succeed())
+		Eventually(func() int { return rowCount(page, itemID) }).Should(Equal(0))
+
+		// Reveal the parked card. The flag filter is the narrow reveal; the
+		// answered filter stays on, so only flagged cards return.
+		Expect(page.Locator("[data-flag-filter]").Click()).To(Succeed())
+		Eventually(func() int { return rowCount(page, itemID) }).Should(Equal(1))
+
+		Expect(page.Locator(rowSelector(itemID) + " button[data-unflag]").Click()).To(Succeed())
+		Eventually(func() string { return getItem(itemID).FlagReason }).Should(BeEmpty())
+
+		// Back to the default view's filters: an unflagged card is no longer
+		// parked, which is the half a cleared field alone cannot show.
+		Expect(page.Locator("[data-flag-filter]").Click()).To(Succeed())
+		Consistently(func() int { return rowCount(page, itemID) }).Should(Equal(1))
 	})
 })

@@ -202,6 +202,57 @@ var _ = Describe("Federating attention store", func() {
 		})
 	})
 
+	Context("flagging and unflagging", func() {
+		It("proxies a flag to the peer that owns the item", func() {
+			local.GetReturns(nil, pkg.ErrItemNotFound)
+			remote.FlagReturns(&pkg.Item{ItemID: "peer-1"}, nil)
+
+			item, err := store.Flag(ctx, "peer-1", "asked the wrong team")
+
+			Expect(err).Should(BeNil())
+			Expect(item.ItemID).Should(Equal(pkg.ItemID("peer-1")))
+			Expect(remote.FlagCallCount()).Should(Equal(1))
+			_, _, reason := remote.FlagArgsForCall(0)
+			Expect(reason).Should(Equal("asked the wrong team"))
+			// Nothing is written locally for a peer-owned item.
+			Expect(local.FlagCallCount()).Should(Equal(0))
+		})
+
+		It("flags a locally-owned item on the local store", func() {
+			local.GetReturns(&pkg.Item{ItemID: "local-1"}, nil)
+			local.FlagReturns(&pkg.Item{ItemID: "local-1"}, nil)
+
+			item, err := store.Flag(ctx, "local-1", "asked the wrong team")
+
+			Expect(err).Should(BeNil())
+			Expect(item.ItemID).Should(Equal(pkg.ItemID("local-1")))
+			Expect(local.FlagCallCount()).Should(Equal(1))
+			Expect(remote.FlagCallCount()).Should(Equal(0))
+		})
+
+		It("does not write locally when the peer refuses", func() {
+			local.GetReturns(nil, pkg.ErrItemNotFound)
+			remote.FlagReturns(nil, pkg.ErrItemNotOpen)
+
+			_, err := store.Flag(ctx, "peer-1", "asked the wrong team")
+
+			Expect(errors.Is(err, pkg.ErrItemNotOpen)).Should(BeTrue())
+			Expect(local.FlagCallCount()).Should(Equal(0))
+		})
+
+		It("proxies unflag to the peer that owns the item", func() {
+			local.GetReturns(nil, pkg.ErrItemNotFound)
+			remote.UnflagReturns(&pkg.Item{ItemID: "peer-1"}, nil)
+
+			item, err := store.Unflag(ctx, "peer-1")
+
+			Expect(err).Should(BeNil())
+			Expect(item.ItemID).Should(Equal(pkg.ItemID("peer-1")))
+			Expect(remote.UnflagCallCount()).Should(Equal(1))
+			Expect(local.UnflagCallCount()).Should(Equal(0))
+		})
+	})
+
 	Context("delegating the rest", func() {
 		It("never pushes to the peer", func() {
 			local.PushReturns(&pkg.Item{ItemID: "local-1"}, nil)
