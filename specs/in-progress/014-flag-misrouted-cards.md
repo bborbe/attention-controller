@@ -1,8 +1,9 @@
 ---
-status: prompted
+status: verifying
 approved: "2026-10-28T13:51:40Z"
 generating: "2026-10-28T13:51:41Z"
 prompted: "2026-10-28T14:09:39Z"
+verifying: "2026-10-28T14:48:38Z"
 branch: dark-factory/flag-misrouted-cards
 ---
 

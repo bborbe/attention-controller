@@ -195,4 +195,41 @@ var _ = Describe("Attention page flag control", func() {
 		Expect(rowOf(body, flagged.ItemID)).To(ContainSubstring(`data-flagged="true"`))
 		Expect(rowOf(body, unflagged.ItemID)).To(ContainSubstring(`data-flagged="false"`))
 	})
+
+	// A flag is reversible, and the card it was written on is the only place the
+	// undo can be reached: the flag parks the card out of the default view, so
+	// without this control the operator would have to know both the flags=none
+	// URL and the item id to take a flag back.
+	It("renders the unflag control on a flagged row and not on an unflagged one", func() {
+		flagged, err := store.Push(ctx, pushRequest(pkg.MessageAnswerMechanism, "unflag-marked"))
+		Expect(err).To(BeNil())
+		unflagged, err := store.Push(
+			ctx,
+			pushRequest(pkg.MessageAnswerMechanism, "unflag-unmarked"),
+		)
+		Expect(err).To(BeNil())
+		_, err = store.Flag(ctx, flagged.ItemID, "misrouted")
+		Expect(err).To(BeNil())
+		provenance.ResolveReturns(pkg.Provenances{
+			flagged.ItemID:   pkg.Provenance{},
+			unflagged.ItemID: pkg.Provenance{},
+		})
+
+		body := render()
+		Expect(rowOf(body, flagged.ItemID)).
+			To(ContainSubstring(`<button type="button" class="unflag" data-unflag>Unflag</button>`))
+		Expect(rowOf(body, unflagged.ItemID)).NotTo(ContainSubstring(`data-unflag`))
+	})
+
+	It("serves the unflag listener and its route", func() {
+		item, err := store.Push(ctx, pushRequest(pkg.MessageAnswerMechanism, "unflag-listener"))
+		Expect(err).To(BeNil())
+		provenance.ResolveReturns(pkg.Provenances{item.ItemID: pkg.Provenance{}})
+
+		body := render()
+		// The selector literal is prefixed with "button", which only the script
+		// carries: data-unflag alone also appears in the row markup.
+		Expect(body).To(ContainSubstring(`button[data-unflag]`))
+		Expect(body).To(ContainSubstring(`'/unflag'`))
+	})
 })

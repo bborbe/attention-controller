@@ -354,6 +354,31 @@ document.addEventListener('submit', function (event) {
     showNote(form, 'Could not flag this card: ' + err.message, true);
   });
 });
+/* Unflag is reachable from the card the flag was written on, and that is the
+   only place it can be reached: a flagged card is parked by the default view,
+   so an operator who flagged one by mistake would otherwise have to know both
+   the flags=none URL and the item id to undo it. It is a plain button rather
+   than a form — the request carries no fields — and it is delegated on the
+   document for the same reason the Acknowledge control is: a stream re-render
+   replaces the row's whole node and takes any per-button listener with it. */
+document.addEventListener('click', function (event) {
+  if (!event.target || !event.target.closest) { return; }
+  var button = event.target.closest('button[data-unflag]');
+  if (!button) { return; }
+  var row = button.closest('li.item');
+  if (!row) { return; }
+  event.preventDefault();
+  fetch('/api/1.0/attention/' + encodeURIComponent(row.getAttribute('data-item-id')) + '/unflag', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({})
+  }).then(function (response) {
+    if (!response.ok) { throw new Error('unflag failed: ' + response.status); }
+    return response.json();
+  }).catch(function (err) {
+    showNote(row, 'Could not unflag this card: ' + err.message, true);
+  });
+});
 /* singleAnswer maps one collected entry onto the item-level answer shape.
    It carries values when the question took several picks: a single-question item
    declared multiple has no other field for them, so sending only value would
@@ -1455,7 +1480,7 @@ function replayFailure(row) {
      ⚠️ Withheld from the dimmed record card: a flag is a field write on an open
      item and the endpoint answers 409 for an answered one, so a control here
      would always fail. */}}{{if not .Dimmed}}<form class="flag" data-flag-control><input class="flag-reason-input" type="text" name="reason" placeholder="Why should this not have reached you?" aria-label="Reason this card was misrouted"><button type="submit" class="flag-submit">⚑ Flag as misrouted</button></form>
-{{end}}{{if .Flagged}}<div class="flag-reason-shown">flagged: {{ cardtext .Item.FlagReason }}</div>
+{{end}}{{if .Flagged}}<div class="flag-reason-shown">flagged: {{ cardtext .Item.FlagReason }} <button type="button" class="unflag" data-unflag>Unflag</button></div>
 {{end}}{{/* The undeliverable marker renders on a card whose answer a recorded
      attempt says did NOT reach the asking session, and on no other status:
      "delivered" is the good case, "never_attempted" and "pre_trail_unknown" are

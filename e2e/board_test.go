@@ -1768,4 +1768,36 @@ var _ = Describe("the attention board", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(disabled).To(BeFalse())
 	})
+
+	// The flag is reversible from the card it was written on, and that card is
+	// the only place the undo can be reached: the default view parks it, so the
+	// control lives behind the flag filter's off position. The round trip is
+	// asserted through the stored record AND the render — the record proves the
+	// endpoint ran, and the switch proves the card is no longer parked.
+	It("unflags a misrouted card from its own control and returns it to the default view", func() {
+		itemID := push("e2e: the card to unflag", "e2e-unflag-control")
+
+		page := newPage("")
+		defer func() { _ = page.Close() }()
+
+		flagForm := rowSelector(itemID) + " form[data-flag-control]"
+		Eventually(func() int { return rowCount(page, itemID) }).Should(Equal(1))
+		Expect(page.Locator(flagForm + " input[name=reason]").Fill("asked the wrong team")).
+			To(Succeed())
+		Expect(page.Locator(flagForm + " button[type=submit]").Click()).To(Succeed())
+		Eventually(func() int { return rowCount(page, itemID) }).Should(Equal(0))
+
+		// Reveal the parked card. The flag filter is the narrow reveal; the
+		// answered filter stays on, so only flagged cards return.
+		Expect(page.Locator("[data-flag-filter]").Click()).To(Succeed())
+		Eventually(func() int { return rowCount(page, itemID) }).Should(Equal(1))
+
+		Expect(page.Locator(rowSelector(itemID) + " button[data-unflag]").Click()).To(Succeed())
+		Eventually(func() string { return getItem(itemID).FlagReason }).Should(BeEmpty())
+
+		// Back to the default view's filters: an unflagged card is no longer
+		// parked, which is the half a cleared field alone cannot show.
+		Expect(page.Locator("[data-flag-filter]").Click()).To(Succeed())
+		Consistently(func() int { return rowCount(page, itemID) }).Should(Equal(1))
+	})
 })
