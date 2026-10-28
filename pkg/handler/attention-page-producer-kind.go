@@ -94,49 +94,52 @@ func boardProducerKindOf(
 }
 
 // filterByProducerKind splits the rendered rows into the ones the board shows
-// and the count it is hiding.
+// and the two counts it could be hiding.
 //
 // ⚠️ It runs over the rows the store returned rather than being pushed into the
-// store query: the hidden count has to describe the same population the page
+// store query: the counts have to describe the same population the page
 // renders, and a second read would let the two disagree. boardHideParam is a
 // rendering input for exactly the same reason.
 //
 // The rows themselves are returned untouched when the filter is off, so the
 // all-kinds view allocates nothing and cannot reorder what the store gave.
 //
-// ⚠️ The count is "rows the kind filter removes that the operator would
-// otherwise be looking at", so it depends on the OTHER filter's position rather
-// than on a fixed notion of openness. ReadBoard returns answered items too, and
-// the page renders them dimmed:
+// ⚠️ TWO counts, because "rows the kind filter hides that the operator would
+// otherwise be looking at" depends on the OTHER filter's position. ReadBoard
+// returns answered items too and the page renders them dimmed:
 //
-//   - with `hide` ON (the default) the answered filter already parks them, so
-//     counting them would report "6 hidden" on a board whose all-kinds view
-//     reveals one open card;
-//   - with `hide=none` those records ARE on screen, so the kind filter really
-//     is hiding them and the count must include them.
+//   - hiddenOpen counts non-matching rows the board is still asking for. It is
+//     the count while `hide` is ON (the default), where the answered filter has
+//     already parked those records — counting them would report "6 hidden" on a
+//     board whose all-kinds view reveals one open card.
+//   - hiddenAll counts every non-matching row, answered included. It is the
+//     count under `hide=none`, where those records ARE on screen and the kind
+//     filter really is what withholds them.
 //
-// A fixed "open rows only" rule is wrong in the second case, and a fixed "every
-// non-matching row" rule is wrong in the first. Neither the count nor the empty
-// state may contradict what the board is showing.
+// Neither number is correct on its own, and the page cannot work out the other
+// from one: the rows the server withheld were never sent. So both are rendered,
+// and the page's script picks the one the current view is showing — which is
+// also what keeps the count true when the answered toggle or a streamed card
+// moves the boundary after load.
 func filterByProducerKind(
 	rows []attentionPageRow,
 	kind pkg.ProducerKind,
 	allKinds bool,
-	hideAnswered bool,
-) ([]attentionPageRow, int) {
+) ([]attentionPageRow, int, int) {
 	if allKinds {
-		return rows, 0
+		return rows, 0, 0
 	}
 	shown := make([]attentionPageRow, 0, len(rows))
-	hidden := 0
+	hiddenOpen, hiddenAll := 0, 0
 	for _, row := range rows {
 		if row.Item.ProducerKind == kind {
 			shown = append(shown, row)
 			continue
 		}
-		if !row.Dimmed || !hideAnswered {
-			hidden++
+		hiddenAll++
+		if !row.Dimmed {
+			hiddenOpen++
 		}
 	}
-	return shown, hidden
+	return shown, hiddenOpen, hiddenAll
 }

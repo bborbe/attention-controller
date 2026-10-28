@@ -139,7 +139,7 @@ const attentionPageTemplate = `<!DOCTYPE html>
      item — the same reason the switch sits here. It ships hidden and is shown
      only by the stream's own onerror, so a healthy board, a quiet board and an
      empty board all render exactly what they rendered before. */}}
-<div class="board-controls"><a class="board-filter" data-board-kind href="{{ .KindHref }}" data-all-kinds="{{if .AllKinds}}true{{else}}false{{end}}"><svg class="switch" viewBox="0 0 44 24" aria-hidden="true" focusable="false"><rect class="switch-track" x="1" y="1" width="42" height="22" rx="11"/><circle class="switch-knob" cx="12" cy="12" r="8"/></svg><span class="switch-label">{{if .AllKinds}}Managers only{{else}}Show all kinds{{end}}</span></a>{{if .HiddenCount}}<span class="kind-hidden" data-kind-hidden>{{ .HiddenCount }} hidden</span>{{end}}<button type="button" class="board-filter" data-board-filter role="switch" aria-checked="{{if .HideAnswered}}true{{else}}false{{end}}"><svg class="switch" viewBox="0 0 44 24" aria-hidden="true" focusable="false"><rect class="switch-track" x="1" y="1" width="42" height="22" rx="11"/><circle class="switch-knob" cx="12" cy="12" r="8"/></svg><span class="switch-label">Hide answered</span></button><span class="stream-stale" data-stream-stale hidden>Not tracking the store - showing the last known state.</span></div>
+<div class="board-controls"><a class="board-filter" data-board-kind href="{{ .KindHref }}" data-all-kinds="{{if .AllKinds}}true{{else}}false{{end}}" data-hidden-open="{{ .HiddenOpen }}" data-hidden-all="{{ .HiddenAll }}"><svg class="switch" viewBox="0 0 44 24" aria-hidden="true" focusable="false"><rect class="switch-track" x="1" y="1" width="42" height="22" rx="11"/><circle class="switch-knob" cx="12" cy="12" r="8"/></svg><span class="switch-label">{{if .AllKinds}}Managers only{{else}}Show all kinds{{end}}</span></a>{{if .HiddenCount}}<span class="kind-hidden" data-kind-hidden>{{ .HiddenCount }} hidden</span>{{end}}<button type="button" class="board-filter" data-board-filter role="switch" aria-checked="{{if .HideAnswered}}true{{else}}false{{end}}"><svg class="switch" viewBox="0 0 44 24" aria-hidden="true" focusable="false"><rect class="switch-track" x="1" y="1" width="42" height="22" rx="11"/><circle class="switch-knob" cx="12" cy="12" r="8"/></svg><span class="switch-label">Hide answered</span></button><span class="stream-stale" data-stream-stale hidden>Not tracking the store - showing the last known state.</span></div>
 {{if .Items}}<ul class="items">
 {{range .Items}}{{template "attention-row" .}}{{end}}</ul>
 {{else}}<p class="empty">{{if .HiddenCount}}No cards of this kind need attention. The others are hidden by the kind filter above.{{else}}Nothing needs attention.{{end}}</p>
@@ -1077,12 +1077,67 @@ function replayFailure(row) {
      trip that guard on a correct page. */
   var KIND_EMPTY_COPY = 'No cards of this kind need attention. The others are hidden by the kind filter above.';
   var kind = new URLSearchParams(window.location.search).get(KIND_PARAM) || KIND_DEFAULT;
-  function applyKindFilter() {
-    if (kind === KIND_ALL) { return; }
-    var rows = document.querySelectorAll('li.item');
-    for (var i = 0; i < rows.length; i++) {
-      if (rows[i].getAttribute('data-producer-kind') !== kind) { rows[i].remove(); }
+  /* The count beside the switch, kept true after load. Both populations arrive
+     on the kind link, because the rows the server withheld were never sent — the
+     document cannot count them, and only the server knows how many of them are
+     answered. What the script adds is the rows the STREAM delivers: applyKindFilter
+     removes them, so the board ends up withholding more than the load-time count
+     names. The span itself is rendered only when there is something to say, so
+     this both updates it and creates or removes it.
+     ⚠️ Read from the link rather than captured into variables at parse time: the
+     link is resolved further down this script, and a captured value would be
+     read before that assignment. The attributes never change after load.
+     ⚠️ Streamed rows are keyed by item id rather than tallied: a card's update
+     arrives as a second frame, and an id-keyed map makes the recount idempotent
+     where a counter would inflate. The value is the row's dimmed state, which
+     decides whether it counts at all — and which changes when the card is
+     answered. */
+  function kindHiddenBase(attribute) {
+    if (!kindLink) { return 0; }
+    return parseInt(kindLink.getAttribute(attribute), 10) || 0;
+  }
+  var kindStreamed = {};
+  function updateKindCount() {
+    var total = 0;
+    if (kind !== KIND_ALL) {
+      total = on ? kindHiddenBase('data-hidden-open') : kindHiddenBase('data-hidden-all');
+      for (var id in kindStreamed) {
+        /* The same rule the server applies: an answered row is already withheld
+           by the answered filter, so the kind filter is not what hides it. */
+        if (!kindStreamed[id] || !on) { total++; }
+      }
     }
+    if (total === 0) {
+      var stale = document.querySelector('[data-kind-hidden]');
+      if (stale) { stale.remove(); }
+      return;
+    }
+    var el = document.querySelector('[data-kind-hidden]');
+    if (!el) {
+      if (!kindLink) { return; }
+      /* Built rather than inserted as markup: the rendered span and a markup
+         string would be the same text, and the Go suite asserts on the served
+         markup to prove the all-kinds view renders no count. */
+      el = document.createElement('span');
+      el.className = 'kind-hidden';
+      el.setAttribute('data-kind-hidden', '');
+      kindLink.parentNode.insertBefore(el, kindLink.nextSibling);
+    }
+    el.textContent = total + ' hidden';
+  }
+  function applyKindFilter() {
+    if (kind !== KIND_ALL) {
+      var rows = document.querySelectorAll('li.item');
+      for (var i = 0; i < rows.length; i++) {
+        if (rows[i].getAttribute('data-producer-kind') === kind) { continue; }
+        /* Recorded before the row leaves the document: whether it counts depends
+           on whether it was dimmed, which only the node knows. */
+        kindStreamed[rows[i].getAttribute('data-item-id')] =
+          rows[i].classList.contains('dimmed');
+        rows[i].remove();
+      }
+    }
+    updateKindCount();
   }
   /* ⚠️ The kind link's href is SERVER-RENDERED from the request, while the
      answered toggle below rewrites the query with history.replaceState. Left
@@ -1132,6 +1187,10 @@ function replayFailure(row) {
          rebuilt from the URL that just changed — see syncKindHref. */
       syncKindHref();
       applyFilter();
+      /* The answered toggle moves which of the two counts applies: with the
+         filter ON the answered records are withheld anyway, so the kind filter
+         is not what hides them. */
+      updateKindCount();
     });
   }
   /* Applied at load as well as on click, so a URL that arrived carrying the
@@ -1140,6 +1199,7 @@ function replayFailure(row) {
      the first paint rather than as a correction to it. */
   if (on) { applyFilter(); }
   syncKindHref();
+  updateKindCount();
   /* The toggle writes the URL with replaceState, so it rebuilds the link
      itself; this covers every OTHER way the URL can change under the page — a
      Back/Forward restore out of bfcache, or any future in-page writer that
@@ -1672,10 +1732,23 @@ type attentionPageData struct {
 	// toggle instead of being dropped by a hand-built query string.
 	KindHref string
 	// HiddenCount is how many of the rows the store returned this filter is not
-	// showing. ⚠️ It is computed from the full row set the page was built from,
-	// not read back from the store, so it costs no second read and cannot
-	// disagree with the rows it describes.
+	// showing, on the view this request rendered. ⚠️ It is computed from the full
+	// row set the page was built from, not read back from the store, so it costs
+	// no second read and cannot disagree with the rows it describes.
 	HiddenCount int
+	// HiddenOpen and HiddenAll are the same count on the two positions of the
+	// answered filter: HiddenOpen excludes the answered records (the `hide` ON
+	// view, where that filter already withholds them), HiddenAll includes them
+	// (the `hide=none` view, where they are on screen and the kind filter is what
+	// hides them).
+	//
+	// ⚠️ Both are rendered so the script can keep the count true after load.
+	// Neither is derivable from the other on the client: the rows the server
+	// withheld were never sent, so only the server knows how many of them are
+	// answered — and the answered toggle and the stream both move which position
+	// applies.
+	HiddenOpen int
+	HiddenAll  int
 	// BuildIdentity is what the running binary can say about the source it was
 	// built from, rendered in the page's footer.
 	//
@@ -1686,6 +1759,19 @@ type attentionPageData struct {
 	// carries no identity renders an explicit line saying so — see
 	// buildidentity.Identity.Known.
 	BuildIdentity buildidentity.Identity
+}
+
+// setKindCount picks the hidden count the view being rendered is showing.
+//
+// It lives here rather than in the template so the rule is stated once: the
+// count follows the answered filter's position, and a template condition would
+// be a second copy of it — the kind of duplicate that agrees until one side is
+// changed.
+func (d *attentionPageData) setKindCount(hideAnswered bool) {
+	d.HiddenCount = d.HiddenAll
+	if hideAnswered {
+		d.HiddenCount = d.HiddenOpen
+	}
 }
 
 // boardHideParam is the query parameter carrying the board's view state, and
@@ -1881,21 +1967,21 @@ func NewAttentionPageHandler(store pkg.AttentionStore,
 				// filter off, and absence (or any unrecognised value) leaves it
 				// on.
 				hideAnswered := req.URL.Query().Get(boardHideParam) != boardHideNone
-				shown, hiddenCount := filterByProducerKind(
-					rows, producerKind, allKinds, hideAnswered,
+				shown, hiddenOpen, hiddenAll := filterByProducerKind(
+					rows, producerKind, allKinds,
 				)
-				if err := page.Execute(
-					&body,
-					attentionPageData{
-						Items:         shown,
-						Speak:         speakEnabled,
-						HideAnswered:  hideAnswered,
-						AllKinds:      allKinds,
-						KindHref:      boardProducerKindHref(req.URL, allKinds),
-						HiddenCount:   hiddenCount,
-						BuildIdentity: buildIdentity,
-					},
-				); err != nil {
+				data := attentionPageData{
+					Items:         shown,
+					Speak:         speakEnabled,
+					HideAnswered:  hideAnswered,
+					AllKinds:      allKinds,
+					KindHref:      boardProducerKindHref(req.URL, allKinds),
+					HiddenOpen:    hiddenOpen,
+					HiddenAll:     hiddenAll,
+					BuildIdentity: buildIdentity,
+				}
+				data.setKindCount(hideAnswered)
+				if err := page.Execute(&body, data); err != nil {
 					return errors.Wrap(ctx, err, "render page failed")
 				}
 				resp.Header().Set(

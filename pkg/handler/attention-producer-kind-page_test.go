@@ -138,10 +138,10 @@ var _ = Describe("the board's producer-kind filter", func() {
 
 			Expect(body).To(ContainSubstring(managerID.String()))
 			Expect(body).To(ContainSubstring(sessionID.String()))
-			// Scoped to the marker rather than to the word "hidden": the page
-			// carries `hidden` attributes on controls of its own, so a bare
-			// substring would fail on a correct page.
-			Expect(body).NotTo(ContainSubstring("data-kind-hidden"))
+			// Scoped to the rendered element rather than to the marker: the script
+			// now carries `data-kind-hidden` itself (it creates and removes the
+			// span), so the bare attribute name appears on every correct page.
+			Expect(body).NotTo(ContainSubstring(`<span class="kind-hidden" data-kind-hidden>`))
 		})
 
 		It("keeps hide=none on the switch's own link, and points it at all kinds", func() {
@@ -161,6 +161,36 @@ var _ = Describe("the board's producer-kind filter", func() {
 			// that always writes `all`, leaving no way back to the default.
 			Expect(body).To(ContainSubstring("producer_kind=manager"))
 			Expect(body).To(ContainSubstring("hide=none"))
+		})
+	})
+
+	Context("with one open and one answered session-kind card", func() {
+		BeforeEach(func() {
+			pushCard(pkg.SessionProducerKind, "open-session-producer")
+			answeredID := pushCard(pkg.SessionProducerKind, "answered-session-producer")
+			answer := pkg.Answer{Kind: pkg.TextAnswerKind, Value: "the board"}
+			_, err := store.Answer(ctx, answeredID, "attention-board", "", "", &answer, nil, nil)
+			Expect(err).To(BeNil())
+		})
+
+		It("counts the answered card only where the board would otherwise show it", func() {
+			// ⚠️ Both sides of the answered/`hide` interaction, which is the whole
+			// reason the count is drawn on two populations rather than one. With
+			// `hide` ON the answered filter has already parked that record, so the
+			// kind filter is not what withholds it and the count must not claim it;
+			// under `hide=none` the record IS on screen, so the kind filter really
+			// is. A single unconditional count cannot satisfy both — it reports 2
+			// on the default view — and neither can a single number, which is why
+			// both are rendered for the script to choose between.
+			defaultBody := get("/").Body.String()
+			Expect(defaultBody).To(ContainSubstring(`data-hidden-open="1"`))
+			Expect(defaultBody).To(ContainSubstring(`data-hidden-all="2"`))
+			Expect(defaultBody).To(ContainSubstring("1 hidden"))
+
+			noneBody := get("/?hide=none").Body.String()
+			Expect(noneBody).To(ContainSubstring(`data-hidden-open="1"`))
+			Expect(noneBody).To(ContainSubstring(`data-hidden-all="2"`))
+			Expect(noneBody).To(ContainSubstring("2 hidden"))
 		})
 	})
 

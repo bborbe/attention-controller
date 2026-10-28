@@ -492,6 +492,25 @@ func rowCount(page playwright.Page, itemID string) int {
 	return count
 }
 
+// kindHiddenCount reads the number the kind switch says it is hiding. The span
+// is rendered only when there is something to name, so absence is the zero
+// state rather than a failure.
+func kindHiddenCount(page playwright.Page) int {
+	loc := page.Locator("[data-kind-hidden]")
+	if count, err := loc.Count(); err != nil || count == 0 {
+		return 0
+	}
+	text, err := loc.First().TextContent()
+	Expect(err).NotTo(HaveOccurred())
+	fields := strings.Fields(text)
+	if len(fields) == 0 {
+		return 0
+	}
+	value, err := strconv.Atoi(fields[0])
+	Expect(err).NotTo(HaveOccurred())
+	return value
+}
+
 // openItemIDs returns the ids the store still counts as open, read through the
 // list API an arm reads rather than through the board.
 //
@@ -822,8 +841,19 @@ var _ = Describe("the attention board", func() {
 			page := newPage("?producer_kind=manager")
 			defer func() { _ = page.Close() }()
 
+			// Read before the push: the store carries cards from earlier specs, so
+			// the count has a non-zero starting point and an absolute assertion
+			// would encode the suite's ordering.
+			hiddenBefore := kindHiddenCount(page)
+
 			sessionID := push("e2e: streamed session card", "e2e-kind-stream-session")
 			Consistently(func() int { return rowCount(page, sessionID) }).Should(Equal(0))
+			// The count follows the stream. The server renders it once at load, so
+			// without the script recomputing it a card that arrives later is
+			// withheld by a board that does not say so — on the element that stops
+			// a managers-only view reading as an empty queue.
+			Eventually(func() int { return kindHiddenCount(page) }).
+				Should(Equal(hiddenBefore + 1))
 
 			// The positive control: the same stream, same page, a matching kind.
 			// Without it this spec passes on a board whose stream is dead.
@@ -831,6 +861,9 @@ var _ = Describe("the attention board", func() {
 				"e2e: streamed manager card", "e2e-kind-stream-manager", pkg.ManagerProducerKind,
 			)
 			Eventually(func() int { return rowCount(page, managerID) }).Should(Equal(1))
+			// A matching card is not hidden, so the count must not move for it.
+			Consistently(func() int { return kindHiddenCount(page) }).
+				Should(Equal(hiddenBefore + 1))
 		},
 	)
 
