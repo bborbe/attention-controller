@@ -81,7 +81,7 @@ The authoritative contract is **`docs/attention-item-flagging.md`** in this repo
 ### Operator-executable (runs on the host after PR merge)
 
 - `make install` — builds, codesigns as `de.bborbe.attention-controller`, reloads the `com.bborbe.attention-controller` launchd job
-- `go test -mod=mod -tags e2e -count=1 -v ./e2e/` — the browser suite. `make e2e` runs without `-v`, so its `N of N Specs` line is invisible; the `-v` form is what shows the new case names and the updated total. **This is the only check that executes the park/restore path**, and therefore the only one that catches a global-unpark implementation.
+- `go test -mod=mod -tags e2e -count=1 -v ./e2e/` — the browser suite. `make e2e` runs without `-v`, so its `N of N Specs` line is invisible; the `-v` form is what shows the updated total. ⚠️ Measured 2026-10-28: `-v` shows the count and the pass/fail summary but **not** the per-spec names — Ginkgo v2 prints those only under `-ginkgo.v` (`go test -tags e2e -count=1 -v -ginkgo.v ./e2e/`). **This is the only check that executes the park/restore path**, and therefore the only one that catches a global-unpark implementation.
 - Round-trip against the running board page (not the JSON read handler, which does not honour view parameters): open `http://127.0.0.1:18080/` and confirm the card is listed; flag it; confirm it leaves the listing and that `http://127.0.0.1:18080/?flags=none` lists it again with its reason visible; unflag; confirm it returns to the bare URL.
 
 ## Desired Behavior
