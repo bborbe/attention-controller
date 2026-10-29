@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- feat: Carry `wrapper_session_id` on the session ledger row — the `claude-wrapper` session a worker's child runs under — so a supervisor that restarts can still find the parked prompt the wrapper holds and answer it, instead of reading the worker as "not parked" and refusing the answer as a foreign park. The row struct had no such field and no catch-all, so the supervisor's value was dropped on unmarshal: 0 of 3470 live rows carried it. Because the patch merge decodes with `DisallowUnknownFields`, a `PATCH` naming the field was also rejected with 400 rather than silently dropped; both paths now carry it.
+
 ## v0.65.0
 
 - feat: Carry the answer route on the answering record — `request_id` (the wrapper's permission gate id, distinct from the store's item id) and `policy` (the rule that decided the answer, or the rule that declined to) — through `Answer`, the federating and notifying stores, the remote client and `POST /api/1.0/attention/{itemID}/answer`, so a record names the gate it moved and the rule that admitted it rather than only the verdict. Both fields are written present-only, so a second write carrying neither does not blank what the arm that actually decided the gate recorded.

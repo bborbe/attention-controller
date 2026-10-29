@@ -74,6 +74,21 @@ type SessionLedgerEntry struct {
 	// read dead after a supervisor restart. The worker's TOKEN is deliberately
 	// NOT carried: it authenticates turns, and this row is served to any reader.
 	WorkerID string `json:"worker_id"`
+	// WrapperSessionID is the `claude-wrapper` session this worker's child runs
+	// under, empty for every worker that is not wrapper-backed.
+	//
+	// ⚠️ **NOTHING ELSE CAN MAP A PARKED PROMPT BACK TO ITS WORKER.** The wrapper
+	// is the only holder of a parked prompt, so a supervisor that restarts and
+	// rebuilds its roster from this row needs this id to find it again. A row
+	// that lost the field reads back with `wrapper_session_id` absent, the
+	// rehydrated agent carries a null `wrapperSessionId`, `answerWrapperPark`
+	// finds no wrapper-backed agent and returns `{consulted: false}`, and the
+	// operator's answer falls through to the foreign-park refusal. The worker
+	// really is parked and the wrapper still holds the prompt — it is only
+	// unreachable, which is exactly the false negative the restart path exists
+	// to remove. The field is a plain string rather than an opaque blob because
+	// the store never reads inside it; only the supervisor's own reader does.
+	WrapperSessionID string `json:"wrapper_session_id"`
 	// Target is the spawn target whose name doubles as an A2A worker's status
 	// (`docker` / `k8s`), empty for every other mode.
 	Target string `json:"target"`
