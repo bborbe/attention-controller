@@ -31,13 +31,23 @@ const (
 	// FailedOutcome is an attempt that did not: the target was unresolvable,
 	// the name was ambiguous, or the send itself failed.
 	FailedOutcome DeliveryOutcome = "failed"
+	// HeldOutcome is an arm that SAW the gate and deliberately did not answer
+	// it, leaving it open for the operator.
+	//
+	// ⚠️ It is neither of the other two, and collapsing it into either is the
+	// defect it exists to prevent. It is not `delivered` — nothing was answered.
+	// It is not `failed` — nothing went wrong, and reading it as a failure puts a
+	// broken card in front of an operator for a gate a rule held on purpose. The
+	// rule that held it is named in the carrier, because this record carries no
+	// free-text field of its own.
+	HeldOutcome DeliveryOutcome = "held"
 )
 
 // DeliveryOutcomes is a collection of DeliveryOutcome.
 type DeliveryOutcomes []DeliveryOutcome
 
 // AvailableDeliveryOutcomes holds every legal outcome.
-var AvailableDeliveryOutcomes = DeliveryOutcomes{DeliveredOutcome, FailedOutcome}
+var AvailableDeliveryOutcomes = DeliveryOutcomes{DeliveredOutcome, FailedOutcome, HeldOutcome}
 
 // String returns the outcome as a string.
 func (o DeliveryOutcome) String() string {
@@ -82,6 +92,14 @@ const (
 	// answer's fate was never measured, and this reports that honestly rather
 	// than guessing. Derived, never written.
 	PreTrailUnknownStatus DeliveryStatus = "pre_trail_unknown"
+	// HeldStatus is an attempt record whose arm declined to answer the gate and
+	// left it for the operator. Stored, like the other two, because it is a
+	// fact some arm observed rather than one derived from absence.
+	//
+	// ⚠️ It is NOT FailedStatus. A held gate is working as designed: the card
+	// still needs the operator, and telling them the delivery failed would send
+	// them looking for a fault that is not there.
+	HeldStatus DeliveryStatus = "held"
 )
 
 // DeliveryTrailEpoch is the instant the delivery-attempt record first shipped.
