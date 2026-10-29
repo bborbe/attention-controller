@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.64.1
 
 - fix: Decouple the board's "Hide flagged" switch from "Hide answered". `?hide=none` now un-hides only the answered records and leaves the flag filter on, and `?flags=none` leaves the answered filter on — neither switch writes the other's parameter, in the server render, the script's initial reading, the post-write re-read or the flag switch's own click handler.
 
