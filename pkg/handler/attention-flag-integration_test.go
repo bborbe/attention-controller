@@ -211,11 +211,13 @@ var _ = Describe("Attention flag round trip", func() {
 		Expect(block).To(ContainSubstring(`data-flagged="true"`))
 		Expect(block).To(ContainSubstring("flagged: asked the wrong team"))
 
-		// (g) ?hide=none: both switches off, reason still served.
+		// (g) ?hide=none: only the answered switch moves — the flag switch
+		// stays on, because the two are independent — and the reason is still
+		// served.
 		hideNoneBody := renderAt("/?hide=none")
 		Expect(hideNoneBody).To(ContainSubstring(filterSwitchOff))
 		Expect(hideNoneBody).To(ContainSubstring(
-			`data-flag-filter role="switch" aria-checked="false"`,
+			`data-flag-filter role="switch" aria-checked="true"`,
 		))
 		Expect(rowOf(hideNoneBody, item.ItemID)).To(ContainSubstring(
 			"flagged: asked the wrong team",
