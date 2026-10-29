@@ -309,11 +309,11 @@ func (d *attentionPageData) setKindCount(hideAnswered bool) {
 }
 
 // boardHideParam is the query parameter carrying the board's view state, and
-// boardHideAnswered / boardHideNone are the two values it recognises. Together
-// they make the view addressable — `?hide=none` survives a reload, a bookmark
-// and a shared link instead of resetting — which is what the operator asked
-// for: *"The hide button at the top should be a URL parameter, so a reload of
-// the page keeps the preview setting."*
+// boardHideNone is the value it recognises as off. Together the parameter and
+// its off-value make the view addressable — `?hide=none` survives a reload, a
+// bookmark and a shared link instead of resetting — which is what the operator
+// asked for: *"The hide button at the top should be a URL parameter, so a
+// reload of the page keeps the preview setting."*
 //
 // ⚠️ The value names the SET that is hidden rather than being a boolean, so the
 // parameter can describe a different view later without a second parameter

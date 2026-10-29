@@ -1312,9 +1312,9 @@ function replayFailure(row) {
          rebuilt from the URL that just changed — see syncKindHref. */
       syncKindHref();
       applyFilter();
-      /* A flagged row that is also a manager card leaves the board when this
-         filter turns on, so the kind count would overstate what is hidden. */
-      updateKindCount();
+      /* No updateKindCount here: the kind count is a function of the answered
+         filter's position and the streamed rows, and this click moves neither
+         now that the two switches are independent. */
     });
   }
   /* Applied at load as well as on click, so a URL that arrived carrying either

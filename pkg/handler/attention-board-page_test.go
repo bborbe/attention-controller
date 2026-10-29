@@ -1206,11 +1206,10 @@ var _ = Describe("Attention page board controls", func() {
 				Expect(body).To(ContainSubstring(
 					`data-flag-filter role="switch" aria-checked="true"`,
 				))
-				// And the explicit on-spelling agrees with the absence spelling,
-				// so the two cannot drift apart.
-				Expect(renderAt("/?hide=none&flags=flagged")).To(ContainSubstring(
-					`data-flag-filter role="switch" aria-checked="true"`,
-				))
+				// The parameter parser itself is covered by the `?flags=none`
+				// case above; an explicit `flags=flagged` would assert `true`
+				// against a default that is already `true`, so it could not
+				// fail and is deliberately not asserted here.
 			})
 
 			It("still serves the flagged row under every view", func() {

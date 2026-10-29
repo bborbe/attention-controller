@@ -1934,7 +1934,8 @@ var _ = Describe("the attention board", func() {
 			answeredSwitch := page.Locator("[data-board-filter]")
 			flagSwitch := page.Locator("[data-flag-filter]")
 
-			// The landing state: managers-only, both filters on.
+			// The landing state for this page: both filters on (newPage opts into
+			// the all-kinds view, so this case is not about the kind filter).
 			Eventually(func() (string, error) {
 				return answeredSwitch.GetAttribute("aria-checked")
 			}).Should(Equal("true"))
