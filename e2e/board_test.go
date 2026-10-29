@@ -1876,13 +1876,13 @@ var _ = Describe("the attention board", func() {
 		},
 	)
 
-	// The union view and the flag filter cannot both be active. Turning the flag
-	// switch on at hide=none must re-enable the answered filter, and the switch
-	// must not be disabled: a disabled control with no explanation reads as
-	// broken.
-	It("writes hide=answered when the flag switch is turned on at hide=none", func() {
-		openID := push("e2e: the open card at the union view", "e2e-flag-union-open")
-		answeredID := push("e2e: the answered card at the union view", "e2e-flag-union-answered")
+	// The two switches are independent (§ Two filters). Turning the flag switch
+	// on at hide=none must write only `flags` and leave the answered filter
+	// where the operator put it, and the switch must not be disabled: a disabled
+	// control with no explanation reads as broken.
+	It("writes only flags when the flag switch is turned on at hide=none", func() {
+		openID := push("e2e: the open card at hide=none", "e2e-flag-independent-open")
+		answeredID := push("e2e: the answered card at hide=none", "e2e-flag-independent-answered")
 		answer(answeredID)
 
 		page := newPage("/?hide=none")
@@ -1892,17 +1892,68 @@ var _ = Describe("the attention board", func() {
 		Eventually(func() int { return rowCount(page, answeredID) }).Should(Equal(1))
 
 		flagSwitch := page.Locator("[data-flag-filter]")
-		Expect(flagSwitch.Click()).To(Succeed())
+		// Arriving at ?hide=none leaves the flag filter ON — that is the fix.
+		Expect(flagSwitch.GetAttribute("aria-checked")).To(Equal("true"))
 
-		Eventually(func() string { return page.URL() }).
-			Should(And(ContainSubstring("hide=answered"), ContainSubstring("flags=flagged")))
-		Eventually(func() int { return rowCount(page, answeredID) }).Should(Equal(0))
-		Consistently(func() int { return rowCount(page, openID) }).Should(Equal(1))
+		// Turn it OFF: the flag parameter moves, the answered parameter does not.
+		Expect(flagSwitch.Click()).To(Succeed())
+		Eventually(func() string { return page.URL() }).Should(ContainSubstring("flags=none"))
+		Expect(page.URL()).To(ContainSubstring("hide=none"))
+		Expect(flagSwitch.GetAttribute("aria-checked")).To(Equal("false"))
+
+		// Turn it back ON: still only the flag parameter is written.
+		Expect(flagSwitch.Click()).To(Succeed())
+		Eventually(func() string { return page.URL() }).Should(ContainSubstring("flags=flagged"))
+		Expect(page.URL()).To(ContainSubstring("hide=none"))
+		Expect(flagSwitch.GetAttribute("aria-checked")).To(Equal("true"))
+
+		// The answered records stay on screen throughout — this switch never
+		// re-hides them.
+		Consistently(func() int { return rowCount(page, answeredID) }).Should(Equal(1))
 
 		disabled, err := flagSwitch.IsDisabled()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(disabled).To(BeFalse())
 	})
+
+	// The live half of the decoupling: toggling Hide answered OFF in a browser
+	// must leave the flag switch on and keep flagged cards parked. The server
+	// render alone cannot show this — it is the client state that used to
+	// recompute flagsOn from hideOn.
+	It(
+		"keeps the flag switch on and flagged rows parked when Hide answered is toggled off",
+		func() {
+			answeredID := push("e2e: the answered card to un-hide", "e2e-decouple-answered")
+			flaggedID := push("e2e: the open flagged card to keep parked", "e2e-decouple-flagged")
+			answer(answeredID)
+			post("api/1.0/attention/"+flaggedID+"/flag", map[string]any{"reason": "misrouted"})
+
+			page := newPage("")
+			defer func() { _ = page.Close() }()
+
+			answeredSwitch := page.Locator("[data-board-filter]")
+			flagSwitch := page.Locator("[data-flag-filter]")
+
+			// The landing state: managers-only, both filters on.
+			Eventually(func() (string, error) {
+				return answeredSwitch.GetAttribute("aria-checked")
+			}).Should(Equal("true"))
+			Expect(flagSwitch.GetAttribute("aria-checked")).To(Equal("true"))
+			Eventually(func() int { return rowCount(page, answeredID) }).Should(Equal(0))
+			Eventually(func() int { return rowCount(page, flaggedID) }).Should(Equal(0))
+
+			// Un-hide the answered records.
+			Expect(answeredSwitch.Click()).To(Succeed())
+			Eventually(func() string { return page.URL() }).Should(ContainSubstring("hide=none"))
+			Eventually(func() int { return rowCount(page, answeredID) }).Should(Equal(1))
+
+			// The flag switch is untouched, and the flagged card is still parked —
+			// the flood control survives an un-hide.
+			Expect(flagSwitch.GetAttribute("aria-checked")).To(Equal("true"))
+			Consistently(func() int { return rowCount(page, flaggedID) }).Should(Equal(0))
+			Expect(page.URL()).NotTo(ContainSubstring("flags="))
+		},
+	)
 
 	// The flag is reversible from the card it was written on, and that card is
 	// the only place the undo can be reached: the default view parks it, so the

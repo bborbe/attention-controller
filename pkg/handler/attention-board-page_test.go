@@ -1141,7 +1141,6 @@ var _ = Describe("Attention page board controls", func() {
 			// rendered body is already in hand, so the assertion costs nothing.
 			body := render()
 			Expect(body).To(ContainSubstring(`var HIDE_PARAM = 'hide';`))
-			Expect(body).To(ContainSubstring(`var HIDE_ANSWERED = 'answered';`))
 			Expect(body).To(ContainSubstring(`var HIDE_NONE = 'none';`))
 		})
 
@@ -1172,8 +1171,11 @@ var _ = Describe("Attention page board controls", func() {
 		})
 
 		// The second filter: flagged cards are parked by default, exactly as
-		// answered records are. The coupling is § Two filters — hide=none
-		// disables both, and the flag parameter cannot be on while hide is off.
+		// answered records are. § Two filters makes the two switches
+		// independent — each parameter governs only its own set, so `hide=none`
+		// leaves the flag filter on and `flags=none` leaves the answered filter
+		// on. Both directions are asserted here because the server render and
+		// the script each used to carry a `hide` conjunct of their own.
 		Describe("the flag filter", func() {
 			It("renders the flag switch on by default and off at flags=none", func() {
 				item, err := store.Push(ctx, messageRequest())
@@ -1190,15 +1192,24 @@ var _ = Describe("Attention page board controls", func() {
 				Expect(renderAt("/?flags=none")).To(ContainSubstring(filterSwitchOn))
 			})
 
-			It("renders both switches off at hide=none", func() {
+			It("keeps the flag switch on at hide=none, moving only the answered switch", func() {
 				item, err := store.Push(ctx, messageRequest())
 				Expect(err).To(BeNil())
 				provenance.ResolveReturns(pkg.Provenances{item.ItemID: pkg.Provenance{}})
 
+				// The decoupled pair. `hide=none` names one switch and must move
+				// only that one: the flag filter is the flood control, and
+				// dropping it here is what buried the operator in flagged work
+				// when they only asked to see the answers.
 				body := renderAt("/?hide=none")
 				Expect(body).To(ContainSubstring(filterSwitchOff))
 				Expect(body).To(ContainSubstring(
-					`data-flag-filter role="switch" aria-checked="false"`,
+					`data-flag-filter role="switch" aria-checked="true"`,
+				))
+				// And the explicit on-spelling agrees with the absence spelling,
+				// so the two cannot drift apart.
+				Expect(renderAt("/?hide=none&flags=flagged")).To(ContainSubstring(
+					`data-flag-filter role="switch" aria-checked="true"`,
 				))
 			})
 
@@ -1250,10 +1261,21 @@ var _ = Describe("Attention page board controls", func() {
 				provenance.ResolveReturns(pkg.Provenances{item.ItemID: pkg.Provenance{}})
 
 				// The composition and the per-row half, so a rewrite that
-				// restores globally or drops the coupling fails here.
+				// restores globally fails here — and so does restoring the
+				// `|| hideOff` conjunct, which is the coupling this contract
+				// removed.
 				body := renderAt("/")
-				Expect(body).To(ContainSubstring(`!flagsOn || hideOff`))
+				Expect(body).To(ContainSubstring(`var flagsOff = !flagsOn;`))
 				Expect(body).To(ContainSubstring(`hideOff || !answered`))
+				Expect(body).NotTo(ContainSubstring(`!flagsOn || hideOff`))
+				// The initialiser and the post-write re-read carry the same
+				// independence; a `hideOn &&` put back at either site fails here.
+				Expect(body).To(ContainSubstring(
+					`var flagsOn = params.get(FLAGS_PARAM) !== FLAGS_NONE;`,
+				))
+				Expect(body).To(ContainSubstring(
+					`flagsOn = url.searchParams.get(FLAGS_PARAM) !== FLAGS_NONE;`,
+				))
 			})
 		})
 	})

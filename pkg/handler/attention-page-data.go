@@ -249,10 +249,10 @@ type attentionPageData struct {
 	// answered records in with the cards that still need the operator.
 	HideAnswered bool
 	// FlagFilter is the flag filter's initial position, read from the request's
-	// `flags` parameter and composed with `hide` exactly as § Two filters
-	// defines: the flag filter can only be on when the answered filter is on,
-	// because `hide=none` is the union view. It is a rendering input, never a
-	// store input — the page still renders every row it was given.
+	// `flags` parameter alone, exactly as § Two filters defines: each parameter
+	// governs its own set, so `hide=none` leaves the flag filter on rather than
+	// disabling it. It is a rendering input, never a store input — the page
+	// still renders every row it was given.
 	FlagFilter bool
 	// AllKinds reports whether the kind filter is off. Rendered so the switch's
 	// initial position and the URL it writes agree with the request — the same
@@ -326,23 +326,23 @@ func (d *attentionPageData) setKindCount(hideAnswered bool) {
 // with — *"can we make hide answers the default — so open
 // http://127.0.0.1:18080/ ... show no answer?"* — so a request carrying no
 // `hide` value renders the filtered view, and `none` is the value that turns it
-// back off. That is why the test is `!= boardHideNone` rather than
-// `== boardHideAnswered`: an unrecognised value falls back to the default
+// back off. That is why the test is `!= boardHideNone` rather than a test for
+// the word `answered`: an unrecognised value falls back to the default
 // instead of silently disabling the filter, and "off" needs a spelling the
 // script can write back, which a deleted parameter can no longer be.
 //
-// ⚠️ All three are mirrored as HIDE_PARAM, HIDE_ANSWERED and HIDE_NONE in the
-// page's script, because the server renders the switch's initial position while
-// the script applies the filter and writes the parameter back. That mirror is
-// the only thing in this file that exists in two languages, so a spec asserts
-// the script carries the same literals: drift there would leave the server
-// rendering from one parameter while the script writes another, and the
-// reload-reproduces-the-view property would stop working with every other test
-// still green.
+// ⚠️ The parameter name and the off-value are mirrored as HIDE_PARAM and
+// HIDE_NONE in the page's script, because the server renders the switch's
+// initial position while the script applies the filter and writes the
+// parameter back. That mirror is the only thing in this file that exists in two
+// languages, so a spec asserts the script carries the same literals: drift
+// there would leave the server rendering from one parameter while the script
+// writes another, and the reload-reproduces-the-view property would stop
+// working with every other test still green. The script never writes the on
+// spelling — absence is how it is written.
 const (
-	boardHideParam    = "hide"
-	boardHideAnswered = "answered"
-	boardHideNone     = "none"
+	boardHideParam = "hide"
+	boardHideNone  = "none"
 
 	// boardFlagsParam carries the flag filter's view state, on the same
 	// convention as boardHideParam: the value names the SET that is hidden,

@@ -18,9 +18,9 @@ authority.**
 
 ## Two filters, and how they compose
 
-The board hides two kinds of row — answered records and flagged cards — with one documented coupling
-between them. Each has its own query parameter, and each parameter names the set that is **hidden** —
-the board's existing convention, which is why the values are `none` rather than `show`.
+The board hides two kinds of row — answered records and flagged cards — with **one switch each and no
+coupling between them**. Each has its own query parameter, and each parameter names the set that is
+**hidden** — the board's existing convention, which is why the values are `none` rather than `show`.
 
 | Parameter | Governs | Default | Off value |
 |---|---|---|---|
@@ -33,26 +33,31 @@ re-evaluated on every change:
 ```
 visible(row) = (hideOff || !row.answered) && (flagsOff || !row.flagged)
 hideOff      = (hide == "none")
-flagsOff     = (flags == "none") || hideOff
+flagsOff     = (flags == "none")
 ```
 
-`hide=none` is the **union view**: it disables both filters, so it reveals flagged cards as well as
-answered ones. That is why `flagsOff` also reads `hideOff` — the alternative is a URL that claims to
-hide nothing while still hiding something.
+**Each half reads only its own parameter.** `hide=none` reveals the answered records and leaves the
+flag filter exactly where it was; `flags=none` reveals the flagged cards and leaves the answered
+filter exactly where it was. Neither switch writes the other's parameter.
+
+> ⚠️ Until 2026-10-29 `flagsOff` also read `hideOff` — `hide=none` was documented as a **union view**
+> that disabled both filters. That coupling was the defect: un-hiding answers silently re-flooded the
+> board with flagged work, which is the state `flags=none` exists to prevent, reached by touching an
+> unrelated switch. The two are independent; do not restore the conjunct.
 
 Consequences that follow from this and must not drift:
 
-- **Absent and `flags=flagged` render identically for every `hide` value**, because at `hide=none`
-  both are overridden equally. There is no state where the two disagree.
-- **The flag switch cannot be switched on at `?hide=none`.** Clicking it there writes `hide=answered`
-  (re-enabling the answered filter) together with `flags=flagged`, because the union view and the
-  flag filter cannot both be active. It is never rendered disabled — a disabled control with no
-  explanation reads as broken.
+- **Absent and `flags=flagged` render identically for every `hide` value.** Absence is how the on
+  position is spelled, so there is no state where the two disagree.
+- **The flag switch works at `?hide=none`.** Clicking it writes `flags=flagged` (or `flags=none`) and
+  leaves `hide` untouched. It is never rendered disabled — a disabled control with no explanation
+  reads as broken.
 - **Restoring must be per row, not a global unpark.** A row hidden by one filter stays hidden while
   the other is still on. Turning the flag filter off must not restore answered rows, which is the
   flood `flags=none` exists to prevent.
 - **A row that is both flagged and answered** is governed by both: `flags=none` leaves it parked
-  while the answered filter is on; `hide=none` restores it.
+  while the answered filter is on; `hide=none` leaves it parked while the flag filter is on; it
+  returns only when both switches are off.
 
 ## Flagging
 
@@ -66,7 +71,7 @@ answer and not a transition**: `flag_reason` and `flagged_at` are written onto a
 | Does it answer the gate? | **No.** `state` stays `open` and `answered_at` stays absent, so a flagged `permission` gate is still answerable and the flag releases nothing. |
 | Is a reason required? | **Yes.** An empty, absent or whitespace-only reason is rejected with HTTP 400 and the record is left unchanged — a flag without a reason is indistinguishable from a grumble and cannot be counted. |
 | Who writes it? | The **store**, from the operator's flag call. `flagged_at` comes from the store's own clock inside the same compare-and-set that writes `flag_reason`, exactly as `escalated_at` pairs with `escalated_by`. |
-| Does it hide the card? | It leaves the board's **default view**, stays reachable with the `hide` filter off (`?hide=none`), and sits behind an explicit flag toggle. Hiding is a render decision; the record is untouched. |
+| Does it hide the card? | It leaves the board's **default view**, stays reachable with its own filter off (`?flags=none`) or its switch clicked, and is unaffected by the answered filter's position. Hiding is a render decision; the record is untouched. |
 | Can it be undone? | **Yes.** Unflagging clears both fields and the card returns to the default view. Unlike `closed`, a flag is not terminal. |
 | What reads it? | The weekly per-producer misroute count, grouped by `producer_id` / `producer_kind` and by reason. Flags are **evidence for a routing fix, never triggers** — nothing reroutes automatically off a flag. |
 

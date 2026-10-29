@@ -1040,7 +1040,6 @@ function replayFailure(row) {
   /* Mirrors boardHideParam / boardFlagsParam and their values in Go — the one
      thing in this file that exists in two languages. */
   var HIDE_PARAM = 'hide';
-  var HIDE_ANSWERED = 'answered';
   var HIDE_NONE = 'none';
   var FLAGS_PARAM = 'flags';
   var FLAGS_FLAGGED = 'flagged';
@@ -1048,12 +1047,14 @@ function replayFailure(row) {
   /* Both defaults are ON: only an explicit off-spelling turns a filter off, and
      absence (or any unrecognised value) leaves it on. Read as "not none"
      rather than "is answered" so an unrecognised value falls back to the
-     default instead of silently disabling the filter. The flag filter can only
-     be on while the answered filter is on, because hide=none is the union view
-     that disables both. */
+     default instead of silently disabling the filter.
+     ⚠️ The two are read INDEPENDENTLY. Each parameter governs its own set, so
+     hide=none un-hides the answered records and leaves the flag filter exactly
+     where it was — it is not a union view, and reading it as one silently
+     dropped the flood control when the operator only asked to see answers. */
   var params = new URLSearchParams(window.location.search);
   var hideOn = params.get(HIDE_PARAM) !== HIDE_NONE;
-  var flagsOn = hideOn && params.get(FLAGS_PARAM) !== FLAGS_NONE;
+  var flagsOn = params.get(FLAGS_PARAM) !== FLAGS_NONE;
   /* The rows the filters are hiding, in board order. Each entry carries the id
      of the row that followed it, so a restore returns it to its own place
      rather than to the foot of the board. It holds rendered HTML rather than
@@ -1097,10 +1098,12 @@ function replayFailure(row) {
   /* The contract's predicate, verbatim:
        visible(row) = (hideOff || !row.answered) && (flagsOff || !row.flagged)
        hideOff      = (hide == "none")
-       flagsOff     = (flags == "none") || hideOff */
+       flagsOff     = (flags == "none")
+     Each half reads only its own switch: a row is hidden by the filter that
+     names it, never by the other one's position. */
   function visible(answered, flagged) {
     var hideOff = !hideOn;
-    var flagsOff = !flagsOn || hideOff;
+    var flagsOff = !flagsOn;
     return (hideOff || !answered) && (flagsOff || !flagged);
   }
   function park(row) {
@@ -1251,7 +1254,7 @@ function replayFailure(row) {
   }
   function syncFromURL(url) {
     hideOn = url.searchParams.get(HIDE_PARAM) !== HIDE_NONE;
-    flagsOn = hideOn && url.searchParams.get(FLAGS_PARAM) !== FLAGS_NONE;
+    flagsOn = url.searchParams.get(FLAGS_PARAM) !== FLAGS_NONE;
   }
   function renderSwitchState() {
     if (button) { button.setAttribute('aria-checked', hideOn ? 'true' : 'false'); }
@@ -1270,11 +1273,10 @@ function replayFailure(row) {
         /* Turning the answered filter back on: absence is the default spelling. */
         url.searchParams.delete(HIDE_PARAM);
       } else {
-        /* hide=none is the union view — it disables both filters — so the flag
-           parameter has no meaning there and is dropped rather than left
-           describing a set the URL does not hide. */
+        /* Only the answered parameter moves. The flag parameter is left exactly
+           as it was: this switch governs answered records, and writing flags
+           from here is what made one switch move the other. */
         url.searchParams.set(HIDE_PARAM, HIDE_NONE);
-        url.searchParams.delete(FLAGS_PARAM);
       }
       window.history.replaceState(null, '', url);
       syncFromURL(url);
@@ -1292,14 +1294,13 @@ function replayFailure(row) {
   if (flagButton) {
     flagButton.addEventListener('click', function () {
       var url = new URL(window.location.href);
-      var hideOff = url.searchParams.get(HIDE_PARAM) === HIDE_NONE;
-      var flagsOff = url.searchParams.get(FLAGS_PARAM) === FLAGS_NONE || hideOff;
+      /* Read from this switch's own parameter alone: the answered filter's
+         position says nothing about whether flagged cards are being hidden. */
+      var flagsOff = url.searchParams.get(FLAGS_PARAM) === FLAGS_NONE;
       if (flagsOff) {
-        /* Turning the flag filter ON. The union view and the flag filter cannot
-           both be active, so hide=none re-enables the answered filter. The
-           switch is never rendered disabled — a disabled control with no
-           explanation reads as broken. */
-        url.searchParams.set(HIDE_PARAM, HIDE_ANSWERED);
+        /* Turning the flag filter ON. The answered filter is left where the
+           operator put it — the two switches are independent, so this one
+           never writes hide. */
         url.searchParams.set(FLAGS_PARAM, FLAGS_FLAGGED);
       } else {
         url.searchParams.set(FLAGS_PARAM, FLAGS_NONE);
@@ -1765,7 +1766,10 @@ func NewAttentionPageHandler(store pkg.AttentionStore,
 				// on.
 				flagsParam := req.URL.Query().Get(boardFlagsParam)
 				hideAnswered := req.URL.Query().Get(boardHideParam) != boardHideNone
-				flagFilter := hideAnswered && flagsParam != boardFlagsNone
+				// Read from its own parameter alone: the flag switch's position
+				// is not derived from the answered switch's, so `?hide=none`
+				// leaves it on. The script applies the same independent reading.
+				flagFilter := flagsParam != boardFlagsNone
 				shown, hiddenOpen, hiddenAll := filterByProducerKind(
 					rows, producerKind, allKinds,
 				)
