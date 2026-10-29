@@ -97,7 +97,7 @@ func NewAttentionAttemptRecordHandler(store pkg.AttentionStore) http.Handler {
 						libhttp.ErrorCodeValidation,
 						http.StatusBadRequest,
 						map[string]any{
-							"reason": "outcome must be one of delivered, failed",
+							"reason": "outcome must be one of delivered, failed, held",
 						},
 					)
 				}

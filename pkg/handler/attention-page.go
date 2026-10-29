@@ -1618,9 +1618,10 @@ function replayFailure(row) {
 {{end}}{{if .Flagged}}<div class="flag-reason-shown">flagged: {{ cardtext .Item.FlagReason }} <button type="button" class="unflag" data-unflag>Unflag</button></div>
 {{end}}{{/* The undeliverable marker renders on a card whose answer a recorded
      attempt says did NOT reach the asking session, and on no other status:
-     "delivered" is the good case, "never_attempted" and "pre_trail_unknown" are
-     absences of an attempt rather than failures of one, and the empty status is
-     a read that failed. The gate is the row's own Undeliverable method, so the
+     "delivered" is the good case, "held" is a gate an arm declined to answer on
+     purpose, "never_attempted" and "pre_trail_unknown" are absences of an
+     attempt rather than failures of one, and the empty status is a read that
+     failed. The gate is the row's own Undeliverable method, so the
      comparison against the status constant stays in Go rather than becoming a
      string literal here that could drift from it. It is a marker, not a control
      — the board cannot retry a delivery — so it carries no handler and sits
