@@ -16,8 +16,8 @@ import (
 )
 
 // DeliveryOutcome is what an attempting arm observed about one answer. It holds
-// exactly two values, because exactly two are measured: an arm either delivered
-// the answer or it did not.
+// three values, and each is a distinct thing an arm can report: it delivered the
+// answer, it tried and failed to, or it saw the gate and declined to answer it.
 //
 // ⚠️ The other two states a reader needs — `never_attempted` and
 // `pre_trail_unknown` — are NOT outcomes and are never stored. Nobody is
@@ -69,9 +69,10 @@ func (o DeliveryOutcomes) Contains(outcome DeliveryOutcome) bool {
 }
 
 // DeliveryStatus is the reader-visible answer to "did my answer reach the
-// session?" — the four values the read surface may return.
+// session?" — the five values the read surface may return.
 //
-// ⚠️ Only DeliveredStatus and FailedStatus are ever STORED. The other two are
+// ⚠️ DeliveredStatus, FailedStatus and HeldStatus are STORED, one per outcome an
+// arm can write. The other two are
 // derived by the store from the item's own CreatedAt against
 // DeliveryTrailEpoch, because an absent record is otherwise the only encoding
 // available for both of them — and that is precisely what the operator could

@@ -33,16 +33,6 @@ type AnswerRoute struct {
 	Policy string
 }
 
-// stampAnswerRoute writes the route members the caller actually supplied.
-//
-// Present-only rather than a plain assignment, for the same reason the Decision
-// guard in the store exists: a second write on an already-answered item — an arm
-// attaching the resolver the release path reads — posts no route, and assigning
-// there would blank what the arm that actually decided the gate recorded.
-//
-// It mutates the in-memory item inside the caller's transaction. It is not a
-// write path of its own, which is the property that keeps the store
-// single-writer.
 // firstRoute is the route a caller supplied, or the zero value when it supplied
 // none. Extracted rather than inlined so the store's Answer keeps its cognitive
 // complexity under the lint's ceiling — the branch is real but belongs here, not
@@ -54,6 +44,16 @@ func firstRoute(route []AnswerRoute) AnswerRoute {
 	return AnswerRoute{}
 }
 
+// stampAnswerRoute writes the route members the caller actually supplied.
+//
+// Present-only rather than a plain assignment, for the same reason the Decision
+// guard in the store exists: a second write on an already-answered item — an arm
+// attaching the resolver the release path reads — posts no route, and assigning
+// there would blank what the arm that actually decided the gate recorded.
+//
+// It mutates the in-memory item inside the caller's transaction. It is not a
+// write path of its own, which is the property that keeps the store
+// single-writer.
 func (i *Item) stampAnswerRoute(route AnswerRoute) {
 	if route.RequestID != "" {
 		i.RequestID = route.RequestID

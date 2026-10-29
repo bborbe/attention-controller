@@ -107,6 +107,39 @@ var _ = Describe("AttentionAnswerHandler", func() {
 		Expect(got.State).To(Equal(pkg.AnsweredState))
 	})
 
+	// ⚠️ The route is what makes an answer auditable against the gate it moved,
+	// so the assertion is on the STORED item, not on the call shape: a handler
+	// that decoded the fields into the wrong slot would still make the call.
+	It("decodes the answer route and the store records it", func() {
+		item := pushParkedGate()
+
+		rec := answer(
+			item.ItemID,
+			`{"answered_by":"attention-watcher","decision":"allow",`+
+				`"request_id":"dmhc3urrw8uo","policy":"routine-tool:Read"}`,
+		)
+		Expect(rec.Code).To(Equal(http.StatusOK))
+
+		got, err := store.Get(ctx, item.ItemID)
+		Expect(err).To(BeNil())
+		Expect(got.RequestID).To(Equal("dmhc3urrw8uo"))
+		Expect(got.Policy).To(Equal("routine-tool:Read"))
+	})
+
+	// An answer carrying no route leaves both fields absent rather than blanking
+	// something, which is the same present-only rule the store applies.
+	It("leaves the route absent when the body carries none", func() {
+		item := pushParkedGate()
+
+		rec := answer(item.ItemID, `{"answered_by":"telegram","decision":"allow"}`)
+		Expect(rec.Code).To(Equal(http.StatusOK))
+
+		got, err := store.Get(ctx, item.ItemID)
+		Expect(err).To(BeNil())
+		Expect(got.RequestID).To(BeEmpty())
+		Expect(got.Policy).To(BeEmpty())
+	})
+
 	// Negative control for the spec above: if the handler ignored the body and
 	// the store defaulted to allow, the allow case would still pass. A deny must
 	// read back as a deny.

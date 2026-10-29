@@ -172,10 +172,7 @@ func (h *httpRemoteAttentionStore) Answer(
 	answeredClient *AnsweredClient,
 	route ...AnswerRoute,
 ) (*Item, error) {
-	var answerRoute AnswerRoute
-	if len(route) > 0 {
-		answerRoute = route[0]
-	}
+	answerRoute := firstRoute(route)
 	var automation *bool
 	if answeredClient != nil {
 		automation = answeredClient.Automation
