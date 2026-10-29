@@ -112,6 +112,16 @@ var _ = Describe("SessionLedgerStore", func() {
 		Expect(json.Unmarshal([]byte(payload), &entry)).To(BeNil())
 		Expect(entry.SessionID).To(Equal(ledgerSessionA))
 		Expect(entry.WrapperSessionID).To(Equal(""))
+
+		// ⚠️ And it must STAY absent on the way back out. Writing `""` would add
+		// the key to every non-wrapper row — all 3470 of them — so a reader
+		// testing `has("wrapper_session_id")` could no longer tell a carried id
+		// from a worker that simply has none.
+		encoded, err := json.Marshal(entry)
+		Expect(err).To(BeNil())
+		roundTripped := map[string]any{}
+		Expect(json.Unmarshal(encoded, &roundTripped)).To(BeNil())
+		Expect(roundTripped).NotTo(HaveKey("wrapper_session_id"))
 	})
 
 	It("reports an unknown session as absent rather than as an error", func() {

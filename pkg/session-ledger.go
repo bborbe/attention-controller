@@ -75,7 +75,7 @@ type SessionLedgerEntry struct {
 	// NOT carried: it authenticates turns, and this row is served to any reader.
 	WorkerID string `json:"worker_id"`
 	// WrapperSessionID is the `claude-wrapper` session this worker's child runs
-	// under, empty for every worker that is not wrapper-backed.
+	// under, absent for every worker that is not wrapper-backed.
 	//
 	// ⚠️ **NOTHING ELSE CAN MAP A PARKED PROMPT BACK TO ITS WORKER.** The wrapper
 	// is the only holder of a parked prompt, so a supervisor that restarts and
@@ -86,9 +86,17 @@ type SessionLedgerEntry struct {
 	// operator's answer falls through to the foreign-park refusal. The worker
 	// really is parked and the wrapper still holds the prompt — it is only
 	// unreachable, which is exactly the false negative the restart path exists
-	// to remove. The field is a plain string rather than an opaque blob because
-	// the store never reads inside it; only the supervisor's own reader does.
-	WrapperSessionID string `json:"wrapper_session_id"`
+	// to remove.
+	//
+	// ⚠️ **`omitempty`, unlike the `worker_id` beside it, and the difference is
+	// deliberate.** `worker_id` has always been present-and-empty, so adding
+	// `omitempty` there would change the shape of rows that already exist. This
+	// field is new: writing `""` on every non-wrapper row would add the key to
+	// all 3470 rows in the live store, so `has("wrapper_session_id")` would match
+	// every row and a reader could no longer tell "carried" from "not
+	// wrapper-backed". Absent is the honest shape, and it is what the
+	// supervisor's `?? null` already reads.
+	WrapperSessionID string `json:"wrapper_session_id,omitempty"`
 	// Target is the spawn target whose name doubles as an A2A worker's status
 	// (`docker` / `k8s`), empty for every other mode.
 	Target string `json:"target"`
