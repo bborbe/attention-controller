@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.65.0
 
 - feat: Carry the answer route on the answering record — `request_id` (the wrapper's permission gate id, distinct from the store's item id) and `policy` (the rule that decided the answer, or the rule that declined to) — through `Answer`, the federating and notifying stores, the remote client and `POST /api/1.0/attention/{itemID}/answer`, so a record names the gate it moved and the rule that admitted it rather than only the verdict. Both fields are written present-only, so a second write carrying neither does not blank what the arm that actually decided the gate recorded.
 - feat: Add `held` as a delivery outcome and status, for a gate an arm SAW and deliberately did not answer, leaving it open for the operator. It reads as neither `delivered` (nothing was answered) nor `failed` (nothing went wrong), and the rule that held the gate is named in the attempt's carrier, which is the record's only caller-supplied string.
