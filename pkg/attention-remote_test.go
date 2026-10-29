@@ -282,6 +282,47 @@ var _ = Describe("HTTP remote attention store", func() {
 			Expect(body).ShouldNot(HaveKey("user_agent"))
 			Expect(body).ShouldNot(HaveKey("remote_addr"))
 		})
+
+		// ⚠️ The route has to survive the wire, not just the local store: a
+		// federated answer records where it came from on the PEER, and a dropped
+		// field here would make the record depend on which store owned the item.
+		It("carries the answer route into the peer's body", func() {
+			respondWith(http.StatusOK, `{"item_id":"peer-1","state":"answered"}`)
+
+			_, err := remote.Answer(
+				ctx,
+				"peer-1",
+				"attention-watcher",
+				"session-1",
+				pkg.AllowDecision,
+				nil,
+				nil,
+				nil,
+				pkg.AnswerRoute{RequestID: "dmhc3urrw8uo", Policy: "routine-tool:Read"},
+			)
+			Expect(err).Should(BeNil())
+
+			var body map[string]any
+			Expect(json.Unmarshal(lastBody, &body)).Should(Succeed())
+			Expect(body["request_id"]).Should(Equal("dmhc3urrw8uo"))
+			Expect(body["policy"]).Should(Equal("routine-tool:Read"))
+		})
+
+		// An arm that supplies no route posts no route keys, so the peer's
+		// present-only stamping cannot blank a route a deciding arm already wrote.
+		It("omits the route keys when the caller supplies none", func() {
+			respondWith(http.StatusOK, `{"item_id":"peer-1","state":"answered"}`)
+
+			_, err := remote.Answer(
+				ctx, "peer-1", "attention-board", "session-1", pkg.AllowDecision, nil, nil, nil,
+			)
+			Expect(err).Should(BeNil())
+
+			var body map[string]any
+			Expect(json.Unmarshal(lastBody, &body)).Should(Succeed())
+			Expect(body).ShouldNot(HaveKey("request_id"))
+			Expect(body).ShouldNot(HaveKey("policy"))
+		})
 	})
 
 	Context("flagging", func() {

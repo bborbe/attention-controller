@@ -10,7 +10,7 @@ import (
 )
 
 type AttentionStore struct {
-	AnswerStub        func(context.Context, pkg.ItemID, string, string, pkg.Decision, *pkg.Answer, pkg.Answers, *pkg.AnsweredClient) (*pkg.Item, error)
+	AnswerStub        func(context.Context, pkg.ItemID, string, string, pkg.Decision, *pkg.Answer, pkg.Answers, *pkg.AnsweredClient, ...pkg.AnswerRoute) (*pkg.Item, error)
 	answerMutex       sync.RWMutex
 	answerArgsForCall []struct {
 		arg1 context.Context
@@ -21,6 +21,7 @@ type AttentionStore struct {
 		arg6 *pkg.Answer
 		arg7 pkg.Answers
 		arg8 *pkg.AnsweredClient
+		arg9 []pkg.AnswerRoute
 	}
 	answerReturns struct {
 		result1 *pkg.Item
@@ -207,7 +208,7 @@ type AttentionStore struct {
 	invocationsMutex sync.RWMutex
 }
 
-func (fake *AttentionStore) Answer(arg1 context.Context, arg2 pkg.ItemID, arg3 string, arg4 string, arg5 pkg.Decision, arg6 *pkg.Answer, arg7 pkg.Answers, arg8 *pkg.AnsweredClient) (*pkg.Item, error) {
+func (fake *AttentionStore) Answer(arg1 context.Context, arg2 pkg.ItemID, arg3 string, arg4 string, arg5 pkg.Decision, arg6 *pkg.Answer, arg7 pkg.Answers, arg8 *pkg.AnsweredClient, arg9 ...pkg.AnswerRoute) (*pkg.Item, error) {
 	fake.answerMutex.Lock()
 	ret, specificReturn := fake.answerReturnsOnCall[len(fake.answerArgsForCall)]
 	fake.answerArgsForCall = append(fake.answerArgsForCall, struct {
@@ -219,13 +220,14 @@ func (fake *AttentionStore) Answer(arg1 context.Context, arg2 pkg.ItemID, arg3 s
 		arg6 *pkg.Answer
 		arg7 pkg.Answers
 		arg8 *pkg.AnsweredClient
-	}{arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8})
+		arg9 []pkg.AnswerRoute
+	}{arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9})
 	stub := fake.AnswerStub
 	fakeReturns := fake.answerReturns
-	fake.recordInvocation("Answer", []interface{}{arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8})
+	fake.recordInvocation("Answer", []interface{}{arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9})
 	fake.answerMutex.Unlock()
 	if stub != nil {
-		return stub(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8)
+		return stub(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9...)
 	}
 	if specificReturn {
 		return ret.result1, ret.result2
@@ -239,17 +241,17 @@ func (fake *AttentionStore) AnswerCallCount() int {
 	return len(fake.answerArgsForCall)
 }
 
-func (fake *AttentionStore) AnswerCalls(stub func(context.Context, pkg.ItemID, string, string, pkg.Decision, *pkg.Answer, pkg.Answers, *pkg.AnsweredClient) (*pkg.Item, error)) {
+func (fake *AttentionStore) AnswerCalls(stub func(context.Context, pkg.ItemID, string, string, pkg.Decision, *pkg.Answer, pkg.Answers, *pkg.AnsweredClient, ...pkg.AnswerRoute) (*pkg.Item, error)) {
 	fake.answerMutex.Lock()
 	defer fake.answerMutex.Unlock()
 	fake.AnswerStub = stub
 }
 
-func (fake *AttentionStore) AnswerArgsForCall(i int) (context.Context, pkg.ItemID, string, string, pkg.Decision, *pkg.Answer, pkg.Answers, *pkg.AnsweredClient) {
+func (fake *AttentionStore) AnswerArgsForCall(i int) (context.Context, pkg.ItemID, string, string, pkg.Decision, *pkg.Answer, pkg.Answers, *pkg.AnsweredClient, []pkg.AnswerRoute) {
 	fake.answerMutex.RLock()
 	defer fake.answerMutex.RUnlock()
 	argsForCall := fake.answerArgsForCall[i]
-	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3, argsForCall.arg4, argsForCall.arg5, argsForCall.arg6, argsForCall.arg7, argsForCall.arg8
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3, argsForCall.arg4, argsForCall.arg5, argsForCall.arg6, argsForCall.arg7, argsForCall.arg8, argsForCall.arg9
 }
 
 func (fake *AttentionStore) AnswerReturns(result1 *pkg.Item, result2 error) {

@@ -101,9 +101,12 @@ func (a *attentionStore) Delivery(
 			attemptedAt := attempt.AttemptedAt
 			report.Carrier = attempt.Carrier
 			report.AttemptedAt = &attemptedAt
-			if attempt.Outcome == DeliveredOutcome {
+			switch attempt.Outcome {
+			case DeliveredOutcome:
 				report.Status = DeliveredStatus
-			} else {
+			case HeldOutcome:
+				report.Status = HeldStatus
+			default:
 				report.Status = FailedStatus
 			}
 		case isNotFound(err):

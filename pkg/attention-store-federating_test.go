@@ -176,6 +176,28 @@ var _ = Describe("Federating attention store", func() {
 			Expect(remote.AnswerCallCount()).Should(Equal(0))
 		})
 
+		// ⚠️ Forwarding is the half a decorator can silently drop: the answer
+		// still lands, the record just loses the gate it moved. Asserted on both
+		// branches, because the peer path and the local path are separate calls.
+		It("forwards the answer route to whichever store owns the item", func() {
+			local.GetReturns(nil, pkg.ErrItemNotFound)
+			remote.AnswerReturns(&pkg.Item{ItemID: "peer-1"}, nil)
+			route := pkg.AnswerRoute{RequestID: "dmhc3urrw8uo", Policy: "routine-tool:Read"}
+
+			_, err := store.Answer(ctx, "peer-1", "board", "session-1", "", nil, nil, nil, route)
+			Expect(err).Should(BeNil())
+			_, _, _, _, _, _, _, _, forwarded := remote.AnswerArgsForCall(0)
+			Expect(forwarded).Should(Equal([]pkg.AnswerRoute{route}))
+
+			local.GetReturns(&pkg.Item{ItemID: "local-1"}, nil)
+			local.AnswerReturns(&pkg.Item{ItemID: "local-1"}, nil)
+
+			_, err = store.Answer(ctx, "local-1", "board", "session-1", "", nil, nil, nil, route)
+			Expect(err).Should(BeNil())
+			_, _, _, _, _, _, _, _, applied := local.AnswerArgsForCall(0)
+			Expect(applied).Should(Equal([]pkg.AnswerRoute{route}))
+		})
+
 		It(
 			"sends the write to the local store when the local read fails for another reason",
 			func() {

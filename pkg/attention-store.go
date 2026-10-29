@@ -143,6 +143,12 @@ type AttentionStore interface {
 		answer *Answer,
 		answers Answers,
 		answeredClient *AnsweredClient,
+		// route carries where the answer came from and which rule produced it.
+		// It is one value rather than further positional parameters so that the
+		// next field costs no caller and no test — see AnswerRoute — and it is
+		// variadic so that the callers which have no route to report stay
+		// byte-identical. Every caller that does report one passes exactly one.
+		route ...AnswerRoute,
 	) (*Item, error)
 
 	// Escalate records which session is carrying this item to the operator, as

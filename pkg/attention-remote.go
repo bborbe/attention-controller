@@ -62,6 +62,7 @@ type RemoteAttentionStore interface {
 		answer *Answer,
 		answers Answers,
 		answeredClient *AnsweredClient,
+		route ...AnswerRoute,
 	) (*Item, error)
 
 	// Close marks one of the peer's answered items closed.
@@ -151,6 +152,12 @@ type remoteAnswerRequest struct {
 	Answer     *Answer  `json:"answer"`
 	Answers    Answers  `json:"answers"`
 	Automation *bool    `json:"automation"`
+	// RequestID and Policy are the route, mirrored field for field like the
+	// rest: a federated answer must record where it came from on the peer
+	// exactly as a local one does, or the record depends on which store happened
+	// to own the item.
+	RequestID string `json:"request_id,omitempty"`
+	Policy    string `json:"policy,omitempty"`
 }
 
 // Answer proxies an answer to the peer and returns the peer's item.
@@ -163,7 +170,9 @@ func (h *httpRemoteAttentionStore) Answer(
 	answer *Answer,
 	answers Answers,
 	answeredClient *AnsweredClient,
+	route ...AnswerRoute,
 ) (*Item, error) {
+	answerRoute := firstRoute(route)
 	var automation *bool
 	if answeredClient != nil {
 		automation = answeredClient.Automation
@@ -176,6 +185,8 @@ func (h *httpRemoteAttentionStore) Answer(
 		Answer:     answer,
 		Answers:    answers,
 		Automation: automation,
+		RequestID:  answerRoute.RequestID,
+		Policy:     answerRoute.Policy,
 	}, &item)
 	if err != nil {
 		return nil, err

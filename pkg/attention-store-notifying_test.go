@@ -71,6 +71,24 @@ var _ = Describe("Notifying attention store", func() {
 		Expect(changes).Should(HaveLen(1))
 	})
 
+	// ⚠️ Load-bearing, not cosmetic: `route` is variadic, so a decorator that
+	// silently drops it still compiles — and this decorator sits in the
+	// production Answer chain ahead of the federating one, so every local answer
+	// passes through it.
+	It("forwards the answer route to the wrapped store", func() {
+		item := &pkg.Item{}
+		inner.AnswerReturns(item, nil)
+		route := pkg.AnswerRoute{RequestID: "dmhcmyi37wgo", Policy: "routine-tool:Read"}
+
+		_, err := store.Answer(
+			ctx, "item-1", "attention-watcher", "session-1", "", nil, nil, nil, route,
+		)
+
+		Expect(err).Should(BeNil())
+		_, _, _, _, _, _, _, _, forwarded := inner.AnswerArgsForCall(0)
+		Expect(forwarded).Should(Equal([]pkg.AnswerRoute{route}))
+	})
+
 	It("signals after an escalation", func() {
 		item := &pkg.Item{}
 		inner.EscalateReturns(item, nil)

@@ -234,6 +234,25 @@ type Item struct {
 	// message- or ack-class item reads as and what every item answered before
 	// this field existed reads as.
 	Decision Decision `json:"decision,omitempty"`
+	// RequestID is the permission gate this answer settled — the wrapper's own
+	// request id, not the store's item id. They are different identifiers for
+	// different things: the item id names the card, the request id names the
+	// pending question inside the process that can answer it, so an answer
+	// recording only the card cannot be audited against the gate it moved.
+	//
+	// A caller's declaration, exactly as AnsweredBy and ResolvedBy are. Empty
+	// means absent, which is what every item answered before this field existed
+	// reads as.
+	RequestID string `json:"request_id,omitempty"`
+	// Policy is the rule that decided this answer, named by the arm that applied
+	// it — `routine-tool:Read`, or `no-routine-rule` on a gate that arm declined
+	// to settle. It is what separates a record produced by a policy from one
+	// produced by a constant: an arm that stamped a literal would be
+	// indistinguishable from one that decided nothing.
+	//
+	// A caller's declaration, exactly as Decision is. Empty means no policy was
+	// recorded.
+	Policy string `json:"policy,omitempty"`
 	// Answer is what the operator actually said on a `message` item. Written by
 	// the store on the open -> answered transition, exactly as AnsweredAt,
 	// AnsweredBy and Decision are.

@@ -265,6 +265,65 @@ var _ = Describe("Board answers", func() {
 			Expect(got.Answer).To(BeNil())
 		})
 
+		It("records the route the answer came from", func() {
+			item := pushQuestion()
+
+			_, err := store.Answer(ctx, item.ItemID, "attention-watcher", "", pkg.AllowDecision,
+				nil, nil, nil, pkg.AnswerRoute{
+					RequestID: "req-123",
+					Policy:    "routine-tool:Read",
+				})
+			Expect(err).To(BeNil())
+
+			got, err := store.Get(ctx, item.ItemID)
+			Expect(err).To(BeNil())
+			Expect(got.RequestID).To(Equal("req-123"))
+			Expect(got.Policy).To(Equal("routine-tool:Read"))
+		})
+
+		It("leaves the route absent when the caller omits one", func() {
+			item := pushQuestion()
+
+			_, err := store.Answer(ctx, item.ItemID, "telegram", "", "", nil, nil, nil)
+			Expect(err).To(BeNil())
+
+			got, err := store.Get(ctx, item.ItemID)
+			Expect(err).To(BeNil())
+			Expect(got.RequestID).To(BeEmpty())
+			Expect(got.Policy).To(BeEmpty())
+		})
+
+		It("does not erase the route on a second write that carries none", func() {
+			// A `permission` item, because the compare-and-set accepts a second
+			// answer on that class alone — the relaxation the arm uses to attach
+			// the resolver the release path reads.
+			request := messageRequest()
+			request.AnswerMechanism = pkg.PermissionAnswerMechanism
+			request.Options = nil
+			item, err := store.Push(ctx, request)
+			Expect(err).To(BeNil())
+
+			_, err = store.Answer(ctx, item.ItemID, "attention-watcher", "", pkg.AllowDecision,
+				nil, nil, nil, pkg.AnswerRoute{
+					RequestID: "req-123",
+					Policy:    "routine-tool:Read",
+				})
+			Expect(err).To(BeNil())
+
+			// The arm that attaches a resolver posts no route. A plain assignment
+			// there would blank what the arm that actually decided the gate
+			// recorded — the same failure the Decision guard exists to stop.
+			_, err = store.Answer(ctx, item.ItemID, "attention-watcher", "session-1", "",
+				nil, nil, nil)
+			Expect(err).To(BeNil())
+
+			got, err := store.Get(ctx, item.ItemID)
+			Expect(err).To(BeNil())
+			Expect(got.RequestID).To(Equal("req-123"))
+			Expect(got.Policy).To(Equal("routine-tool:Read"))
+			Expect(got.ResolvedBy).To(Equal("session-1"))
+		})
+
 		It("rejects an option answer carrying no value", func() {
 			err := (&pkg.Answer{Kind: pkg.OptionAnswerKind}).Validate(ctx)
 			Expect(err).NotTo(BeNil())

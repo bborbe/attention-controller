@@ -1257,7 +1257,12 @@ func (a *attentionStore) Answer(
 	answer *Answer,
 	answers Answers,
 	answeredClient *AnsweredClient,
+	route ...AnswerRoute,
 ) (*Item, error) {
+	// A caller reporting no route passes nothing; one reporting a route passes
+	// exactly one. More than one is a caller bug, not a merge, so the first wins
+	// rather than being concatenated.
+	answerRoute := firstRoute(route)
 	var result *Item
 	err := a.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
 		item, err := a.store.Get(ctx, tx, itemID.String())
@@ -1318,6 +1323,10 @@ func (a *attentionStore) Answer(
 		// backfilled from answeredBy: the arm is not an identity, so copying it
 		// here would record a value that looks like a resolver and is not one.
 		item.ResolvedBy = resolvedBy
+		// The route rides WITH the transition, never beside it: the item's state
+		// and the record of who settled it change together, which is the property
+		// that keeps the store single-writer.
+		item.stampAnswerRoute(answerRoute)
 		// Stamped from the caller's declaration for the same reason, and never
 		// derived either: the arm is not a decision, so an empty decision stays
 		// empty rather than being inferred from the arm that supplied it.

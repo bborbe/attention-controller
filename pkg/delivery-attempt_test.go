@@ -139,6 +139,28 @@ var _ = Describe("Delivery trail", func() {
 		Expect(failed.Status).NotTo(Equal(never.Status))
 	})
 
+	// ⚠️ A held gate is not a failed delivery, and the difference is what the
+	// operator does next: `failed` sends them hunting a fault, `held` tells them
+	// a rule declined on purpose and the gate is theirs to answer.
+	It("reads held for a gate an arm declined to answer", func() {
+		store := storeAt(pkg.DeliveryTrailEpoch.Add(stdtime.Hour))
+		item := push(store, "gate-held")
+
+		_, err := store.RecordAttempt(
+			ctx, item.ItemID, "watcher:attention-watcher:no-routine-rule", pkg.HeldOutcome,
+		)
+		Expect(err).To(BeNil())
+
+		report, err := store.Delivery(ctx, item.ItemID)
+		Expect(err).To(BeNil())
+		Expect(report.Status).To(Equal(pkg.HeldStatus))
+		Expect(report.Status).NotTo(Equal(pkg.FailedStatus))
+		Expect(report.Status).NotTo(Equal(pkg.DeliveredStatus))
+		// The carrier names the rule that held it, which is the only place the
+		// record can carry it — the attempt record has no free-text field.
+		Expect(report.Carrier).To(Equal("watcher:attention-watcher:no-routine-rule"))
+	})
+
 	// ⚠️ A close is a clear, not an answer. An item cleared from the board with
 	// no answer routed nowhere, so nothing was delivered — reading `closed` as
 	// delivered would repeat the overstatement this record exists to remove.

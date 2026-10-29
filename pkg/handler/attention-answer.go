@@ -87,6 +87,16 @@ func handleAttentionAnswer(
 		// no automation reading, which is what a client that cannot read it
 		// reports.
 		Automation *bool `json:"automation"`
+		// RequestID is the permission gate the answer settled — the wrapper's own
+		// request id, distinct from this item's id. Optional: an omitted value
+		// stores an item with no gate recorded, which is what every item answered
+		// before this field existed reads as.
+		RequestID string `json:"request_id"`
+		// Policy is the rule that decided the answer, named by the arm that
+		// applied it. Optional for the same reason, and recorded rather than
+		// derived: the store cannot know which rule an arm consulted, and a
+		// derived value would read as a decision the arm never made.
+		Policy string `json:"policy"`
 	}
 	if err := json.NewDecoder(req.Body).Decode(&request); err != nil {
 		return libhttp.WrapWithDetails(
@@ -111,6 +121,9 @@ func handleAttentionAnswer(
 		// members come from the request itself, and only the automation hint
 		// comes from what the page posted.
 		answeredClientFromRequest(req, request.Automation),
+		// The route lands WITH the transition, never beside it — the whole point
+		// of carrying it through Answer rather than through a field-write route.
+		pkg.AnswerRoute{RequestID: request.RequestID, Policy: request.Policy},
 	)
 	if err != nil {
 		return wrapAnswerError(ctx, err, itemID, store)
