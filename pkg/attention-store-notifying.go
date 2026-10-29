@@ -90,9 +90,10 @@ func (n *notifyingAttentionStore) Answer(
 	answer *Answer,
 	answers Answers,
 	answeredClient *AnsweredClient,
+	route ...AnswerRoute,
 ) (*Item, error) {
 	item, err := n.store.Answer(
-		ctx, itemID, answeredBy, resolvedBy, decision, answer, answers, answeredClient,
+		ctx, itemID, answeredBy, resolvedBy, decision, answer, answers, answeredClient, route...,
 	)
 	if err != nil {
 		return nil, err

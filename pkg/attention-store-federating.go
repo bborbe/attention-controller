@@ -168,14 +168,23 @@ func (f *federatingAttentionStore) Answer(
 	answer *Answer,
 	answers Answers,
 	answeredClient *AnsweredClient,
+	route ...AnswerRoute,
 ) (*Item, error) {
 	if f.isRemote(ctx, itemID) {
 		return f.remote.Answer(
-			ctx, itemID, answeredBy, resolvedBy, decision, answer, answers, answeredClient,
+			ctx,
+			itemID,
+			answeredBy,
+			resolvedBy,
+			decision,
+			answer,
+			answers,
+			answeredClient,
+			route...,
 		)
 	}
 	return f.local.Answer(
-		ctx, itemID, answeredBy, resolvedBy, decision, answer, answers, answeredClient,
+		ctx, itemID, answeredBy, resolvedBy, decision, answer, answers, answeredClient, route...,
 	)
 }
 
