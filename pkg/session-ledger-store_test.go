@@ -6,6 +6,7 @@ package pkg_test
 
 import (
 	"context"
+	"encoding/json"
 	stdtime "time"
 
 	libboltkv "github.com/bborbe/boltkv"
@@ -27,6 +28,9 @@ const (
 	// ledgerSharedAgentID is what `supervisor.mjs` mints on a reconnect: a
 	// per-process counter restarting at 0, so two unrelated workers receive it.
 	ledgerSharedAgentID = "agent_1"
+	// ledgerWrapperSessionID is a `claude-wrapper` session id, carried so a
+	// restarted supervisor can find the park it holds.
+	ledgerWrapperSessionID = "55555555-5555-4555-8555-555555555555"
 )
 
 // mustParseDateTime turns an RFC3339 fixture into the store's clock type. A
@@ -82,6 +86,42 @@ var _ = Describe("SessionLedgerStore", func() {
 		Expect(got.SessionID).To(Equal(ledgerSessionA))
 		Expect(got.Label).To(Equal("a worker"))
 		Expect(got.SpawnerSessionID).To(Equal("44444444-4444-4444-8444-444444444444"))
+	})
+
+	It("carries the wrapper session id through a write and a read", func() {
+		// The supervisor writes this field and a restarted supervisor reads it
+		// back to find a parked prompt. Dropping it is silent — the row simply
+		// reads as "not wrapper-backed" — so the round trip is the only check
+		// that catches the struct losing it.
+		entry := ledgerEntry(ledgerSessionA, "2026-10-13T10:00:00Z")
+		entry.WrapperSessionID = ledgerWrapperSessionID
+		Expect(store.Post(ctx, entry)).To(BeNil())
+
+		got, found, err := store.Get(ctx, ledgerSessionA)
+		Expect(err).To(BeNil())
+		Expect(found).To(BeTrue())
+		Expect(got.WrapperSessionID).To(Equal(ledgerWrapperSessionID))
+	})
+
+	It("decodes a row written before wrapper_session_id existed as empty", func() {
+		// Every row already in the store predates the field. A required field
+		// would make all of them unreadable, so "absent" must decode to the
+		// empty string rather than failing the decode.
+		var entry pkg.SessionLedgerEntry
+		payload := `{"session_id":"` + ledgerSessionA + `","spawned_at":"2026-10-13T10:00:00Z"}`
+		Expect(json.Unmarshal([]byte(payload), &entry)).To(BeNil())
+		Expect(entry.SessionID).To(Equal(ledgerSessionA))
+		Expect(entry.WrapperSessionID).To(Equal(""))
+
+		// ⚠️ And it must STAY absent on the way back out. Writing `""` would add
+		// the key to every non-wrapper row — all 3470 of them — so a reader
+		// testing `has("wrapper_session_id")` could no longer tell a carried id
+		// from a worker that simply has none.
+		encoded, err := json.Marshal(entry)
+		Expect(err).To(BeNil())
+		roundTripped := map[string]any{}
+		Expect(json.Unmarshal(encoded, &roundTripped)).To(BeNil())
+		Expect(roundTripped).NotTo(HaveKey("wrapper_session_id"))
 	})
 
 	It("reports an unknown session as absent rather than as an error", func() {

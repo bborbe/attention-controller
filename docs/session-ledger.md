@@ -34,6 +34,7 @@ Wire shape (snake_case), as served by the read routes:
 | `role` | `agent`, `manager` or `human`, empty for a row written before the field existed. |
 | `task` / `vault` | The vault task the session is anchored to. **Paired** — see the errors below. |
 | `worker_id` | The A2A controller's id for a container or pod worker, empty for local and cluster modes. ⚠️ **Nothing else maps a controller worker back to its session**, so dropping it makes every A2A worker read dead after a supervisor restart. |
+| `wrapper_session_id` | The `claude-wrapper` session this worker's child runs under, **absent** for a worker that is not wrapper-backed. ⚠️ **Nothing else maps a parked prompt back to its worker**: the wrapper is the only holder of the park, so a row that lost the field makes a restarted supervisor read a genuinely parked worker as "not parked" and refuse the answer as a foreign park. |
 | `target` | The spawn target whose name doubles as an A2A worker's status (`docker` / `k8s`). |
 | `ended_at` | When the worker was observed to end, **absent** while it has not. |
 | `stopped_at` | When a supervisor **deliberately stopped** the worker, absent while no stop has been recorded. ⚠️ **A field of its own** — not `status` and not `ended_at` — see below. |

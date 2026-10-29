@@ -163,6 +163,25 @@ var _ = Describe("SessionLedgerPatchHandler", func() {
 		Expect(patched["stopped_at"]).To(Equal("2026-10-17T09:30:00Z"))
 	})
 
+	It("accepts a patch naming wrapper_session_id and keeps the value", func() {
+		// ⚠️ The merge decodes the merged row with `DisallowUnknownFields`, so
+		// before the struct carried this field a patch naming it was REFUSED with
+		// 400 rather than silently dropped. The status code is therefore the
+		// assertion: 400 and 200 are both possible and they are distinguishable.
+		status, _ := do(spawner, http.MethodPost, "/api/1.0/session-ledger", fullLedgerRow())
+		Expect(status).To(Equal(http.StatusOK))
+
+		status, patched := do(stopper, http.MethodPatch, ledgerPath, map[string]any{
+			"wrapper_session_id": "55555555-5555-4555-8555-555555555555",
+		})
+		Expect(status).To(Equal(http.StatusOK))
+		Expect(patched["wrapper_session_id"]).To(Equal("55555555-5555-4555-8555-555555555555"))
+
+		status, read := do(stopper, http.MethodGet, ledgerPath, nil)
+		Expect(status).To(Equal(http.StatusOK))
+		Expect(read["wrapper_session_id"]).To(Equal("55555555-5555-4555-8555-555555555555"))
+	})
+
 	It("answers 404 for a row that was never spawned", func() {
 		status, _ := do(stopper, http.MethodPatch, ledgerPath, map[string]any{
 			"stopped_at": "2026-10-17T09:30:00Z",
