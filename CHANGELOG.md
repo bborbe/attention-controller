@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- fix: Set `Cache-Control: no-store` on the board's HTML response, so a page load after an answer is served fresh from the handler rather than from a copy a browser or proxy stored before the answer landed. The header is set once beside the existing `Content-Type`, before the body is written, and is unconditional across the board's views; the SSE stream's `no-cache` and the legacy jump page are unchanged.
+
 ## v0.66.1
 
 - fix: task index no longer pins a whole-file copy of every task file — `frontmatterValue` and `frontmatterList` now clone the values they return instead of handing back substrings of the full-file split, which kept 135 MB of in-use heap alive against a 135.5 MB task directory (measured 2026-11-02, heap profile)
