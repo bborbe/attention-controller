@@ -989,7 +989,11 @@ func frontmatterValue(content []byte, key string) string {
 		if !ok || strings.TrimSpace(name) != key {
 			continue
 		}
-		return strings.TrimSpace(value)
+		// Clone: value is a substring of the whole-file copy frontmatterLines
+		// splits, so returning it uncloned pins the entire file for as long as the
+		// caller keeps the value — measured 2026-11-02 at 135 MB of in-use heap,
+		// one copy of every file in the task directory.
+		return strings.Clone(strings.TrimSpace(value))
 	}
 	return ""
 }
@@ -1049,7 +1053,9 @@ func frontmatterList(content []byte, key string) []string {
 		if !strings.HasPrefix(trimmed, "-") {
 			break
 		}
-		entries = append(entries, trimmed)
+		// Clone for the same reason frontmatterValue does: an uncloned entry
+		// pins the whole file it was split from.
+		entries = append(entries, strings.Clone(trimmed))
 	}
 	return entries
 }

@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## v0.66.1
+
+- fix: task index no longer pins a whole-file copy of every task file — `frontmatterValue` and `frontmatterList` now clone the values they return instead of handing back substrings of the full-file split, which kept 135 MB of in-use heap alive against a 135.5 MB task directory (measured 2026-11-02, heap profile)
+
 ## v0.66.0
 
 - feat: Carry `wrapper_session_id` on the session ledger row — the `claude-wrapper` session a worker's child runs under — so a supervisor that restarts can still find the parked prompt the wrapper holds and answer it, instead of reading the worker as "not parked" and refusing the answer as a foreign park. The row struct had no such field and no catch-all, so the supervisor's value was dropped on unmarshal: 0 of 3470 live rows carried it. Because the patch merge decodes with `DisallowUnknownFields`, a `PATCH` naming the field was also rejected with 400 rather than silently dropped; both paths now carry it.
