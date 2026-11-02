@@ -1033,6 +1033,11 @@ func registerAdminRoutes(
 ) {
 	router.Path("/healthz").Handler(factory.CreateHealthzHandler())
 	router.Path("/readiness").Handler(libhttp.NewPrintHandler("OK"))
+	// The pipeline probe: 200 with body `ok`, and nothing else. It exists only
+	// to prove the cluster ship path carries a request end to end, so it reads
+	// no store and touches no subsystem — a probe that can fail for a reason
+	// other than "the process is down" reports on the wrong thing.
+	router.Path("/probe").Handler(libhttp.NewPrintHandler("ok"))
 	router.Path("/metrics").Handler(promhttp.Handler())
 	router.Path("/resetdb").Handler(libkv.NewResetHandler(db, cancel))
 	router.Path("/resetbucket/{BucketName}").Handler(libkv.NewResetBucketHandler(db, cancel))

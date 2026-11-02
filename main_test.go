@@ -20,6 +20,7 @@ import (
 	libhttp "github.com/bborbe/http"
 	libkv "github.com/bborbe/kv"
 	"github.com/bborbe/run"
+	sentrymocks "github.com/bborbe/sentry/mocks"
 	libtime "github.com/bborbe/time"
 	"github.com/gorilla/mux"
 	. "github.com/onsi/ginkgo/v2"
@@ -451,6 +452,42 @@ var _ = Describe("registerPprofIfLoopback", func() {
 			rec := httptest.NewRecorder()
 			router.ServeHTTP(rec, req)
 			Expect(rec.Code).To(Equal(http.StatusOK), path)
+		}
+	})
+})
+
+var _ = Describe("registerAdminRoutes", func() {
+	var ctx context.Context
+	var db libkv.DB
+	var router *mux.Router
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		var err error
+		db, err = libboltkv.OpenTemp(ctx)
+		Expect(err).To(BeNil())
+
+		router = mux.NewRouter()
+		registerAdminRoutes(ctx, router, db, func() {}, &sentrymocks.SentryClient{})
+	})
+
+	AfterEach(func() {
+		Expect(db.Close()).To(BeNil())
+	})
+
+	It("serves the pipeline probe and keeps its neighbours", func() {
+		for _, probe := range []struct {
+			path string
+			body string
+		}{
+			{"/probe", "ok"},
+			{"/readiness", "OK"},
+		} {
+			req := httptest.NewRequest(http.MethodGet, probe.path, nil)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			Expect(rec.Code).To(Equal(http.StatusOK), probe.path)
+			Expect(rec.Body.String()).To(Equal(probe.body), probe.path)
 		}
 	})
 })

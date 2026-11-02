@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- feat: Add the `/probe` endpoint, answering HTTP 200 with the body `ok`, as an end-to-end probe for the cluster ship path — it reads no store and touches no subsystem, so a failure reports on the pipeline rather than on a feature. The board's listener serves it; the token-gated cluster listener does not, matching the other operational endpoints.
+
 ## v0.66.0
 
 - feat: Carry `wrapper_session_id` on the session ledger row — the `claude-wrapper` session a worker's child runs under — so a supervisor that restarts can still find the parked prompt the wrapper holds and answer it, instead of reading the worker as "not parked" and refusing the answer as a foreign park. The row struct had no such field and no catch-all, so the supervisor's value was dropped on unmarshal: 0 of 3470 live rows carried it. Because the patch merge decodes with `DisallowUnknownFields`, a `PATCH` naming the field was also rejected with 400 rather than silently dropped; both paths now carry it.
