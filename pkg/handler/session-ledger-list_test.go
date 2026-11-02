@@ -100,7 +100,7 @@ var _ = Describe("SessionLedgerListHandler", func() {
 	// "nobody was spawned" from "I could not find out".
 	It("answers 500 — never an empty array — when the store cannot be read", func() {
 		failing := &mocks.SessionLedgerStore{}
-		failing.ListReturns(nil, errors.New("store unavailable"))
+		failing.ListJSONReturns(nil, errors.New("store unavailable"))
 
 		rec := list(handler.NewSessionLedgerListHandler(failing))
 		Expect(rec.Code).To(Equal(http.StatusInternalServerError))

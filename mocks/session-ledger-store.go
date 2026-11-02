@@ -52,6 +52,19 @@ type SessionLedgerStore struct {
 		result1 pkg.SessionLedgerEntries
 		result2 error
 	}
+	ListJSONStub        func(context.Context) ([]byte, error)
+	listJSONMutex       sync.RWMutex
+	listJSONArgsForCall []struct {
+		arg1 context.Context
+	}
+	listJSONReturns struct {
+		result1 []byte
+		result2 error
+	}
+	listJSONReturnsOnCall map[int]struct {
+		result1 []byte
+		result2 error
+	}
 	PatchStub        func(context.Context, string, pkg.SessionLedgerPatch) (pkg.SessionLedgerEntry, bool, error)
 	patchMutex       sync.RWMutex
 	patchArgsForCall []struct {
@@ -278,6 +291,70 @@ func (fake *SessionLedgerStore) ListReturnsOnCall(i int, result1 pkg.SessionLedg
 	}
 	fake.listReturnsOnCall[i] = struct {
 		result1 pkg.SessionLedgerEntries
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *SessionLedgerStore) ListJSON(arg1 context.Context) ([]byte, error) {
+	fake.listJSONMutex.Lock()
+	ret, specificReturn := fake.listJSONReturnsOnCall[len(fake.listJSONArgsForCall)]
+	fake.listJSONArgsForCall = append(fake.listJSONArgsForCall, struct {
+		arg1 context.Context
+	}{arg1})
+	stub := fake.ListJSONStub
+	fakeReturns := fake.listJSONReturns
+	fake.recordInvocation("ListJSON", []interface{}{arg1})
+	fake.listJSONMutex.Unlock()
+	if stub != nil {
+		return stub(arg1)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *SessionLedgerStore) ListJSONCallCount() int {
+	fake.listJSONMutex.RLock()
+	defer fake.listJSONMutex.RUnlock()
+	return len(fake.listJSONArgsForCall)
+}
+
+func (fake *SessionLedgerStore) ListJSONCalls(stub func(context.Context) ([]byte, error)) {
+	fake.listJSONMutex.Lock()
+	defer fake.listJSONMutex.Unlock()
+	fake.ListJSONStub = stub
+}
+
+func (fake *SessionLedgerStore) ListJSONArgsForCall(i int) context.Context {
+	fake.listJSONMutex.RLock()
+	defer fake.listJSONMutex.RUnlock()
+	argsForCall := fake.listJSONArgsForCall[i]
+	return argsForCall.arg1
+}
+
+func (fake *SessionLedgerStore) ListJSONReturns(result1 []byte, result2 error) {
+	fake.listJSONMutex.Lock()
+	defer fake.listJSONMutex.Unlock()
+	fake.ListJSONStub = nil
+	fake.listJSONReturns = struct {
+		result1 []byte
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *SessionLedgerStore) ListJSONReturnsOnCall(i int, result1 []byte, result2 error) {
+	fake.listJSONMutex.Lock()
+	defer fake.listJSONMutex.Unlock()
+	fake.ListJSONStub = nil
+	if fake.listJSONReturnsOnCall == nil {
+		fake.listJSONReturnsOnCall = make(map[int]struct {
+			result1 []byte
+			result2 error
+		})
+	}
+	fake.listJSONReturnsOnCall[i] = struct {
+		result1 []byte
 		result2 error
 	}{result1, result2}
 }

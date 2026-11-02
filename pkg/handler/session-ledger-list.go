@@ -52,7 +52,11 @@ func handleSessionLedgerList(
 	resp http.ResponseWriter,
 	store pkg.SessionLedgerStore,
 ) error {
-	entries, err := store.List(ctx)
+	// ⚠️ The cached body, not List + encode: the endpoint is polled two to three
+	// times a second and the ledger rarely changes, so rebuilding the same 3 MB
+	// response each time was most of the process's allocation (see
+	// ledgerListCache). The body is byte-identical to what SendJSONResponse wrote.
+	body, err := store.ListJSON(ctx)
 	if err != nil {
 		return libhttp.WrapWithCode(
 			errors.Wrap(ctx, err, "list session ledger entries failed"),
@@ -60,7 +64,9 @@ func handleSessionLedgerList(
 			http.StatusInternalServerError,
 		)
 	}
-	if err := libhttp.SendJSONResponse(ctx, resp, entries, http.StatusOK); err != nil {
+	resp.Header().Set(libhttp.ContentTypeHeaderName, libhttp.ApplicationJSONContentType)
+	resp.WriteHeader(http.StatusOK)
+	if _, err := resp.Write(body); err != nil {
 		return errors.Wrap(ctx, err, "send response failed")
 	}
 	return nil
