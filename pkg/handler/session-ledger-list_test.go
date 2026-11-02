@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 
 	libboltkv "github.com/bborbe/boltkv"
+	libhttp "github.com/bborbe/http"
 	libkv "github.com/bborbe/kv"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -61,6 +62,9 @@ var _ = Describe("SessionLedgerListHandler", func() {
 
 		rec := list(handler.NewSessionLedgerListHandler(store))
 		Expect(rec.Code).To(Equal(http.StatusOK))
+		Expect(
+			rec.Header().Get(libhttp.ContentTypeHeaderName),
+		).To(Equal(libhttp.ApplicationJSONContentType))
 		Expect(rec.Body.String()).To(ContainSubstring(handlerLedgerSessionID))
 		Expect(rec.Body.String()).To(ContainSubstring(handlerLedgerSecondSessionID))
 	})

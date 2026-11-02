@@ -270,7 +270,7 @@ func (s *sessionLedgerStore) ListJSON(ctx context.Context) ([]byte, error) {
 	}
 	entries, err := s.List(ctx)
 	if err != nil {
-		return nil, errors.Wrap(ctx, err, "list session ledger entries failed")
+		return nil, errors.Wrap(ctx, err, "build session ledger list body failed")
 	}
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(entries); err != nil {
