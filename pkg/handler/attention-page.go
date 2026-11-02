@@ -1793,6 +1793,7 @@ func NewAttentionPageHandler(store pkg.AttentionStore,
 					libhttp.ContentTypeHeaderName,
 					libhttp.TextHTML+"; charset=utf-8",
 				)
+				resp.Header().Set("Cache-Control", "no-store")
 				if _, err := resp.Write(body.Bytes()); err != nil {
 					return errors.Wrap(ctx, err, "write response failed")
 				}
