@@ -77,6 +77,7 @@ make precommit
 |----------|-------------|
 | `/healthz` | Health check |
 | `/readiness` | Readiness check |
+| `/probe` | Pipeline probe — HTTP 200 with body `ok` |
 | `/metrics` | Prometheus metrics |
 | `/resetdb` | Database reset |
 | `/setloglevel/{level}` | Dynamic log level adjustment |

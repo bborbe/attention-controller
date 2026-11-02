@@ -200,7 +200,7 @@ var _ = Describe("second listener", func() {
 		// still answer 404 for an unregistered path. Authenticated, a mounted
 		// board page would answer 200 and a mounted /metrics would answer 200, so
 		// the 404 is what shows the route is absent.
-		for _, path := range []string{"/", "/metrics", "/healthz", "/readiness", "/jump/item-1"} {
+		for _, path := range []string{"/", "/metrics", "/healthz", "/readiness", "/probe", "/jump/item-1"} {
 			Expect(do(http.MethodGet, path, "", "").Code).
 				To(Equal(http.StatusNotFound), "unauthenticated GET %s", path)
 			Expect(do(http.MethodGet, path, "Bearer "+secondListenerToken, "").Code).
