@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- fix: `GET /api/1.0/session-ledger` serves a cached, pre-encoded body instead of re-listing and re-encoding the whole ledger on every poll — the store keeps the encoded `List` body (`SessionLedgerStore.ListJSON`) and every `Post` / `Patch` / `Import` drops it, with a generation counter so a write racing a rebuild costs a miss, never a stale answer. Measured 2026-11-02 on the Mac board: the endpoint answered 3.2 MB (3,796 rows) two to three times a second and accounted for 53 % of all allocation (14.8 GB in ten minutes), driving a 1.9 GB heap peak against ~23 MB live. The body is byte-identical to the previous `SendJSONResponse` output.
+
 ## v0.66.1
 
 - fix: task index no longer pins a whole-file copy of every task file — `frontmatterValue` and `frontmatterList` now clone the values they return instead of handing back substrings of the full-file split, which kept 135 MB of in-use heap alive against a 135.5 MB task directory (measured 2026-11-02, heap profile)

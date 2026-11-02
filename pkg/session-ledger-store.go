@@ -5,7 +5,10 @@
 package pkg
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"sync"
 
 	"github.com/bborbe/errors"
 	libkv "github.com/bborbe/kv"
@@ -58,6 +61,10 @@ type SessionLedgerStore interface {
 	Get(ctx context.Context, sessionID string) (SessionLedgerEntry, bool, error)
 	// List returns every row the store holds, in no guaranteed order.
 	List(ctx context.Context) (SessionLedgerEntries, error)
+	// ListJSON returns List's rows as the encoded JSON body the list endpoint
+	// answers, served from a cache that every write drops. The caller must not
+	// modify the returned slice — it is shared with the next reader.
+	ListJSON(ctx context.Context) ([]byte, error)
 	// Import adds the rows that are not already present and returns how many it
 	// added. See the implementation for why it is idempotent.
 	Import(ctx context.Context, entries SessionLedgerEntries) (int, error)
@@ -67,6 +74,50 @@ type SessionLedgerStore interface {
 type sessionLedgerStore struct {
 	db      libkv.DB
 	entries libkv.StoreTx[string, SessionLedgerEntry]
+	cache   *ledgerListCache
+}
+
+// ledgerListCache holds the encoded body of the last full List.
+//
+// ⚠️ **It exists because the list endpoint is polled, not because it is slow.**
+// Every supervisor script and manager loop reads the whole ledger on a timer;
+// measured 2026-11-02 on the Mac board, 3,796 rows came to a 3.2 MB response and
+// the endpoint accounted for 53 % of all bytes the process allocated — 14.8 GB in
+// ten minutes, re-decoding and re-encoding an unchanged ledger two to three times
+// a second. That churn drove the heap to a 1.9 GB peak against ~23 MB live, and
+// macOS kept the released pages in the process footprint.
+//
+// ⚠️ **The generation counter is what makes the cache safe, not the mutex.** A
+// List that started before a write would otherwise store a body that predates
+// it, and the next reader would be answered a ledger missing the write. Every
+// write bumps the generation, and a body is only stored if the generation it was
+// read under is still current — so a racing write costs one cache miss, never a
+// stale answer.
+type ledgerListCache struct {
+	mu   sync.Mutex
+	gen  uint64
+	body []byte
+}
+
+func (c *ledgerListCache) load() ([]byte, uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.body, c.gen
+}
+
+func (c *ledgerListCache) store(gen uint64, body []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.gen == gen {
+		c.body = body
+	}
+}
+
+func (c *ledgerListCache) invalidate() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.gen++
+	c.body = nil
 }
 
 // NewSessionLedgerStore creates a store over the given database.
@@ -79,11 +130,13 @@ func NewSessionLedgerStore(db libkv.DB) SessionLedgerStore {
 	return &sessionLedgerStore{
 		db:      db,
 		entries: libkv.NewStoreTx[string, SessionLedgerEntry](sessionLedgerBucketName),
+		cache:   &ledgerListCache{},
 	}
 }
 
 // Post stores one row, keyed by its session id.
 func (s *sessionLedgerStore) Post(ctx context.Context, entry SessionLedgerEntry) error {
+	defer s.cache.invalidate()
 	if err := entry.Validate(ctx); err != nil {
 		return errors.Wrap(ctx, err, "validate session ledger entry failed")
 	}
@@ -111,6 +164,7 @@ func (s *sessionLedgerStore) Patch(
 	sessionID string,
 	patch SessionLedgerPatch,
 ) (SessionLedgerEntry, bool, error) {
+	defer s.cache.invalidate()
 	var merged SessionLedgerEntry
 	found := false
 	err := s.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
@@ -203,6 +257,30 @@ func (s *sessionLedgerStore) List(ctx context.Context) (SessionLedgerEntries, er
 	return entries, nil
 }
 
+// ListJSON returns the encoded List body, from the cache when no write has
+// landed since it was built.
+//
+// The body is encoded exactly as `libhttp.SendJSONResponse` encodes a value —
+// `json.NewEncoder(...).Encode`, trailing newline included — so serving it
+// changes no byte a caller receives.
+func (s *sessionLedgerStore) ListJSON(ctx context.Context) ([]byte, error) {
+	body, gen := s.cache.load()
+	if body != nil {
+		return body, nil
+	}
+	entries, err := s.List(ctx)
+	if err != nil {
+		return nil, errors.Wrap(ctx, err, "build session ledger list body failed")
+	}
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(entries); err != nil {
+		return nil, errors.Wrap(ctx, err, "encode session ledger entries failed")
+	}
+	body = buf.Bytes()
+	s.cache.store(gen, body)
+	return body, nil
+}
+
 // Import adds the rows that are not already present.
 //
 // ⚠️ **It is idempotent by `session_id`, and that is the criterion rather than a
@@ -225,6 +303,7 @@ func (s *sessionLedgerStore) Import(
 	ctx context.Context,
 	entries SessionLedgerEntries,
 ) (int, error) {
+	defer s.cache.invalidate()
 	added := 0
 	err := s.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
 		added = 0
