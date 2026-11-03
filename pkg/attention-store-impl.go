@@ -1120,7 +1120,12 @@ func (a *attentionStore) stillRemovable(
 //
 // A read transaction, not a write one: this path mutates nothing, so it takes
 // no writer lock and cannot interleave with the pruning Read does.
-func (a *attentionStore) History(ctx context.Context, limit int, offset int) (Items, error) {
+func (a *attentionStore) History(
+	ctx context.Context,
+	limit int,
+	offset int,
+	filters ...HistoryFilter,
+) (Items, error) {
 	if err := a.ensureHistoryIndex(ctx); err != nil {
 		return nil, errors.Wrap(ctx, err, "ensure history index failed")
 	}
@@ -1130,7 +1135,7 @@ func (a *attentionStore) History(ctx context.Context, limit int, offset int) (It
 	var items Items
 	err := a.db.View(ctx, func(ctx context.Context, tx libkv.Tx) error {
 		var err error
-		items, err = a.collectHistoryPage(ctx, tx, limit, offset)
+		items, err = a.collectHistoryPage(ctx, tx, limit, offset, newHistoryMatcher(filters))
 		return err
 	})
 	if err != nil {
@@ -1154,6 +1159,7 @@ func (a *attentionStore) collectHistoryPage(
 	tx libkv.Tx,
 	limit int,
 	offset int,
+	filter historyMatcher,
 ) (Items, error) {
 	bucket, err := tx.Bucket(ctx, attentionHistoryIndexBucketName)
 	if err != nil {
@@ -1185,9 +1191,12 @@ func (a *attentionStore) collectHistoryPage(
 		if string(it.Item().Key()) == historyIndexMarkerKey {
 			continue
 		}
-		item, err := decodeHistoryIndexEntry(ctx, it.Item())
+		item, keep, err := filter.decode(ctx, it.Item())
 		if err != nil {
 			return nil, err
+		}
+		if !keep {
+			continue
 		}
 		// ⚠️ An expired OPEN item is skipped, and it is filtered BEFORE the offset
 		// so it never occupies a page slot. This is History's one narrowing:

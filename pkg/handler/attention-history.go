@@ -22,6 +22,15 @@ const (
 	historyLimitParam  = "limit"
 	historyOffsetParam = "offset"
 
+	// historyProducerParam narrows the page to one or more producers; repeat it
+	// for several (`?producer_id=a&producer_id=b`). Absent means every producer,
+	// so every existing caller is unchanged.
+	historyProducerParam = "producer_id"
+
+	// historyDedupPrefixParam narrows the page to items whose dedup key starts
+	// with the value (`?dedup_key_prefix=park:`).
+	historyDedupPrefixParam = "dedup_key_prefix"
+
 	// historyDefaultLimit bounds the response when the caller names no limit.
 	//
 	// ⚠️ It is sized from the payload rather than from taste. Rows average ~840
@@ -64,7 +73,10 @@ func NewAttentionHistoryHandler(store pkg.AttentionStore) http.Handler {
 				if err != nil {
 					return err
 				}
-				items, err := store.History(ctx, limit, offset)
+				items, err := store.History(ctx, limit, offset, pkg.HistoryFilter{
+					Producers:      historyProducers(req),
+					DedupKeyPrefix: pkg.DedupKey(req.URL.Query().Get(historyDedupPrefixParam)),
+				})
 				if err != nil {
 					return libhttp.WrapWithCode(
 						errors.Wrap(ctx, err, "history failed"),
@@ -79,6 +91,19 @@ func NewAttentionHistoryHandler(store pkg.AttentionStore) http.Handler {
 			},
 		),
 	)
+}
+
+// historyProducers reads every `producer_id` query value. An empty value is
+// dropped here as well as in the store, so `?producer_id=` reads as "no filter"
+// rather than as "items with no producer".
+func historyProducers(req *http.Request) []pkg.ProducerID {
+	var producers []pkg.ProducerID
+	for _, raw := range req.URL.Query()[historyProducerParam] {
+		if raw != "" {
+			producers = append(producers, pkg.ProducerID(raw))
+		}
+	}
+	return producers
 }
 
 // historyIntParam reads one integer query parameter, returning fallback when it
