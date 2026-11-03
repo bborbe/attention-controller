@@ -7,6 +7,8 @@
 package pkg
 
 import (
+	"sync"
+
 	"github.com/fsnotify/fsnotify"
 )
 
@@ -24,21 +26,31 @@ func newTaskDirWatcher(dir string) (taskDirWatcher, error) {
 	w := &fsnotifyTaskDirWatcher{
 		watcher: watcher,
 		events:  make(chan string, 256),
+		done:    make(chan struct{}),
 	}
 	go w.forward()
 	return w, nil
 }
 
 type fsnotifyTaskDirWatcher struct {
-	watcher *fsnotify.Watcher
-	events  chan string
+	watcher   *fsnotify.Watcher
+	events    chan string
+	done      chan struct{}
+	closeOnce sync.Once
 }
 
-// forward relays event names until fsnotify closes its channel.
+// forward relays event names until fsnotify closes its channel or Close runs.
+//
+// ⚠️ The send selects on done: once the consumer has stopped reading, a full
+// buffer would otherwise park this goroutine forever after Close.
 func (w *fsnotifyTaskDirWatcher) forward() {
 	defer close(w.events)
 	for event := range w.watcher.Events {
-		w.events <- event.Name
+		select {
+		case w.events <- event.Name:
+		case <-w.done:
+			return
+		}
 	}
 }
 
@@ -46,4 +58,11 @@ func (w *fsnotifyTaskDirWatcher) Events() <-chan string { return w.events }
 
 func (w *fsnotifyTaskDirWatcher) Errors() <-chan error { return w.watcher.Errors }
 
-func (w *fsnotifyTaskDirWatcher) Close() error { return w.watcher.Close() }
+func (w *fsnotifyTaskDirWatcher) Close() error {
+	var err error
+	w.closeOnce.Do(func() {
+		close(w.done)
+		err = w.watcher.Close()
+	})
+	return err
+}

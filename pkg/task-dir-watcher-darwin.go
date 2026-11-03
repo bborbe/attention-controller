@@ -26,8 +26,7 @@ const taskDirWatchLatency = 200 * time.Millisecond
 // and stats every entry on each directory change — see taskDirWatcher.
 //
 // ⚠️ FSEvents reports the real path, relative to the device root with no
-// leading slash. A vault reached through a symlink (`~/Documents/Obsidian/
-// Personal`) would then never share a prefix with the vault directory the index
+// leading slash. A vault reached through a symlink would then never share a prefix with the vault directory the index
 // compares against, and every event would be dropped as outside the vault. The
 // real directory is resolved once here and each event is mapped back under dir.
 func newTaskDirWatcher(dir string) (taskDirWatcher, error) {
