@@ -45,6 +45,38 @@ var _ = Describe("task dir watcher (platform backend)", func() {
 		expectDelivered(watcher, filepath.Join(dir, "A.md"))
 	})
 
+	// ⚠️ The heartbeat store posts atomically — CreateTemp then Rename into the
+	// watched dir — so the final name must be reported for a rename, not only for
+	// a plain write.
+	It("reports the final name of a temp-file-then-rename write", func() {
+		dir, err := filepath.EvalSymlinks(GinkgoT().TempDir())
+		Expect(err).NotTo(HaveOccurred())
+		watcher, err := newTaskDirWatcher(dir)
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = watcher.Close() }()
+
+		want := filepath.Join(dir, "s.json")
+		Eventually(func(g Gomega) {
+			tmp, err := os.CreateTemp(dir, ".s-*.tmp")
+			g.Expect(err).NotTo(HaveOccurred())
+			_, _ = tmp.WriteString(time.Now().String())
+			g.Expect(tmp.Close()).To(Succeed())
+			g.Expect(os.Rename(tmp.Name(), want)).To(Succeed())
+			deadline := time.After(250 * time.Millisecond)
+			for {
+				select {
+				case got := <-watcher.Events():
+					if got == want {
+						return
+					}
+				case <-deadline:
+					g.Expect("no event for the final name").To(Equal(want))
+					return
+				}
+			}
+		}, 10*time.Second).Should(Succeed())
+	})
+
 	It("returns from Close and closes Events with a full buffer and no reader", func() {
 		dir := GinkgoT().TempDir()
 		watcher, err := newTaskDirWatcher(dir)

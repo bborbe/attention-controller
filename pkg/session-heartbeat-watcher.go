@@ -13,7 +13,6 @@ import (
 
 	"github.com/bborbe/errors"
 	libtime "github.com/bborbe/time"
-	"github.com/fsnotify/fsnotify"
 	"github.com/golang/glog"
 )
 
@@ -31,10 +30,16 @@ const (
 )
 
 // newSessionHeartbeatFSWatcher is a package variable so a spec can drive the
-// construction-failure path: a real inotify failure cannot be produced on
+// construction-failure path: a real watcher failure cannot be produced on
 // demand, and an untested fail-soft path is one that can silently become
 // fail-hard.
-var newSessionHeartbeatFSWatcher = fsnotify.NewWatcher
+//
+// ⚠️ It is the same platform backend the task index uses (taskDirWatcher):
+// FSEvents on darwin with cgo, fsnotify elsewhere. fsnotify's darwin kqueue
+// backend re-lists and stats the whole directory on every change; with ~770
+// heartbeat files rewritten about once a second that was 47 % of all
+// allocation (4.4 GB per 20 min, measured 2026-11-03 under v0.67.1).
+var newSessionHeartbeatFSWatcher = newTaskDirWatcher
 
 // Run keeps the in-memory snapshot current from the heartbeat directory until
 // ctx is cancelled.
@@ -60,12 +65,12 @@ func (s *sessionHeartbeatStore) Run(ctx context.Context) error {
 
 	// nil channels block forever in a select, so a watcher that could not be
 	// established simply leaves the backstop as the only trigger.
-	var events <-chan fsnotify.Event
+	var events <-chan string
 	var watchErrors <-chan error
 	if watcher != nil {
 		defer watcher.Close()
-		events = watcher.Events
-		watchErrors = watcher.Errors
+		events = watcher.Events()
+		watchErrors = watcher.Errors()
 	}
 
 	ticker := time.NewTicker(sessionHeartbeatReconcileInterval)
@@ -86,7 +91,12 @@ func (s *sessionHeartbeatStore) Run(ctx context.Context) error {
 				watchErrors = nil
 				continue
 			}
+			// Events may have been lost (an overflow, an FSEvents drop): reconcile
+			// now rather than waiting out the backstop.
 			glog.Warningf("watch session heartbeat dir '%s' failed: %v", s.dir, watchErr)
+			if err := s.reconcile(ctx); err != nil {
+				glog.Warningf("reconcile session heartbeat dir '%s' failed: %v", s.dir, err)
+			}
 		case <-ticker.C:
 			if err := s.reconcile(ctx); err != nil {
 				glog.Warningf("reconcile session heartbeat dir '%s' failed: %v", s.dir, err)
@@ -98,18 +108,14 @@ func (s *sessionHeartbeatStore) Run(ctx context.Context) error {
 // watch creates the filesystem watcher over the store directory.
 //
 // ⚠️ The directory is created first. It may not exist yet on a host where no
-// session has posted, and fsnotify refuses to watch a missing path — the same
+// session has posted, and neither backend can watch a missing path — the same
 // answer the store's own Post gives with MkdirAll.
-func (s *sessionHeartbeatStore) watch(ctx context.Context) (*fsnotify.Watcher, error) {
+func (s *sessionHeartbeatStore) watch(ctx context.Context) (taskDirWatcher, error) {
 	if err := os.MkdirAll(s.dir, 0750); err != nil {
 		return nil, errors.Wrapf(ctx, err, "create heartbeat dir '%s' failed", s.dir)
 	}
-	watcher, err := newSessionHeartbeatFSWatcher()
+	watcher, err := newSessionHeartbeatFSWatcher(s.dir)
 	if err != nil {
-		return nil, errors.Wrap(ctx, err, "create heartbeat watcher failed")
-	}
-	if err := watcher.Add(s.dir); err != nil {
-		_ = watcher.Close()
 		return nil, errors.Wrapf(ctx, err, "watch heartbeat dir '%s' failed", s.dir)
 	}
 	return watcher, nil
@@ -123,15 +129,15 @@ func (s *sessionHeartbeatStore) watch(ctx context.Context) (*fsnotify.Watcher, e
 // continuous stream cannot starve the apply.
 func (s *sessionHeartbeatStore) applyEventBurst(
 	ctx context.Context,
-	first fsnotify.Event,
-	events <-chan fsnotify.Event,
+	first string,
+	events <-chan string,
 ) {
 	paths := make([]string, 0, 8)
-	add := func(event fsnotify.Event) {
-		if !strings.HasSuffix(event.Name, sessionHeartbeatFileSuffix) {
+	add := func(name string) {
+		if !strings.HasSuffix(name, sessionHeartbeatFileSuffix) {
 			return
 		}
-		paths = append(paths, event.Name)
+		paths = append(paths, name)
 	}
 	add(first)
 
