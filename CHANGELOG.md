@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- perf: the session heartbeat store watches its directory through the same platform backend as the task index — FSEvents on darwin with cgo, fsnotify elsewhere. With ~770 heartbeat files rewritten about once a second, fsnotify's darwin kqueue backend re-listed and stat'ed the whole directory on every write: 47 % of all allocation under v0.67.1 (4.4 GB per 20 min, measured 2026-11-03). A watcher error (an overflow or an FSEvents drop) now triggers an immediate reconcile instead of waiting for the 30 s backstop.
+
 ## v0.67.1
 
 - perf: on darwin (cgo builds) the task index watches `25 Tasks/` through FSEvents instead of fsnotify. fsnotify's darwin backend is kqueue, which on every directory change re-lists the directory and stats every entry; with 9,920 task files that was 45 % of all allocation (3.7 GB per 15 min, measured 2026-11-03). FSEvents names the changed file, so a save costs one path. Paths are mapped back under the configured vault directory, so a vault reached through a symlink keeps resolving. Linux and `CGO_ENABLED=0` builds keep fsnotify (inotify has no rescan).
