@@ -31,16 +31,17 @@ const taskDirWatchLatency = 200 * time.Millisecond
 // compares against, and every event would be dropped as outside the vault. The
 // real directory is resolved once here and each event is mapped back under dir.
 //
-// ⚠️ dir is made absolute first: FSEvents paths are always absolute, so a
-// relative dir would share no prefix with any event and the watch would drop
-// everything silently.
+// ⚠️ realDir is resolved from the absolute form: FSEvents paths are always
+// absolute, so a relative realDir would share no prefix with any event. Events
+// are still mapped back under dir exactly as configured — relative stays
+// relative — because the consumer makes them relative to its own configured
+// vault path, and an absolute name against a relative vault path fails there.
 func newTaskDirWatcher(dir string) (taskDirWatcher, error) {
 	absDir, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, err
 	}
-	dir = absDir
-	realDir, err := filepath.EvalSymlinks(dir)
+	realDir, err := filepath.EvalSymlinks(absDir)
 	if err != nil {
 		return nil, err
 	}

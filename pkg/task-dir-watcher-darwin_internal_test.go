@@ -61,7 +61,7 @@ var _ = Describe("FSEvents task dir watcher", func() {
 		Expect(err).NotTo(HaveOccurred())
 		defer func() { _ = watcher.Close() }()
 
-		expectDelivered(watcher, filepath.Join(base, "tasks", "A.md"))
+		expectDelivered(watcher, filepath.Join("tasks", "A.md"))
 	})
 
 	It("reports a drop-flagged batch as exactly one error and still relays its paths", func() {
