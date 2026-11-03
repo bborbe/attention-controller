@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.67.2
 
 - perf: the session heartbeat store watches its directory through the same platform backend as the task index — FSEvents on darwin with cgo, fsnotify elsewhere. With ~770 heartbeat files rewritten about once a second, fsnotify's darwin kqueue backend re-listed and stat'ed the whole directory on every write: 47 % of all allocation under v0.67.1 (4.4 GB per 20 min, measured 2026-11-03). A watcher error (an overflow or an FSEvents drop) now triggers an immediate reconcile instead of waiting for the 30 s backstop.
 
