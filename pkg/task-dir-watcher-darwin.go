@@ -104,13 +104,20 @@ func (w *fseventsTaskDirWatcher) forward() {
 // relayBatch sends one batch's events on, reporting false once Close has run.
 // A drop-flagged event becomes an error; an event outside the watched dir is
 // skipped.
+//
+// ⚠️ At most one error per batch: the consumer answers each error with a full
+// reconcile, so a batch flagging many drops must still cost one rescan.
 func (w *fseventsTaskDirWatcher) relayBatch(batch []fsevents.Event) bool {
+	dropped := false
 	for _, event := range batch {
 		if event.Flags&fseventsDropFlags != 0 {
-			select {
-			case w.errors <- errFSEventsDropped:
-			case <-w.done:
-				return false
+			if !dropped {
+				dropped = true
+				select {
+				case w.errors <- errFSEventsDropped:
+				case <-w.done:
+					return false
+				}
 			}
 			continue
 		}

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/fsnotify/fsevents"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -61,6 +62,25 @@ var _ = Describe("FSEvents task dir watcher", func() {
 		defer func() { _ = watcher.Close() }()
 
 		expectDelivered(watcher, filepath.Join(base, "tasks", "A.md"))
+	})
+
+	It("reports a drop-flagged batch as exactly one error and still relays its paths", func() {
+		w := &fseventsTaskDirWatcher{
+			dir:     "/link/t",
+			realDir: "/real/t",
+			events:  make(chan string, 8),
+			errors:  make(chan error, 8),
+			done:    make(chan struct{}),
+		}
+		ok := w.relayBatch([]fsevents.Event{
+			{Path: "real/t", Flags: fsevents.MustScanSubDirs},
+			{Path: "real/t", Flags: fsevents.KernelDropped},
+			{Path: "real/t/A.md"},
+		})
+		Expect(ok).To(BeTrue())
+		Expect(w.errors).To(HaveLen(1))
+		Expect(<-w.errors).To(MatchError(errFSEventsDropped))
+		Expect(w.events).To(Receive(Equal("/link/t/A.md")))
 	})
 
 	It("closes its event channel on Close", func() {
