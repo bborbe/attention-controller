@@ -76,8 +76,9 @@ func (n *notifyingAttentionStore) History(
 	ctx context.Context,
 	limit int,
 	offset int,
+	filters ...HistoryFilter,
 ) (Items, error) {
-	return n.store.History(ctx, limit, offset)
+	return n.store.History(ctx, limit, offset, filters...)
 }
 
 // Answer delegates and signals on success.

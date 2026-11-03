@@ -140,8 +140,9 @@ func (f *federatingAttentionStore) History(
 	ctx context.Context,
 	limit int,
 	offset int,
+	filters ...HistoryFilter,
 ) (Items, error) {
-	return f.local.History(ctx, limit, offset)
+	return f.local.History(ctx, limit, offset, filters...)
 }
 
 // SweepAnswered delegates to the local store. The peer sweeps its own.

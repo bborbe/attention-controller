@@ -122,6 +122,37 @@ var _ = Describe("Attention history over HTTP", func() {
 		Expect(itemsOf(rec)).To(HaveLen(1))
 	})
 
+	It("narrows to the named producer_id values", func() {
+		seed(2) // two items from session-a
+		body := `{
+			"producer_id": "session-b",
+			"producer_kind": "session",
+			"liveness_ref": "session:session-b",
+			"dedup_key": "gate-b",
+			"interrupt_class": "pick",
+			"payload": "Which surface should the answer land on?",
+			"answer_mechanism": "message"
+		}`
+		rec := httptest.NewRecorder()
+		pushHandler.ServeHTTP(rec, httptest.NewRequest(
+			http.MethodPost, "/api/1.0/attention", strings.NewReader(body),
+		))
+		Expect(rec.Code).To(Equal(http.StatusCreated))
+
+		onlyB := itemsOf(get("?producer_id=session-b"))
+		Expect(onlyB).To(HaveLen(1))
+		Expect(onlyB[0].ProducerID).To(Equal(pkg.ProducerID("session-b")))
+
+		Expect(itemsOf(get("?producer_id=session-a&producer_id=session-b"))).To(HaveLen(3))
+		Expect(itemsOf(get("?producer_id="))).To(HaveLen(3))
+		Expect(itemsOf(get(""))).To(HaveLen(3))
+
+		// seed's keys are gate-0 and gate-1; session-b's is gate-b.
+		Expect(itemsOf(get("?dedup_key_prefix=gate-b"))).To(HaveLen(1))
+		Expect(itemsOf(get("?dedup_key_prefix=gate-"))).To(HaveLen(3))
+		Expect(itemsOf(get("?dedup_key_prefix=park:"))).To(BeEmpty())
+	})
+
 	It("skips the first offset", func() {
 		seed(3)
 		all := itemsOf(get(""))
