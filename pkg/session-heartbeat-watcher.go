@@ -108,7 +108,7 @@ func (s *sessionHeartbeatStore) Run(ctx context.Context) error {
 // watch creates the filesystem watcher over the store directory.
 //
 // ⚠️ The directory is created first. It may not exist yet on a host where no
-// session has posted, and fsnotify refuses to watch a missing path — the same
+// session has posted, and neither backend can watch a missing path — the same
 // answer the store's own Post gives with MkdirAll.
 func (s *sessionHeartbeatStore) watch(ctx context.Context) (taskDirWatcher, error) {
 	if err := os.MkdirAll(s.dir, 0750); err != nil {
