@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/fsnotify/fsnotify"
 	"github.com/golang/glog"
 )
 
@@ -31,15 +30,35 @@ type TaskIndexWatcher interface {
 	Run(ctx context.Context) error
 }
 
+// taskDirWatcher delivers the absolute paths changed beneath one watched
+// directory.
+//
+// ⚠️ It exists so the backend can differ by platform. On darwin with cgo it is
+// FSEvents (task-dir-watcher-darwin.go); everywhere else it is fsnotify
+// (task-dir-watcher-fsnotify.go). fsnotify's macOS backend is kqueue, which on
+// every directory change re-lists the directory and `Lstat`s every entry to
+// find what changed — measured 2026-11-03 at 45 % of all allocation over
+// `25 Tasks/` with 9,920 files. FSEvents names the changed file itself, so a
+// save costs one path, not one rescan. Linux keeps inotify, which never had
+// the rescan.
+type taskDirWatcher interface {
+	// Events carries absolute paths of changed entries.
+	Events() <-chan string
+	// Errors carries non-fatal watcher errors.
+	Errors() <-chan error
+	// Close stops the watch and closes both channels.
+	Close() error
+}
+
 // newTaskIndexFSWatcher constructs the filesystem watcher the task index watcher
-// drives.
+// drives, already watching dir.
 //
 // ⚠️ It is a package variable rather than a direct call so a spec can drive the
 // construction-failure path — the fail-soft rule that a watcher which cannot be
-// created logs a warning and leaves the service serving. A real inotify failure
+// created logs a warning and leaves the service serving. A real watcher failure
 // cannot be produced on demand, and an untested fail-soft path is a fail-soft
 // path that can silently become a fail-hard one.
-var newTaskIndexFSWatcher = fsnotify.NewWatcher
+var newTaskIndexFSWatcher = newTaskDirWatcher
 
 // NewTaskIndexWatcher builds the watcher that keeps index current from the task
 // files under vaultDir.
@@ -88,20 +107,16 @@ func (w *taskIndexWatcher) Run(ctx context.Context) error {
 	if w.vaultDir == "" {
 		return nil
 	}
-	watcher, err := newTaskIndexFSWatcher()
-	if err != nil {
-		glog.Warningf("create task index watcher failed: %v", err)
-		return nil
-	}
-	defer watcher.Close()
-
 	tasksDir := filepath.Join(w.vaultDir, taskDirName)
-	if err := watcher.Add(tasksDir); err != nil {
-		// The directory may not exist yet on an empty vault. The backstop covers
-		// it, so this is a warning rather than a failure.
+	watcher, err := newTaskIndexFSWatcher(tasksDir)
+	if err != nil {
+		// The directory may not exist yet on an empty vault, or the platform
+		// refused a watch. The backstop covers both, so this is a warning rather
+		// than a failure.
 		glog.Warningf("watch vault tasks dir %s failed: %v", tasksDir, err)
 		return nil
 	}
+	defer watcher.Close()
 	glog.V(2).Infof("watching vault tasks dir %s", tasksDir)
 
 	// ⚠️ The window is the index's own backstop constant rather than a second
@@ -117,19 +132,19 @@ func (w *taskIndexWatcher) Run(ctx context.Context) error {
 			return nil
 		case <-ticker.C:
 			w.index.Reconcile(ctx)
-		case event, ok := <-watcher.Events:
+		case name, ok := <-watcher.Events():
 			if !ok {
 				// The watcher was closed underneath the loop; there is nothing
 				// left to watch and no error to report.
 				return nil
 			}
-			glog.V(3).Infof("vault tasks dir changed: %s", event.Name)
-			paths, drained := w.changedPaths(event, watcher.Events)
+			glog.V(3).Infof("vault tasks dir changed: %s", name)
+			paths, drained := w.changedPaths(name, watcher.Events())
 			if !drained {
 				return nil
 			}
 			w.index.ApplyPaths(ctx, paths)
-		case watchErr, ok := <-watcher.Errors:
+		case watchErr, ok := <-watcher.Errors():
 			if !ok {
 				return nil
 			}
@@ -156,8 +171,8 @@ func (w *taskIndexWatcher) Run(ctx context.Context) error {
 // caller hands it. A path that cannot be made relative is dropped rather than
 // passed on: it names something outside the vault, which is not a task file.
 func (w *taskIndexWatcher) changedPaths(
-	first fsnotify.Event,
-	events chan fsnotify.Event,
+	first string,
+	events <-chan string,
 ) ([]string, bool) {
 	seen := map[string]struct{}{}
 	paths := make([]string, 0, 1)
@@ -174,13 +189,13 @@ func (w *taskIndexWatcher) changedPaths(
 		seen[rel] = struct{}{}
 		paths = append(paths, rel)
 	}
-	append(first.Name)
+	append(first)
 	for len(events) > 0 {
 		queued, ok := <-events
 		if !ok {
 			return nil, false
 		}
-		append(queued.Name)
+		append(queued)
 	}
 	return paths, true
 }
