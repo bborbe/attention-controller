@@ -16,6 +16,7 @@ require (
 	github.com/bborbe/service v1.11.1
 	github.com/bborbe/time v1.27.18
 	github.com/bborbe/validation v1.5.6
+	github.com/fsnotify/fsevents v0.2.0
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/getsentry/sentry-go v0.50.0
 	github.com/golang/glog v1.2.5

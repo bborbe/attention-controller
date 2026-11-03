@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- perf: on darwin (cgo builds) the task index watches `25 Tasks/` through FSEvents instead of fsnotify. fsnotify's darwin backend is kqueue, which on every directory change re-lists the directory and stats every entry; with 9,920 task files that was 45 % of all allocation (3.7 GB per 15 min, measured 2026-11-03). FSEvents names the changed file, so a save costs one path. Paths are mapped back under the configured vault directory, so a vault reached through a symlink keeps resolving. Linux and `CGO_ENABLED=0` builds keep fsnotify (inotify has no rescan).
+
 ## v0.67.0
 
 - feat: `GET /api/1.0/attention/history` accepts `producer_id` (repeatable) and `dedup_key_prefix` to narrow the page, applied before `limit`/`offset`; absent or empty means no narrowing, so existing callers are unchanged. `AttentionStore.History` takes an optional `HistoryFilter`. The store rules a row out from its raw index bytes before decoding it — the needle is the field as the store encoded it, so a JSON-escaped id still matches — and confirms every kept row with an exact compare. Motivation, measured 2026-11-03 on the Mac board: the endpoint was 41 % of all allocation — 8 manager watchers each read `?limit=50000` (≈ the whole history) every 60 s to find `park:` cards, and answered-watchers read it on every reconnect to find their own session's cards.

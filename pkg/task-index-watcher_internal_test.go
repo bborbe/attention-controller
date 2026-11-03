@@ -9,7 +9,6 @@ import (
 	stderrors "errors"
 
 	libtime "github.com/bborbe/time"
-	"github.com/fsnotify/fsnotify"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -28,7 +27,7 @@ var _ = Describe("TaskIndexWatcher construction failure", func() {
 	It("keeps serving when the watcher cannot be created", func() {
 		original := newTaskIndexFSWatcher
 		defer func() { newTaskIndexFSWatcher = original }()
-		newTaskIndexFSWatcher = func() (*fsnotify.Watcher, error) {
+		newTaskIndexFSWatcher = func(string) (taskDirWatcher, error) {
 			return nil, stderrors.New("no inotify instances available")
 		}
 
