@@ -31,3 +31,23 @@ jobs:
 
       - name: Run precommit checks
         run: make precommit
+
+  # The darwin && cgo FSEvents backend and its specs compile only on macOS;
+  # the ubuntu job above never builds them.
+  test-darwin:
+    runs-on: macos-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Vet and test the darwin build
+        run: |
+          go vet ./...
+          go test ./pkg/...

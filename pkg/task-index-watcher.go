@@ -148,7 +148,11 @@ func (w *taskIndexWatcher) Run(ctx context.Context) error {
 			if !ok {
 				return nil
 			}
+			// An error means events may have been lost (an inotify overflow, an
+			// FSEvents kernel drop), so reconcile now rather than waiting out the
+			// backstop window.
 			glog.Warningf("task index watcher error: %v", watchErr)
+			w.index.Reconcile(ctx)
 		}
 	}
 }

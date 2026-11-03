@@ -28,6 +28,7 @@ func newTaskDirWatcher(dir string) (taskDirWatcher, error) {
 		events:  make(chan string, 256),
 		done:    make(chan struct{}),
 	}
+	w.wg.Add(1)
 	go w.forward()
 	return w, nil
 }
@@ -37,6 +38,7 @@ type fsnotifyTaskDirWatcher struct {
 	events    chan string
 	done      chan struct{}
 	closeOnce sync.Once
+	wg        sync.WaitGroup
 }
 
 // forward relays event names until fsnotify closes its channel or Close runs.
@@ -44,6 +46,7 @@ type fsnotifyTaskDirWatcher struct {
 // ⚠️ The send selects on done: once the consumer has stopped reading, a full
 // buffer would otherwise park this goroutine forever after Close.
 func (w *fsnotifyTaskDirWatcher) forward() {
+	defer w.wg.Done()
 	defer close(w.events)
 	for event := range w.watcher.Events {
 		select {
@@ -63,6 +66,7 @@ func (w *fsnotifyTaskDirWatcher) Close() error {
 	w.closeOnce.Do(func() {
 		close(w.done)
 		err = w.watcher.Close()
+		w.wg.Wait()
 	})
 	return err
 }

@@ -44,13 +44,23 @@ var _ = Describe("FSEvents task dir watcher", func() {
 		watcher, err := newTaskDirWatcher(linkDir)
 		Expect(err).NotTo(HaveOccurred())
 		defer func() { _ = watcher.Close() }()
-		// FSEvents may need a moment before the stream sees writes.
-		time.Sleep(300 * time.Millisecond)
-
-		Expect(os.WriteFile(filepath.Join(linkDir, "A.md"), []byte("x"), 0o600)).To(Succeed())
 
 		want := filepath.Join(linkDir, "A.md")
-		Eventually(watcher.Events(), 5*time.Second).Should(Receive(Equal(want)))
+		expectDelivered(watcher, want)
+	})
+
+	// ⚠️ FSEvents paths are absolute; a relative configured dir must still match.
+	It("delivers writes when the watched dir is given as a relative path", func() {
+		base, err := filepath.EvalSymlinks(GinkgoT().TempDir())
+		Expect(err).NotTo(HaveOccurred())
+		GinkgoT().Chdir(base)
+		Expect(os.Mkdir("tasks", 0o755)).To(Succeed())
+
+		watcher, err := newTaskDirWatcher("tasks")
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = watcher.Close() }()
+
+		expectDelivered(watcher, filepath.Join(base, "tasks", "A.md"))
 	})
 
 	It("closes its event channel on Close", func() {
