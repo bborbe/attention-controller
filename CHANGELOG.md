@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.67.3
 
 - perf: the frontmatter reader no longer copies the whole task file. It scans to the frontmatter block and splits only that, so a read allocates for the block (a few hundred bytes) rather than the file (12 KB on average). `indexContent` performs three such reads per file, so the startup index pass over the operator's 10,132 task files allocated ~730 MB and the process footprint read 605 MB sixteen seconds after start, before a single request — the floor every later fix inherited, because macOS keeps released pages counted in `phys_footprint`. A spec pins the allocation against a 32 MB body and fails against the old implementation.
 - perf: `sessionLedgerStore.List` is cached and dropped by the same write generation as `ListJSON`. The provenance resolver re-listed and re-decoded the whole ledger on every page refresh to build its `session id -> mode` map — 37.6 % of all allocation, 654 MB per ten minutes, measured 2026-11-03. The caller must not modify the returned slice; the contract is documented on the method.
