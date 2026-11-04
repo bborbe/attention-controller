@@ -60,6 +60,12 @@ type SessionLedgerStore interface {
 	// what lets a reader tell `absent` from `ended`.
 	Get(ctx context.Context, sessionID string) (SessionLedgerEntry, bool, error)
 	// List returns every row the store holds, in no guaranteed order.
+	//
+	// ⚠️ The caller must not modify the returned slice — it is shared with the
+	// next reader, because a cache hit hands back the same backing array rather
+	// than a copy. Callers that need to sort or filter must copy first; the ones
+	// in this repo only range over it, which is why the cache can be shared at
+	// all. ListJSON carries the same warning for the same reason.
 	List(ctx context.Context) (SessionLedgerEntries, error)
 	// ListJSON returns List's rows as the encoded JSON body the list endpoint
 	// answers, served from a cache that every write drops. The caller must not
