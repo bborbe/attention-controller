@@ -35,12 +35,13 @@ const (
 	//
 	// ⚠️ It is sized from the payload rather than from taste. Rows average ~840
 	// bytes, so 1000 is ~0.8 MB — comfortably under the 2 MB the criterion pins,
-	// and roughly 400x below the 18.8 MB the unbounded read returned.
+	// and roughly 23x below the 18.8 MB the unbounded read returned.
 	//
 	// `limit=0` does NOT raise this to the whole store — it resolves to
 	// historyMaxLimit, the largest page one request may ask for. A caller that
 	// genuinely needs more than that walks the pages, which the endpoint's own
-	// doc already requires for a stable count.
+	// doc requires in order to count at all — though that walk is not stable
+	// while an item is expiring, as the doc spells out.
 	historyDefaultLimit = 1000
 
 	// historyMaxLimit is the largest page one request may ask for, and the value

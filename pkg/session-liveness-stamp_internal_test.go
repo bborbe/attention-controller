@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync"
 
 	libtime "github.com/bborbe/time"
 	. "github.com/onsi/ginkgo/v2"
@@ -173,24 +174,33 @@ var _ = Describe("session registry stamp cache", func() {
 		// ⚠️ The start barrier is load-bearing. Without it the scheduler can run
 		// the goroutines back to back, the spec passes, and entryMu was never
 		// contended — the false confidence the spec exists to prevent.
+		// ⚠️ The done signal is a defer, not a send after the assertions. A failed
+		// Expect panics, GinkgoRecover swallows it, and a goroutine that only
+		// signalled on success would leave the main goroutine blocking until the
+		// timeout — reporting a timeout instead of the assertion that actually
+		// failed. Same shape as pkg/attention-store_test.go.
 		const listings = 8
 		results := make([]SessionIDs, listings)
-		done := make(chan int, listings)
 		start := make(chan struct{})
+		var wg sync.WaitGroup
 		for i := 0; i < listings; i++ {
+			wg.Add(1)
 			go func(i int) {
 				defer GinkgoRecover()
+				defer wg.Done()
 				<-start
 				ids, readable := checker.LiveSessionsFresh(context.Background())
 				Expect(readable).To(BeTrue())
 				results[i] = ids
-				done <- i
 			}(i)
 		}
 		close(start)
-		for i := 0; i < listings; i++ {
-			Eventually(done, "10s").Should(Receive())
-		}
+		finished := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(finished)
+		}()
+		Eventually(finished, "10s").Should(BeClosed())
 		for i := 0; i < listings; i++ {
 			Expect(results[i]).To(ConsistOf("session-a", "session-b"))
 		}
