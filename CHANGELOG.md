@@ -8,6 +8,11 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- docs: the `historyDefaultLimit` comment no longer claims `limit=0` returns the whole store — it resolves to `historyMaxLimit`, the largest page one request may ask for.
+- test: specs for the registry stamp cache's retry guarantee (an unreadable and an unparseable entry are each re-read on the following listing rather than cached as absent) and for concurrent listings against the new `entryMu`/`entryStamps` state. The default gate runs `-race=false`, so the concurrency spec pins agreement under load, not data races.
+
 ## v0.67.4
 
 - perf: the session-liveness listing re-reads only the registry files that changed. `IsLive` re-lists the registry on every miss — every attention read whose items include a dead producer — and each listing read and JSON-decoded every `~/.claude/sessions/*.json`. That was 19 % of all allocation (172 MB per ten minutes, 70 % of it through `entrySessionID`) for a directory whose files change only when a session starts, renames itself or exits. Entries are now stamped by size and modification time, and an entry that cannot be read is left unstamped so a transient failure is retried rather than cached.
