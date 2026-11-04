@@ -582,7 +582,8 @@ func (a *application) createPaneActivator(panes pkg.PaneLister) pkg.PaneActivato
 }
 
 // isLoopbackListen reports whether a `host:port` listen address binds to a
-// loopback interface. It is the gate on mounting the pprof endpoints.
+// loopback interface. It is the gate on mounting the pprof endpoints and the
+// reset routes.
 //
 // ⚠️ An empty host (":18080") is NOT loopback — it binds every interface — and
 // `net.SplitHostPort` returns it as "", so it is refused explicitly rather than
@@ -633,6 +634,35 @@ func registerPprofIfLoopback(router *mux.Router, listen string) bool {
 	// silent success reads identically to a registration that never ran.
 	glog.Infof("pprof endpoints mounted on loopback listen address %q", listen)
 	libhttp.RegisterPprof(router)
+	return true
+}
+
+// registerResetRoutesIfLoopback mounts the store's two destructive reset routes
+// on router when listen is a loopback address, and reports whether it did.
+//
+// ⚠️ It mirrors registerPprofIfLoopback deliberately: a named function rather
+// than an inline `if` at the call site, so the gate and the registration can be
+// exercised together against a real router. Only these two routes are withheld
+// on a non-loopback bind; every other admin route stays registered on every
+// bind. Both are unauthenticated, and /resetdb and /resetbucket let any client
+// that can reach the listener delete the store, so loopback binding is what
+// makes them acceptable.
+func registerResetRoutesIfLoopback(
+	router *mux.Router,
+	listen string,
+	db libkv.DB,
+	cancel context.CancelFunc,
+) bool {
+	if !isLoopbackListen(listen) {
+		glog.Warningf(
+			"reset routes NOT mounted: listen address %q is not loopback, and /resetdb and /resetbucket would let any client that can reach the listener delete the store",
+			listen,
+		)
+		return false
+	}
+	glog.Infof("reset routes mounted on loopback listen address %q", listen)
+	router.Path("/resetdb").Handler(libkv.NewResetHandler(db, cancel))
+	router.Path("/resetbucket/{BucketName}").Handler(libkv.NewResetBucketHandler(db, cancel))
 	return true
 }
 
@@ -710,7 +740,7 @@ func (a *application) createHTTPServer(
 		// profile, but has to build an instrumented instance to do it — the cost
 		// this gate accepts in exchange for never publishing argv.
 		registerPprofIfLoopback(router, a.Listen)
-		registerAdminRoutes(ctx, router, db, cancel, sentryClient)
+		registerAdminRoutes(ctx, router, a.Listen, db, cancel, sentryClient)
 		// The Jump button's target: a path on this board, answered in-process.
 		// Registered ahead of the page's own route, and GET/HEAD only, because a
 		// navigation rather than a business call.
@@ -1020,13 +1050,18 @@ func registerAttentionAPIRoutes(
 //
 // ⚠️ Extracted from createHTTPServer for length alone — nothing here is new, and
 // the grouping is the repo's own: `/healthz`, `/readiness`, `/metrics`, the
-// store's reset routes, the log-level switch, `/gc` and the two probe handlers
-// are operational surfaces rather than business ones. Keeping them out of the
-// business-route block below is what makes the two kinds of route tellable
-// apart at a glance, and it is why `/api/1.0/...` starts where it does.
+// log-level switch, `/gc` and the two probe handlers are operational surfaces
+// rather than business ones. Keeping them out of the business-route block below
+// is what makes the two kinds of route tellable apart at a glance, and it is why
+// `/api/1.0/...` starts where it does.
+//
+// ⚠️ The two destructive reset routes are delegated to
+// registerResetRoutesIfLoopback, which mounts them only on a loopback listen.
+// Every other route here stays registered on every bind.
 func registerAdminRoutes(
 	ctx context.Context,
 	router *mux.Router,
+	listen string,
 	db libkv.DB,
 	cancel context.CancelFunc,
 	sentryClient libsentry.Client,
@@ -1034,8 +1069,7 @@ func registerAdminRoutes(
 	router.Path("/healthz").Handler(factory.CreateHealthzHandler())
 	router.Path("/readiness").Handler(libhttp.NewPrintHandler("OK"))
 	router.Path("/metrics").Handler(promhttp.Handler())
-	router.Path("/resetdb").Handler(libkv.NewResetHandler(db, cancel))
-	router.Path("/resetbucket/{BucketName}").Handler(libkv.NewResetBucketHandler(db, cancel))
+	registerResetRoutesIfLoopback(router, listen, db, cancel)
 	router.Path("/setloglevel/{level}").
 		Handler(log.NewSetLoglevelHandler(ctx, log.NewLogLevelSetter(2, 5*time.Minute)))
 	router.Path("/gc").Handler(libhttp.NewGarbageCollectorHandler())

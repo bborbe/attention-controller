@@ -7,6 +7,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"flag"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -20,7 +21,9 @@ import (
 	libhttp "github.com/bborbe/http"
 	libkv "github.com/bborbe/kv"
 	"github.com/bborbe/run"
+	sentrymocks "github.com/bborbe/sentry/mocks"
 	libtime "github.com/bborbe/time"
+	"github.com/getsentry/sentry-go"
 	"github.com/gorilla/mux"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -385,6 +388,57 @@ var _ = Describe("attention store token configuration", func() {
 	})
 })
 
+// newResetFixture opens a fresh temp database and a cancel counter. The counter
+// is a plain closure passed as context.CancelFunc; it is what proves the real
+// handler ran, since the handler's own effect (closing or mutating the store) is
+// asserted separately.
+func newResetFixture(ctx context.Context) (libkv.DB, context.CancelFunc, *int) {
+	db, err := libboltkv.OpenTemp(ctx)
+	Expect(err).To(BeNil())
+	cancelled := 0
+	return db, func() { cancelled++ }, &cancelled
+}
+
+func seedResetBucket(ctx context.Context, db libkv.DB, name string) {
+	Expect(db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
+		bucket, err := tx.CreateBucket(ctx, libkv.NewBucketName(name))
+		if err != nil {
+			return err
+		}
+		return bucket.Put(ctx, []byte("seed"), []byte("value"))
+	})).To(BeNil())
+}
+
+func resetBucketExists(ctx context.Context, db libkv.DB, name string) bool {
+	err := db.View(ctx, func(ctx context.Context, tx libkv.Tx) error {
+		_, err := tx.Bucket(ctx, libkv.NewBucketName(name))
+		return err
+	})
+	return err == nil
+}
+
+// assertAdminRoutesReachable asserts every non-reset admin route answers with
+// something other than 404. The `v` flag is saved and restored because
+// /setloglevel/2 starts a five-minute verbosity reset.
+func assertAdminRoutesReachable(router *mux.Router) {
+	vFlag := flag.Lookup("v")
+	original := ""
+	if vFlag != nil {
+		original = vFlag.Value.String()
+	}
+	for _, path := range []string{
+		"/healthz", "/readiness", "/metrics", "/gc",
+		"/setloglevel/2", "/testloglevel", "/sentryalert",
+	} {
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		Expect(rec.Code).NotTo(Equal(http.StatusNotFound), path)
+	}
+	if vFlag != nil {
+		Expect(flag.Set("v", original)).To(BeNil())
+	}
+}
+
 var _ = Describe("isLoopbackListen", func() {
 	DescribeTable("classifies the listen address",
 		func(addr string, expected bool) {
@@ -451,6 +505,101 @@ var _ = Describe("registerPprofIfLoopback", func() {
 			rec := httptest.NewRecorder()
 			router.ServeHTTP(rec, req)
 			Expect(rec.Code).To(Equal(http.StatusOK), path)
+		}
+	})
+})
+
+var _ = Describe("registerResetRoutesIfLoopback", func() {
+	It("withholds both reset routes on every non-loopback listen", func() {
+		ctx := context.Background()
+		for _, listen := range []string{":18080", "0.0.0.0:18080", "[::]:18080"} {
+			db, cancel, cancelled := newResetFixture(ctx)
+			router := mux.NewRouter()
+			Expect(registerResetRoutesIfLoopback(router, listen, db, cancel)).To(BeFalse())
+
+			for _, path := range []string{"/resetdb", "/resetbucket/x"} {
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+				Expect(rec.Code).To(Equal(http.StatusNotFound), listen+" "+path)
+			}
+			Expect(*cancelled).To(Equal(0), listen)
+			Expect(db.Close()).To(BeNil())
+		}
+	})
+
+	It("mounts both reset routes on every loopback listen", func() {
+		ctx := context.Background()
+		for _, listen := range []string{"127.0.0.1:18080", "[::1]:18080", "localhost:18080"} {
+			// /resetdb closes and removes the database, so it gets its own fixture
+			// and is never closed again.
+			db, cancel, cancelled := newResetFixture(ctx)
+			router := mux.NewRouter()
+			Expect(registerResetRoutesIfLoopback(router, listen, db, cancel)).To(BeTrue())
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/resetdb", nil))
+			Expect(rec.Code).To(Equal(http.StatusOK), listen)
+			Expect(*cancelled).To(Equal(1), listen)
+
+			// /resetbucket needs a seeded bucket: deleting a missing one returns an
+			// error, which the handler answers as 500.
+			db2, cancel2, cancelled2 := newResetFixture(ctx)
+			seedResetBucket(ctx, db2, "x")
+			router2 := mux.NewRouter()
+			Expect(registerResetRoutesIfLoopback(router2, listen, db2, cancel2)).To(BeTrue())
+			rec2 := httptest.NewRecorder()
+			router2.ServeHTTP(rec2, httptest.NewRequest(http.MethodGet, "/resetbucket/x", nil))
+			Expect(rec2.Code).To(Equal(http.StatusOK), listen)
+			Expect(*cancelled2).To(Equal(1), listen)
+			Expect(resetBucketExists(ctx, db2, "x")).To(BeFalse(), listen)
+			Expect(db2.Close()).To(BeNil())
+		}
+	})
+})
+
+var _ = Describe("registerAdminRoutes", func() {
+	var ctx context.Context
+	var sentryClient *sentrymocks.SentryClient
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		sentryClient = &sentrymocks.SentryClient{}
+		eventID := sentry.EventID("test-event-id")
+		sentryClient.CaptureExceptionReturns(&eventID)
+	})
+
+	It("withholds only the reset routes on a non-loopback listen", func() {
+		db, cancel, cancelled := newResetFixture(ctx)
+		router := mux.NewRouter()
+		registerAdminRoutes(ctx, router, ":18080", db, cancel, sentryClient)
+
+		for _, path := range []string{"/resetdb", "/resetbucket/x"} {
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+			Expect(rec.Code).To(Equal(http.StatusNotFound), path)
+		}
+		Expect(*cancelled).To(Equal(0))
+		assertAdminRoutesReachable(router)
+		Expect(db.Close()).To(BeNil())
+	})
+
+	It("mounts the reset routes and keeps every other admin route on a loopback listen", func() {
+		for _, path := range []string{"/resetdb", "/resetbucket/x"} {
+			db, cancel, cancelled := newResetFixture(ctx)
+			if path == "/resetbucket/x" {
+				seedResetBucket(ctx, db, "x")
+			}
+			router := mux.NewRouter()
+			registerAdminRoutes(ctx, router, "127.0.0.1:18080", db, cancel, sentryClient)
+			assertAdminRoutesReachable(router)
+
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+			Expect(rec.Code).NotTo(Equal(http.StatusNotFound), path)
+			Expect(*cancelled).To(Equal(1), path)
+			if path == "/resetbucket/x" {
+				Expect(resetBucketExists(ctx, db, "x")).To(BeFalse())
+				Expect(db.Close()).To(BeNil())
+			}
 		}
 	})
 })

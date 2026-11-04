@@ -68,4 +68,4 @@ The route is registered on the board's own router only, deliberately **not** on 
 lsof -nP -iTCP:18080 -sTCP:LISTEN     # → TCP 127.0.0.1:18080 (LISTEN), never *:18080
 ```
 
-⚠️ `isLoopbackListen` (`main.go:526`) corroborates the intent but does **not** enforce it: it gates the pprof mount only, and does not refuse a non-loopback `-listen`. The plist's `-listen` value plus the `lsof` read are what actually carry the claim.
+⚠️ `isLoopbackListen` (`main.go`) corroborates the intent but does **not** enforce it: it gates the pprof mount and the reset routes, and does not refuse a non-loopback `-listen`. The plist's `-listen` value plus the `lsof` read are what actually carry the claim.

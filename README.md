@@ -78,7 +78,8 @@ make precommit
 | `/healthz` | Health check |
 | `/readiness` | Readiness check |
 | `/metrics` | Prometheus metrics |
-| `/resetdb` | Database reset |
+| `/resetdb` | Database reset — ⚠️ Unauthenticated, and mounted **only when the listen address is loopback**; a non-loopback bind logs and skips the registration. |
+| `/resetbucket/{BucketName}` | Bucket reset — ⚠️ Unauthenticated, and mounted **only when the listen address is loopback**; a non-loopback bind logs and skips the registration. |
 | `/setloglevel/{level}` | Dynamic log level adjustment |
 | `/testloglevel` | Test logging at all levels |
 | `/sentryalert` | Test Sentry integration |
