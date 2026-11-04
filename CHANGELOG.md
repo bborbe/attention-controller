@@ -10,6 +10,8 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 
 ## v0.67.5
 
+- perf: `/api/1.0/attention/history` caps a page at 2,000 rows, down from 10,000. The earlier number was sized against a 50,000-row request the store could never fill — it holds a little over 10,000 rows, so `limit=50000` returned the 10,000 cap and cut the response 1.6x (18.8 MB to 11.7 MB), not 5x. A 150 s `alloc_space` delta on v0.67.4 put `collectHistoryPage` at 132 MB cumulative (41 % of accounted allocation), because `answered-watch.py` re-reads the whole history every 60 s, and the Go arena settled at 335 MB against a 25 MB live heap. The page is newest-first, so a consumer polling for recent items still gets them.
+
 - docs: the `historyDefaultLimit` comment no longer claims `limit=0` returns the whole store — it resolves to `historyMaxLimit`, the largest page one request may ask for.
 - test: specs for the registry stamp cache's retry guarantee (an unreadable and an unparseable entry are each re-read on the following listing rather than cached as absent) and for concurrent listings against the new `entryMu`/`entryStamps` state. The default gate runs `-race=false`, so the concurrency spec pins agreement under load, not data races.
 

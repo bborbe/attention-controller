@@ -50,12 +50,20 @@ const (
 	// ⚠️ It exists because the page is materialised in memory before it is
 	// encoded, so an unbounded one sets the process footprint for hours after it
 	// is served — macOS keeps released pages counted in `phys_footprint`, so the
-	// high-water mark, not the live set, is what the operator sees. Measured
-	// 2026-11-04: a 50,000-row read allocates roughly 200 MB, and two overlapping
-	// reads produced a 386 MB peak against a 23 MB live heap. 10,000 rows is about
-	// 8 MB encoded and is still an order of magnitude above any page a caller
-	// reads today.
-	historyMaxLimit = 10000
+	// high-water mark, not the live set, is what the operator sees.
+	//
+	// ⚠️ **2,000, not 10,000, and the first number was wrong for a measurable
+	// reason.** The cap was sized against a 50,000-row request, but the store only
+	// ever held a little over 10,000 rows — so `limit=50000` returned the 10,000
+	// cap and the cut was 1.6x (18.8 MB → 11.7 MB), not the 5x the sizing implied.
+	// A 150 s `alloc_space` delta on v0.67.4 put `collectHistoryPage` at 132 MB
+	// cumulative (41 % of accounted allocation) because `answered-watch.py` polls
+	// the whole history every 60 s, and the arena settled at 335 MB against a 25 MB
+	// live heap. At 2,000 rows the same poll decodes a fifth as much. The page is
+	// newest-first, so a consumer polling for recent items still gets them; one
+	// that genuinely needs more walks the pages, which the endpoint's own doc
+	// already requires in order to count at all.
+	historyMaxLimit = 2000
 )
 
 // clampHistoryLimit bounds one page. `limit=0` has always meant "the whole
