@@ -989,10 +989,13 @@ func frontmatterValue(content []byte, key string) string {
 		if !ok || strings.TrimSpace(name) != key {
 			continue
 		}
-		// Clone: value is a substring of the whole-file copy frontmatterLines
-		// splits, so returning it uncloned pins the entire file for as long as the
-		// caller keeps the value — measured 2026-11-02 at 135 MB of in-use heap,
-		// one copy of every file in the task directory.
+		// Clone: the value is a substring of the block copy frontmatterLines
+		// splits, so returning it uncloned pins that whole block for as long as the
+		// caller keeps the value. The block is a few hundred bytes, not the file —
+		// frontmatterLines stopped copying the file — so this is no longer the
+		// 135 MB of pinned task files measured 2026-11-02. It still earns its place:
+		// the index holds these values for the life of the process, and cloning
+		// lets the block copy be collected.
 		return strings.Clone(strings.TrimSpace(value))
 	}
 	return ""
@@ -1034,14 +1037,10 @@ func frontmatterBlock(content []byte) []byte {
 	for pos := 0; pos < len(content); {
 		line, next := contentLine(content, pos)
 		if isFrontmatterDelimiter(line) {
-			if start < 0 {
-				start = next
-			} else if start > pos {
-				// The closing delimiter precedes the block it should close.
-				return nil
-			} else {
+			if start >= 0 {
 				return content[start:pos]
 			}
+			start = next
 		}
 		pos = next
 	}
@@ -1117,8 +1116,9 @@ func frontmatterList(content []byte, key string) []string {
 		if !strings.HasPrefix(trimmed, "-") {
 			break
 		}
-		// Clone for the same reason frontmatterValue does: an uncloned entry
-		// pins the whole file it was split from.
+		// Clone for the same reason frontmatterValue does: an uncloned entry pins
+		// the block copy it was split from, and the index keeps these for the life
+		// of the process.
 		entries = append(entries, strings.Clone(trimmed))
 	}
 	return entries

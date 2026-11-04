@@ -82,6 +82,17 @@ var _ = Describe("frontmatter reads copy the block, never the file", func() {
 		body := []byte("---\nstatus: in_progress\n")
 		Expect(frontmatterValue(body, "status")).To(BeEmpty())
 	})
+
+	It("reports nothing for an empty block", func() {
+		body := []byte("---\n---\nstatus: in_progress\n")
+		Expect(frontmatterValue(body, "status")).To(BeEmpty())
+		Expect(frontmatterList(body, "goals")).To(BeEmpty())
+	})
+
+	It("finds a block whose opening fence is not the first line", func() {
+		body := []byte("\n\n---\nstatus: in_progress\n---\nbody\n")
+		Expect(frontmatterValue(body, "status")).To(Equal("in_progress"))
+	})
 })
 
 var _ = Describe("frontmatter values do not pin their source file", func() {
