@@ -128,20 +128,36 @@ var _ = Describe("session registry stamp cache", func() {
 	// ⚠️ An unparseable entry takes the same path as an unreadable one, and the
 	// two are separate branches in entrySessionID — a decode error and an I/O
 	// error. The cache must not turn either into a permanent absence.
+	// ⚠️ The file is left VALID on disk and the failure is injected through the
+	// reader, because rewriting it would change size and mtime and force a re-read
+	// whatever the cache did with the failure. A spec that rewrites the file
+	// passes against a cache that stamps the failed entry — it is a duplicate of
+	// "re-reads only the file that changed", not a test of the retry.
 	It("retries an entry it could not parse", func() {
-		path := filepath.Join(dir, "1.json")
-		Expect(os.WriteFile(path, []byte("{not json"), 0o600)).To(Succeed())
+		writeEntry("1.json", "session-a")
 		checker := newChecker()
+
+		original := sessionRegistryFileReader
+		DeferCleanup(func() { sessionRegistryFileReader = original })
+		failed := false
+		sessionRegistryFileReader = func(root *os.Root, name string) ([]byte, error) {
+			reads++
+			if !failed {
+				failed = true
+				return []byte("{not json"), nil
+			}
+			return root.ReadFile(name)
+		}
 
 		first, readable := checker.LiveSessionsFresh(context.Background())
 		Expect(readable).To(BeTrue())
-		Expect(first).To(BeEmpty())
+		Expect(first).To(BeEmpty(), "an unparseable entry contributes no id")
 
-		writeEntry("1.json", "session-a")
 		second, readable := checker.LiveSessionsFresh(context.Background())
 		Expect(readable).To(BeTrue())
 		Expect(second).To(ConsistOf("session-a"),
-			"a parse failure must be retried once the file is rewritten")
+			"a parse failure must be retried even though the file never changed")
+		Expect(reads).To(Equal(2), "the unparseable entry is read again on the next listing")
 	})
 
 	// ⚠️ entryMu and entryStamps are new shared state, and the default gate runs
@@ -154,20 +170,26 @@ var _ = Describe("session registry stamp cache", func() {
 		writeEntry("2.json", "session-b")
 		checker := newChecker()
 
+		// ⚠️ The start barrier is load-bearing. Without it the scheduler can run
+		// the goroutines back to back, the spec passes, and entryMu was never
+		// contended — the false confidence the spec exists to prevent.
 		const listings = 8
 		results := make([]SessionIDs, listings)
 		done := make(chan int, listings)
+		start := make(chan struct{})
 		for i := 0; i < listings; i++ {
 			go func(i int) {
 				defer GinkgoRecover()
+				<-start
 				ids, readable := checker.LiveSessionsFresh(context.Background())
 				Expect(readable).To(BeTrue())
 				results[i] = ids
 				done <- i
 			}(i)
 		}
+		close(start)
 		for i := 0; i < listings; i++ {
-			Eventually(done).Should(Receive())
+			Eventually(done, "10s").Should(Receive())
 		}
 		for i := 0; i < listings; i++ {
 			Expect(results[i]).To(ConsistOf("session-a", "session-b"))
