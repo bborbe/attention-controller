@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- fix: Mount the destructive admin routes `/resetdb` and `/resetbucket/{BucketName}` only when the board's listen address is loopback, reusing `isLoopbackListen`; a non-loopback bind logs and skips them while every other admin route stays registered on every bind.
+
 ## v0.67.5
 
 - docs: the `historyDefaultLimit` comment no longer claims `limit=0` returns the whole store — it resolves to `historyMaxLimit`, the largest page one request may ask for.

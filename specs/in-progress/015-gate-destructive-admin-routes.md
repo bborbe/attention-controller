@@ -1,6 +1,8 @@
 ---
-status: approved
+status: prompted
 approved: "2026-11-04T15:26:37Z"
+generating: "2026-11-04T16:58:05Z"
+prompted: "2026-11-04T17:07:09Z"
 branch: dark-factory/gate-destructive-admin-routes
 ---
 
