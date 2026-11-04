@@ -31,6 +31,59 @@ func retainedSince(before uint64) uint64 {
 	return after - before
 }
 
+// allocationDuring returns how many bytes were allocated while f ran.
+func allocationDuring(f func()) uint64 {
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	f()
+	runtime.ReadMemStats(&after)
+	return after.TotalAlloc - before.TotalAlloc
+}
+
+var _ = Describe("frontmatter reads copy the block, never the file", func() {
+	// A task file averages ~12 KB and the startup pass parses 10,132 of them.
+	// Reading the whole file per frontmatter key is what put the index pass at
+	// ~730 MB of allocation and the process footprint at 605 MB sixteen seconds
+	// after start, so the bound is pinned against a body far larger than any real
+	// file: 32 MB of body may cost nothing beyond the block.
+	const bodySize = 32 << 20
+	const copyBound = 1 << 20
+
+	content := func(newline string) []byte {
+		return []byte("---" + newline + "status: in_progress" + newline +
+			"goals:" + newline + "    - '[[Some Goal]]'" + newline + "---" + newline +
+			strings.Repeat("x", bodySize))
+	}
+
+	It("allocates for the block only, not the body", func() {
+		body := content("\n")
+		allocated := allocationDuring(func() {
+			frontmatterValue(body, "status")
+			frontmatterList(body, "goals")
+		})
+		Expect(allocated).To(BeNumerically("<", copyBound),
+			"a frontmatter read must not copy the file body")
+	})
+
+	It("reads the same values from a CRLF file", func() {
+		body := content("\r\n")
+		Expect(frontmatterValue(body, "status")).To(Equal("in_progress"))
+		Expect(frontmatterList(body, "goals")).To(Equal([]string{"- '[[Some Goal]]'"}))
+	})
+
+	It("reports nothing for a file with no frontmatter", func() {
+		body := []byte("no frontmatter here\n")
+		Expect(frontmatterValue(body, "status")).To(BeEmpty())
+		Expect(frontmatterList(body, "goals")).To(BeEmpty())
+	})
+
+	It("reports nothing for an unterminated block", func() {
+		body := []byte("---\nstatus: in_progress\n")
+		Expect(frontmatterValue(body, "status")).To(BeEmpty())
+	})
+})
+
 var _ = Describe("frontmatter values do not pin their source file", func() {
 	// 32 MB of body below the frontmatter block: a value that pins the file
 	// retains at least this much, one that does not retains a few bytes.

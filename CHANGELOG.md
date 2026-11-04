@@ -8,6 +8,11 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- perf: the frontmatter reader no longer copies the whole task file. It scans to the frontmatter block and splits only that, so a read allocates for the block (a few hundred bytes) rather than the file (12 KB on average). `indexContent` performs three such reads per file, so the startup index pass over the operator's 10,132 task files allocated ~730 MB and the process footprint read 605 MB sixteen seconds after start, before a single request — the floor every later fix inherited, because macOS keeps released pages counted in `phys_footprint`. A spec pins the allocation against a 32 MB body and fails against the old implementation.
+- perf: `sessionLedgerStore.List` is cached and dropped by the same write generation as `ListJSON`. The provenance resolver re-listed and re-decoded the whole ledger on every page refresh to build its `session id -> mode` map — 37.6 % of all allocation, 654 MB per ten minutes, measured 2026-11-03. The caller must not modify the returned slice; the contract is documented on the method.
+
 ## v0.67.2
 
 - perf: the session heartbeat store watches its directory through the same platform backend as the task index — FSEvents on darwin with cgo, fsnotify elsewhere. With ~770 heartbeat files rewritten about once a second, fsnotify's darwin kqueue backend re-listed and stat'ed the whole directory on every write: 47 % of all allocation under v0.67.1 (4.4 GB per 20 min, measured 2026-11-03). A watcher error (an overflow or an FSEvents drop) now triggers an immediate reconcile instead of waiting for the 30 s backstop.
