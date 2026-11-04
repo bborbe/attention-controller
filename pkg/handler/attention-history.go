@@ -39,7 +39,31 @@ const (
 	// that genuinely needs the whole store can still ask for it with `limit=0`;
 	// what changed is that it has to ASK.
 	historyDefaultLimit = 1000
+
+	// historyMaxLimit is the largest page one request may ask for, and the value
+	// `limit=0` now resolves to.
+	//
+	// ⚠️ It exists because the page is materialised in memory before it is
+	// encoded, so an unbounded one sets the process footprint for hours after it
+	// is served — macOS keeps released pages counted in `phys_footprint`, so the
+	// high-water mark, not the live set, is what the operator sees. Measured
+	// 2026-11-04: a 50,000-row read allocates roughly 200 MB, and two overlapping
+	// reads produced a 386 MB peak against a 23 MB live heap. 10,000 rows is about
+	// 8 MB encoded and is still an order of magnitude above any page a caller
+	// reads today.
+	historyMaxLimit = 10000
 )
+
+// clampHistoryLimit bounds one page. `limit=0` has always meant "the whole
+// store", and that is the value this exists to remove: a caller that wants more
+// than historyMaxLimit walks the pages, which the endpoint's own doc already
+// requires for a stable count.
+func clampHistoryLimit(limit int) int {
+	if limit <= 0 || limit > historyMaxLimit {
+		return historyMaxLimit
+	}
+	return limit
+}
 
 // NewAttentionHistoryHandler creates an HTTP handler that returns items
 // regardless of state, newest-first and paginated.
@@ -69,6 +93,7 @@ func NewAttentionHistoryHandler(store pkg.AttentionStore) http.Handler {
 				if err != nil {
 					return err
 				}
+				limit = clampHistoryLimit(limit)
 				offset, err := historyIntParam(ctx, req, historyOffsetParam, 0)
 				if err != nil {
 					return err

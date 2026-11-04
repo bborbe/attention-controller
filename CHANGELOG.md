@@ -8,6 +8,11 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- perf: the session-liveness listing re-reads only the registry files that changed. `IsLive` re-lists the registry on every miss — every attention read whose items include a dead producer — and each listing read and JSON-decoded every `~/.claude/sessions/*.json`. That was 19 % of all allocation (172 MB per ten minutes, 70 % of it through `entrySessionID`) for a directory whose files change only when a session starts, renames itself or exits. Entries are now stamped by size and modification time, and an entry that cannot be read is left unstamped so a transient failure is retried rather than cached.
+- fix: `/api/1.0/attention/history` caps a page at 10,000 rows, and `limit=0` now resolves to that cap instead of the whole store. The page is materialised in memory before it is encoded, so an unbounded one sets the process footprint for hours — macOS keeps released pages counted — and a 50,000-row read allocates roughly 200 MB. No caller reads more than a few thousand rows today; a consumer that needs more walks the pages, which the endpoint's own doc already requires for a stable count.
+
 ## v0.67.3
 
 - perf: the frontmatter reader no longer copies the whole task file. It scans to the frontmatter block and splits only that, so a read allocates for the block (a few hundred bytes) rather than the file (12 KB on average). `indexContent` performs three such reads per file, so the startup index pass over the operator's 10,132 task files allocated ~730 MB and the process footprint read 605 MB sixteen seconds after start, before a single request — the floor every later fix inherited, because macOS keeps released pages counted in `phys_footprint`. A spec pins the allocation against a 32 MB body and fails against the old implementation.

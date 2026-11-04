@@ -196,8 +196,9 @@ var _ = Describe("Attention history over HTTP", func() {
 		Expect(rec.Code).To(Equal(http.StatusBadRequest))
 	})
 
-	// The unbounded compatibility path, asserted so a caller that needs the whole
-	// store can still be shown to get it.
+	// `limit=0` no longer means "the whole store": it resolves to the maximum
+	// page (historyMaxLimit), so an unbounded response cannot be requested. This
+	// seed is far under the cap, so the page it returns is every item.
 	It("returns every item when the limit is explicitly zero", func() {
 		seed(3)
 		rec := get("?limit=0")
