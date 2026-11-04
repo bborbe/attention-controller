@@ -989,10 +989,13 @@ func frontmatterValue(content []byte, key string) string {
 		if !ok || strings.TrimSpace(name) != key {
 			continue
 		}
-		// Clone: value is a substring of the whole-file copy frontmatterLines
-		// splits, so returning it uncloned pins the entire file for as long as the
-		// caller keeps the value — measured 2026-11-02 at 135 MB of in-use heap,
-		// one copy of every file in the task directory.
+		// Clone: the value is a substring of the block copy frontmatterLines
+		// splits, so returning it uncloned pins that whole block for as long as the
+		// caller keeps the value. The block is a few hundred bytes, not the file —
+		// frontmatterLines stopped copying the file — so this is no longer the
+		// 135 MB of pinned task files measured 2026-11-02. It still earns its place:
+		// the index holds these values for the life of the process, and cloning
+		// lets the block copy be collected.
 		return strings.Clone(strings.TrimSpace(value))
 	}
 	return ""
@@ -1000,24 +1003,82 @@ func frontmatterValue(content []byte, key string) string {
 
 // frontmatterLines returns the lines between the first two lines that are
 // exactly `---`, or nil when there is no such pair.
+//
+// ⚠️ It splits the frontmatter BLOCK, not the file. The block is a sub-slice of
+// content and is found by scanning, so the only allocation here is a copy of the
+// block itself — a few hundred bytes — instead of a copy of the whole file.
+//
+// ⚠️ The copy mattered. This used to convert all of content to a string and run
+// a CRLF ReplaceAll over it, so every read copied the whole file twice, and
+// indexContent performs three such reads per task file. Measured 2026-11-03 over
+// the operator's vault — 10,132 task files, 118.7 MB — the startup index pass
+// allocated roughly 730 MB, and the process footprint read 605 MB sixteen
+// seconds after start, before a single request was served. That startup peak is
+// the floor a later fix cannot get under: macOS keeps the released pages counted
+// in `phys_footprint`, so the footprint tracks the peak rather than the ~21 MB
+// live heap.
 func frontmatterLines(content []byte) []string {
-	lines := strings.Split(strings.ReplaceAll(string(content), "\r\n", "\n"), "\n")
-	start := -1
-	for i, line := range lines {
-		if line == "---" {
-			start = i
-			break
-		}
-	}
-	if start < 0 {
+	block := frontmatterBlock(content)
+	if block == nil {
 		return nil
 	}
-	for i := start + 1; i < len(lines); i++ {
-		if lines[i] == "---" {
-			return lines[start+1 : i]
+	return strings.Split(strings.ReplaceAll(string(block), "\r\n", "\n"), "\n")
+}
+
+// frontmatterBlock returns the bytes between the first two lines that are
+// exactly `---`, or nil when there is no such pair.
+//
+// ⚠️ It returns a SUB-SLICE of content and never copies it. A task file is
+// ~12 KB on average and its frontmatter is a few hundred bytes, so scanning to
+// the block and copying only that is what keeps the index pass proportional to
+// the frontmatter rather than to the whole corpus.
+func frontmatterBlock(content []byte) []byte {
+	start := -1
+	for pos := 0; pos < len(content); {
+		line, next := contentLine(content, pos)
+		if isFrontmatterDelimiter(line) {
+			if start >= 0 {
+				return content[start:pos]
+			}
+			start = next
 		}
+		pos = next
 	}
 	return nil
+}
+
+// contentLine returns the line beginning at pos and the offset of the line that
+// follows it, with any trailing carriage return trimmed. An unterminated last
+// line reports len(content) as its successor, which ends the caller's scan.
+func contentLine(content []byte, pos int) ([]byte, int) {
+	rest := content[pos:]
+	if i := indexNewline(rest); i >= 0 {
+		return trimCarriageReturn(rest[:i]), pos + i + 1
+	}
+	return trimCarriageReturn(rest), len(content)
+}
+
+// indexNewline returns the offset of the first '\n' in b, or -1.
+func indexNewline(b []byte) int {
+	for i := 0; i < len(b); i++ {
+		if b[i] == '\n' {
+			return i
+		}
+	}
+	return -1
+}
+
+// trimCarriageReturn drops one trailing '\r', the CRLF line ending.
+func trimCarriageReturn(b []byte) []byte {
+	if len(b) > 0 && b[len(b)-1] == '\r' {
+		return b[:len(b)-1]
+	}
+	return b
+}
+
+// isFrontmatterDelimiter reports whether line is exactly the `---` fence.
+func isFrontmatterDelimiter(line []byte) bool {
+	return len(line) == 3 && line[0] == '-' && line[1] == '-' && line[2] == '-'
 }
 
 // frontmatterList returns the entries of the list `key` in content's YAML
@@ -1034,6 +1095,8 @@ func frontmatterLines(content []byte) []string {
 // delimiter. That matters here and not for frontmatterValue: the delimiter line
 // starts with `-`, so a reader that re-split the content itself would collect it
 // as an entry.
+//
+//nolint:unparam // key mirrors frontmatterValue's shape; one key is passed today
 func frontmatterList(content []byte, key string) []string {
 	var entries []string
 	inList := false
@@ -1053,8 +1116,9 @@ func frontmatterList(content []byte, key string) []string {
 		if !strings.HasPrefix(trimmed, "-") {
 			break
 		}
-		// Clone for the same reason frontmatterValue does: an uncloned entry
-		// pins the whole file it was split from.
+		// Clone for the same reason frontmatterValue does: an uncloned entry pins
+		// the block copy it was split from, and the index keeps these for the life
+		// of the process.
 		entries = append(entries, strings.Clone(trimmed))
 	}
 	return entries

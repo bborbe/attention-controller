@@ -94,9 +94,10 @@ type sessionLedgerStore struct {
 // read under is still current — so a racing write costs one cache miss, never a
 // stale answer.
 type ledgerListCache struct {
-	mu   sync.Mutex
-	gen  uint64
-	body []byte
+	mu      sync.Mutex
+	gen     uint64
+	body    []byte
+	entries SessionLedgerEntries
 }
 
 func (c *ledgerListCache) load() ([]byte, uint64) {
@@ -113,11 +114,29 @@ func (c *ledgerListCache) store(gen uint64, body []byte) {
 	}
 }
 
+// loadEntries returns the cached rows and the generation they were read under.
+func (c *ledgerListCache) loadEntries() (SessionLedgerEntries, uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.entries, c.gen
+}
+
+// storeEntries caches rows only when no write landed since they were read, for
+// the same reason store does: a stale answer is worse than a cache miss.
+func (c *ledgerListCache) storeEntries(gen uint64, entries SessionLedgerEntries) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.gen == gen {
+		c.entries = entries
+	}
+}
+
 func (c *ledgerListCache) invalidate() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.gen++
 	c.body = nil
+	c.entries = nil
 }
 
 // NewSessionLedgerStore creates a store over the given database.
@@ -240,8 +259,24 @@ func (s *sessionLedgerStore) Get(
 	return entry, found, nil
 }
 
-// List returns every row the store holds.
+// List returns every row the store holds, from the cache when no write has
+// landed since it was read.
+//
+// ⚠️ **The caller must not modify the returned slice** — it is shared with the
+// next reader, exactly as ListJSON's body is.
+//
+// ⚠️ **It is cached for the same reason ListJSON is, and the read it removes was
+// the larger one.** The provenance resolver calls List once per page refresh to
+// build its `session id -> mode` map, and that read decodes every row: measured
+// 2026-11-03 at 37.6 % of all allocation — 654 MB per ten minutes — for a ledger
+// that changes only when a session posts. Caching the decoded rows drops the
+// whole read, so ListJSON's encoder now re-encodes a cached slice rather than
+// re-reading BoltDB.
 func (s *sessionLedgerStore) List(ctx context.Context) (SessionLedgerEntries, error) {
+	cached, gen := s.cache.loadEntries()
+	if cached != nil {
+		return cached, nil
+	}
 	var entries SessionLedgerEntries
 	err := s.db.View(ctx, func(ctx context.Context, tx libkv.Tx) error {
 		got, err := s.entries.List(ctx, tx)
@@ -254,6 +289,7 @@ func (s *sessionLedgerStore) List(ctx context.Context) (SessionLedgerEntries, er
 	if err != nil {
 		return nil, errors.Wrap(ctx, err, "list session ledger entries failed")
 	}
+	s.cache.storeEntries(gen, entries)
 	return entries, nil
 }
 

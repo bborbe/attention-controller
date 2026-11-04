@@ -35,6 +35,50 @@ var _ = Describe("ledgerListCache generation guard", func() {
 		Expect(string(body)).To(Equal("current body"))
 	})
 
+	// The rows cache carries the same argument as the body cache: a List that
+	// started before a write must not publish rows that predate it, or the
+	// provenance resolver answers a mode for a session the ledger has moved on.
+	It("refuses rows read under a generation a write has since replaced", func() {
+		c := &ledgerListCache{}
+		_, gen := c.loadEntries()
+		c.invalidate()
+		c.storeEntries(gen, SessionLedgerEntries{{SessionID: "stale"}})
+
+		entries, _ := c.loadEntries()
+		Expect(entries).To(BeNil())
+	})
+
+	It("keeps rows read under the current generation", func() {
+		c := &ledgerListCache{}
+		_, gen := c.loadEntries()
+		c.storeEntries(gen, SessionLedgerEntries{{SessionID: "s1"}})
+
+		entries, _ := c.loadEntries()
+		Expect(entries).To(HaveLen(1))
+		Expect(entries[0].SessionID).To(Equal("s1"))
+	})
+
+	It("never publishes stale rows under concurrent writes", func() {
+		c := &ledgerListCache{}
+		var wg sync.WaitGroup
+		for i := 0; i < 200; i++ {
+			wg.Add(2)
+			go func() {
+				defer wg.Done()
+				_, gen := c.loadEntries()
+				c.storeEntries(gen, SessionLedgerEntries{{SessionID: "s1"}})
+			}()
+			go func() {
+				defer wg.Done()
+				c.invalidate()
+			}()
+		}
+		wg.Wait()
+		c.invalidate()
+		entries, _ := c.loadEntries()
+		Expect(entries).To(BeNil())
+	})
+
 	It("never publishes a stale body under concurrent writes", func() {
 		c := &ledgerListCache{}
 		var wg sync.WaitGroup

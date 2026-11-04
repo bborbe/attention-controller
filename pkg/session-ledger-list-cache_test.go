@@ -110,3 +110,65 @@ var _ = Describe("SessionLedgerStore ListJSON cache", func() {
 		Expect(string(body)).To(ContainSubstring(ledgerSessionC))
 	})
 })
+
+// The decoded rows are cached for the same reason the encoded body is: the
+// provenance resolver re-lists the whole ledger on every page refresh to build
+// its `session id -> mode` map, and that read was 37.6 % of all allocation
+// (measured 2026-11-03, 654 MB per ten minutes) for a ledger that changes only
+// when a session posts.
+var _ = Describe("SessionLedgerStore List cache", func() {
+	var ctx context.Context
+	var db libkv.DB
+	var store pkg.SessionLedgerStore
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		var err error
+		db, err = libboltkv.OpenTemp(ctx)
+		Expect(err).To(BeNil())
+		store = pkg.NewSessionLedgerStore(db)
+	})
+
+	AfterEach(func() {
+		Expect(db.Close()).To(BeNil())
+	})
+
+	It("serves a repeat List from the cache", func() {
+		Expect(store.Post(ctx, ledgerEntry(ledgerSessionA, "2026-10-13T10:00:00Z"))).To(Succeed())
+
+		first, err := store.List(ctx)
+		Expect(err).To(BeNil())
+		second, err := store.List(ctx)
+		Expect(err).To(BeNil())
+		// Same backing array: the second read did not touch BoltDB.
+		Expect(&second[0]).To(BeIdenticalTo(&first[0]))
+	})
+
+	It("drops the cached rows on Post", func() {
+		Expect(store.Post(ctx, ledgerEntry(ledgerSessionA, "2026-10-13T10:00:00Z"))).To(Succeed())
+		_, err := store.List(ctx)
+		Expect(err).To(BeNil())
+
+		Expect(store.Post(ctx, ledgerEntry(ledgerSessionB, "2026-10-13T11:00:00Z"))).To(Succeed())
+		entries, err := store.List(ctx)
+		Expect(err).To(BeNil())
+		Expect(entries).To(HaveLen(2))
+	})
+
+	It("drops the cached rows on Patch", func() {
+		Expect(store.Post(ctx, ledgerEntry(ledgerSessionA, "2026-10-13T10:00:00Z"))).To(Succeed())
+		_, err := store.List(ctx)
+		Expect(err).To(BeNil())
+
+		_, found, err := store.Patch(ctx, ledgerSessionA, pkg.SessionLedgerPatch{
+			"label": json.RawMessage(`"a patched worker"`),
+		})
+		Expect(err).To(BeNil())
+		Expect(found).To(BeTrue())
+
+		entries, err := store.List(ctx)
+		Expect(err).To(BeNil())
+		Expect(entries).To(HaveLen(1))
+		Expect(entries[0].Label).To(Equal("a patched worker"))
+	})
+})
