@@ -63,7 +63,11 @@ func NewSessionLivenessCheckerWithClock(
 	sessionsDir string,
 	now libtime.CurrentDateTimeGetter,
 ) SessionLivenessChecker {
-	return &sessionLivenessChecker{sessionsDir: sessionsDir, now: now}
+	return &sessionLivenessChecker{
+		sessionsDir: sessionsDir,
+		now:         now,
+		entryStamps: map[string]registryEntryStamp{},
+	}
 }
 
 // NewAlwaysLiveSessionLivenessChecker returns a checker that reports every
@@ -113,6 +117,21 @@ type sessionLivenessChecker struct {
 	cachedReadable bool
 	cachedAt       libtime.DateTime
 	haveCached     bool
+	// entryMu guards entryStamps. ⚠️ It is deliberately separate from mu:
+	// LiveSessionsFresh calls list without holding mu, so a list that took mu
+	// would deadlock against LiveSessions, which holds it across the call.
+	entryMu sync.Mutex
+	// entryStamps is the last-seen stamp of each registry file, so a listing
+	// re-reads only the files that changed. See list for why it exists.
+	entryStamps map[string]registryEntryStamp
+}
+
+// registryEntryStamp is one registry file's size, modification time and the
+// session id parsed from it. A file whose stamp is unchanged is not re-read.
+type registryEntryStamp struct {
+	size      int64
+	modNano   int64
+	sessionID string
 }
 
 // sessionRegistryEntry is one `<pid>.json` in the session registry. Three
@@ -267,22 +286,77 @@ func (s *sessionLivenessChecker) list(ctx context.Context) (SessionIDs, bool) {
 		return nil, false
 	}
 	ids := make(SessionIDs, 0, len(names))
+	s.entryMu.Lock()
+	defer s.entryMu.Unlock()
+	next := make(map[string]registryEntryStamp, len(names))
 	for _, name := range names {
 		if !strings.HasSuffix(name, ".json") {
 			continue
 		}
-		if sessionID, ok := s.entrySessionID(root, name); ok {
-			ids = append(ids, sessionID)
+		stamp, ok := s.stampOf(root, name, next)
+		if !ok || stamp.sessionID == "" {
+			continue
 		}
+		ids = append(ids, stamp.sessionID)
 	}
+	s.entryStamps = next
 	return ids, true
+}
+
+// stampOf returns one registry file's stamp, reusing the cached session id when
+// the file's size and modification time are unchanged.
+//
+// ⚠️ It exists because the listing is not cheap and is not rare. `IsLive`
+// re-lists the registry on every miss so a session that registered inside the
+// cache window is not wrongly reported gone, and every attention read whose
+// items include a dead producer is a miss. Reading and JSON-decoding every
+// registry file each time was 19 % of all allocation — 172 MB per ten minutes,
+// 70 % of it through this one function — for a directory whose files change
+// only when a session starts, renames itself or exits.
+//
+// ⚠️ An entry that cannot be read or parsed is left out of `next` rather than
+// stamped, so a transient failure is retried on the following listing instead
+// of being cached until the file happens to change.
+func (s *sessionLivenessChecker) stampOf(
+	root *os.Root,
+	name string,
+	next map[string]registryEntryStamp,
+) (registryEntryStamp, bool) {
+	info, err := root.Stat(name)
+	if err != nil {
+		return registryEntryStamp{}, false
+	}
+	stamp := registryEntryStamp{size: info.Size(), modNano: info.ModTime().UnixNano()}
+	if prev, ok := s.entryStamps[name]; ok &&
+		prev.size == stamp.size && prev.modNano == stamp.modNano {
+		stamp.sessionID = prev.sessionID
+		next[name] = stamp
+		return stamp, true
+	}
+	sessionID, ok := s.entrySessionID(root, name)
+	if !ok {
+		return registryEntryStamp{}, false
+	}
+	stamp.sessionID = sessionID
+	next[name] = stamp
+	return stamp, true
+}
+
+// sessionRegistryFileReader reads one registry file.
+//
+// ⚠️ It is a package variable rather than a direct os.Root.ReadFile so a spec
+// can count the reads one listing performs. The stamp cache's whole claim is
+// that a repeat listing re-reads only the files that changed, and a claim about
+// a count cannot be asserted against a reader the spec cannot see.
+var sessionRegistryFileReader = func(root *os.Root, name string) ([]byte, error) {
+	return root.ReadFile(name)
 }
 
 // entrySessionID reads one registry entry and returns the session id it
 // carries. ok is false for an unreadable file, an unparseable one, or one that
 // records no session id — none of which contributes an id to the listing.
 func (s *sessionLivenessChecker) entrySessionID(root *os.Root, name string) (string, bool) {
-	content, err := root.ReadFile(name)
+	content, err := sessionRegistryFileReader(root, name)
 	if err != nil {
 		glog.V(3).Infof("read session registry entry %s failed: %v", name, err)
 		return "", false
