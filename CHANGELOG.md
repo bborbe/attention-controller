@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.67.5
 
 - docs: the `historyDefaultLimit` comment no longer claims `limit=0` returns the whole store — it resolves to `historyMaxLimit`, the largest page one request may ask for.
 - test: specs for the registry stamp cache's retry guarantee (an unreadable and an unparseable entry are each re-read on the following listing rather than cached as absent) and for concurrent listings against the new `entryMu`/`entryStamps` state. The default gate runs `-race=false`, so the concurrency spec pins agreement under load, not data races.
