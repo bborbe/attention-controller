@@ -35,6 +35,24 @@ import (
 // delay a prune, never cause one.
 const sessionRegistryCacheWindow = libtime.Duration(1 * time.Second)
 
+// freshListingWindow bounds how old a "fresh" listing may be when the registry
+// directory itself has not changed.
+//
+// ⚠️ It exists because the fresh re-list ran on EVERY `IsLive` miss, and a dead
+// producer misses forever. Measured 2026-11-05 on v0.67.4 with 56 live sessions
+// and 57 registry files: a 45 s profile put `syscall.rawsyscalln` at 33 % of all
+// CPU, every stack ending in `LiveSessionsFresh → list` — one stat per registry
+// file per miss, from every reader whose items include a dead producer — and
+// `ps -o pcpu=` read 28 % with a 5.76 % mean over two minutes.
+//
+// The directory's own mtime is the primary invalidation: a session registering
+// creates a file, which moves the mtime, so a newly registered session is seen
+// immediately. This ceiling covers the one case the mtime cannot: a pid reused
+// by a new session whose registry file is rewritten in place. The worst case is
+// therefore a new session reading "gone" for at most this long, against a
+// re-list that otherwise ran continuously.
+const freshListingWindow = libtime.Duration(1 * time.Second)
+
 //counterfeiter:generate -o ../mocks/session-liveness-checker.go --fake-name SessionLivenessChecker . SessionLivenessChecker
 
 // SessionLivenessChecker reports whether a long-lived producer's session is
@@ -124,6 +142,14 @@ type sessionLivenessChecker struct {
 	// entryStamps is the last-seen stamp of each registry file, so a listing
 	// re-reads only the files that changed. See list for why it exists.
 	entryStamps map[string]registryEntryStamp
+	// freshMu guards the fresh listing below. It is separate from mu because
+	// IsLive calls LiveSessionsFresh after LiveSessions has released mu, and
+	// from entryMu because list takes entryMu itself.
+	freshMu     sync.Mutex
+	fresh       SessionIDs
+	freshAt     libtime.DateTime
+	freshDirMod int64
+	haveFresh   bool
 }
 
 // registryEntryStamp is one registry file's size, modification time and the
@@ -243,8 +269,57 @@ func (s *sessionLivenessChecker) LiveSessions(ctx context.Context) (SessionIDs, 
 // LiveSessionsFresh lists the registry without consulting the cache. It
 // publishes nothing: a fresh read must leave the cache as it found it, so this
 // cannot be turned into a cache-poisoning path.
+//
+// "Fresh" means "reflects every registry change": the result is reused only
+// while the directory's mtime is unchanged and it is younger than
+// freshListingWindow. See freshListingWindow for why the reuse exists.
 func (s *sessionLivenessChecker) LiveSessionsFresh(ctx context.Context) (SessionIDs, bool) {
-	return s.list(ctx)
+	dirMod, dirOK := s.registryDirMod()
+	s.freshMu.Lock()
+	defer s.freshMu.Unlock()
+	now := s.now.Now()
+	// ⚠️ A negative age (the clock stepped backwards) is not "young": it would
+	// otherwise extend the reuse indefinitely.
+	age := now.Sub(s.freshAt)
+	if dirOK && s.haveFresh && s.freshDirMod == dirMod &&
+		age >= 0 && age < freshListingWindow {
+		return s.fresh, true
+	}
+	// ⚠️ complete comes back from THIS listing, never from shared state: a
+	// concurrent LiveSessions listing could otherwise overwrite it between the
+	// listing and the read, and an incomplete listing would be cached.
+	ids, readable, complete := sessionRegistryLister(ctx, s)
+	if !dirOK || !readable || !complete {
+		// An unstattable directory proves nothing about what changed, and an
+		// incomplete listing must be retried, so neither is cached.
+		s.haveFresh = false
+		return ids, readable
+	}
+	s.fresh = ids
+	s.freshAt = s.now.Now()
+	s.freshDirMod = dirMod
+	s.haveFresh = true
+	return ids, readable
+}
+
+// registryDirMod returns the registry directory's modification time.
+func (s *sessionLivenessChecker) registryDirMod() (int64, bool) {
+	info, err := os.Stat(s.sessionsDir)
+	if err != nil {
+		// Without the stamp the fresh listing cannot be reused, so CPU returns
+		// to a listing per miss; say so rather than regress silently.
+		glog.V(3).Infof("stat session registry %s failed: %v", s.sessionsDir, err)
+		return 0, false
+	}
+	return info.ModTime().UnixNano(), true
+}
+
+// sessionRegistryLister runs one full listing. ⚠️ It is a package variable so a
+// spec can count listings: the fresh cache's claim is that an unchanged
+// directory is not re-listed, and a count cannot be asserted against a call the
+// spec cannot see. Same seam shape as sessionRegistryFileReader.
+var sessionRegistryLister = func(ctx context.Context, s *sessionLivenessChecker) (SessionIDs, bool, bool) {
+	return s.listResolved(ctx)
 }
 
 // list reads every session id the registry holds, in one pass. It is the ONLY
@@ -260,47 +335,60 @@ func (s *sessionLivenessChecker) LiveSessionsFresh(ctx context.Context) (Session
 // single body both halves of the listing capability share, so it carries the
 // shape sessionSnapshotter and sessionFreshLister declare rather than a shape
 // this body needs. Dropping it would make the two callers adapt instead.
+func (s *sessionLivenessChecker) list(ctx context.Context) (SessionIDs, bool) {
+	ids, readable, _ := s.listResolved(ctx)
+	return ids, readable
+}
+
+// listResolved is list plus a third result: whether every registry file was
+// resolved. stampOf leaves an unreadable entry out so the next listing retries
+// it, which is why only a complete listing may be reused as a fresh one.
 //
 //nolint:unparam // ctx is fixed by the listing capability's signature, not by this body
-func (s *sessionLivenessChecker) list(ctx context.Context) (SessionIDs, bool) {
+func (s *sessionLivenessChecker) listResolved(ctx context.Context) (SessionIDs, bool, bool) {
 	// The registry is opened as an os.Root so every read is confined beneath
 	// it — the entry names come from ReadDir, but scoping the handle makes the
 	// confinement structural rather than an assumption about those names.
 	root, err := os.OpenRoot(s.sessionsDir)
 	if err != nil {
 		glog.Warningf("session registry %s unreadable: %v", s.sessionsDir, err)
-		return nil, false
+		return nil, false, false
 	}
 	defer root.Close()
 
 	entries, err := root.Open(".")
 	if err != nil {
 		glog.Warningf("session registry %s unreadable: %v", s.sessionsDir, err)
-		return nil, false
+		return nil, false, false
 	}
 	defer entries.Close()
 
 	names, err := entries.Readdirnames(-1)
 	if err != nil {
 		glog.Warningf("session registry %s listing failed: %v", s.sessionsDir, err)
-		return nil, false
+		return nil, false, false
 	}
 	ids := make(SessionIDs, 0, len(names))
 	s.entryMu.Lock()
 	defer s.entryMu.Unlock()
 	next := make(map[string]registryEntryStamp, len(names))
+	complete := true
 	for _, name := range names {
 		if !strings.HasSuffix(name, ".json") {
 			continue
 		}
 		stamp, ok := s.stampOf(root, name, next)
-		if !ok || stamp.sessionID == "" {
+		if !ok {
+			complete = false
+			continue
+		}
+		if stamp.sessionID == "" {
 			continue
 		}
 		ids = append(ids, stamp.sessionID)
 	}
 	s.entryStamps = next
-	return ids, true
+	return ids, true, complete
 }
 
 // stampOf returns one registry file's stamp, reusing the cached session id when
