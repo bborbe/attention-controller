@@ -8,7 +8,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -1078,43 +1077,7 @@ func (r *provenanceResolver) mergeEventBytes(
 // store ran somewhere the registry is absent, and the store's own liveness
 // checker takes the same position for the same reason.
 func (r *provenanceResolver) sessionNames(ctx context.Context) map[string]sessionName {
-	names := map[string]sessionName{}
-	if r.sessionsDir == "" {
-		return names
-	}
-	entries, err := os.ReadDir(r.sessionsDir)
-	if err != nil {
-		glog.V(2).Infof("read session registry %s failed: %v", r.sessionsDir, err)
-		return names
-	}
-	for _, entry := range entries {
-		select {
-		case <-ctx.Done():
-			glog.V(3).Infof("session registry scan cancelled")
-			return names
-		default:
-		}
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
-		content, err := os.ReadFile(filepath.Join(r.sessionsDir, entry.Name()))
-		if err != nil {
-			glog.V(3).Infof("read session registry entry %s failed: %v", entry.Name(), err)
-			continue
-		}
-		var record sessionRegistryEntry
-		if err := json.Unmarshal(content, &record); err != nil {
-			glog.V(3).Infof("parse session registry entry %s failed: %v", entry.Name(), err)
-			continue
-		}
-		if record.SessionID != "" {
-			names[record.SessionID] = sessionName{
-				Name:   record.Name,
-				Source: record.NameSource,
-			}
-		}
-	}
-	return names
+	return readSessionNames(ctx, r.sessionsDir)
 }
 
 // sessionModes reads the supervisor's session ledger as `session id -> mode`.
