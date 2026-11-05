@@ -535,7 +535,7 @@ func (a *application) createProvenanceResolver(
 		sessionLedger,
 		panes,
 		tasks,
-		liveness,
+		pkg.NewWorkerCoverage(tasks, liveness),
 		libtime.NewCurrentDateTime(),
 	)
 }

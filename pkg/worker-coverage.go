@@ -5,6 +5,7 @@
 package pkg
 
 import (
+	"context"
 	"regexp"
 	"strings"
 	"unicode"
@@ -48,6 +49,54 @@ import (
 // a task's hand-authored `managed_by`, a task listed directly in a topic's
 // `## Goals`, a manager detected only by tab colour or by its loop record
 // (`manager_subject` source 1), and sessions anchored in another vault.
+
+//counterfeiter:generate -o ../mocks/worker-coverage.go --fake-name WorkerCoverage . WorkerCoverage
+
+// WorkerCoverage decides, for a page of sessions, which have no live manager
+// that could relay their attention card.
+//
+// It takes the registry as `session id -> name` from the caller rather than
+// reading it, because the provenance resolver already holds a cached snapshot
+// of the registry for the same page: a second read would let the coverage
+// verdict and the rendered session name come from two different instants.
+type WorkerCoverage interface {
+	// Uncovered returns the members of sessionIDs that no live manager covers.
+	// A session absent from the result is covered, or its coverage could not
+	// be read — both render hidden, never on the board by default.
+	Uncovered(ctx context.Context, registry map[string]string, sessionIDs []string) map[string]bool
+}
+
+// NewWorkerCoverage returns a WorkerCoverage over the vault's task index and
+// the store's liveness checker.
+func NewWorkerCoverage(tasks TaskIndex, liveness SessionLivenessChecker) WorkerCoverage {
+	return &workerCoverage{tasks: tasks, liveness: liveness}
+}
+
+type workerCoverage struct {
+	tasks    TaskIndex
+	liveness SessionLivenessChecker
+}
+
+// Uncovered returns the members of sessionIDs that no live manager covers.
+func (c *workerCoverage) Uncovered(
+	ctx context.Context,
+	registry map[string]string,
+	sessionIDs []string,
+) map[string]bool {
+	uncovered := map[string]bool{}
+	if c == nil || c.tasks == nil || c.liveness == nil || len(sessionIDs) == 0 {
+		return uncovered
+	}
+	index := newSubjectIndex(c.tasks.SubjectTitles())
+	managers := liveManagerSubjects(ctx, registry, index, c.liveness.IsLive)
+	for _, sessionID := range sessionIDs {
+		task, hasTask := c.tasks.Lookup(sessionID)
+		if workerUncovered(sessionID, task, hasTask, registry, index, managers) {
+			uncovered[sessionID] = true
+		}
+	}
+	return uncovered
+}
 
 // workerCoverageTruncationMinPrefix is the length below which a registry name
 // is not accepted as a truncation of a title.
@@ -128,14 +177,22 @@ func (s subjectIndex) prefixTitle(key string) string {
 // liveManagerSubjects returns the lowered subject title of every live session
 // whose name resolves to a goal or topic, keyed by session id.
 func liveManagerSubjects(
-	names map[string]sessionName,
+	ctx context.Context,
+	registry map[string]string,
 	index subjectIndex,
-	isLive func(sessionID string) bool,
+	isLive func(ctx context.Context, sessionID string) bool,
 ) map[string]string {
 	subjects := map[string]string{}
-	for sessionID, entry := range names {
-		title := index.subject(entry.Name)
-		if title == "" || !isLive(sessionID) {
+	for sessionID, name := range registry {
+		// ⚠️ Checked per entry: isLive may stat the registry, and this loop
+		// runs once per page across every registered session.
+		select {
+		case <-ctx.Done():
+			return subjects
+		default:
+		}
+		title := index.subject(name)
+		if title == "" || !isLive(ctx, sessionID) {
 			continue
 		}
 		subjects[sessionID] = strings.ToLower(title)
@@ -154,14 +211,14 @@ func workerUncovered(
 	sessionID string,
 	task Task,
 	hasTask bool,
-	names map[string]sessionName,
+	registry map[string]string,
 	index subjectIndex,
 	managers map[string]string,
 ) bool {
-	if sessionID == "" || len(names) == 0 {
+	if sessionID == "" || len(registry) == 0 {
 		return false
 	}
-	if entry, ok := names[sessionID]; ok && index.subject(entry.Name) != "" {
+	if name, ok := registry[sessionID]; ok && index.subject(name) != "" {
 		// A manager is parented to the root, never to a peer manager.
 		return true
 	}

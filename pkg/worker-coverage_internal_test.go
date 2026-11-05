@@ -5,6 +5,8 @@
 package pkg
 
 import (
+	"context"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -64,18 +66,18 @@ var _ = Describe("worker coverage", func() {
 			topicM  = "topic-manager-session"
 		)
 		var (
-			names    map[string]sessionName
+			names    map[string]string
 			managers map[string]string
 			task     Task
 		)
 		BeforeEach(func() {
-			names = map[string]sessionName{
-				worker:  {Name: "⚙ Fix the Board"},
-				manager: {Name: goalTitle + " Manager"},
-				topicM:  {Name: topicTitle + " Manager"},
+			names = map[string]string{
+				worker:  "⚙ Fix the Board",
+				manager: goalTitle + " Manager",
+				topicM:  topicTitle + " Manager",
 			}
-			alive := func(string) bool { return true }
-			managers = liveManagerSubjects(names, index, alive)
+			alive := func(context.Context, string) bool { return true }
+			managers = liveManagerSubjects(context.Background(), names, index, alive)
 			task = Task{
 				Name:      "Fix the Board",
 				GoalName:  goalTitle,
@@ -93,13 +95,13 @@ var _ = Describe("worker coverage", func() {
 		})
 		It("is uncovered when the only live manager is the goal's TOPIC manager", func() {
 			// fleet-board's manager_on_chain: a topic manager never parents a
-			// worker. This is the case the first draft of this file got wrong.
+			// worker, so the goal's topic is not a covering rung.
 			delete(managers, manager)
 			Expect(workerUncovered(worker, task, true, names, index, managers)).To(BeTrue())
 		})
 		It("is uncovered when the goal's manager is not live", func() {
-			dead := func(id string) bool { return id != manager }
-			managers = liveManagerSubjects(names, index, dead)
+			dead := func(_ context.Context, id string) bool { return id != manager }
+			managers = liveManagerSubjects(context.Background(), names, index, dead)
 			Expect(workerUncovered(worker, task, true, names, index, managers)).To(BeTrue())
 		})
 		It("is uncovered when the session anchors no task", func() {
@@ -114,7 +116,7 @@ var _ = Describe("worker coverage", func() {
 		})
 		It("is covered when the registry is unreadable, so the board is never flooded", func() {
 			Expect(
-				workerUncovered(worker, task, true, map[string]sessionName{}, index, managers),
+				workerUncovered(worker, task, true, map[string]string{}, index, managers),
 			).To(BeFalse())
 		})
 		It("is covered for an item naming no session", func() {

@@ -61,47 +61,49 @@ var _ = Describe("worker coverage parity with fleet-board.py", func() {
 		Expect(reference).NotTo(BeEmpty(), "fleet-board returned no sessions — the probe is blind")
 
 		tasks := NewTaskIndex(ctx, vaultDir, libtime.NewCurrentDateTime())
-		liveness := NewSessionLivenessChecker(sessionsDir)
 		names := readSessionNames(ctx, sessionsDir)
 		Expect(names).NotTo(BeEmpty(), "registry unreadable — the probe is blind")
-		index := newSubjectIndex(tasks.SubjectTitles())
-		managers := liveManagerSubjects(
-			names,
-			index,
-			func(id string) bool { return liveness.IsLive(ctx, id) },
-		)
+		registry := make(map[string]string, len(names))
+		for id, entry := range names {
+			registry[id] = entry.Name
+		}
 
-		var disagreements []string
-		compared, uncovered := 0, 0
 		ids := make([]string, 0, len(reference))
 		for id := range reference {
 			ids = append(ids, id)
 		}
 		sort.Strings(ids)
+
+		// The shipped seam, wired exactly as main wires it.
+		verdicts := NewWorkerCoverage(tasks, NewSessionLivenessChecker(sessionsDir)).
+			Uncovered(ctx, registry, ids)
+
+		var disagreements []string
+		compared, uncovered := 0, 0
 		for _, id := range ids {
 			want := reference[id]
-			task, hasTask := tasks.Lookup(id)
-			got := workerUncovered(id, task, hasTask, names, index, managers)
+			got := verdicts[id]
 			compared++
 			if want.uncovered {
 				uncovered++
 			}
 			if got != want.uncovered {
+				task, _ := tasks.Lookup(id)
 				disagreements = append(disagreements, fmt.Sprintf(
 					"%s %-9s fleet-board uncovered=%-5v go uncovered=%-5v task=%q goals=%q | %s",
 					id[:8], want.role, want.uncovered, got, task.Name, task.Goals, want.label))
 			}
 		}
 		// ⚠️ The negative control. A zero above is evidence only if this
-		// comparison can fire, so it is re-run with the manager set emptied — a
-		// matcher that resolves no manager at all. That must disagree on exactly
-		// the sessions fleet-board reads as covered; if it does not, the spec is
-		// blind and its zero proves nothing.
+		// comparison can fire, so it is re-run through the same seam with a
+		// liveness checker that reads every session as gone — no manager is
+		// live. That must disagree on exactly the sessions fleet-board reads as
+		// covered; if it does not, the spec is blind and its zero proves nothing.
 		covered := compared - uncovered
+		blindVerdicts := NewWorkerCoverage(tasks, noneLive{}).Uncovered(ctx, registry, ids)
 		blind := 0
 		for _, id := range ids {
-			task, hasTask := tasks.Lookup(id)
-			if workerUncovered(id, task, hasTask, names, index, nil) != reference[id].uncovered {
+			if blindVerdicts[id] != reference[id].uncovered {
 				blind++
 			}
 		}
@@ -178,3 +180,9 @@ func envOr(key, fallback string) string {
 	}
 	return fallback
 }
+
+// noneLive is a liveness checker that reads every session as gone, so no
+// manager can cover anyone — the parity spec's negative control.
+type noneLive struct{}
+
+func (noneLive) IsLive(context.Context, string) bool { return false }
