@@ -95,12 +95,17 @@ var _ = Describe("worker coverage parity with fleet-board.py", func() {
 			}
 		}
 		// ⚠️ The negative control. A zero above is evidence only if this
-		// comparison can fire, so it is re-run through the same seam with a
-		// liveness checker that reads every session as gone — no manager is
-		// live. That must disagree on exactly the sessions fleet-board reads as
-		// covered; if it does not, the spec is blind and its zero proves nothing.
+		// comparison can fire, so it is re-run through the same seam with the
+		// real liveness checker pointed at an EMPTY registry directory — no
+		// session reads live, so no manager can cover anyone. That must disagree
+		// on exactly the sessions fleet-board reads as covered; if it does not,
+		// the spec is blind and its zero proves nothing.
 		covered := compared - uncovered
-		blindVerdicts := NewWorkerCoverage(tasks, noneLive{}).Uncovered(ctx, registry, ids)
+		emptyRegistry, err := os.MkdirTemp("", "worker-coverage-parity-")
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(os.RemoveAll, emptyRegistry)
+		blindVerdicts := NewWorkerCoverage(tasks, NewSessionLivenessChecker(emptyRegistry)).
+			Uncovered(ctx, registry, ids)
 		blind := 0
 		for _, id := range ids {
 			if blindVerdicts[id] != reference[id].uncovered {
@@ -180,9 +185,3 @@ func envOr(key, fallback string) string {
 	}
 	return fallback
 }
-
-// noneLive is a liveness checker that reads every session as gone, so no
-// manager can cover anyone — the parity spec's negative control.
-type noneLive struct{}
-
-func (noneLive) IsLive(context.Context, string) bool { return false }
