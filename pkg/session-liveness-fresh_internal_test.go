@@ -34,9 +34,9 @@ var _ = Describe("session registry fresh listing", func() {
 		now = libtime.NewCurrentDateTime().Now()
 		original := sessionRegistryLister
 		DeferCleanup(func() { sessionRegistryLister = original })
-		sessionRegistryLister = func(ctx context.Context, s *sessionLivenessChecker) (SessionIDs, bool) {
+		sessionRegistryLister = func(ctx context.Context, s *sessionLivenessChecker) (SessionIDs, bool, bool) {
 			listings++
-			return s.list(ctx)
+			return s.listResolved(ctx)
 		}
 	})
 
