@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.68.0
 
 - feat: Show a worker's card in the board's manager-only default view when no live manager could relay it, with a reason line saying so. Coverage mirrors claude-supervisor's `fleet-board.py` grouping (a session is covered only when parented to a live non-root goal manager) and is resolved in-process from the task index, the session registry and the store's own liveness checker; an opt-in parity spec (`ATTENTION_COVERAGE_PARITY=1`) checks the two rules agree session by session over the live fleet.
 
