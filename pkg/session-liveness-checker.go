@@ -35,6 +35,24 @@ import (
 // delay a prune, never cause one.
 const sessionRegistryCacheWindow = libtime.Duration(1 * time.Second)
 
+// freshListingWindow bounds how old a "fresh" listing may be when the registry
+// directory itself has not changed.
+//
+// ⚠️ It exists because the fresh re-list ran on EVERY `IsLive` miss, and a dead
+// producer misses forever. Measured 2026-11-05 on v0.67.4 with 56 live sessions
+// and 57 registry files: a 45 s profile put `syscall.rawsyscalln` at 33 % of all
+// CPU, every stack ending in `LiveSessionsFresh → list` — one stat per registry
+// file per miss, from every reader whose items include a dead producer — and
+// `ps -o pcpu=` read 28 % with a 5.76 % mean over two minutes.
+//
+// The directory's own mtime is the primary invalidation: a session registering
+// creates a file, which moves the mtime, so a newly registered session is seen
+// immediately. This ceiling covers the one case the mtime cannot: a pid reused
+// by a new session whose registry file is rewritten in place. The worst case is
+// therefore a new session reading "gone" for at most this long, against a
+// re-list that otherwise ran continuously.
+const freshListingWindow = libtime.Duration(1 * time.Second)
+
 //counterfeiter:generate -o ../mocks/session-liveness-checker.go --fake-name SessionLivenessChecker . SessionLivenessChecker
 
 // SessionLivenessChecker reports whether a long-lived producer's session is
@@ -124,6 +142,20 @@ type sessionLivenessChecker struct {
 	// entryStamps is the last-seen stamp of each registry file, so a listing
 	// re-reads only the files that changed. See list for why it exists.
 	entryStamps map[string]registryEntryStamp
+	// lastListComplete is whether the last listing resolved every registry
+	// file. Guarded by entryMu. ⚠️ A listing with an unreadable entry is never
+	// reused as a fresh listing: stampOf leaves such an entry out precisely so
+	// the next listing retries it, and caching the listing would defeat that.
+	lastListComplete bool
+	// freshMu guards the fresh listing below. It is separate from mu because
+	// IsLive calls LiveSessionsFresh after LiveSessions has released mu, and
+	// from entryMu because list takes entryMu itself.
+	freshMu       sync.Mutex
+	fresh         SessionIDs
+	freshReadable bool
+	freshAt       libtime.DateTime
+	freshDirMod   int64
+	haveFresh     bool
 }
 
 // registryEntryStamp is one registry file's size, modification time and the
@@ -243,7 +275,51 @@ func (s *sessionLivenessChecker) LiveSessions(ctx context.Context) (SessionIDs, 
 // LiveSessionsFresh lists the registry without consulting the cache. It
 // publishes nothing: a fresh read must leave the cache as it found it, so this
 // cannot be turned into a cache-poisoning path.
+//
+// "Fresh" means "reflects every registry change": the result is reused only
+// while the directory's mtime is unchanged and it is younger than
+// freshListingWindow. See freshListingWindow for why the reuse exists.
 func (s *sessionLivenessChecker) LiveSessionsFresh(ctx context.Context) (SessionIDs, bool) {
+	dirMod, dirOK := s.registryDirMod()
+	s.freshMu.Lock()
+	defer s.freshMu.Unlock()
+	now := s.now.Now()
+	if dirOK && s.haveFresh && s.freshDirMod == dirMod &&
+		now.Sub(s.freshAt) < freshListingWindow {
+		return s.fresh, s.freshReadable
+	}
+	ids, readable := sessionRegistryLister(ctx, s)
+	s.entryMu.Lock()
+	complete := s.lastListComplete
+	s.entryMu.Unlock()
+	if !dirOK || !readable || !complete {
+		// An unstattable directory proves nothing about what changed, and an
+		// incomplete listing must be retried, so neither is cached.
+		s.haveFresh = false
+		return ids, readable
+	}
+	s.fresh = ids
+	s.freshReadable = readable
+	s.freshAt = s.now.Now()
+	s.freshDirMod = dirMod
+	s.haveFresh = true
+	return ids, readable
+}
+
+// registryDirMod returns the registry directory's modification time.
+func (s *sessionLivenessChecker) registryDirMod() (int64, bool) {
+	info, err := os.Stat(s.sessionsDir)
+	if err != nil {
+		return 0, false
+	}
+	return info.ModTime().UnixNano(), true
+}
+
+// sessionRegistryLister runs one full listing. ⚠️ It is a package variable so a
+// spec can count listings: the fresh cache's claim is that an unchanged
+// directory is not re-listed, and a count cannot be asserted against a call the
+// spec cannot see. Same seam shape as sessionRegistryFileReader.
+var sessionRegistryLister = func(ctx context.Context, s *sessionLivenessChecker) (SessionIDs, bool) {
 	return s.list(ctx)
 }
 
@@ -289,17 +365,23 @@ func (s *sessionLivenessChecker) list(ctx context.Context) (SessionIDs, bool) {
 	s.entryMu.Lock()
 	defer s.entryMu.Unlock()
 	next := make(map[string]registryEntryStamp, len(names))
+	complete := true
 	for _, name := range names {
 		if !strings.HasSuffix(name, ".json") {
 			continue
 		}
 		stamp, ok := s.stampOf(root, name, next)
-		if !ok || stamp.sessionID == "" {
+		if !ok {
+			complete = false
+			continue
+		}
+		if stamp.sessionID == "" {
 			continue
 		}
 		ids = append(ids, stamp.sessionID)
 	}
 	s.entryStamps = next
+	s.lastListComplete = complete
 	return ids, true
 }
 

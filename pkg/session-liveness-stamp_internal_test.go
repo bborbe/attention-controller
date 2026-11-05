@@ -43,10 +43,21 @@ var _ = Describe("session registry stamp cache", func() {
 		return path
 	}
 
+	// ⚠️ The clock steps past freshListingWindow on every read, so each
+	// LiveSessionsFresh call in THIS block takes a real listing. These specs pin
+	// the per-file stamp behaviour of list(); the fresh-listing reuse in front
+	// of it has its own block below, which holds the clock still.
 	newChecker := func() *sessionLivenessChecker {
-		checker, ok := NewSessionLivenessCheckerWithClock(
-			dir, libtime.NewCurrentDateTime(),
-		).(*sessionLivenessChecker)
+		base := libtime.NewCurrentDateTime().Now()
+		var step int64
+		var stepMu sync.Mutex
+		clock := libtime.CurrentDateTimeGetterFunc(func() libtime.DateTime {
+			stepMu.Lock()
+			defer stepMu.Unlock()
+			step++
+			return base.Add(libtime.Duration(step) * 2 * freshListingWindow)
+		})
+		checker, ok := NewSessionLivenessCheckerWithClock(dir, clock).(*sessionLivenessChecker)
 		Expect(ok).To(BeTrue(), "the constructor must build the stamping checker")
 		return checker
 	}
