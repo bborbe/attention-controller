@@ -10,7 +10,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 
 ## Unreleased
 
-- Add a worker-coverage resolver that decides whether a worker's attention card has a live manager that could relay it, resolving coverage in-process from the task index, the session registry and the liveness checker rather than from claude-supervisor's Python.
+- Show a worker's card in the board's manager-only default view when no live manager could relay it, with a reason line saying so. Coverage mirrors claude-supervisor's `fleet-board.py` grouping (a session is covered only when parented to a live non-root goal manager) and is resolved in-process from the task index, the session registry and the store's own liveness checker; an opt-in parity spec (`ATTENTION_COVERAGE_PARITY=1`) checks the two rules agree session by session over the live fleet.
 
 ## v0.67.6
 

@@ -5,150 +5,188 @@
 package pkg
 
 import (
-	"context"
+	"regexp"
 	"strings"
 	"unicode"
 
 	"golang.org/x/text/unicode/norm"
 )
 
-// workerCoverageTruncationMinPrefix is the length below which a registry name
-// is not accepted as a truncation of a title.
-//
-// ⚠️ It mirrors `_TRUNCATION_MIN_PREFIX` in claude-supervisor's
-// `fleet-board.py`, and the two must agree — a registry name is a *truncated*
-// title (measured 46 characters on 2026-10-07, against a 108-character title),
-// so the prefix branch is what makes coverage resolve at all. The floor is what
-// keeps a short coincidental prefix from matching: a role name such as `boss`
-// opens no title by accident, but it would open one by luck.
-const workerCoverageTruncationMinPrefix = 20
-
-// WorkerCoverage answers whether a worker's attention card has a live manager
-// that could relay it.
+// Worker coverage answers whether a session's attention card has a live
+// manager that could relay it.
 //
 // The board's default view shows manager-kind cards only, on the assumption
 // that a worker's manager handles or relays the worker's question. That
 // assumption had no check behind it: where no live manager covers the worker,
 // the question is neither relayed nor shown, and the operator cannot answer what
 // they cannot see. Measured 2026-11-05 — 9 live sessions parked on a waiting
-// verb, 6 with no live covering manager, and 0 cards in the default view.
+// verb and 0 cards in the default view.
 //
-// ⚠️ Coverage is resolved from the three sources this process already holds,
-// never from claude-supervisor's Python: the task index answers which goal and
-// topic a worker's session belongs to, the session registry answers what the
-// live sessions are called, and the liveness checker answers which are live. A
-// cross-repo runtime dependency would let a refactor in another repository
-// change this service's behaviour silently.
-type WorkerCoverage interface {
-	// Uncovered reports whether sessionID's card has no live covering manager.
-	//
-	// ⚠️ Every unprovable case answers false — covered — because the failure
-	// directions are not symmetric. Reading an unreadable registry as "nobody
-	// covers anyone" would put every worker card on the board the moment the
-	// registry was missing, which is the same false alarm the liveness checker
-	// already refuses. Only a readable registry holding no matching live
-	// manager makes a card uncovered.
-	Uncovered(ctx context.Context, sessionID string) bool
+// ⚠️ THE RULE IS claude-supervisor's, NOT OURS. `fleet-board.py`'s
+// `build_grouping` parents every session, and this file answers one question
+// about that tree: is the session parented to a manager other than the root?
+// It is re-derived here from sources this process already holds — the task
+// index, the session registry and the liveness checker — rather than by
+// running the Python, because a cross-repo runtime dependency would let a
+// refactor elsewhere change this service silently. A rule with two homes
+// drifts, so the parity spec runs both over the live fleet and asserts
+// identical verdicts; see worker-coverage-parity_test.go.
+//
+// Mirrored, step for step:
+//   - A manager is a session whose registry name resolves to a goal or topic
+//     page (`manager_subject` sources 2 and 3): the name, or the name less a
+//     trailing ` Manager`, exactly and case-insensitively; else a unique
+//     normalized prefix of at least workerCoverageTruncationMinPrefix runes
+//     across goals and topics together.
+//   - A worker is covered when a live manager's subject is one of its task's
+//     declared goals (`manager_on_chain`). The goal's TOPIC is deliberately not
+//     a rung — a topic manager never parents a worker.
+//   - A manager's own card, and a session with no task, have no relaying parent
+//     above them, so both are uncovered.
+//
+// Known gaps, each counted by the parity spec rather than assumed harmless:
+// a task's hand-authored `managed_by`, a task listed directly in a topic's
+// `## Goals`, a manager detected only by tab colour or by its loop record
+// (`manager_subject` source 1), and sessions anchored in another vault.
+
+// workerCoverageTruncationMinPrefix is the length below which a registry name
+// is not accepted as a truncation of a title.
+//
+// ⚠️ It mirrors `_TRUNCATION_MIN_PREFIX` in `fleet-board.py`, and the two must
+// agree.
+const workerCoverageTruncationMinPrefix = 20
+
+// managerSuffix mirrors `_MANAGER_SUFFIX`: a manager session is named after its
+// subject with ` Manager` appended, and the subject is what has to match.
+var managerSuffix = regexp.MustCompile(`(?i)\s+manager$`)
+
+// subjectIndex resolves a session name to the goal or topic it names.
+type subjectIndex struct {
+	// exact maps a lowered, trimmed title to itself.
+	exact map[string]string
+	// normalized maps normalizeSessionName(title) to the title.
+	normalized map[string]string
 }
 
-// NewWorkerCoverage returns a WorkerCoverage over the task index, the liveness
-// checker and the session registry directory.
-func NewWorkerCoverage(
-	tasks TaskIndex,
-	liveness SessionLivenessChecker,
-	sessionsDir string,
-) WorkerCoverage {
-	return &workerCoverage{tasks: tasks, liveness: liveness, sessionsDir: sessionsDir}
+// newSubjectIndex builds the index over every goal and topic title.
+func newSubjectIndex(titles []string) subjectIndex {
+	index := subjectIndex{
+		exact:      make(map[string]string, len(titles)),
+		normalized: make(map[string]string, len(titles)),
+	}
+	for _, title := range titles {
+		index.exact[strings.ToLower(strings.TrimSpace(title))] = title
+		index.normalized[normalizeSessionName(title)] = title
+	}
+	return index
 }
 
-type workerCoverage struct {
-	tasks       TaskIndex
-	liveness    SessionLivenessChecker
-	sessionsDir string
+// subject returns the title a session name names, or "" when it names none.
+func (s subjectIndex) subject(name string) string {
+	stripped := managerSuffix.ReplaceAllString(name, "")
+	for _, candidate := range []string{name, stripped} {
+		if title, ok := s.exact[strings.ToLower(strings.TrimSpace(candidate))]; ok {
+			return title
+		}
+	}
+	// ⚠️ Exactly ONE hit across both keys and both tables, so an ambiguous
+	// prefix stays unresolved rather than becoming a confident guess.
+	hits := map[string]struct{}{}
+	for _, key := range []string{normalizeSessionName(name), normalizeSessionName(stripped)} {
+		if title := s.prefixTitle(key); title != "" {
+			hits[title] = struct{}{}
+		}
+	}
+	if len(hits) != 1 {
+		return ""
+	}
+	for title := range hits {
+		return title
+	}
+	return ""
 }
 
-// Uncovered reports whether this worker's card has no live covering manager.
-func (c *workerCoverage) Uncovered(ctx context.Context, sessionID string) bool {
-	if c == nil || c.tasks == nil || c.liveness == nil || sessionID == "" {
+// prefixTitle mirrors `_prefix_title`: the single title key unambiguously
+// prefixes, or "".
+func (s subjectIndex) prefixTitle(key string) string {
+	if len([]rune(key)) < workerCoverageTruncationMinPrefix {
+		return ""
+	}
+	found := ""
+	for normalized, title := range s.normalized {
+		if !strings.HasPrefix(normalized, key) {
+			continue
+		}
+		if found != "" {
+			return ""
+		}
+		found = title
+	}
+	return found
+}
+
+// liveManagerSubjects returns the lowered subject title of every live session
+// whose name resolves to a goal or topic, keyed by session id.
+func liveManagerSubjects(
+	names map[string]sessionName,
+	index subjectIndex,
+	isLive func(sessionID string) bool,
+) map[string]string {
+	subjects := map[string]string{}
+	for sessionID, entry := range names {
+		title := index.subject(entry.Name)
+		if title == "" || !isLive(sessionID) {
+			continue
+		}
+		subjects[sessionID] = strings.ToLower(title)
+	}
+	return subjects
+}
+
+// workerUncovered reports whether sessionID's card has no live manager that
+// could relay it.
+//
+// ⚠️ An empty registry answers false — covered — because the failure
+// directions are not symmetric. Reading "I could not look" as "nobody covers
+// anyone" would put every worker card on the board the moment the registry was
+// unreadable, the same false alarm the liveness checker already refuses.
+func workerUncovered(
+	sessionID string,
+	task Task,
+	hasTask bool,
+	names map[string]sessionName,
+	index subjectIndex,
+	managers map[string]string,
+) bool {
+	if sessionID == "" || len(names) == 0 {
 		return false
 	}
-	titles := c.coveredTitles(sessionID)
-	if len(titles) == 0 {
-		// No goal and no topic is no manager's subject. A worker the vault
-		// cannot place is uncovered by construction, not by measurement.
+	if entry, ok := names[sessionID]; ok && index.subject(entry.Name) != "" {
+		// A manager is parented to the root, never to a peer manager.
 		return true
 	}
-	names := readSessionNames(ctx, c.sessionsDir)
-	if len(names) == 0 {
-		// An unreadable registry proves nothing, and the board must not treat
-		// "I could not look" as "nobody covers this worker".
-		return false
+	if !hasTask || len(task.Goals) == 0 {
+		return true
 	}
-	for candidate, entry := range names {
+	for candidate, subject := range managers {
 		if candidate == sessionID {
 			continue
 		}
-		if !c.liveness.IsLive(ctx, candidate) {
-			continue
-		}
-		if matchesOneTitle(normalizeSessionName(entry.Name), titles) {
-			return false
+		for _, goal := range task.Goals {
+			if strings.ToLower(goal) == subject {
+				return false
+			}
 		}
 	}
 	return true
 }
 
-// coveredTitles returns the normalized goal and topic titles a live manager
-// would have to name to cover this session. An empty set means the session
-// anchors no goal and no topic.
-func (c *workerCoverage) coveredTitles(sessionID string) map[string]struct{} {
-	task, ok := c.tasks.Lookup(sessionID)
-	if !ok {
-		return nil
-	}
-	titles := make(map[string]struct{}, 2)
-	for _, title := range []string{task.GoalName, task.TopicName} {
-		if normalized := normalizeSessionName(title); normalized != "" {
-			titles[normalized] = struct{}{}
-		}
-	}
-	return titles
-}
-
-// matchesOneTitle reports whether key names exactly one entry of titles.
+// normalizeSessionName mirrors `_norm_session_name`, step for step: NFKC,
+// trim, drop the leading decoration (`⚙ ` is a registry marker no title
+// carries), collapse whitespace, casefold.
 //
-// ⚠️ Exact first, then a prefix gated on the length floor AND on identifying
-// exactly one title. A guess about which title was truncated must never displace
-// a certainty, and an ambiguous prefix must never become a confident match —
-// the same two guards `_matches_one_title` applies, for the same reasons.
-func matchesOneTitle(key string, titles map[string]struct{}) bool {
-	if key == "" {
-		return false
-	}
-	if _, ok := titles[key]; ok {
-		return true
-	}
-	if len([]rune(key)) < workerCoverageTruncationMinPrefix {
-		return false
-	}
-	prefixes := 0
-	for title := range titles {
-		if strings.HasPrefix(title, key) {
-			prefixes++
-		}
-	}
-	return prefixes == 1
-}
-
-// normalizeSessionName reduces a session name or a title to the form the two are
-// compared in.
-//
-// ⚠️ It mirrors `_norm_session_name` in claude-supervisor's `fleet-board.py`,
-// step for step: NFKC, trim, drop the leading decoration (`⚙ ` is a registry
-// marker no title carries), collapse whitespace, casefold. The one deviation is
-// that Go's case folding is `ToLower`, which differs from Python's `casefold`
-// only for non-ASCII scripts — and the parity test over the live fleet is what
-// would catch that, rather than a reader noticing.
+// ⚠️ The one deviation is case folding: Go's ToLower differs from Python's
+// casefold only outside ASCII, and the parity spec is what catches it.
 func normalizeSessionName(text string) string {
 	text = norm.NFKC.String(text)
 	text = strings.TrimSpace(text)
@@ -157,10 +195,8 @@ func normalizeSessionName(text string) string {
 	return strings.ToLower(text)
 }
 
-// isLeadingDecoration reports whether r is decoration a registry name may carry
-// in front of the title. Python's `[^\w(]` keeps word characters and `(`; this
-// keeps the same set, so a name beginning with `(` is not stripped on one side
-// and stripped on the other.
+// isLeadingDecoration mirrors Python's `[^\w(]`: it keeps letters, digits,
+// `_` and `(`, so a name opening with `(` is stripped on neither side.
 func isLeadingDecoration(r rune) bool {
 	return !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_' && r != '('
 }

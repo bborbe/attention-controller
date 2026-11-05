@@ -132,7 +132,10 @@ func filterByProducerKind(
 	shown := make([]attentionPageRow, 0, len(rows))
 	hiddenOpen, hiddenAll := 0, 0
 	for _, row := range rows {
-		if row.Item.ProducerKind == kind {
+		// ⚠️ An uncovered card is shown whatever the kind filter says: the
+		// manager-only default rests on a manager relaying the worker's
+		// question, and an uncovered card has no live manager to relay it.
+		if row.Item.ProducerKind == kind || row.Provenance.Uncovered {
 			shown = append(shown, row)
 			continue
 		}
