@@ -8,7 +8,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -141,6 +140,18 @@ type Provenance struct {
 	// case of that direction is a pair on a park whose task did not declare one —
 	// never a missing pair on a park that did.
 	ProductionTouching bool
+	// Uncovered reports whether no live manager could relay this item's card:
+	// its session is parented to no manager but the root in claude-supervisor's
+	// grouping. The board's manager-only default view shows such a card anyway,
+	// because the question would otherwise reach nobody. See worker-coverage.go.
+	//
+	// ⚠️ A visibility gate, not a line fact, and so NOT a member of Resolved() —
+	// the rule Headless and ProductionTouching follow.
+	//
+	// ⚠️ Fail-closed toward HIDDEN: no liveness checker, an unreadable
+	// registry, or an item naming no session all leave this false. The opposite
+	// default would flood the board the moment the registry was unreadable.
+	Uncovered bool
 }
 
 // Resolved reports whether anything about this item's origin could be told.
@@ -238,12 +249,30 @@ func NewProvenanceResolver(
 	tasks TaskIndex,
 	currentDateTimeGetter libtime.CurrentDateTimeGetter,
 ) ProvenanceResolver {
+	return NewProvenanceResolverWithCoverage(
+		eventLogs, sessionsDir, sessionLedger, panes, tasks, nil, currentDateTimeGetter,
+	)
+}
+
+// NewProvenanceResolverWithCoverage is NewProvenanceResolver plus worker
+// coverage, so each session-kind item resolves its Uncovered fact. A nil
+// coverage leaves every item covered — NewProvenanceResolver's behaviour.
+func NewProvenanceResolverWithCoverage(
+	eventLogs EventLogReader,
+	sessionsDir string,
+	sessionLedger SessionLedgerStore,
+	panes PaneLister,
+	tasks TaskIndex,
+	coverage WorkerCoverage,
+	currentDateTimeGetter libtime.CurrentDateTimeGetter,
+) ProvenanceResolver {
 	return &provenanceResolver{
 		eventLogs:             eventLogs,
 		sessionsDir:           sessionsDir,
 		sessionLedger:         sessionLedger,
 		panes:                 panes,
 		tasks:                 tasks,
+		coverage:              coverage,
 		currentDateTimeGetter: currentDateTimeGetter,
 		producerLogs:          map[ProducerID]*producerEventLog{},
 	}
@@ -259,7 +288,10 @@ func NewProvenanceResolver(
 const provenanceCacheWindow = libtime.Duration(2 * time.Second)
 
 type provenanceResolver struct {
-	eventLogs             EventLogReader
+	eventLogs EventLogReader
+	// coverage decides which items' sessions no live manager covers. Nil
+	// leaves every item covered.
+	coverage              WorkerCoverage
 	sessionsDir           string
 	sessionLedger         SessionLedgerStore
 	panes                 PaneLister
@@ -563,6 +595,7 @@ func (r *provenanceResolver) Resolve(ctx context.Context, items Items) Provenanc
 	panesAvailable := state.panesErr == nil
 	names := state.names
 	modes := state.modes
+	uncovered := r.uncoveredItems(ctx, items, names)
 
 	// One read of each producer's log, reused across that producer's items.
 	// A session with six open items would otherwise re-read the same file six
@@ -646,6 +679,13 @@ func (r *provenanceResolver) Resolve(ctx context.Context, items Items) Provenanc
 		if mode := modes[sessionIDFromItem(item)]; mode == headlessSessionMode {
 			provenance := resolved[item.ItemID]
 			provenance.Headless = true
+			resolved[item.ItemID] = provenance
+		}
+		// ⚠️ Independent of every block above, with the same read-modify-write.
+		// The manager set is computed once per resolve, before the loop.
+		if uncovered[item.ItemID] {
+			provenance := resolved[item.ItemID]
+			provenance.Uncovered = true
 			resolved[item.ItemID] = provenance
 		}
 	}
@@ -1078,43 +1118,7 @@ func (r *provenanceResolver) mergeEventBytes(
 // store ran somewhere the registry is absent, and the store's own liveness
 // checker takes the same position for the same reason.
 func (r *provenanceResolver) sessionNames(ctx context.Context) map[string]sessionName {
-	names := map[string]sessionName{}
-	if r.sessionsDir == "" {
-		return names
-	}
-	entries, err := os.ReadDir(r.sessionsDir)
-	if err != nil {
-		glog.V(2).Infof("read session registry %s failed: %v", r.sessionsDir, err)
-		return names
-	}
-	for _, entry := range entries {
-		select {
-		case <-ctx.Done():
-			glog.V(3).Infof("session registry scan cancelled")
-			return names
-		default:
-		}
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
-		content, err := os.ReadFile(filepath.Join(r.sessionsDir, entry.Name()))
-		if err != nil {
-			glog.V(3).Infof("read session registry entry %s failed: %v", entry.Name(), err)
-			continue
-		}
-		var record sessionRegistryEntry
-		if err := json.Unmarshal(content, &record); err != nil {
-			glog.V(3).Infof("parse session registry entry %s failed: %v", entry.Name(), err)
-			continue
-		}
-		if record.SessionID != "" {
-			names[record.SessionID] = sessionName{
-				Name:   record.Name,
-				Source: record.NameSource,
-			}
-		}
-	}
-	return names
+	return readSessionNames(ctx, r.sessionsDir)
 }
 
 // sessionModes reads the supervisor's session ledger as `session id -> mode`.
@@ -1222,4 +1226,49 @@ var productionTouchingMarker = regexp.MustCompile(
 // direction.
 func hasProductionTouchingMarker(content []byte) bool {
 	return productionTouchingMarker.Match(content)
+}
+
+// uncoveredItems asks the coverage seam once per resolve, for the sessions of
+// this page's session-kind items, against the host snapshot's registry, and
+// returns the ids of the items whose session no live manager covers.
+//
+// ⚠️ Keyed by ITEM, not by session, so the kind filter below is the only place
+// that decides which items are asked: a cron card whose liveness ref happens to
+// name a session can never inherit that session's verdict.
+//
+// ⚠️ Only a session-kind item is asked: a manager card is shown by kind
+// already, and a cron, agent or dark-factory card names no session to place in
+// the tree — asking would read every such card as uncovered and widen the
+// default view to cards no manager was ever meant to relay.
+func (r *provenanceResolver) uncoveredItems(
+	ctx context.Context,
+	items Items,
+	names map[string]sessionName,
+) map[ItemID]bool {
+	if r.coverage == nil {
+		return nil
+	}
+	asked := map[ItemID]string{}
+	sessionIDs := make([]string, 0, len(items))
+	for _, item := range items {
+		if item.ProducerKind != SessionProducerKind {
+			continue
+		}
+		if sessionID := sessionIDFromItem(item); sessionID != "" {
+			asked[item.ItemID] = sessionID
+			sessionIDs = append(sessionIDs, sessionID)
+		}
+	}
+	registry := make(map[string]string, len(names))
+	for sessionID, entry := range names {
+		registry[sessionID] = entry.Name
+	}
+	verdicts := r.coverage.Uncovered(ctx, registry, sessionIDs)
+	uncovered := make(map[ItemID]bool, len(verdicts))
+	for itemID, sessionID := range asked {
+		if verdicts[sessionID] {
+			uncovered[itemID] = true
+		}
+	}
+	return uncovered
 }

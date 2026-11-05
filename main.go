@@ -196,7 +196,15 @@ func (a *application) Run(ctx context.Context, sentryClient libsentry.Client) er
 	}
 	defer db.Close()
 
-	rawStore, err := a.createAttentionStore(ctx, db)
+	// ⚠️ One liveness checker, two consumers: the store prunes items whose
+	// producer it reads as gone, and the provenance resolver counts the live
+	// managers that cover a worker. Two checkers would be two caches that could
+	// disagree about whether the same manager is alive.
+	livenessChecker, err := a.sessionLivenessChecker(ctx)
+	if err != nil {
+		return err
+	}
+	rawStore, err := a.createAttentionStore(ctx, db, livenessChecker)
 	if err != nil {
 		return err
 	}
@@ -222,7 +230,7 @@ func (a *application) Run(ctx context.Context, sentryClient libsentry.Client) er
 
 	return service.Run(
 		ctx,
-		a.createHTTPServer(sentryClient, db, store, notifier, boardMetrics),
+		a.createHTTPServer(sentryClient, db, store, notifier, boardMetrics, livenessChecker),
 	)
 
 }
@@ -261,14 +269,11 @@ func (a *application) federate(store pkg.AttentionStore) pkg.AttentionStore {
 func (a *application) createAttentionStore(
 	ctx context.Context,
 	db libkv.DB,
+	livenessChecker pkg.SessionLivenessChecker,
 ) (pkg.AttentionStore, error) {
 	heartbeatWindow, err := libtime.ParseDuration(ctx, a.HeartbeatWindow)
 	if err != nil {
 		return nil, errors.Wrapf(ctx, err, "parse heartbeat window '%s' failed", a.HeartbeatWindow)
-	}
-	livenessChecker, err := a.sessionLivenessChecker(ctx)
-	if err != nil {
-		return nil, err
 	}
 	return pkg.NewAttentionStore(
 		db,
@@ -487,6 +492,7 @@ func (a *application) createProvenanceResolver(
 	panes pkg.PaneLister,
 	tasks pkg.TaskIndex,
 	sessionLedger pkg.SessionLedgerStore,
+	liveness pkg.SessionLivenessChecker,
 ) pkg.ProvenanceResolver {
 	stateDir := a.AttentionStateDir
 	if stateDir == "" {
@@ -520,12 +526,16 @@ func (a *application) createProvenanceResolver(
 	// SSE stream, so the whole vault must not be re-read on every render. The
 	// resolver and the watcher share ONE index, because two indexes would be two
 	// independent maps that could disagree about the same session.
-	return pkg.NewProvenanceResolver(
+	// ⚠️ The SAME checker the store prunes with, so a session the store reads
+	// as live is the session coverage counts as a live manager — two checkers
+	// would be two answers to "is this manager alive".
+	return pkg.NewProvenanceResolverWithCoverage(
 		pkg.NewEventLogReader(stateDir),
 		sessionsDir,
 		sessionLedger,
 		panes,
 		tasks,
+		pkg.NewWorkerCoverage(tasks, liveness),
 		libtime.NewCurrentDateTime(),
 	)
 }
@@ -642,6 +652,7 @@ func (a *application) createHTTPServer(
 	store pkg.AttentionStore,
 	notifier pkg.AttentionChangeNotifier,
 	boardMetrics pkg.Metrics,
+	livenessChecker pkg.SessionLivenessChecker,
 ) run.Func {
 	return func(ctx context.Context) error {
 		ctx, cancel := context.WithCancel(ctx)
@@ -673,7 +684,7 @@ func (a *application) createHTTPServer(
 		// lock timeout rather than a readable error — and two stores would also be
 		// two views that could disagree about the same session.
 		sessionLedger := pkg.NewSessionLedgerStore(db)
-		provenance := a.createProvenanceResolver(ctx, panes, tasks, sessionLedger)
+		provenance := a.createProvenanceResolver(ctx, panes, tasks, sessionLedger, livenessChecker)
 		jumpTokens := a.createJumpTokenReader(ctx)
 		activator := a.createPaneActivator(panes)
 

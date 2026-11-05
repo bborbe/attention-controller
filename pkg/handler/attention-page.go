@@ -1221,6 +1221,9 @@ function replayFailure(row) {
       var rows = document.querySelectorAll('li.item');
       for (var i = 0; i < rows.length; i++) {
         if (rows[i].getAttribute('data-producer-kind') === kind) { continue; }
+        /* Mirrors filterByProducerKind: a card no live manager can relay is
+           shown whatever its kind, so a streamed one must survive this pass. */
+        if (rows[i].getAttribute('data-uncovered') === 'true') { continue; }
         /* Recorded before the row leaves the document: whether it counts depends
            on whether it was dimmed, which only the node knows. */
         kindStreamed[rows[i].getAttribute('data-item-id')] =
@@ -1534,7 +1537,7 @@ function replayFailure(row) {
      — and it must be the SAME markup, not a second renderer that would drift
      from this one. The dollar sign inside a sub-template is the value passed to
      it, which is why Speak is carried on the row and read as dot-Speak here. */}}
-{{define "attention-row"}}<li class="item risk-{{ .Risk }}{{if .Dimmed}} dimmed{{end}}" data-item-id="{{ .Item.ItemID }}" data-risk="{{ .Risk }}" data-producer-kind="{{ .Item.ProducerKind }}" data-flagged="{{if .Flagged}}true{{else}}false{{end}}">
+{{define "attention-row"}}<li class="item risk-{{ .Risk }}{{if .Dimmed}} dimmed{{end}}" data-item-id="{{ .Item.ItemID }}" data-risk="{{ .Risk }}" data-producer-kind="{{ .Item.ProducerKind }}"{{if .Provenance.Uncovered}} data-uncovered="true"{{end}} data-flagged="{{if .Flagged}}true{{else}}false{{end}}">
 {{/* The corner X renders on every OPEN row, ungated by mechanism, from
      2026-09-27 — message, ack and permission alike — and is withheld from the
      dimmed record card by the (not .Dimmed) conjunct, added 2026-10-01. It was
@@ -1583,6 +1586,7 @@ function replayFailure(row) {
 {{else if .NoJump}}<button type="button" class="jump-corner" disabled aria-label="Jump to session" title="Jump to session"><svg class="jump-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.75 3.25h8.5a1.5 1.5 0 0 1 1.5 1.5v6.5a1.5 1.5 0 0 1-1.5 1.5h-8.5a1.5 1.5 0 0 1-1.5-1.5v-6.5a1.5 1.5 0 0 1 1.5-1.5z"/><path d="M5.75 6.5 7.5 8.25 5.75 10"/><path d="M9 10h1.75"/></svg></button>
 {{end}}{{if .Info}}<button type="button" class="info-toggle" data-info-toggle aria-expanded="false" aria-label="Card information">i</button>
 {{end}}{{if or .TaskURL .GoalURL .TopicURL .Provenance.SessionName}}<div class="provenance">{{if .TaskURL}}<span class="task"><a href="{{ .TaskURL }}">{{ .Provenance.TaskName }}</a></span>{{end}}{{if .GoalURL}}<span class="goal"><a href="{{ .GoalURL }}">{{ .Provenance.GoalName }}</a></span>{{end}}{{if .TopicURL}}<span class="topic"><a href="{{ .TopicURL }}">{{ .Provenance.TopicName }}</a></span>{{end}}{{if .Provenance.SessionName}}<span class="session-name">{{ .Provenance.SessionName }}</span>{{end}}</div>
+{{end}}{{if .Provenance.Uncovered}}<div class="uncovered-reason" data-uncovered-reason>Shown because no live manager can relay it.</div>
 {{end}}{{if not .Message}}<div class="payload">{{ cardtext .Item.Payload }}</div>
 {{end}}{{if .Item.Context}}<div class="context">{{ cardtext .Item.Context }}</div>
 {{end}}{{if .Dimmed}}<div class="record"><div class="record-question">{{ cardtext .Item.Payload }}</div><div class="record-answer">answered: {{ .Record }}</div></div>

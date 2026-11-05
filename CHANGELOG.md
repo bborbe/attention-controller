@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- feat: Show a worker's card in the board's manager-only default view when no live manager could relay it, with a reason line saying so. Coverage mirrors claude-supervisor's `fleet-board.py` grouping (a session is covered only when parented to a live non-root goal manager) and is resolved in-process from the task index, the session registry and the store's own liveness checker; an opt-in parity spec (`ATTENTION_COVERAGE_PARITY=1`) checks the two rules agree session by session over the live fleet.
+
 ## v0.67.6
 
 - perf: a "fresh" session-registry listing is reused while the registry directory's mtime is unchanged and it is under a second old. `IsLive` re-listed the registry fresh on every miss, and a dead producer misses forever, so with 56 live sessions and 57 registry files one stat per file ran continuously: a 45 s profile on v0.67.4 put `syscall.rawsyscalln` at 33 % of all CPU, every stack ending in `LiveSessionsFresh → list`, and `ps -o pcpu=` read 28 % with a 5.76 % two-minute mean. A newly registered session still shows at once, because creating its file moves the directory mtime; a listing with an unreadable entry is never reused, so the retry guarantee holds.
