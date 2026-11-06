@@ -245,6 +245,54 @@ var _ = Describe("a rating click on a card with an answer in progress", func() {
 		Expect(checked(page, touched, `input[data-option="Dog"]`)).To(BeTrue())
 	})
 
+	It("does not carry a pick across a re-push that rewords the question", func() {
+		request := pkg.PushRequest{
+			DedupKey:        "rate-reworded-question",
+			Payload:         "e2e: the original wording",
+			AnswerMechanism: pkg.MessageAnswerMechanism,
+			Options:         options("Cat", "Dog"),
+		}
+		itemID := pushCard(request)
+		page = newPage("")
+		Eventually(func() int { return rowCount(page, itemID) }).Should(Equal(1))
+
+		pick(page, itemID, "Dog")
+		markRow(page, itemID)
+
+		request.Payload = "e2e: the reworded question"
+		Expect(pushCard(request)).To(Equal(itemID), "the re-push must update in place")
+		awaitSwap(page, itemID)
+
+		Expect(checked(page, itemID, `input[data-option="Dog"]`)).To(BeFalse())
+	})
+
+	It("leaves no sent flag reason behind in the card once the flag is sent", func() {
+		itemID := petCard("rate-flag-reason-cleared")
+		page = newPage("")
+		flagForm := rowSelector(itemID) + " form[data-flag-control]"
+		Eventually(func() int { return rowCount(page, itemID) }).Should(Equal(1))
+
+		Expect(
+			page.Locator(flagForm + " input[name=reason]").Fill("asked the wrong team"),
+		).To(Succeed())
+		Expect(page.Locator(flagForm + " button[type=submit]").Click()).To(Succeed())
+		Eventually(
+			func() string { return getItem(itemID).FlagReason },
+		).Should(Equal("asked the wrong team"))
+		Eventually(func() int { return rowCount(page, itemID) }).Should(Equal(0))
+
+		// Reveal the parked card: its flag field must be empty, so a second
+		// Flag click cannot re-send the old reason.
+		Expect(page.Locator("[data-flag-filter]").Click()).To(Succeed())
+		Eventually(func() int { return rowCount(page, itemID) }).Should(Equal(1))
+		Expect(inputValue(page, itemID, "form[data-flag-control] input[name=reason]")).To(BeEmpty())
+
+		// Leave the shared store as found: unflag, so the card is an ordinary
+		// open card the empty-board cases can answer.
+		click(page, itemID, "button[data-unflag]")
+		Eventually(func() string { return getItem(itemID).FlagReason }).Should(BeEmpty())
+	})
+
 	It("rates, survives a reload, clears on a second click and switches on the other", func() {
 		itemID := petCard("rate-round-trip")
 		page = newPage("")

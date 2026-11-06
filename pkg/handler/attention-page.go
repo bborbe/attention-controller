@@ -340,6 +340,13 @@ document.addEventListener('submit', function (event) {
     return;
   }
   var itemID = row.getAttribute('data-item-id');
+  /* Cleared at SUBMIT, not on success. ⚠️ Load bearing: the flag's stream echo
+     can land before the fetch resolves, and the row swap carries unsent input
+     onto the new node (carryFormState) — a field still holding the sent reason
+     would be carried, and a success handler clearing the captured field would
+     only empty the detached old node. On failure the reason is put back into
+     whichever node is live by then. */
+  field.value = '';
   fetch('/api/1.0/attention/' + encodeURIComponent(itemID) + '/flag', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -347,10 +354,15 @@ document.addEventListener('submit', function (event) {
   }).then(function (response) {
     if (!response.ok) { throw new Error('flag failed: ' + response.status); }
     return response.json();
-  }).then(function () {
-    if (field) { field.value = ''; }
   }).catch(function (err) {
-    showNote(form, 'Could not flag this card: ' + err.message, true);
+    var target = field;
+    document.querySelectorAll('li.item').forEach(function (candidate) {
+      if (candidate.getAttribute('data-item-id') !== itemID) { return; }
+      var live = candidate.querySelector('form[data-flag-control] input[name=reason]');
+      if (live) { target = live; }
+    });
+    if (!target.value) { target.value = reason; }
+    showNote(target.closest('form') || form, 'Could not flag this card: ' + err.message, true);
   });
 });
 /* Unflag is reachable from the card the flag was written on, and that is the
@@ -1150,6 +1162,10 @@ function replayFailure(row) {
        while hidden arrives here a second time, and two entries for one id
        would restore it twice. */
     parked = parked.filter(function (entry) { return entry.id !== id; });
+    /* Self-carry first: outerHTML serialises attributes, so without it a row
+       restored later would come back with the picks of its LAST swap rather
+       than the ones on screen when it was parked. */
+    carryFormState(row, row);
     parked.push({
       id: id,
       html: row.outerHTML,
@@ -1428,12 +1444,17 @@ function replayFailure(row) {
      the live properties. A control the new markup no longer carries (the card
      became an answered record) has nothing to land on and is dropped, which is
      right — the answer was given. */
+  /* The key carries the question's own TEXT, so a producer re-push that rewords
+     a question does not keep a pick the operator made against the old wording:
+     the key no longer matches and that panel comes back blank. */
   function controlKey(input) {
     var form = input.closest('form');
     var panel = input.closest('.panel');
+    var question = panel ? panel.querySelector('.question') : null;
     var key = [
       form ? form.className : '',
       panel ? panel.getAttribute('data-question') : '',
+      question ? question.textContent : '',
       input.type,
       input.name,
       input.className
@@ -1441,7 +1462,18 @@ function replayFailure(row) {
     if (input.type === 'radio' || input.type === 'checkbox') {
       key.push(input.hasAttribute('data-other') ? 'data-other' : 'option:' + input.value);
     }
-    return key.join('|');
+    return JSON.stringify(key);
+  }
+  function restoreFocus(itemID, key, caret) {
+    var row = findRow(itemID);
+    if (!row) { return; }
+    var inputs = row.querySelectorAll('input');
+    for (var i = 0; i < inputs.length; i++) {
+      if (controlKey(inputs[i]) !== key) { continue; }
+      inputs[i].focus();
+      if (caret) { inputs[i].setSelectionRange(caret[0], caret[1]); }
+      return;
+    }
   }
   function carryFormState(live, row) {
     var targets = {};
@@ -1518,7 +1550,14 @@ function replayFailure(row) {
     }
     var row = findRow(itemID);
     if (row) {
+      /* The operator may be typing in this row when an unrelated event lands:
+         the text is carried by preparedHTML, and focus and caret are put back
+         here, so the next keystroke still reaches the field. */
+      var focused = document.activeElement;
+      var focusKey = (focused && focused.tagName === 'INPUT' && row.contains(focused)) ? controlKey(focused) : null;
+      var caret = (focusKey && focused.type === 'text') ? [focused.selectionStart, focused.selectionEnd] : null;
       row.outerHTML = prepared;
+      if (focusKey) { restoreFocus(itemID, focusKey, caret); }
     } else {
       var list = ensureList();
       if (!list) { return; }

@@ -10,7 +10,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 
 ## Unreleased
 
-- fix: A stream update to a card no longer discards the answer the operator is part-way through. Rating a card (whose echo re-renders the row) wiped a checked radio, checked boxes, typed Other text, the unsaved flag reason and the chosen tab; the row swap now carries those controls from the live row onto the server's rendering before committing it. Rows still update from the stream, touched or not.
+- fix: A stream update to a card no longer discards the answer the operator is part-way through. Rating a card (whose echo re-renders the row) wiped a checked radio, checked boxes, typed Other text, the unsaved flag reason and the chosen tab; the row swap now carries those controls from the live row onto the server's rendering before committing it, and puts back focus and caret in a field being typed in. Rows still update from the stream, touched or not. A pick is not carried across a re-push that rewords its question, and the flag reason is cleared at submit so the flag's own echo cannot carry it.
 
 ## v0.69.0
 
