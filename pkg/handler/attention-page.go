@@ -340,6 +340,13 @@ document.addEventListener('submit', function (event) {
     return;
   }
   var itemID = row.getAttribute('data-item-id');
+  /* Cleared at SUBMIT, not on success. ⚠️ Load bearing: the flag's stream echo
+     can land before the fetch resolves, and the row swap carries unsent input
+     onto the new node (carryFormState) — a field still holding the sent reason
+     would be carried, and a success handler clearing the captured field would
+     only empty the detached old node. On failure the reason is put back into
+     whichever node is live by then. */
+  field.value = '';
   fetch('/api/1.0/attention/' + encodeURIComponent(itemID) + '/flag', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -347,10 +354,15 @@ document.addEventListener('submit', function (event) {
   }).then(function (response) {
     if (!response.ok) { throw new Error('flag failed: ' + response.status); }
     return response.json();
-  }).then(function () {
-    if (field) { field.value = ''; }
   }).catch(function (err) {
-    showNote(form, 'Could not flag this card: ' + err.message, true);
+    var target = field;
+    document.querySelectorAll('li.item').forEach(function (candidate) {
+      if (candidate.getAttribute('data-item-id') !== itemID) { return; }
+      var live = candidate.querySelector('form[data-flag-control] input[name=reason]');
+      if (live) { target = live; }
+    });
+    if (!target.value) { target.value = reason; }
+    showNote(target.closest('form') || form, 'Could not flag this card: ' + err.message, true);
   });
 });
 /* Unflag is reachable from the card the flag was written on, and that is the
@@ -1150,6 +1162,10 @@ function replayFailure(row) {
        while hidden arrives here a second time, and two entries for one id
        would restore it twice. */
     parked = parked.filter(function (entry) { return entry.id !== id; });
+    /* Self-carry first: outerHTML serialises attributes, so without it a row
+       restored later would come back with the picks of its LAST swap rather
+       than the ones on screen when it was parked. */
+    carryFormState(row, row);
     parked.push({
       id: id,
       html: row.outerHTML,
@@ -1405,14 +1421,96 @@ function replayFailure(row) {
      a board whose own switch said it was hidden. Preparing first makes the swap
      the LAST fallible step, and is also how a PARKED row's note is replayed. */
   function preparedHTML(html, itemID) {
-    if (!failures[itemID] && !speaking[itemID]) { return html; }
+    var live = findRow(itemID);
+    var carry = !!(live && live.querySelector('form'));
+    if (!failures[itemID] && !speaking[itemID] && !carry) { return html; }
     var detached = document.createElement('div');
     detached.innerHTML = html;
     var row = detached.firstElementChild;
     if (!row) { return html; }
     if (failures[itemID]) { replayFailure(row); }
     if (speaking[itemID]) { speakButtonState(speakButtonIn(row), true); }
+    if (carry) { carryFormState(live, row); }
     return row.outerHTML;
+  }
+  /* The operator's unsent input, carried from the live row onto the server's
+     rendering before the swap. The server never renders a pick, a typed field
+     or a chosen tab — it cannot know them — so every stream event for a row
+     (a 👍/👎 echo above all, since the operator clicks it WHILE answering)
+     used to replace that row with blank controls and silently discard the
+     answer in progress.
+     ⚠️ Written as ATTRIBUTES, not properties: the prepared node is serialised
+     through outerHTML, which carries the checked and value attributes and drops
+     the live properties. A control the new markup no longer carries (the card
+     became an answered record) has nothing to land on and is dropped, which is
+     right — the answer was given. */
+  /* The key carries the question's own TEXT, so a producer re-push that rewords
+     a question does not keep a pick the operator made against the old wording:
+     the key no longer matches and that panel comes back blank. */
+  function controlKey(input) {
+    var form = input.closest('form');
+    var panel = input.closest('.panel');
+    var question = panel ? panel.querySelector('.question') : null;
+    var key = [
+      form ? form.className : '',
+      panel ? panel.getAttribute('data-question') : '',
+      question ? question.textContent : '',
+      input.type,
+      input.name,
+      input.className
+    ];
+    if (input.type === 'radio' || input.type === 'checkbox') {
+      key.push(input.hasAttribute('data-other') ? 'data-other' : 'option:' + input.value);
+    }
+    return JSON.stringify(key);
+  }
+  function restoreFocus(itemID, key, caret) {
+    var row = findRow(itemID);
+    if (!row) { return; }
+    var inputs = row.querySelectorAll('input');
+    for (var i = 0; i < inputs.length; i++) {
+      if (controlKey(inputs[i]) !== key) { continue; }
+      inputs[i].focus();
+      if (caret) { inputs[i].setSelectionRange(caret[0], caret[1]); }
+      return;
+    }
+  }
+  function carryFormState(live, row) {
+    var targets = {};
+    row.querySelectorAll('input').forEach(function (input) {
+      var key = controlKey(input);
+      if (!targets[key]) { targets[key] = []; }
+      targets[key].push(input);
+    });
+    var seen = {};
+    live.querySelectorAll('input').forEach(function (input) {
+      var key = controlKey(input);
+      var index = seen[key] || 0;
+      seen[key] = index + 1;
+      var target = targets[key] && targets[key][index];
+      if (!target) { return; }
+      if (input.type === 'radio' || input.type === 'checkbox') {
+        if (input.checked) { target.setAttribute('checked', ''); }
+        else { target.removeAttribute('checked'); }
+      } else if (input.type === 'text') {
+        target.setAttribute('value', input.value);
+      }
+    });
+    var activeTab = live.querySelector('.tabs button[data-tab].active');
+    if (!activeTab) { return; }
+    var name = activeTab.getAttribute('data-tab');
+    var match = false;
+    row.querySelectorAll('.tabs button[data-tab]').forEach(function (tab) {
+      if (tab.getAttribute('data-tab') === name) { match = true; }
+    });
+    if (!match) { return; }
+    row.querySelectorAll('.tabs button[data-tab]').forEach(function (tab) {
+      tab.classList.toggle('active', tab.getAttribute('data-tab') === name);
+    });
+    row.querySelectorAll('.panel').forEach(function (panel) {
+      if (panel.getAttribute('data-question') === name) { panel.removeAttribute('hidden'); }
+      else { panel.setAttribute('hidden', ''); }
+    });
   }
   /* The read-aloud control within a row not yet in the document — speakControl
      searches the document, which an uncommitted node is not part of. */
@@ -1452,7 +1550,14 @@ function replayFailure(row) {
     }
     var row = findRow(itemID);
     if (row) {
+      /* The operator may be typing in this row when an unrelated event lands:
+         the text is carried by preparedHTML, and focus and caret are put back
+         here, so the next keystroke still reaches the field. */
+      var focused = document.activeElement;
+      var focusKey = (focused && focused.tagName === 'INPUT' && row.contains(focused)) ? controlKey(focused) : null;
+      var caret = (focusKey && focused.type === 'text') ? [focused.selectionStart, focused.selectionEnd] : null;
       row.outerHTML = prepared;
+      if (focusKey) { restoreFocus(itemID, focusKey, caret); }
     } else {
       var list = ensureList();
       if (!list) { return; }

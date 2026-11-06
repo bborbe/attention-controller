@@ -1446,6 +1446,7 @@ var _ = Describe("the attention board", func() {
 			Expect(activeTab(page, itemID)).To(Equal("Alpha"))
 			clickTab(page, itemID, "Beta")
 			Expect(activeTab(page, itemID)).To(Equal("Beta"))
+			markRow(page, itemID)
 
 			// Re-push the same producer and dedup key: the store updates the
 			// item in place, the stream sees the row's rendered HTML change and
@@ -1458,17 +1459,19 @@ var _ = Describe("the attention board", func() {
 			)
 			Expect(repushedID).To(Equal(itemID), "the re-push must update in place, not add a row")
 
-			// The swap really happened: the stream puts a freshly rendered row in
-			// place, which resets the strip to the server's own active question.
-			// Waiting for that is what makes the clicks below about the swapped
-			// node rather than about the pre-swap one — asserting straight after
-			// the push reads the old node, because the frame has not landed yet.
-			Eventually(func() string { return activeTab(page, itemID) }).
-				WithTimeout(10 * time.Second).Should(Equal("Alpha"))
+			// The swap really happened: the marked node is gone. Waiting for that
+			// is what makes the clicks below about the swapped node rather than
+			// about the pre-swap one — asserting straight after the push reads
+			// the old node, because the frame has not landed yet. The operator's
+			// chosen tab is carried onto the new node (carryFormState), so the
+			// swap no longer resets the strip to the server's active question.
+			Eventually(func() bool { return rowSwapped(page, itemID) }).
+				WithTimeout(10 * time.Second).Should(BeTrue())
+			Expect(activeTab(page, itemID)).To(Equal("Beta"))
 
 			// The control still works on the node the stream put there.
-			clickTab(page, itemID, "Beta")
-			Expect(activeTab(page, itemID)).To(Equal("Beta"))
+			clickTab(page, itemID, "Alpha")
+			Expect(activeTab(page, itemID)).To(Equal("Alpha"))
 
 			// And the second binding style on the same row still works: Dismiss
 			// is a submit, so this is the form handler rather than the strip.
