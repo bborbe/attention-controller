@@ -21,7 +21,7 @@ wins and the disagreement is a finding to report.
 | Does it hide, reorder or route anything? | **No.** No reader of the board's visibility, ordering or delivery path reads it. |
 | Is a producer notified? | **No.** The only signal is the board's own change stream, so the row re-renders its highlight. |
 | Can it be undone? | **Yes.** Rating with the empty value clears both fields. |
-| Who owns the record on a federated board? | The item's owner, exactly as for a flag: a peer-owned item is rated on the peer. |
+| Who owns the record on a federated board? | The item's owner, exactly as for a flag: a peer-owned item is proxied to the peer's `/rate`. ⚠️ **Out of scope for this release:** a peer that does not run this build has no `/rate`, so rating a peer-owned card fails with an error note on the card and writes nothing. Locally-owned cards are rated now; peer-owned cards become ratable once the peer runs a build carrying this route. |
 
 ## Relation to the misroute flag — kept separate
 

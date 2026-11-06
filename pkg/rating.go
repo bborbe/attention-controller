@@ -7,6 +7,7 @@ package pkg
 import (
 	"context"
 
+	"github.com/bborbe/collection"
 	"github.com/bborbe/errors"
 )
 
@@ -26,20 +27,34 @@ const (
 	DownRating Rating = "down"
 )
 
+// Ratings is a collection of Rating.
+type Ratings []Rating
+
+// AvailableRatings holds every legal rating, the cleared NoRating included —
+// a rate call with NoRating is how a rating is removed.
+var AvailableRatings = Ratings{
+	NoRating,
+	UpRating,
+	DownRating,
+}
+
 // String returns the stored wire value.
 func (r Rating) String() string {
 	return string(r)
 }
 
-// Validate accepts exactly the three declared values. Anything else is
+// Validate accepts exactly the values in AvailableRatings. Anything else is
 // rejected rather than normalized — a typo such as "Up" or "thumbs-up" is a
 // caller bug, and storing a fourth value would make every reader's count
 // silently drop it.
 func (r Rating) Validate(ctx context.Context) error {
-	switch r {
-	case NoRating, UpRating, DownRating:
-		return nil
-	default:
+	if !AvailableRatings.Contains(r) {
 		return errors.Wrapf(ctx, ErrRatingInvalid, "rating %q is not up, down or empty", string(r))
 	}
+	return nil
+}
+
+// Contains reports whether the collection holds the given rating.
+func (r Ratings) Contains(rating Rating) bool {
+	return collection.Contains(r, rating)
 }
