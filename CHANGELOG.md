@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.69.0
 
 - feat: Every board card carries a 👍/👎 rating. One click highlights and stores it (`rating` + store-stamped `rated_at`), a second click on the same icon clears it, the other icon switches it. Accepted on open, answered and closed items via `POST /api/1.0/attention/{itemID}/rate`; it is not an answer, not a transition and not a flag — state, answer, flag, visibility and ordering are untouched and no producer is notified. Kept separate from the misroute flag (open-only, reason-carrying, parks the card). Contract: `docs/attention-item-rating.md`.
 
