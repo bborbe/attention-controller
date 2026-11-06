@@ -226,6 +226,20 @@ func (f *federatingAttentionStore) Unflag(ctx context.Context, itemID ItemID) (*
 	return f.local.Unflag(ctx, itemID)
 }
 
+// Rate proxies to the peer when the peer owns the item, and applies locally
+// otherwise — the same ownership rule as Flag, so a rating lives on the one
+// record the item has.
+func (f *federatingAttentionStore) Rate(
+	ctx context.Context,
+	itemID ItemID,
+	rating Rating,
+) (*Item, error) {
+	if f.isRemote(ctx, itemID) {
+		return f.remote.Rate(ctx, itemID, rating)
+	}
+	return f.local.Rate(ctx, itemID, rating)
+}
+
 // Close proxies to the peer when the peer owns the item, and applies locally
 // otherwise.
 func (f *federatingAttentionStore) Close(

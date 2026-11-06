@@ -1105,4 +1105,11 @@ li.item.risk-risk {
 .flag { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0 0; }
 .flag input { flex: 1 1 220px; }
 .flag-reason-shown { margin: 8px 0 0; color: var(--muted); }
+/* The rating pair renders on every row, dimmed record cards included: a
+   rating is a measurement on any state, never an answer. The chosen icon is
+   highlighted from the STORED value, so a reload shows what was saved. */
+.rate { display: inline-flex; gap: 4px; margin: 8px 0 0; }
+.rate-btn { background: none; border: 1px solid var(--border); border-radius: 6px; padding: 2px 8px; cursor: pointer; opacity: .45; }
+.rate-btn.rated { opacity: 1; background: var(--green-bg); border-color: var(--green); }
+.rate-btn[data-rate=down].rated { background: var(--panel); border-color: var(--warn); }
 `

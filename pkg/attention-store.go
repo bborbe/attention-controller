@@ -198,6 +198,15 @@ type AttentionStore interface {
 	// ErrItemNotFound.
 	Unflag(ctx context.Context, itemID ItemID) (*Item, error)
 
+	// Rate records the operator's 👍/👎 judgement of an item ("up" / "down"),
+	// or clears it ("" — NoRating). It is a measurement only: NOT a transition,
+	// NOT an answer, NOT a flag. State, the answer fields, the delivery trail
+	// and the flag pair are untouched, and it is accepted in every state —
+	// open, answered and closed alike. Any other value is ErrRatingInvalid and
+	// writes nothing. RatedAt is stamped from the store's clock with Rating and
+	// cleared with it. An unknown id is ErrItemNotFound.
+	Rate(ctx context.Context, itemID ItemID, rating Rating) (*Item, error)
+
 	// Close applies open -> closed or answered -> closed. Closing an item that
 	// is already closed is rejected with ErrIllegalTransition.
 	//

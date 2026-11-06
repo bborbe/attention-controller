@@ -994,6 +994,11 @@ func registerAttentionAPIRoutes(
 	router.Path("/api/1.0/attention/{itemID}/unflag").
 		Methods(http.MethodPost).
 		Handler(factory.CreateAttentionUnflagHandler(store))
+	// A rating is a measurement on any item state, not a transition, not an
+	// answer and not a flag: it writes rating/rated_at and nothing else.
+	router.Path("/api/1.0/attention/{itemID}/rate").
+		Methods(http.MethodPost).
+		Handler(factory.CreateAttentionRateHandler(store))
 	// The delivery trail. The GET is the one query that answers "did this
 	// item's answer reach the session?"; the POST is called by the arm that
 	// ATTEMPTS delivery — never by the arm that records the answer, which
