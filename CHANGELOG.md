@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- fix: A stream update to a card no longer discards the answer the operator is part-way through. Rating a card (whose echo re-renders the row) wiped a checked radio, checked boxes, typed Other text, the unsaved flag reason and the chosen tab; the row swap now carries those controls from the live row onto the server's rendering before committing it. Rows still update from the stream, touched or not.
+
 ## v0.69.0
 
 - feat: Every board card carries a 👍/👎 rating. One click highlights and stores it (`rating` + store-stamped `rated_at`), a second click on the same icon clears it, the other icon switches it. Accepted on open, answered and closed items via `POST /api/1.0/attention/{itemID}/rate`; it is not an answer, not a transition and not a flag — state, answer, flag, visibility and ordering are untouched and no producer is notified. Kept separate from the misroute flag (open-only, reason-carrying, parks the card). Contract: `docs/attention-item-rating.md`.

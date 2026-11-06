@@ -1405,14 +1405,80 @@ function replayFailure(row) {
      a board whose own switch said it was hidden. Preparing first makes the swap
      the LAST fallible step, and is also how a PARKED row's note is replayed. */
   function preparedHTML(html, itemID) {
-    if (!failures[itemID] && !speaking[itemID]) { return html; }
+    var live = findRow(itemID);
+    var carry = !!(live && live.querySelector('form'));
+    if (!failures[itemID] && !speaking[itemID] && !carry) { return html; }
     var detached = document.createElement('div');
     detached.innerHTML = html;
     var row = detached.firstElementChild;
     if (!row) { return html; }
     if (failures[itemID]) { replayFailure(row); }
     if (speaking[itemID]) { speakButtonState(speakButtonIn(row), true); }
+    if (carry) { carryFormState(live, row); }
     return row.outerHTML;
+  }
+  /* The operator's unsent input, carried from the live row onto the server's
+     rendering before the swap. The server never renders a pick, a typed field
+     or a chosen tab — it cannot know them — so every stream event for a row
+     (a 👍/👎 echo above all, since the operator clicks it WHILE answering)
+     used to replace that row with blank controls and silently discard the
+     answer in progress.
+     ⚠️ Written as ATTRIBUTES, not properties: the prepared node is serialised
+     through outerHTML, which carries the checked and value attributes and drops
+     the live properties. A control the new markup no longer carries (the card
+     became an answered record) has nothing to land on and is dropped, which is
+     right — the answer was given. */
+  function controlKey(input) {
+    var form = input.closest('form');
+    var panel = input.closest('.panel');
+    var key = [
+      form ? form.className : '',
+      panel ? panel.getAttribute('data-question') : '',
+      input.type,
+      input.name,
+      input.className
+    ];
+    if (input.type === 'radio' || input.type === 'checkbox') {
+      key.push(input.hasAttribute('data-other') ? 'data-other' : 'option:' + input.value);
+    }
+    return key.join('|');
+  }
+  function carryFormState(live, row) {
+    var targets = {};
+    row.querySelectorAll('input').forEach(function (input) {
+      var key = controlKey(input);
+      if (!targets[key]) { targets[key] = []; }
+      targets[key].push(input);
+    });
+    var seen = {};
+    live.querySelectorAll('input').forEach(function (input) {
+      var key = controlKey(input);
+      var index = seen[key] || 0;
+      seen[key] = index + 1;
+      var target = targets[key] && targets[key][index];
+      if (!target) { return; }
+      if (input.type === 'radio' || input.type === 'checkbox') {
+        if (input.checked) { target.setAttribute('checked', ''); }
+        else { target.removeAttribute('checked'); }
+      } else if (input.type === 'text') {
+        target.setAttribute('value', input.value);
+      }
+    });
+    var activeTab = live.querySelector('.tabs button[data-tab].active');
+    if (!activeTab) { return; }
+    var name = activeTab.getAttribute('data-tab');
+    var match = false;
+    row.querySelectorAll('.tabs button[data-tab]').forEach(function (tab) {
+      if (tab.getAttribute('data-tab') === name) { match = true; }
+    });
+    if (!match) { return; }
+    row.querySelectorAll('.tabs button[data-tab]').forEach(function (tab) {
+      tab.classList.toggle('active', tab.getAttribute('data-tab') === name);
+    });
+    row.querySelectorAll('.panel').forEach(function (panel) {
+      if (panel.getAttribute('data-question') === name) { panel.removeAttribute('hidden'); }
+      else { panel.setAttribute('hidden', ''); }
+    });
   }
   /* The read-aloud control within a row not yet in the document — speakControl
      searches the document, which an uncommitted node is not part of. */
