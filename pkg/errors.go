@@ -142,6 +142,11 @@ var (
 	// cannot be counted, so the record is left exactly as it was.
 	ErrFlagReasonRequired = stderrors.New("flag reason required")
 
+	// ErrRatingInvalid is returned when a rating is not one of "up", "down" or
+	// "" (clear). The store refuses before writing anything rather than
+	// normalizing the value.
+	ErrRatingInvalid = stderrors.New("rating invalid")
+
 	// ErrMisrouteWeekInvalid is returned when the weekly misroute count is asked
 	// for a window that is not an ISO-8601 week in the `YYYYWww` form.
 	//

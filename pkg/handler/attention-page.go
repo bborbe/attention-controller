@@ -378,6 +378,44 @@ document.addEventListener('click', function (event) {
     showNote(row, 'Could not unflag this card: ' + err.message, true);
   });
 });
+/* The 👍/👎 rating. Clicking the highlighted icon clears it; clicking the
+   other switches it. It posts to /rate only — never /answer — and changes no
+   row state beyond the highlight; the stored value comes back over the SSE
+   stream like any other row change, and the optimistic update below covers the
+   gap. Delegated on the document because a stream re-render replaces the row. */
+function applyRating(control, rating) {
+  control.setAttribute('data-rating', rating);
+  var buttons = control.querySelectorAll('button[data-rate]');
+  for (var i = 0; i < buttons.length; i++) {
+    var on = buttons[i].getAttribute('data-rate') === rating;
+    buttons[i].classList.toggle('rated', on);
+    buttons[i].setAttribute('aria-pressed', on ? 'true' : 'false');
+  }
+}
+document.addEventListener('click', function (event) {
+  if (!event.target || !event.target.closest) { return; }
+  var button = event.target.closest('button[data-rate]');
+  if (!button) { return; }
+  var control = button.closest('[data-rate-control]');
+  var row = button.closest('li.item');
+  if (!control || !row) { return; }
+  event.preventDefault();
+  var previous = control.getAttribute('data-rating') || '';
+  var clicked = button.getAttribute('data-rate');
+  var next = previous === clicked ? '' : clicked;
+  applyRating(control, next);
+  fetch('/api/1.0/attention/' + encodeURIComponent(row.getAttribute('data-item-id')) + '/rate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rating: next })
+  }).then(function (response) {
+    if (!response.ok) { throw new Error('rate failed: ' + response.status); }
+    return response.json();
+  }).catch(function (err) {
+    applyRating(control, previous);
+    showNote(row, 'Could not rate this card: ' + err.message, true);
+  });
+});
 /* singleAnswer maps one collected entry onto the item-level answer shape.
    It carries values when the question took several picks: a single-question item
    declared multiple has no other field for them, so sending only value would
@@ -1620,7 +1658,11 @@ function replayFailure(row) {
      item and the endpoint answers 409 for an answered one, so a control here
      would always fail. */}}{{if not .Dimmed}}<form class="flag" data-flag-control><input class="flag-reason-input" type="text" name="reason" placeholder="Why should this not have reached you?" aria-label="Reason this card was misrouted"><button type="submit" class="flag-submit">⚑ Flag as misrouted</button></form>
 {{end}}{{if .Flagged}}<div class="flag-reason-shown">flagged: {{ cardtext .Item.FlagReason }} <button type="button" class="unflag" data-unflag>Unflag</button></div>
-{{end}}{{/* The undeliverable marker renders on a card whose answer a recorded
+{{end}}{{/* The 👍/👎 pair renders on EVERY row, dimmed record cards included: a
+     rating is a measurement accepted in any state, not an answer, so the
+     record-card rule (no control that offers an answer) does not withhold it.
+     Kept to two buttons so the history's rows stay small. */}}<div class="rate" data-rate-control data-rating="{{ .Item.Rating }}"><button type="button" class="rate-btn{{if eq .Item.Rating "up"}} rated{{end}}" data-rate="up" aria-pressed="{{if eq .Item.Rating "up"}}true{{else}}false{{end}}" aria-label="Good card">👍</button><button type="button" class="rate-btn{{if eq .Item.Rating "down"}} rated{{end}}" data-rate="down" aria-pressed="{{if eq .Item.Rating "down"}}true{{else}}false{{end}}" aria-label="Should not have reached me">👎</button></div>
+{{/* The undeliverable marker renders on a card whose answer a recorded
      attempt says did NOT reach the asking session, and on no other status:
      "delivered" is the good case, "held" is a gate an arm declined to answer on
      purpose, "never_attempted" and "pre_trail_unknown" are absences of an

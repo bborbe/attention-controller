@@ -105,6 +105,12 @@ func CreateAttentionUnflagHandler(store pkg.AttentionStore) http.Handler {
 	return handler.NewAttentionUnflagHandler(store)
 }
 
+// CreateAttentionRateHandler creates the handler that records or clears the
+// operator's 👍/👎 rating of an item.
+func CreateAttentionRateHandler(store pkg.AttentionStore) http.Handler {
+	return handler.NewAttentionRateHandler(store)
+}
+
 // CreateAttentionHistoryHandler creates the handler that returns every item
 // regardless of state, for counting resolutions rather than rendering.
 func CreateAttentionHistoryHandler(store pkg.AttentionStore) http.Handler {

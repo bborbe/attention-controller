@@ -98,4 +98,8 @@ const (
 	// may be well-formed JSON and still name no reason, and the caller's fix is
 	// to supply the reason rather than to correct a malformed body.
 	ErrorCodeFlagReasonRequired = "FLAG_REASON_REQUIRED"
+
+	// ErrorCodeRatingInvalid is the code a caller receives when a rating is not
+	// "up", "down" or "" (clear).
+	ErrorCodeRatingInvalid = "RATING_INVALID"
 )

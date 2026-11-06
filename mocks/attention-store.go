@@ -135,6 +135,21 @@ type AttentionStore struct {
 		result1 *pkg.Item
 		result2 error
 	}
+	RateStub        func(context.Context, pkg.ItemID, pkg.Rating) (*pkg.Item, error)
+	rateMutex       sync.RWMutex
+	rateArgsForCall []struct {
+		arg1 context.Context
+		arg2 pkg.ItemID
+		arg3 pkg.Rating
+	}
+	rateReturns struct {
+		result1 *pkg.Item
+		result2 error
+	}
+	rateReturnsOnCall map[int]struct {
+		result1 *pkg.Item
+		result2 error
+	}
 	ReadStub        func(context.Context) (pkg.Items, error)
 	readMutex       sync.RWMutex
 	readArgsForCall []struct {
@@ -737,6 +752,72 @@ func (fake *AttentionStore) PushReturnsOnCall(i int, result1 *pkg.Item, result2 
 		})
 	}
 	fake.pushReturnsOnCall[i] = struct {
+		result1 *pkg.Item
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *AttentionStore) Rate(arg1 context.Context, arg2 pkg.ItemID, arg3 pkg.Rating) (*pkg.Item, error) {
+	fake.rateMutex.Lock()
+	ret, specificReturn := fake.rateReturnsOnCall[len(fake.rateArgsForCall)]
+	fake.rateArgsForCall = append(fake.rateArgsForCall, struct {
+		arg1 context.Context
+		arg2 pkg.ItemID
+		arg3 pkg.Rating
+	}{arg1, arg2, arg3})
+	stub := fake.RateStub
+	fakeReturns := fake.rateReturns
+	fake.recordInvocation("Rate", []interface{}{arg1, arg2, arg3})
+	fake.rateMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2, arg3)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *AttentionStore) RateCallCount() int {
+	fake.rateMutex.RLock()
+	defer fake.rateMutex.RUnlock()
+	return len(fake.rateArgsForCall)
+}
+
+func (fake *AttentionStore) RateCalls(stub func(context.Context, pkg.ItemID, pkg.Rating) (*pkg.Item, error)) {
+	fake.rateMutex.Lock()
+	defer fake.rateMutex.Unlock()
+	fake.RateStub = stub
+}
+
+func (fake *AttentionStore) RateArgsForCall(i int) (context.Context, pkg.ItemID, pkg.Rating) {
+	fake.rateMutex.RLock()
+	defer fake.rateMutex.RUnlock()
+	argsForCall := fake.rateArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3
+}
+
+func (fake *AttentionStore) RateReturns(result1 *pkg.Item, result2 error) {
+	fake.rateMutex.Lock()
+	defer fake.rateMutex.Unlock()
+	fake.RateStub = nil
+	fake.rateReturns = struct {
+		result1 *pkg.Item
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *AttentionStore) RateReturnsOnCall(i int, result1 *pkg.Item, result2 error) {
+	fake.rateMutex.Lock()
+	defer fake.rateMutex.Unlock()
+	fake.RateStub = nil
+	if fake.rateReturnsOnCall == nil {
+		fake.rateReturnsOnCall = make(map[int]struct {
+			result1 *pkg.Item
+			result2 error
+		})
+	}
+	fake.rateReturnsOnCall[i] = struct {
 		result1 *pkg.Item
 		result2 error
 	}{result1, result2}

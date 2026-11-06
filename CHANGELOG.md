@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- feat: Every board card carries a 👍/👎 rating. One click highlights and stores it (`rating` + store-stamped `rated_at`), a second click on the same icon clears it, the other icon switches it. Accepted on open, answered and closed items via `POST /api/1.0/attention/{itemID}/rate`; it is not an answer, not a transition and not a flag — state, answer, flag, visibility and ordering are untouched and no producer is notified. Kept separate from the misroute flag (open-only, reason-carrying, parks the card). Contract: `docs/attention-item-rating.md`.
+
 ## v0.68.0
 
 - feat: Show a worker's card in the board's manager-only default view when no live manager could relay it, with a reason line saying so. Coverage mirrors claude-supervisor's `fleet-board.py` grouping (a session is covered only when parented to a live non-root goal manager) and is resolved in-process from the task index, the session registry and the store's own liveness checker; an opt-in parity spec (`ATTENTION_COVERAGE_PARITY=1`) checks the two rules agree session by session over the live fleet.
