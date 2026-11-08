@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.69.2
 
 - perf: `/api/1.0/attention/history` serves a repeat page from a cache keyed on the request and dropped by every write. The endpoint was the process's largest single allocator — a lifetime `alloc_space` profile on 2026-11-07 put `collectHistoryPage` at 67.9 % cumulative (464 GB of 683 GB over 10.5 h, v0.69.1), with `decodeHistoryIndexEntry` 60.4 %, `json.makeString` 21.3 % and `slices.Grow` 12.0 % behind it. About 22 pollers each re-decoded the full 10,000-row page every 60 s to answer a page that had not changed, and that allocation fed ~0.6 GCs/s against the 112 MiB soft limit. The cache holds one entry, so a second distinct query evicts the first and memory stays bounded; the caller must not modify the returned slice.
 
