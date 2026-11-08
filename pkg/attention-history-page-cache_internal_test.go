@@ -36,6 +36,7 @@ var _ = Describe("history page cache", func() {
 	var db libkv.DB
 	var store *attentionStore
 	var walks int
+	var now libtime.DateTime
 
 	BeforeEach(func() {
 		ctx = context.Background()
@@ -43,11 +44,14 @@ var _ = Describe("history page cache", func() {
 		db, err = libboltkv.OpenTemp(ctx)
 		Expect(err).To(BeNil())
 
+		now = libtime.NewCurrentDateTime().Now()
+		clock := libtime.CurrentDateTimeGetterFunc(func() libtime.DateTime { return now })
+
 		built, ok := NewAttentionStore(
 			db,
 			NewItemIDGenerator(),
 			alwaysLiveChecker{},
-			libtime.NewCurrentDateTime(),
+			clock,
 			libtime.Duration(15*60*1e9),
 		).(*attentionStore)
 		Expect(ok).To(BeTrue(), "the constructor must build the concrete store")
@@ -112,6 +116,83 @@ var _ = Describe("history page cache", func() {
 		Expect(err).To(BeNil())
 		Expect(walks).To(Equal(2), "a write must drop the cached page")
 		Expect(after).To(HaveLen(2), "the cached page must not outlive the write")
+	})
+
+	// ⚠️ This is the spec that keeps the cache worth having. The answered sweep
+	// ticks every minute — the SAME cadence the history pollers use — and most
+	// ticks close nothing. An unconditional invalidate there would clear the
+	// cache as fast as it fills, and every other spec in this file would still
+	// pass because they push before reading.
+	It("keeps the cached page across a sweep that closes nothing", func() {
+		push("session-a", "gate-1")
+		_, err := store.History(ctx, 10, 0)
+		Expect(err).To(BeNil())
+		Expect(walks).To(Equal(1))
+
+		closed, err := store.SweepAnswered(ctx, libtime.Duration(15*60*1e9))
+		Expect(err).To(BeNil())
+		Expect(closed).To(Equal(0), "nothing is due, so the sweep must write nothing")
+
+		_, err = store.History(ctx, 10, 0)
+		Expect(err).To(BeNil())
+		Expect(walks).To(Equal(1),
+			"a sweep that closed nothing must not drop the cached page")
+	})
+
+	// ⚠️ The cache key cannot carry time, but the walk drops an OPEN item once it
+	// expires. An expiry is not a write, so no invalidate arrives — without the
+	// re-check the cached page would serve the expired item for as long as it
+	// stayed cached, silently undoing the endpoint's one narrowing.
+	It("drops an item that expires while its page is cached", func() {
+		expiresAt := now.Add(libtime.Duration(60 * 1e9))
+		_, err := store.Push(ctx, PushRequest{
+			ProducerID:      ProducerID("session-a"),
+			ProducerKind:    SessionProducerKind,
+			LivenessRef:     LivenessRef("session:session-a"),
+			DedupKey:        DedupKey("gate-expiring"),
+			InterruptClass:  "approve",
+			Payload:         Payload("still needed?"),
+			AnswerMechanism: MessageAnswerMechanism,
+			ExpiresAt:       &expiresAt,
+		})
+		Expect(err).To(BeNil())
+
+		first, err := store.History(ctx, 10, 0)
+		Expect(err).To(BeNil())
+		Expect(first).To(HaveLen(1))
+		Expect(walks).To(Equal(1))
+
+		now = now.Add(libtime.Duration(120 * 1e9))
+
+		second, err := store.History(ctx, 10, 0)
+		Expect(err).To(BeNil())
+		Expect(walks).To(Equal(1), "the page is still cached")
+		Expect(second).To(BeEmpty(),
+			"an item that expired while cached must not be served from it")
+	})
+
+	It("re-walks after an answer, so the new state is visible", func() {
+		push("session-a", "gate-1")
+		page, err := store.History(ctx, 10, 0)
+		Expect(err).To(BeNil())
+		Expect(page).To(HaveLen(1))
+		Expect(walks).To(Equal(1))
+
+		_, err = store.Answer(
+			ctx,
+			page[0].ItemID,
+			"operator",
+			"operator",
+			Decision("approve"),
+			nil,
+			nil,
+			nil,
+		)
+		Expect(err).To(BeNil())
+
+		_, err = store.History(ctx, 10, 0)
+		Expect(err).To(BeNil())
+		Expect(walks).To(Equal(2), "an answer must drop the cached page")
 	})
 
 	It("does not serve one page to a different bound", func() {

@@ -5,8 +5,11 @@
 package pkg
 
 import (
+	"context"
 	"strings"
 	"sync"
+
+	libkv "github.com/bborbe/kv"
 )
 
 // historyPageKey identifies one page request. Every field is part of the answer,
@@ -99,4 +102,56 @@ func (c *historyPageCache) invalidate() {
 	c.gen++
 	c.items = nil
 	c.have = false
+}
+
+// reapplyExpiry re-applies the wall-clock narrowing to a cached page.
+//
+// ⚠️ The cache key cannot carry time, but `collectHistoryPage` drops an OPEN
+// item once it expires — the endpoint's ONE documented narrowing. Serving a
+// cached page unchanged would silently undo it, and no write would arrive to
+// drop the entry, because an expiry is not a write. Re-checking costs a walk
+// over the page's own structs and no decode at all.
+//
+// ⚠️ The page may therefore come back SHORTER than limit rather than shifting
+// the later rows up. That is inside the endpoint's stated contract: its doc
+// already says a row can stop being reachable partway through a paginated walk
+// while an item is expiring, and a consumer counting must walk faster than the
+// expiry horizon or pin a cutoff.
+func (a *attentionStore) reapplyExpiry(items Items) Items {
+	now := a.currentDateTimeGetter.Now()
+	expired := false
+	for i := range items {
+		if items[i].State == OpenState && isExpired(&items[i], now) {
+			expired = true
+			break
+		}
+	}
+	if !expired {
+		return items
+	}
+	kept := make(Items, 0, len(items))
+	for i := range items {
+		if items[i].State == OpenState && isExpired(&items[i], now) {
+			continue
+		}
+		kept = append(kept, items[i])
+	}
+	return kept
+}
+
+// historyPageCollector runs one index walk for History.
+//
+// ⚠️ It is a package variable so a spec can count walks: the cache's whole claim
+// is that a repeat read does not re-walk the index, and a count cannot be
+// asserted against a call the spec cannot see. Same seam shape as
+// sessionRegistryLister in session-liveness-checker.go.
+var historyPageCollector = func(
+	a *attentionStore,
+	ctx context.Context,
+	tx libkv.Tx,
+	limit int,
+	offset int,
+	filter historyMatcher,
+) (Items, error) {
+	return a.collectHistoryPage(ctx, tx, limit, offset, filter)
 }
