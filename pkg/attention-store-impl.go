@@ -42,6 +42,7 @@ func NewAttentionStore(
 		sessionLivenessChecker: sessionLivenessChecker,
 		currentDateTimeGetter:  currentDateTimeGetter,
 		heartbeatWindow:        heartbeatWindow,
+		historyPage:            &historyPageCache{},
 	}
 }
 
@@ -57,9 +58,16 @@ type attentionStore struct {
 	sessionLivenessChecker SessionLivenessChecker
 	currentDateTimeGetter  libtime.CurrentDateTimeGetter
 	heartbeatWindow        libtime.Duration
+	// historyPage caches the last history page, dropped by every write. See
+	// historyPageCache for why the endpoint needs one.
+	historyPage *historyPageCache
 }
 
 func (a *attentionStore) Push(ctx context.Context, request PushRequest) (*Item, error) {
+	// Every write drops the cached history page: the answer it would
+	// otherwise serve predates this change.
+	defer a.historyPage.invalidate()
+
 	// ⚠️ The store validates its own request rather than trusting the caller.
 	// The HTTP handler does call `PushRequest.Validate` today, so nothing is
 	// unguarded in production — but `Push` is an exported interface method, and a
@@ -1007,6 +1015,11 @@ func (a *attentionStore) pruneDead(ctx context.Context, keys []string) error {
 	// prune is judged against the same instant, so a deadline cannot fall between
 	// two keys of the same batch.
 	now := a.currentDateTimeGetter.Now()
+	// ⚠️ Only a prune that actually removed something drops the cached history
+	// page. The read path calls this whenever it classified any key for removal,
+	// and `stillRemovable` re-checks each one — so an unconditional drop would
+	// clear the cache on reads that changed nothing.
+	removed := 0
 	err := a.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
 		for _, key := range keys {
 			remove, err := a.stillRemovable(ctx, tx, key, liveness, now)
@@ -1019,11 +1032,15 @@ func (a *attentionStore) pruneDead(ctx context.Context, keys []string) error {
 			if err := a.removeItem(ctx, tx, key); err != nil {
 				return errors.Wrapf(ctx, err, "remove dead item %s failed", key)
 			}
+			removed++
 		}
 		return nil
 	})
 	if err != nil {
 		return errors.Wrap(ctx, err, "prune dead items failed")
+	}
+	if removed > 0 {
+		a.historyPage.invalidate()
 	}
 	return nil
 }
@@ -1132,15 +1149,23 @@ func (a *attentionStore) History(
 	if offset < 0 {
 		offset = 0
 	}
+	// ⚠️ The caller must not modify the returned slice: a cache hit hands back
+	// the same backing array as the previous reader. The handler only encodes it.
+	key := newHistoryPageKey(limit, offset, filters)
+	cached, gen := a.historyPage.load(key)
+	if cached != nil {
+		return a.reapplyExpiry(cached), nil
+	}
 	var items Items
 	err := a.db.View(ctx, func(ctx context.Context, tx libkv.Tx) error {
 		var err error
-		items, err = a.collectHistoryPage(ctx, tx, limit, offset, newHistoryMatcher(filters))
+		items, err = historyPageCollector(a, ctx, tx, limit, offset, newHistoryMatcher(filters))
 		return err
 	})
 	if err != nil {
 		return nil, errors.Wrap(ctx, err, "history failed")
 	}
+	a.historyPage.store(gen, key, items)
 	return items, nil
 }
 
@@ -1268,6 +1293,9 @@ func (a *attentionStore) Answer(
 	answeredClient *AnsweredClient,
 	route ...AnswerRoute,
 ) (*Item, error) {
+	// Every write drops the cached history page: the answer it would
+	// otherwise serve predates this change.
+	defer a.historyPage.invalidate()
 	// A caller reporting no route passes nothing; one reporting a route passes
 	// exactly one. More than one is a caller bug, not a merge, so the first wins
 	// rather than being concatenated.
@@ -1411,6 +1439,9 @@ func (a *attentionStore) Escalate(
 	itemID ItemID,
 	escalatedBy string,
 ) (*Item, error) {
+	// Every write drops the cached history page: the answer it would
+	// otherwise serve predates this change.
+	defer a.historyPage.invalidate()
 	// Refused before the transaction opens: a malformed value is a caller bug and
 	// no write should be attempted for one. § Escalation requires a session id
 	// here, and a stored placeholder would be indistinguishable from a real
@@ -1480,6 +1511,9 @@ func (a *attentionStore) Close(
 	answeredBy string,
 	answeredClient *AnsweredClient,
 ) (*Item, error) {
+	// Every write drops the cached history page: the answer it would
+	// otherwise serve predates this change.
+	defer a.historyPage.invalidate()
 	var result *Item
 	err := a.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
 		item, err := a.store.Get(ctx, tx, itemID.String())
@@ -1566,6 +1600,11 @@ func (a *attentionStore) SweepAnswered(
 	ctx context.Context,
 	maxAge libtime.Duration,
 ) (int, error) {
+	// ⚠️ NOT a deferred invalidate. The sweep ticks every minute — the same
+	// cadence the history pollers use — and most ticks close nothing, so
+	// dropping the cache unconditionally would clear it as fast as it fills and
+	// the cache would never serve a hit. Only a tick that actually changed
+	// something drops it.
 	if err := a.ensureLiveIndex(ctx); err != nil {
 		return 0, errors.Wrap(ctx, err, "ensure live index failed")
 	}
@@ -1597,6 +1636,9 @@ func (a *attentionStore) SweepAnswered(
 	})
 	if err != nil {
 		return 0, errors.Wrap(ctx, err, "sweep answered failed")
+	}
+	if closed > 0 {
+		a.historyPage.invalidate()
 	}
 	return closed, nil
 }

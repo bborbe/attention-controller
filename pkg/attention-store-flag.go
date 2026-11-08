@@ -33,6 +33,9 @@ func (a *attentionStore) Flag(
 	itemID ItemID,
 	reason string,
 ) (*Item, error) {
+	// Every write drops the cached history page: the answer it would
+	// otherwise serve predates this change.
+	defer a.historyPage.invalidate()
 	// Refused before the transaction opens: a flag with no reason is a caller
 	// bug and no write should be attempted for one. TrimSpace is the check
 	// only — the stored reason is the caller's text verbatim, because the
@@ -93,6 +96,9 @@ func (a *attentionStore) Flag(
 // permanent, which is the opposite of "unlike closed, a flag is not terminal".
 // The state gate belongs to Flag only.
 func (a *attentionStore) Unflag(ctx context.Context, itemID ItemID) (*Item, error) {
+	// Every write drops the cached history page: the answer it would
+	// otherwise serve predates this change.
+	defer a.historyPage.invalidate()
 	var result *Item
 	err := a.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
 		item, err := a.store.Get(ctx, tx, itemID.String())

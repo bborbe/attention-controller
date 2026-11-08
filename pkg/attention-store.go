@@ -68,6 +68,9 @@ type AttentionStore interface {
 	// filters, when given, narrow the page (see HistoryFilter); they are applied
 	// before limit and offset, so a page holds up to limit MATCHING items. No
 	// filter — or a zero one — narrows nothing, which is every existing caller.
+	//
+	// ⚠️ The caller must not modify the returned slice: a repeat read is served
+	// from a cache and hands back the same backing array as the previous reader.
 	History(ctx context.Context, limit int, offset int, filters ...HistoryFilter) (Items, error)
 
 	// SweepAnswered closes every answered item whose AnsweredAt is older than

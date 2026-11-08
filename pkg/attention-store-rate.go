@@ -32,6 +32,9 @@ func (a *attentionStore) Rate(
 	itemID ItemID,
 	rating Rating,
 ) (*Item, error) {
+	// Every write drops the cached history page: the answer it would
+	// otherwise serve predates this change.
+	defer a.historyPage.invalidate()
 	if err := rating.Validate(ctx); err != nil {
 		return nil, errors.Wrapf(ctx, err, "item %s: rate", itemID)
 	}
