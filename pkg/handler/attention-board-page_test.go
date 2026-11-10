@@ -479,7 +479,9 @@ var _ = Describe("Attention page board controls", func() {
 			Expect(err).To(BeNil())
 
 			block := rowBlock(render(), item.ItemID)
-			Expect(block).To(ContainSubstring("client: curl/8.7.1 @ 127.0.0.1:51423 (forwarded_for: 203.0.113.7)"))
+			Expect(
+				block,
+			).To(ContainSubstring("client: curl/8.7.1 @ 127.0.0.1:51423 (forwarded_for: 203.0.113.7)"))
 		})
 
 		// An item answered before the field existed records no client, and the

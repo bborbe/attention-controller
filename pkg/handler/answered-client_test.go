@@ -163,29 +163,32 @@ var _ = Describe("Answered client over HTTP", func() {
 		// remote_addr would move the one unspoofable member into the declaration
 		// class this field exists to separate — the exact conflation the field
 		// was added to end.
-		It("records a forwarded address beside the peer address, leaving remote_addr intact", func() {
-			item := pushMessage()
+		It(
+			"records a forwarded address beside the peer address, leaving remote_addr intact",
+			func() {
+				item := pushMessage()
 
-			req := httptest.NewRequest(
-				http.MethodPost,
-				"/api/1.0/attention/"+item.ItemID.String()+"/answer",
-				strings.NewReader(`{"answered_by":"attention-board"}`),
-			)
-			req = mux.SetURLVars(req, map[string]string{"itemID": item.ItemID.String()})
-			req.Header.Set("User-Agent", "curl/8.7.1")
-			req.Header.Set("X-Forwarded-For", "203.0.113.7")
-			req.RemoteAddr = "198.51.100.7:41000"
-			rec := httptest.NewRecorder()
-			answerHandler.ServeHTTP(rec, req)
-			Expect(rec.Code).To(Equal(http.StatusOK))
+				req := httptest.NewRequest(
+					http.MethodPost,
+					"/api/1.0/attention/"+item.ItemID.String()+"/answer",
+					strings.NewReader(`{"answered_by":"attention-board"}`),
+				)
+				req = mux.SetURLVars(req, map[string]string{"itemID": item.ItemID.String()})
+				req.Header.Set("User-Agent", "curl/8.7.1")
+				req.Header.Set("X-Forwarded-For", "203.0.113.7")
+				req.RemoteAddr = "198.51.100.7:41000"
+				rec := httptest.NewRecorder()
+				answerHandler.ServeHTTP(rec, req)
+				Expect(rec.Code).To(Equal(http.StatusOK))
 
-			got, err := store.Get(ctx, item.ItemID)
-			Expect(err).To(BeNil())
-			Expect(got.AnsweredClient).NotTo(BeNil())
-			Expect(got.AnsweredClient.ForwardedFor).To(Equal("203.0.113.7"))
-			Expect(got.AnsweredClient.RemoteAddr).To(Equal("198.51.100.7:41000"))
-			Expect(got.AnsweredClient.RemoteAddr).NotTo(Equal("203.0.113.7"))
-		})
+				got, err := store.Get(ctx, item.ItemID)
+				Expect(err).To(BeNil())
+				Expect(got.AnsweredClient).NotTo(BeNil())
+				Expect(got.AnsweredClient.ForwardedFor).To(Equal("203.0.113.7"))
+				Expect(got.AnsweredClient.RemoteAddr).To(Equal("198.51.100.7:41000"))
+				Expect(got.AnsweredClient.RemoteAddr).NotTo(Equal("203.0.113.7"))
+			},
+		)
 
 		// The same rule the two derived members carry: a body cannot set the
 		// forwarded address either, or the field becomes a declaration the caller
