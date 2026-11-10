@@ -1732,7 +1732,7 @@ function replayFailure(row) {
 {{end}}{{if .Provenance.Uncovered}}<div class="uncovered-reason" data-uncovered-reason>Shown because no live manager can relay it.</div>
 {{end}}{{if not .Message}}<div class="payload">{{ cardtext .Item.Payload }}</div>
 {{end}}{{if .Item.Context}}<div class="context">{{ cardtext .Item.Context }}</div>
-{{end}}{{if .Dimmed}}<div class="record"><div class="record-question">{{ cardtext .Item.Payload }}</div><div class="record-answer">answered: {{ .Record }}</div></div>
+{{end}}{{if .Dimmed}}<div class="record"><div class="record-question">{{ cardtext .Item.Payload }}</div><div class="record-answer">answered: {{ .Record }}</div>{{if .Client}}<div class="record-client">client: {{ .Client }}</div>{{end}}</div>
 {{else if .Message}}<form class="answer" data-multi="{{ .Tabs }}">
 {{if .Tabs}}<div class="tabs">{{range .Questions}}<button type="button" class="tab{{if .Active}} active{{end}}" data-tab="{{ .Tab }}">{{ .Tab }}</button>{{end}}</div>
 <div class="card-title">{{ cardtext .Item.Payload }}</div>

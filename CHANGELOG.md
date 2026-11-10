@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- feat: the board renders the answering client — `user_agent` and `remote_addr` — beside the recorded answer on a dimmed card, so "who answered this" is readable from the board instead of inferred from a log. `X-Forwarded-For` is recorded in a new `forwarded_for` field beside `remote_addr`, never in place of it: the header is caller-set, so `remote_addr` stays the one member a caller cannot spoof.
+
 ## v0.70.0
 
 - feat: `make build BUILD_TARGET=<cluster> REF=<sha> VERSION=<tag>` builds the image inside that cluster as a Job rendered from `hack/build-job.yaml`, so the image no longer needs this Mac. `local` stays the default and tags exactly what it tagged before; `upload` and `clean` are guarded on the local arm so `make buca BUILD_TARGET=<cluster>` no longer fails at the push step after a build that succeeded.

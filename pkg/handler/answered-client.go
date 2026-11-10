@@ -34,12 +34,17 @@ import (
 func answeredClientFromRequest(req *http.Request, automation *bool) *pkg.AnsweredClient {
 	userAgent := req.UserAgent()
 	remoteAddr := req.RemoteAddr
-	if userAgent == "" && remoteAddr == "" && automation == nil {
+	// Recorded beside remoteAddr, never in place of it: the header is
+	// caller-set, so writing it into remoteAddr would move the one unspoofable
+	// member into the declaration class this field exists to separate.
+	forwardedFor := req.Header.Get("X-Forwarded-For")
+	if userAgent == "" && remoteAddr == "" && forwardedFor == "" && automation == nil {
 		return nil
 	}
 	return &pkg.AnsweredClient{
-		UserAgent:  userAgent,
-		RemoteAddr: remoteAddr,
-		Automation: automation,
+		UserAgent:    userAgent,
+		RemoteAddr:   remoteAddr,
+		ForwardedFor: forwardedFor,
+		Automation:   automation,
 	}
 }

@@ -27,6 +27,16 @@ type AnsweredClient struct {
 	// RemoteAddr is the request's own source address, read by the store from the
 	// request. Never accepted from the request body.
 	RemoteAddr string `json:"remote_addr,omitempty"`
+	// ForwardedFor is the request's X-Forwarded-For header, recorded when the
+	// header is present.
+	//
+	// ⚠️ It is recorded BESIDE RemoteAddr, never in place of it, and it does not
+	// share RemoteAddr's trust class. A caller sets this header freely, so it is
+	// a declaration like UserAgent and Automation — while RemoteAddr remains the
+	// one member a caller cannot spoof. Honouring it as the client's identity
+	// requires a trusted-proxy allowlist the store does not have; recording it
+	// keeps what the request claimed without letting that claim overwrite a fact.
+	ForwardedFor string `json:"forwarded_for,omitempty"`
 	// Automation is the page's own navigator.webdriver reading — the one member
 	// the body carries, because only the page's own script can read it. It sits
 	// in the weaker class with UserAgent: it is a client declaration, and a
