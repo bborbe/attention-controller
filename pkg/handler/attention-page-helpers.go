@@ -155,6 +155,7 @@ func newAttentionPageRow(
 		// evidence at exactly the moment it could be noticed.
 		row.Dimmed = true
 		row.Record = recordAnswer(item)
+		row.Client = recordClient(item)
 	}
 	if row.Message {
 		row.Questions = pageQuestions(item)
@@ -191,6 +192,42 @@ func recordAnswer(item pkg.Item) string {
 		// content rather than as an error.
 		return "no answer recorded"
 	}
+}
+
+// recordClient renders the client evidence the store recorded for an answer, as
+// the dimmed card shows it beside the record. It exists so "who answered this"
+// is readable from the board itself rather than inferred from a log.
+//
+// ⚠️ The rendered order is deliberate: the user agent leads because it is what
+// separates a browser from a script, and the address follows. A forwarded
+// address renders in its own parenthetical because it is a caller declaration —
+// flattening it into the address would read as though the store had proven it.
+//
+// An item answered before `answered_client` existed, or by a caller that sent
+// neither header, renders no line at all: an empty string here means "the store
+// recorded nothing about the client", which is the honest reading, not a blank
+// client.
+func recordClient(item pkg.Item) string {
+	client := item.AnsweredClient
+	if client == nil {
+		return ""
+	}
+	parts := make([]string, 0, 2)
+	if client.UserAgent != "" {
+		parts = append(parts, client.UserAgent)
+	}
+	if client.RemoteAddr != "" {
+		parts = append(parts, "@ "+client.RemoteAddr)
+	}
+	rendered := strings.TrimSpace(strings.Join(parts, " "))
+	if client.ForwardedFor != "" {
+		if rendered == "" {
+			rendered = "forwarded_for: " + client.ForwardedFor
+		} else {
+			rendered += " (forwarded_for: " + client.ForwardedFor + ")"
+		}
+	}
+	return rendered
 }
 
 // answerText renders one answer's content from its kind. `skip` is the case

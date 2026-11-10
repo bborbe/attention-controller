@@ -107,6 +107,12 @@ type attentionPageRow struct {
 	// Record is the answer the store recorded, rendered for the dimmed card by
 	// recordAnswer. Empty on every row that is not dimmed.
 	Record string
+	// Client is the answering request's recorded client evidence — user agent,
+	// remote address and the forwarded address when present — rendered beside
+	// the record by recordClient. Empty on every row that is not dimmed, and on
+	// a dimmed row whose item carries no answered_client (answered before the
+	// field existed, or by a caller that sent no user agent and no address).
+	Client string
 	// Flagged reports whether this row carries a flag and is therefore parked by
 	// the flag filter's default position. The template reads it for the row's
 	// data-flagged mark and for the flag-reason line; the page's script reads the
