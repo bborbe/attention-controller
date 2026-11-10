@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.71.0
 
 - feat: the board renders the answering client — `user_agent` and `remote_addr` — beside the recorded answer on a dimmed card, so "who answered this" is readable from the board instead of inferred from a log. `X-Forwarded-For` is recorded in a new `forwarded_for` field beside `remote_addr`, never in place of it: the header is caller-set, so `remote_addr` stays the one member a caller cannot spoof.
 
