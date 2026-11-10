@@ -489,6 +489,31 @@ func answer(itemID string) {
 	})
 }
 
+// answerAs answers a card through the API with an explicit User-Agent, so a case
+// can assert that the board renders each card's OWN client rather than one shared
+// value. The controller reads `user_agent` from the request itself and never from
+// the body, so the header set here is what the store records.
+func answerAs(itemID, userAgent string) {
+	raw, err := json.Marshal(map[string]any{
+		"answered_by": "e2e",
+		"answer":      map[string]string{"kind": "text", "value": "e2e answer"},
+	})
+	Expect(err).NotTo(HaveOccurred())
+	req, err := http.NewRequest(
+		http.MethodPost,
+		baseURL+"api/1.0/attention/"+itemID+"/answer",
+		bytes.NewReader(raw),
+	)
+	Expect(err).NotTo(HaveOccurred())
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", userAgent)
+	resp, err := http.DefaultClient.Do(req)
+	Expect(err).NotTo(HaveOccurred())
+	defer resp.Body.Close()
+	content, _ := io.ReadAll(resp.Body)
+	Expect(resp.StatusCode).To(BeNumerically("<", 300), "answer failed: %s", string(content))
+}
+
 // getItem reads one item through the read API, decoding into pkg.Item so a case
 // can assert the stored state and flag fields rather than the rendered DOM. The
 // read API is the same one an arm uses, and it returns the item whatever its
@@ -510,6 +535,21 @@ func rowCount(page playwright.Page, itemID string) int {
 	count, err := page.Locator(fmt.Sprintf(rowSelectorFmt, itemID)).Count()
 	Expect(err).NotTo(HaveOccurred())
 	return count
+}
+
+// rowText returns a row's rendered text, so a case can assert on what the board
+// draws INSIDE a row rather than on the row's presence alone.
+//
+// It returns "" instead of failing when the row is absent, because every caller
+// polls it through Eventually: a spec failure inside a polling function aborts
+// the wait on the first tick, which would turn "the row has not rendered yet"
+// into a hard failure.
+func rowText(page playwright.Page, itemID string) string {
+	text, err := page.Locator(rowSelector(itemID)).TextContent()
+	if err != nil {
+		return ""
+	}
+	return text
 }
 
 // kindHiddenCount reads the number the kind switch says it is hiding. The span
@@ -1033,6 +1073,35 @@ var _ = Describe("the attention board", func() {
 
 		Eventually(func() int { return rowCount(page, openID) }).Should(Equal(1))
 		Eventually(func() int { return rowCount(page, answeredID) }).Should(Equal(1))
+	})
+
+	// The dimmed record names the CLIENT that answered, not only the surface —
+	// which is the entire point of the field, because a board click and a local
+	// script both arrive on loopback and both stamp the same `answered_by`.
+	//
+	// ⚠️ Two cards with two user agents, each asserted against its OWN: a single
+	// card passes on a board that renders one shared client for every record,
+	// which is the bug this case exists to catch. Fixture store only — driving a
+	// browser against the live board would record an answer nobody gave.
+	It("renders each answered card's own recorded client beside its answer", func() {
+		browserID := push("e2e: answered from a browser", "e2e-client-browser")
+		answerAs(browserID, "Mozilla/5.0 (Macintosh; rv:141.0) Firefox/141.0")
+		scriptID := push("e2e: answered from a script", "e2e-client-script")
+		answerAs(scriptID, "curl/8.7.1")
+
+		page := newPage("?hide=none")
+		defer func() { _ = page.Close() }()
+
+		Eventually(func() string { return rowText(page, browserID) }).
+			WithTimeout(5 * time.Second).
+			Should(ContainSubstring("client: Mozilla/5.0 (Macintosh; rv:141.0) Firefox/141.0 @ 127.0.0.1:"))
+		Eventually(func() string { return rowText(page, scriptID) }).
+			WithTimeout(5 * time.Second).
+			Should(ContainSubstring("client: curl/8.7.1 @ 127.0.0.1:"))
+
+		// Distinct, not merely present: each record carries its own client.
+		Expect(rowText(page, browserID)).NotTo(ContainSubstring("curl/8.7.1"))
+		Expect(rowText(page, scriptID)).NotTo(ContainSubstring("Firefox"))
 	})
 
 	// ⚠️ The footer's identity is asserted against the BINARY'S OWN stamp, never
