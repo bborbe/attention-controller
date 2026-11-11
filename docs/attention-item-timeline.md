@@ -56,6 +56,10 @@ An absent timestamp renders as `—`, never as a zero delta. A delta computed fr
 
 `pkg/delivery-attempt.go` stores a third outcome, `held` — a deliberate hold, not a failure — while the schema page lists two stored outcomes and two derived states. The renderer must not invent a meaning for it: an answer that is `held` was **not** an undelivered answer, and flagging it as one would light up 245 of the 736 answered cards measured on 2026-11-11. Until the gap is resolved on the schema page, any surface that flags undelivered answers flags exactly `failed` and `never_attempted`.
 
+**Interim rendering of `held`:** a card whose attempt record is `held` shows **no delivery-outcome line and no marker**. Rendering `—` would be false — an attempt and its timestamp exist — and rendering the literal `held` would name a fifth outcome this page does not list. Silence is the only honest option until the gap is resolved.
+
+**The seen write is local.** `displayed_at` is written by the store that owns the item, and the seen call is **not** forwarded upstream — unlike Flag, Rate, Answer, Close and Escalate, which the federating store does forward. A peer board renders a federated card's stage as absent rather than writing the owning store's field.
+
 ## The undeliverable marker, and its widening
 
 The board already ships a row-level marker, `delivery-undeliverable`, rendered from `attentionPageRow.Undeliverable()`. Its predicate was `DeliveryStatus == FailedStatus` only, on the recorded rationale that *"only a recorded failure is something the operator can act on, and the other three would put a marker on every card"*.
