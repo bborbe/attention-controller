@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- chore: update Go to 1.27.4 and github.com/bborbe/argument/v2 to v2.13.10, github.com/bborbe/boltkv to v1.16.8, github.com/bborbe/collection to v1.21.7, github.com/bborbe/errors to v1.6.6, github.com/bborbe/http to v1.26.33, github.com/bborbe/kv to v1.21.29, github.com/bborbe/log to v1.7.8, github.com/bborbe/metrics to v0.6.11, github.com/bborbe/run to v1.11.11, github.com/bborbe/sentry to v1.10.7, github.com/bborbe/service to v1.11.3, github.com/bborbe/time to v1.27.28, github.com/bborbe/validation to v1.5.9, github.com/onsi/ginkgo/v2 to v2.34.0, golang.org/x/text to v0.44.0
+
 ## v0.71.0
 
 - feat: the board renders the answering client — `user_agent` and `remote_addr` — beside the recorded answer on a dimmed card, so "who answered this" is readable from the board instead of inferred from a log. `X-Forwarded-For` is recorded in a new `forwarded_for` field beside `remote_addr`, never in place of it: the header is caller-set, so `remote_addr` stays the one member a caller cannot spoof.
