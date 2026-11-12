@@ -891,13 +891,23 @@ var _ = Describe("the attention board", func() {
 	)
 
 	It(
-		"keeps a session-kind card pushed while the page is open off the managers-only view",
+		"keeps an agent-kind card pushed while the page is open off the managers-only view",
 		func() {
 			// ⚠️ The one half the Go suite cannot reach: the stream path's kind
 			// filter is client-side JS, and the CHANGELOG claims a card pushed
 			// while the board is open cannot leak onto a filtered view. Without
 			// this spec that claim is untested, and the failure is silent — the
 			// row simply appears.
+			//
+			// ⚠️ NOT a session-kind card. Since 97b2f49 "Show uncovered worker
+			// cards in the default view" (2026-11-05) both the server filter and
+			// this one keep a card whose Provenance.Uncovered is true, whatever
+			// its kind: the manager-only view rests on a manager relaying the
+			// worker's question, and an uncovered card has no manager to relay
+			// it. This fixture runs with an empty registry, so every session-kind
+			// card it pushes is uncovered and is deliberately shown. Agent, cron
+			// and dark-factory cards are never asked that question, so an
+			// agent-kind card is what still exercises the filter on this path.
 			page := newPage("?producer_kind=manager")
 			defer func() { _ = page.Close() }()
 
@@ -906,8 +916,10 @@ var _ = Describe("the attention board", func() {
 			// would encode the suite's ordering.
 			hiddenBefore := kindHiddenCount(page)
 
-			sessionID := push("e2e: streamed session card", "e2e-kind-stream-session")
-			Consistently(func() int { return rowCount(page, sessionID) }).Should(Equal(0))
+			agentID := pushOfKind(
+				"e2e: streamed agent card", "e2e-kind-stream-agent", pkg.AgentProducerKind,
+			)
+			Consistently(func() int { return rowCount(page, agentID) }).Should(Equal(0))
 			// The count follows the stream. The server renders it once at load, so
 			// without the script recomputing it a card that arrives later is
 			// withheld by a board that does not say so — on the element that stops

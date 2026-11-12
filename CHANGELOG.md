@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- test: correct the board's stream-path kind spec, which had been red on master since `v0.69.0`. `keeps a session-kind card pushed while the page is open off the managers-only view` asserted that a streamed session-kind card is withheld from `?producer_kind=manager`, but `97b2f49` (2026-11-05) deliberately inverted that rule: an **uncovered** card — one no live manager can relay — is shown whatever its kind, on the server render and on the stream alike. The suite runs with an empty registry, so every session-kind card it pushes is uncovered and is meant to appear. The case now pushes an **agent**-kind card, which is never resolved uncovered and therefore still exercises the client-side filter on the stream path, and it reads `keeps an agent-kind card pushed while the page is open off the managers-only view`. Both scenario counts lose their "the suite is currently red" clause; the total stays `56 of 56`.
+
 ## v0.72.4
 
 - docs: add `docs/release-process.md`, which makes `make e2e` the documented gate at the pull request. The repo's release is a side effect of the merge — `.maintainer.yaml` `release.autoRelease: true` makes `github-releaser-agent` tag straight after it — so the pull request is the last moment a person is involved and the suite is the only thing between a branch and a tag. The doc states the red-suite rule (a red suite stops the merge; a spec already red on master is named in the pull request body, not absorbed), pins the count command to `go test -mod=mod -tags e2e -count=1 -v ./e2e/` because `make e2e` runs without `-v` and `go test` discards a passing package's stdout, and links `docs/dod.md`, `scenarios/001` and `scenarios/002`. Scenario 001's cadence sentence said the suite is *never* run per commit or per PR; it now states the pull-request cadence, and its stale `53 of 53 Specs` total moves to `56`.

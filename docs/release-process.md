@@ -33,7 +33,7 @@ The scenarios in `scenarios/` describe the cases the suite asserts:
 
 If a spec was **already red on `master` before your change**, name it in the pull request body — the spec name and the evidence that it fails without your diff. A pre-existing failure you name is a known defect; one you stay quiet about is a green suite that isn't.
 
-As of 2026-11-12 `master` carries one such failure: `keeps a session-kind card pushed while the page is open off the managers-only view`. Name it, do not silently absorb it, and do not use it as cover for a second failure.
+As of 2026-11-12 `master` carries no known pre-existing failure — the long-standing session-kind one was a stale expectation and was corrected that day. If you find one, name it here with its date so the next person inherits the fact rather than rediscovering it.
 
 ## Reading the spec count
 
