@@ -200,6 +200,104 @@ var _ = Describe("an answer given on the rendered board", func() {
 		Expect(string(item.Answer.Value)).To(Equal("Zoe"))
 	})
 
+	// An IME composition confirm arrives as a keydown too. Before the guard it
+	// answered the card with whatever text existed at that instant and swallowed
+	// the confirm, so the operator could neither finish the word nor correct it.
+	//
+	// ⚠️ The spy is what separates a real guard from a guard that calls
+	// preventDefault and THEN returns. That shape passes a submit-only assertion —
+	// the card stays open — while still eating the keystroke, which is the harder
+	// failure to notice. The value and the open state prove nothing was submitted;
+	// only the spy proves nothing was swallowed.
+	// ⚠️ The spy sits on the document in the BUBBLE phase, registered after the
+	// board's own listener was registered at page load, so it runs after that
+	// handler and reads the final defaultPrevented. A capture-phase spy would read
+	// the event before the board ever saw it and report false on every build.
+	// ⚠️ keyCode 229 is dispatched as its own case because some Safari/iOS and
+	// Android IMEs set it WITHOUT isComposing. A guard reading isComposing alone
+	// is green on the first dispatch and broken on the second.
+	// ⚠️ A synthetic KeyboardEvent approximates the browser's composition pipeline;
+	// it does not reproduce it. The click-through on the deployed board is the only
+	// step that exercises a real IME.
+	It(
+		"leaves the card open and the text intact on the keydown that confirms an IME composition",
+		func() {
+			itemID := pushCard(pkg.PushRequest{
+				DedupKey:        "shape-text-composition",
+				Payload:         "e2e: a name entered through an IME",
+				AnswerMechanism: pkg.MessageAnswerMechanism,
+				Options:         options("Anna", "Bob"),
+			})
+			page = newPage("")
+			field := page.Locator(rowSelector(itemID) + " input[name=text]:visible")
+			// ⚠️ The selector handed to Evaluate is plain CSS, without Playwright's
+			// `:visible` pseudo-class — querySelector rejects it. The row pins the item,
+			// so one input[name=text] is the only match on a message card.
+			selector := rowSelector(itemID) + " input[name=text]"
+			Expect(field.Fill("Zoe")).To(Succeed())
+
+			_, err := page.Evaluate(`(selector) => {
+			window.__compositionEvents = [];
+			document.addEventListener('keydown', (event) => {
+				if (event.key !== 'Enter') { return; }
+				window.__compositionEvents.push({
+					isComposing: event.isComposing,
+					keyCode: event.keyCode,
+					defaultPrevented: event.defaultPrevented,
+				});
+			});
+		}`, selector)
+			Expect(err).NotTo(HaveOccurred())
+
+			// keyCode/which are defined on the event rather than passed through the
+			// init dict: Chrome does not reliably honour the legacy members there, and a
+			// silently-zero keyCode would make the 229 case green for the wrong reason.
+			dispatchEnter := func(keyCode int, isComposing bool) {
+				_, evalErr := page.Evaluate(`(args) => {
+				const field = document.querySelector(args.selector);
+				field.focus();
+				const event = new KeyboardEvent('keydown', {
+					key: 'Enter',
+					code: 'Enter',
+					isComposing: args.isComposing,
+					bubbles: true,
+					cancelable: true,
+				});
+				Object.defineProperty(event, 'keyCode', { get: () => args.keyCode });
+				Object.defineProperty(event, 'which', { get: () => args.keyCode });
+				field.dispatchEvent(event);
+			}`, map[string]any{"selector": selector, "keyCode": keyCode, "isComposing": isComposing})
+				Expect(evalErr).NotTo(HaveOccurred())
+			}
+
+			// The composition confirm as Chrome and Firefox report it, then the same
+			// confirm from an IME that only sets keyCode 229.
+			dispatchEnter(229, true)
+			dispatchEnter(229, false)
+
+			events, err := page.Evaluate(`() => window.__compositionEvents`)
+			Expect(err).NotTo(HaveOccurred())
+			observed := events.([]any)
+			Expect(observed).To(HaveLen(2))
+			for _, raw := range observed {
+				Expect(raw.(map[string]any)["defaultPrevented"]).To(BeFalse())
+			}
+
+			// Neither swallowed nor submitted: the card is still open and the text is
+			// exactly what the case typed.
+			Expect(storedItem(itemID).State).To(Equal(pkg.OpenState))
+			Expect(field.InputValue()).To(Equal("Zoe"))
+
+			// Positive control: an ordinary Enter still submits, so the guard is not
+			// swallowing every Enter on the board.
+			Expect(field.Press("Enter")).To(Succeed())
+			item := answeredItem(itemID)
+			Expect(item.Answer).NotTo(BeNil())
+			Expect(item.Answer.Kind).To(Equal(pkg.TextAnswerKind))
+			Expect(string(item.Answer.Value)).To(Equal("Zoe"))
+		},
+	)
+
 	// The pick-then-type sequence, which had no coverage at all: the case above
 	// types text WITHOUT picking first, so it passes on a board that drops the
 	// pick.
