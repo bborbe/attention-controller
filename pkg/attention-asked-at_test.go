@@ -133,4 +133,38 @@ var _ = Describe("asked_at", func() {
 		Expect(updated.ItemID).To(Equal(item.ItemID))
 		Expect(updated.AskedAt).To(BeNil())
 	})
+
+	// The zero instant is not a timestamp a producer can mean: a non-nil pointer
+	// to a zero libtime.DateTime bypasses omitempty, so without this branch the
+	// item stores 0001-01-01 as present and the board renders a fabricated
+	// forwarding lag. Absent means absent, on the write path.
+	It("drops a zero ask time rather than storing year one", func() {
+		var zero libtime.DateTime
+		req := pushRequest("session-a", "asked-at-zero")
+		req.AskedAt = &zero
+
+		item, err := store.Push(ctx, req)
+		Expect(err).To(BeNil())
+		Expect(item.AskedAt).To(BeNil())
+
+		stored, err := store.Get(ctx, item.ItemID)
+		Expect(err).To(BeNil())
+		Expect(stored.AskedAt).To(BeNil())
+	})
+
+	It("drops a zero ask time on the re-push path too", func() {
+		askedAt := libtime.DateTime(now.Add(-stdtime.Hour))
+		first := pushRequest("session-a", "asked-at-zero-repush")
+		first.AskedAt = &askedAt
+		item, err := store.Push(ctx, first)
+		Expect(err).To(BeNil())
+		Expect(item.AskedAt).NotTo(BeNil())
+
+		var zero libtime.DateTime
+		repush := pushRequest("session-a", "asked-at-zero-repush")
+		repush.AskedAt = &zero
+		updated, err := store.Push(ctx, repush)
+		Expect(err).To(BeNil())
+		Expect(updated.AskedAt).To(BeNil())
+	})
 })

@@ -136,7 +136,7 @@ Reference docs (in-container paths):
 - Use `libtime.DateTime` with the store's injected clock, never `time.Now()`. Use the import alias the files already use: `libtime "github.com/bborbe/time"` in `pkg/` production files, and whatever alias the new test file's neighbours use (`stdtime` for the standard library).
 - Existing wire shapes do not change: a push without the new field produces a byte-identical body to today's, and every existing route's request and response shape is unchanged.
 - Do **not** touch `pkg/handler/`, `pkg/factory/`, `main.go`, the page template, the store's `AttentionStore` interface or `CHANGELOG.md` — later prompts own those. This prompt adds a field and its two write-path copies, nothing else.
-- Do not add a `Validate` rule for the new field, and do not add a zero-instant guard.
+- Do not add a `Validate` rule for the new field. ⚠️ **Superseded during review, 2026-11-13:** this line originally also said "and do not add a zero-instant guard". That was wrong for an explicit zero — a non-nil pointer to the zero `libtime.DateTime` bypasses `omitempty`, so a producer serialising an uninitialised value stored `0001-01-01` as a present timestamp and rendered a fabricated forwarding lag. The shipped code adds `askedAtOrNil` on both write paths, and the "keeps that instant exactly as pushed" summary bullet is therefore wrong for an explicit zero: a zero is dropped, not kept.
 - Do NOT commit — dark-factory handles git.
 - Existing tests must still pass.
 - End with the completion report dark-factory appends, followed by a `## Improvements` section (categorise each suggestion PROMPT / GUIDE / GLOBAL).

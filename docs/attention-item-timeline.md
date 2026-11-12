@@ -16,6 +16,23 @@ A card's timeline is not one record — three stages are stored fields, two are 
 | gate released | derived from the attempt record: an `outcome: delivered` attempt at `attempted_at`. There is no field, because the release **is** the delivery — the attempting arm is not the answering arm, and a third writer would record the same event twice. |
 | closed | `closed_at` (store), with the reason derived from `answer_mechanism` and `answered_client` |
 
+## The delta vocabulary
+
+**Exactly four deltas, between consecutive stages that both carry a timestamp.** This list is the single source: the spec's acceptance criteria and prompt 055's requirement both restate it, and any document that names a different set is wrong.
+
+| Delta | Why it is here |
+|---|---|
+| `asked→created` | **The forwarding lag** — the gap between the producer asking and the store receiving. The `asked_at` field exists for this one subtraction; a vocabulary without it deletes the field's purpose. |
+| `created→displayed` | How long the card sat on the board before a browser first painted it. |
+| `displayed→answered` | How long the operator had it before answering. |
+| `answered→delivered` | Whether, and how long after, the answer reached the asking session. |
+
+**Two stages carry no delta of their own.** `gate released` has no timestamp distinct from `delivered` — the release *is* the delivery, so a delta there would be zero by construction. `closed` is terminal and its time is the card's death, not a leg of the journey.
+
+**Labels use these stage names verbatim** — `asked`, `created`, `displayed`, `answered`, `delivered`. There is no `shown` stage: the rendered label is `created→displayed`, not `created→shown`, so a reader can find every term in the table above.
+
+**An absent stage renders `—` and suppresses both deltas that touch it.** A card with no `asked_at` shows `asked→created —` and no `created→displayed` subtraction against a stage that never existed — never a zero, and never a delta computed from `created_at` in its place.
+
 ## The two fields this surface adds
 
 ### `asked_at`

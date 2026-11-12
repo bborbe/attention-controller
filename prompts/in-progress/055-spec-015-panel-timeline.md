@@ -9,7 +9,7 @@ queued: "2026-11-12T10:21:06Z"
 
 <summary>
 - A card's info panel lists each stage that happened, with its raw timestamp.
-- The three deltas the contract names render as whole seconds, floored.
+- The four deltas the contract names render as whole seconds, floored.
 - A stage that did not happen renders as an em dash, never as a zero duration.
 - Where the card was answered and why it closed are readable from the same panel.
 - The gate-released stage appears only for a card whose attempt was delivered.
@@ -171,10 +171,11 @@ Reference docs (in-container paths):
        lines := []string{
            "asked " + stageTimestamp(item.AskedAt),
            "created " + stageTimestamp(&item.CreatedAt),
-           "shown " + stageTimestamp(item.DisplayedAt),
-           "asked→shown " + stageDelta(item.AskedAt, item.DisplayedAt),
+           "displayed " + stageTimestamp(item.DisplayedAt),
+           "asked→created " + stageDelta(item.AskedAt, &item.CreatedAt),
+           "created→displayed " + stageDelta(&item.CreatedAt, item.DisplayedAt),
            "answered " + stageTimestamp(item.AnsweredAt),
-           "shown→answered " + stageDelta(item.DisplayedAt, item.AnsweredAt),
+           "displayed→answered " + stageDelta(item.DisplayedAt, item.AnsweredAt),
        }
        if item.AnsweredBy != "" {
            lines = append(lines, "answered by "+item.AnsweredBy)
@@ -224,7 +225,7 @@ Reference docs (in-container paths):
 
    Imports: `fmt`, `math`, `libtime "github.com/bborbe/time"`, `"github.com/bborbe/attention-controller/pkg"`.
 
-6. **The vocabulary is fixed, not chosen here.** Exactly three delta lines exist — `asked→shown`, `shown→answered`, `answered→delivered` — and no fourth. Do not add a `created→shown` delta, a `delivered→released` delta (the two are one instant by the contract's own definition), or a `→closed` delta. Stage labels are exactly `asked`, `created`, `shown`, `answered`, `delivered`, `released`, `closed`. Deltas render as `<whole seconds>s` and nothing else: no zero-padded clock, no humanized phrase.
+6. **The vocabulary is fixed by the contract, not chosen here.** `docs/attention-item-timeline.md` § The delta vocabulary names exactly four deltas, and these are they: `asked→created`, `created→displayed`, `displayed→answered`, `answered→delivered`. There is no fifth. ⚠️ **`asked→created` is mandatory** — it is the forwarding lag, the sole reason `asked_at` exists, so omitting it deletes the field's purpose. Do not add a `delivered→released` delta (the two are one instant by the contract's own definition) or a `→closed` delta (closed is terminal, not a leg). Stage labels are exactly `asked`, `created`, `displayed`, `answered`, `delivered`, `released`, `closed` — **there is no `shown` label**; the rendered text is `displayed`, matching the contract's stage name. Deltas render as `<whole seconds>s` and nothing else: no zero-padded clock, no humanized phrase.
 
 ### C. The template
 
@@ -261,9 +262,9 @@ Reference docs (in-container paths):
 
    Write these specs:
 
-   a. `renders every stage and the three deltas on the card's panel` — one item with `AskedAt=10:00:00Z`, `CreatedAt=10:00:01Z`, `DisplayedAt=10:00:02Z`, `AnsweredAt=10:00:05Z`, `AnsweredBy="attention-board"`, `ClosedAt=10:00:09Z`, `State: pkg.ClosedState`, `AnswerMechanism: pkg.MessageAnswerMechanism`, `ProducerID`, `Payload`; and a `DeliveryReport{Status: pkg.DeliveredStatus, AttemptedAt: 10:00:06Z}`. Assert the row contains, literally: `asked 2026-11-11T10:00:00Z`, `created 2026-11-11T10:00:01Z`, `shown 2026-11-11T10:00:02Z`, `asked→shown 2s`, `answered 2026-11-11T10:00:05Z`, `shown→answered 3s`, `answered by attention-board`, `delivered 2026-11-11T10:00:06Z`, `answered→delivered 1s`, `released 2026-11-11T10:00:06Z`, `closed 2026-11-11T10:00:09Z message`. Assert the same literals inside `panelOf(row)`, and assert the part of the row BEFORE `<div class="info-panel"` contains none of the timeline lines — the face gains no new line.
+   a. `renders every stage and the three deltas on the card's panel` — one item with `AskedAt=10:00:00Z`, `CreatedAt=10:00:01Z`, `DisplayedAt=10:00:02Z`, `AnsweredAt=10:00:05Z`, `AnsweredBy="attention-board"`, `ClosedAt=10:00:09Z`, `State: pkg.ClosedState`, `AnswerMechanism: pkg.MessageAnswerMechanism`, `ProducerID`, `Payload`; and a `DeliveryReport{Status: pkg.DeliveredStatus, AttemptedAt: 10:00:06Z}`. Assert the row contains, literally: `asked 2026-11-11T10:00:00Z`, `created 2026-11-11T10:00:01Z`, `displayed 2026-11-11T10:00:02Z`, `asked→created 1s`, `created→displayed 1s`, `answered 2026-11-11T10:00:05Z`, `displayed→answered 3s`, `answered by attention-board`, `delivered 2026-11-11T10:00:06Z`, `answered→delivered 1s`, `released 2026-11-11T10:00:06Z`, `closed 2026-11-11T10:00:09Z message`. Assert the same literals inside `panelOf(row)`, and assert the part of the row BEFORE `<div class="info-panel"` contains none of the timeline lines — the face gains no new line.
 
-   b. `renders an absent ask stage as an em dash and never as a zero` — one item with `AskedAt` nil and the other stages at distinct instants. Assert the row contains `asked —` and `asked→shown —`, and that `regexp.MustCompile("(?:^|[^0-9])0s")` finds no match in the row. ⚠️ Seed distinct instants for `DisplayedAt` and `AnsweredAt` in this fixture, so no legitimate zero delta exists to confound the assertion.
+   b. `renders an absent ask stage as an em dash and never as a zero` — one item with `AskedAt` nil and the other stages at distinct instants. Assert the row contains `asked —` and `asked→created —`, and that `regexp.MustCompile("(?:^|[^0-9])0s")` finds no match in the row. ⚠️ Seed distinct instants for `CreatedAt`, `DisplayedAt` and `AnsweredAt` in this fixture, so no legitimate zero delta exists to confound the assertion.
 
    c. `renders the gate-released stage only for a delivered attempt` — three cases in one spec or three specs: delivered (attempt at T) → `released <T>` present; failed attempt → `released —` present and no `released <T>`; no attempt record (`DeliveryReturns(&pkg.DeliveryReport{Status: pkg.NeverAttemptedStatus}, nil)`) → `released —`.
 
@@ -273,9 +274,9 @@ Reference docs (in-container paths):
 
    f. `keeps the whole timeline absent when the delivery read fails` — `DeliveryReturns(nil, errors.New(ctx, "delivery read failed"))`; the page still answers 200, the row still renders its payload, `delivered —`, `answered→delivered —` and `released —` are present, and no `delivery-outcome` element is.
 
-   g. `renders a negative delta as a signed value rather than clamping it` — an item whose `AskedAt` is later than its `DisplayedAt` (the producer's clock ran ahead of the store's) renders `asked→shown -2s`, and a second fixture with `AskedAt=10:00:02.5Z` and `DisplayedAt=10:00:00Z` renders `asked→shown -3s` — the floor half. Assert the row does **not** contain `asked→shown 0s` and does not contain `asked→shown 2s`: a renderer that clamped the sign or truncated toward zero passes a positive-only fixture and fails this one.
+   g. `renders a negative delta as a signed value rather than clamping it` — an item whose `AskedAt` is later than its `CreatedAt` (the producer's clock ran ahead of the store's) renders `asked→created -2s`, and a second fixture with `AskedAt=10:00:02.5Z` and `CreatedAt=10:00:00Z` renders `asked→created -3s` — the floor half. Assert the row does **not** contain `asked→created 0s` and does not contain `asked→created 2s`: a renderer that clamped the sign or truncated toward zero passes a positive-only fixture and fails this one.
 
-10. In `pkg/handler/attention-stream_test.go`, add one spec `carries the timeline in a streamed row` — capture the rendered event payload for one item and assert it contains `asked→shown` and `data-timeline`. Use the file's existing capture helper; do not start a second renderer. This pins the "both callers pass the report" requirement, which a page-only spec cannot see.
+10. In `pkg/handler/attention-stream_test.go`, add one spec `carries the timeline in a streamed row` — capture the rendered event payload for one item and assert it contains `asked→created` and `data-timeline`. Use the file's existing capture helper; do not start a second renderer. This pins the "both callers pass the report" requirement, which a page-only spec cannot see.
 </requirements>
 
 <constraints>
@@ -283,7 +284,7 @@ Reference docs (in-container paths):
 - **Absence is not a zero.** A stage with no timestamp renders `—`; no delta is computed across a missing stage; no zero duration is ever printed in its place.
 - **Derived stages stay derived.** Gate-released is read off the delivered attempt record; the close reason is read off the answer mechanism and the recorded client. Neither becomes a stored field, and `pkg/attention-item.go` must not gain one.
 - **The panel names exactly the four outcomes the contract lists and invents no fifth.** A `held` card renders no delivery-outcome line at all.
-- The delta vocabulary is fixed by this prompt: exactly `asked→shown`, `shown→answered`, `answered→delivered`, whole seconds floored, signed, never clamped.
+- The delta vocabulary is fixed by `docs/attention-item-timeline.md` § The delta vocabulary: exactly `asked→created`, `created→displayed`, `displayed→answered`, `answered→delivered`, whole seconds floored, signed, never clamped.
 - The marker keeps its class and its row-level position. Do **not** change `Undeliverable()` in this prompt — prompt `4-spec-015-undeliverable-marker.md` widens it. If your fixtures need the marker, leave it alone.
 - The panel is the render target: the card face gains no new line.
 - The template is a Go raw-string literal: no backticks. The lines go through `html/template`'s text escaping; no free-text value reaches the panel unescaped and no new user input is introduced.
@@ -304,7 +305,7 @@ Run in the repo root:
 - `! grep -q 'deliveryStatusOf' pkg/handler/` — succeeds only when the old helper is gone from every file (including its doc comment).
 - `grep -c 'data-timeline' pkg/handler/attention-page.go` — prints `1`.
 - `grep -c 'delivery-outcome' pkg/handler/attention-page.go` — prints `1` (the template line; the stylesheet carries the class name in `attention-page-helpers.go`, which is a different file).
-- `grep -c 'asked→shown\|shown→answered\|answered→delivered' pkg/handler/attention-page-timeline.go` — prints `3`, one per delta, and no fourth delta label exists anywhere in that file.
+- `grep -c 'asked→created\|created→displayed\|displayed→answered\|answered→delivered' pkg/handler/attention-page-timeline.go` — prints `4`, one per delta, and no fifth delta label exists anywhere in that file.
 - `! grep -q 'GateReleasedAt\|ReleasedAt\|CloseReason' pkg/attention-item.go` — succeeds only when no derived stage became a stored field.
 - `ROOTDIR=/workspace make precommit` — must exit 0. ⚠️ The explicit `ROOTDIR` is required in this container: `.git` is masked here, so the Makefile cannot resolve `ROOTDIR`/`BRANCH` from the checkout on its own. This is the same form earlier prompts in this repo use.
 
