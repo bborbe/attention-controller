@@ -140,8 +140,9 @@ func (f *federatingAttentionStore) History(
 	ctx context.Context,
 	limit int,
 	offset int,
+	filters ...HistoryFilter,
 ) (Items, error) {
-	return f.local.History(ctx, limit, offset)
+	return f.local.History(ctx, limit, offset, filters...)
 }
 
 // SweepAnswered delegates to the local store. The peer sweeps its own.
@@ -223,6 +224,20 @@ func (f *federatingAttentionStore) Unflag(ctx context.Context, itemID ItemID) (*
 		return f.remote.Unflag(ctx, itemID)
 	}
 	return f.local.Unflag(ctx, itemID)
+}
+
+// Rate proxies to the peer when the peer owns the item, and applies locally
+// otherwise — the same ownership rule as Flag, so a rating lives on the one
+// record the item has.
+func (f *federatingAttentionStore) Rate(
+	ctx context.Context,
+	itemID ItemID,
+	rating Rating,
+) (*Item, error) {
+	if f.isRemote(ctx, itemID) {
+		return f.remote.Rate(ctx, itemID, rating)
+	}
+	return f.local.Rate(ctx, itemID, rating)
 }
 
 // Close proxies to the peer when the peer owns the item, and applies locally

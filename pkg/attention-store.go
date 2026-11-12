@@ -64,7 +64,14 @@ type AttentionStore interface {
 	// that needs the whole store rather than a page. offset < 0 is treated as 0.
 	// Both bounds exist because the unbounded form is what this endpoint used to
 	// do unconditionally, and it decoded all ~22,000 rows on every request.
-	History(ctx context.Context, limit int, offset int) (Items, error)
+	//
+	// filters, when given, narrow the page (see HistoryFilter); they are applied
+	// before limit and offset, so a page holds up to limit MATCHING items. No
+	// filter — or a zero one — narrows nothing, which is every existing caller.
+	//
+	// ⚠️ The caller must not modify the returned slice: a repeat read is served
+	// from a cache and hands back the same backing array as the previous reader.
+	History(ctx context.Context, limit int, offset int, filters ...HistoryFilter) (Items, error)
 
 	// SweepAnswered closes every answered item whose AnsweredAt is older than
 	// maxAge, and every open item that repeats an ask already answered,
@@ -193,6 +200,15 @@ type AttentionStore interface {
 	// nothing, because the caller's intent already holds. An unknown id is
 	// ErrItemNotFound.
 	Unflag(ctx context.Context, itemID ItemID) (*Item, error)
+
+	// Rate records the operator's 👍/👎 judgement of an item ("up" / "down"),
+	// or clears it ("" — NoRating). It is a measurement only: NOT a transition,
+	// NOT an answer, NOT a flag. State, the answer fields, the delivery trail
+	// and the flag pair are untouched, and it is accepted in every state —
+	// open, answered and closed alike. Any other value is ErrRatingInvalid and
+	// writes nothing. RatedAt is stamped from the store's clock with Rating and
+	// cleared with it. An unknown id is ErrItemNotFound.
+	Rate(ctx context.Context, itemID ItemID, rating Rating) (*Item, error)
 
 	// Close applies open -> closed or answered -> closed. Closing an item that
 	// is already closed is rejected with ErrIllegalTransition.
@@ -401,3 +417,20 @@ func (p PushRequest) validateQuestions(ctx context.Context) error {
 
 // AttentionStoreBucketName is the bucket every item lives in.
 var AttentionStoreBucketName = libkv.NewBucketName("attention-items")
+
+// HistoryFilter narrows a History page. Every set field must hold for an item
+// to be returned; a zero HistoryFilter narrows nothing. Several filters passed
+// to one call are merged into one.
+//
+// ⚠️ It exists for the polling readers, not for counting. The store's own
+// consumers read the whole history on a timer to find a handful of their own
+// cards — measured 2026-11-03, 8 manager watchers each read `?limit=50000`
+// every 60 s for `park:` cards — and a filter applied server-side is what lets
+// them stop doing that.
+type HistoryFilter struct {
+	// Producers keeps items whose `producer_id` is one of these. Empty ids are
+	// ignored: an empty id would match every item whose producer declared none.
+	Producers []ProducerID
+	// DedupKeyPrefix keeps items whose `dedup_key` starts with it.
+	DedupKeyPrefix DedupKey
+}

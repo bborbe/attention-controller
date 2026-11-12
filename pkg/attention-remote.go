@@ -82,6 +82,9 @@ type RemoteAttentionStore interface {
 
 	// Unflag clears a flag on one of the peer's items.
 	Unflag(ctx context.Context, itemID ItemID) (*Item, error)
+
+	// Rate records or clears the operator's rating on one of the peer's items.
+	Rate(ctx context.Context, itemID ItemID, rating Rating) (*Item, error)
 }
 
 // NewHTTPRemoteAttentionStore returns a RemoteAttentionStore backed by a peer
@@ -287,6 +290,31 @@ func (h *httpRemoteAttentionStore) Unflag(
 	return &item, nil
 }
 
+// remoteRateRequest is the peer's rate body, mirrored field for field.
+type remoteRateRequest struct {
+	Rating Rating `json:"rating"`
+}
+
+// Rate proxies a rating to the peer and returns the peer's item.
+func (h *httpRemoteAttentionStore) Rate(
+	ctx context.Context,
+	itemID ItemID,
+	rating Rating,
+) (*Item, error) {
+	var item Item
+	err := h.do(
+		ctx,
+		http.MethodPost,
+		remoteItemPath(itemID)+"/rate",
+		remoteRateRequest{Rating: rating},
+		&item,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &item, nil
+}
+
 // do performs one call against the peer and decodes a successful response into
 // result. A nil result means the caller wants only the failure signal.
 func (h *httpRemoteAttentionStore) do(
@@ -421,6 +449,13 @@ func remoteResponseError(ctx context.Context, resp *http.Response) error {
 			ctx,
 			ErrFlagReasonRequired,
 			"peer attention store: flag reason required (%s)",
+			errorResponse.Error.Message,
+		)
+	case code == ErrorCodeRatingInvalid:
+		return errors.Wrapf(
+			ctx,
+			ErrRatingInvalid,
+			"peer attention store: rating invalid (%s)",
 			errorResponse.Error.Message,
 		)
 	case code == libhttp.ErrorCodeNotFound || resp.StatusCode == http.StatusNotFound:

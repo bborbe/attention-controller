@@ -22,15 +22,52 @@ const (
 	historyLimitParam  = "limit"
 	historyOffsetParam = "offset"
 
+	// historyProducerParam narrows the page to one or more producers; repeat it
+	// for several (`?producer_id=a&producer_id=b`). Absent means every producer,
+	// so every existing caller is unchanged.
+	historyProducerParam = "producer_id"
+
+	// historyDedupPrefixParam narrows the page to items whose dedup key starts
+	// with the value (`?dedup_key_prefix=park:`).
+	historyDedupPrefixParam = "dedup_key_prefix"
+
 	// historyDefaultLimit bounds the response when the caller names no limit.
 	//
 	// ⚠️ It is sized from the payload rather than from taste. Rows average ~840
 	// bytes, so 1000 is ~0.8 MB — comfortably under the 2 MB the criterion pins,
-	// and roughly 400x below the 18.8 MB the unbounded read returned. A caller
-	// that genuinely needs the whole store can still ask for it with `limit=0`;
-	// what changed is that it has to ASK.
+	// and roughly 23x below the 18.8 MB the unbounded read returned.
+	//
+	// `limit=0` does NOT raise this to the whole store — it resolves to
+	// historyMaxLimit, the largest page one request may ask for. A caller that
+	// genuinely needs more than that walks the pages, which the endpoint's own
+	// doc requires in order to count at all — though that walk is not stable
+	// while an item is expiring, as the doc spells out.
 	historyDefaultLimit = 1000
+
+	// historyMaxLimit is the largest page one request may ask for, and the value
+	// `limit=0` now resolves to.
+	//
+	// ⚠️ It exists because the page is materialised in memory before it is
+	// encoded, so an unbounded one sets the process footprint for hours after it
+	// is served — macOS keeps released pages counted in `phys_footprint`, so the
+	// high-water mark, not the live set, is what the operator sees. Measured
+	// 2026-11-04: a 50,000-row read allocates roughly 200 MB, and two overlapping
+	// reads produced a 386 MB peak against a 23 MB live heap. 10,000 rows is about
+	// 8 MB encoded and is still an order of magnitude above any page a caller
+	// reads today.
+	historyMaxLimit = 10000
 )
+
+// clampHistoryLimit bounds one page. `limit=0` has always meant "the whole
+// store", and that is the value this exists to remove: a caller that wants more
+// than historyMaxLimit walks the pages, which the endpoint's own doc already
+// requires for a stable count.
+func clampHistoryLimit(limit int) int {
+	if limit <= 0 || limit > historyMaxLimit {
+		return historyMaxLimit
+	}
+	return limit
+}
 
 // NewAttentionHistoryHandler creates an HTTP handler that returns items
 // regardless of state, newest-first and paginated.
@@ -60,11 +97,15 @@ func NewAttentionHistoryHandler(store pkg.AttentionStore) http.Handler {
 				if err != nil {
 					return err
 				}
+				limit = clampHistoryLimit(limit)
 				offset, err := historyIntParam(ctx, req, historyOffsetParam, 0)
 				if err != nil {
 					return err
 				}
-				items, err := store.History(ctx, limit, offset)
+				items, err := store.History(ctx, limit, offset, pkg.HistoryFilter{
+					Producers:      historyProducers(req),
+					DedupKeyPrefix: pkg.DedupKey(req.URL.Query().Get(historyDedupPrefixParam)),
+				})
 				if err != nil {
 					return libhttp.WrapWithCode(
 						errors.Wrap(ctx, err, "history failed"),
@@ -79,6 +120,19 @@ func NewAttentionHistoryHandler(store pkg.AttentionStore) http.Handler {
 			},
 		),
 	)
+}
+
+// historyProducers reads every `producer_id` query value. An empty value is
+// dropped here as well as in the store, so `?producer_id=` reads as "no filter"
+// rather than as "items with no producer".
+func historyProducers(req *http.Request) []pkg.ProducerID {
+	var producers []pkg.ProducerID
+	for _, raw := range req.URL.Query()[historyProducerParam] {
+		if raw != "" {
+			producers = append(producers, pkg.ProducerID(raw))
+		}
+	}
+	return producers
 }
 
 // historyIntParam reads one integer query parameter, returning fallback when it

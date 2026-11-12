@@ -33,6 +33,16 @@ type TaskIndex struct {
 	reconcileArgsForCall []struct {
 		arg1 context.Context
 	}
+	SubjectTitlesStub        func() []string
+	subjectTitlesMutex       sync.RWMutex
+	subjectTitlesArgsForCall []struct {
+	}
+	subjectTitlesReturns struct {
+		result1 []string
+	}
+	subjectTitlesReturnsOnCall map[int]struct {
+		result1 []string
+	}
 	invocations      map[string][][]interface{}
 	invocationsMutex sync.RWMutex
 }
@@ -169,6 +179,59 @@ func (fake *TaskIndex) ReconcileArgsForCall(i int) context.Context {
 	defer fake.reconcileMutex.RUnlock()
 	argsForCall := fake.reconcileArgsForCall[i]
 	return argsForCall.arg1
+}
+
+func (fake *TaskIndex) SubjectTitles() []string {
+	fake.subjectTitlesMutex.Lock()
+	ret, specificReturn := fake.subjectTitlesReturnsOnCall[len(fake.subjectTitlesArgsForCall)]
+	fake.subjectTitlesArgsForCall = append(fake.subjectTitlesArgsForCall, struct {
+	}{})
+	stub := fake.SubjectTitlesStub
+	fakeReturns := fake.subjectTitlesReturns
+	fake.recordInvocation("SubjectTitles", []interface{}{})
+	fake.subjectTitlesMutex.Unlock()
+	if stub != nil {
+		return stub()
+	}
+	if specificReturn {
+		return ret.result1
+	}
+	return fakeReturns.result1
+}
+
+func (fake *TaskIndex) SubjectTitlesCallCount() int {
+	fake.subjectTitlesMutex.RLock()
+	defer fake.subjectTitlesMutex.RUnlock()
+	return len(fake.subjectTitlesArgsForCall)
+}
+
+func (fake *TaskIndex) SubjectTitlesCalls(stub func() []string) {
+	fake.subjectTitlesMutex.Lock()
+	defer fake.subjectTitlesMutex.Unlock()
+	fake.SubjectTitlesStub = stub
+}
+
+func (fake *TaskIndex) SubjectTitlesReturns(result1 []string) {
+	fake.subjectTitlesMutex.Lock()
+	defer fake.subjectTitlesMutex.Unlock()
+	fake.SubjectTitlesStub = nil
+	fake.subjectTitlesReturns = struct {
+		result1 []string
+	}{result1}
+}
+
+func (fake *TaskIndex) SubjectTitlesReturnsOnCall(i int, result1 []string) {
+	fake.subjectTitlesMutex.Lock()
+	defer fake.subjectTitlesMutex.Unlock()
+	fake.SubjectTitlesStub = nil
+	if fake.subjectTitlesReturnsOnCall == nil {
+		fake.subjectTitlesReturnsOnCall = make(map[int]struct {
+			result1 []string
+		})
+	}
+	fake.subjectTitlesReturnsOnCall[i] = struct {
+		result1 []string
+	}{result1}
 }
 
 func (fake *TaskIndex) Invocations() map[string][][]interface{} {

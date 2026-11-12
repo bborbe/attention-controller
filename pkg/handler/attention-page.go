@@ -340,6 +340,13 @@ document.addEventListener('submit', function (event) {
     return;
   }
   var itemID = row.getAttribute('data-item-id');
+  /* Cleared at SUBMIT, not on success. ⚠️ Load bearing: the flag's stream echo
+     can land before the fetch resolves, and the row swap carries unsent input
+     onto the new node (carryFormState) — a field still holding the sent reason
+     would be carried, and a success handler clearing the captured field would
+     only empty the detached old node. On failure the reason is put back into
+     whichever node is live by then. */
+  field.value = '';
   fetch('/api/1.0/attention/' + encodeURIComponent(itemID) + '/flag', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -347,10 +354,15 @@ document.addEventListener('submit', function (event) {
   }).then(function (response) {
     if (!response.ok) { throw new Error('flag failed: ' + response.status); }
     return response.json();
-  }).then(function () {
-    if (field) { field.value = ''; }
   }).catch(function (err) {
-    showNote(form, 'Could not flag this card: ' + err.message, true);
+    var target = field;
+    document.querySelectorAll('li.item').forEach(function (candidate) {
+      if (candidate.getAttribute('data-item-id') !== itemID) { return; }
+      var live = candidate.querySelector('form[data-flag-control] input[name=reason]');
+      if (live) { target = live; }
+    });
+    if (!target.value) { target.value = reason; }
+    showNote(target.closest('form') || form, 'Could not flag this card: ' + err.message, true);
   });
 });
 /* Unflag is reachable from the card the flag was written on, and that is the
@@ -376,6 +388,44 @@ document.addEventListener('click', function (event) {
     return response.json();
   }).catch(function (err) {
     showNote(row, 'Could not unflag this card: ' + err.message, true);
+  });
+});
+/* The 👍/👎 rating. Clicking the highlighted icon clears it; clicking the
+   other switches it. It posts to /rate only — never /answer — and changes no
+   row state beyond the highlight; the stored value comes back over the SSE
+   stream like any other row change, and the optimistic update below covers the
+   gap. Delegated on the document because a stream re-render replaces the row. */
+function applyRating(control, rating) {
+  control.setAttribute('data-rating', rating);
+  var buttons = control.querySelectorAll('button[data-rate]');
+  for (var i = 0; i < buttons.length; i++) {
+    var on = buttons[i].getAttribute('data-rate') === rating;
+    buttons[i].classList.toggle('rated', on);
+    buttons[i].setAttribute('aria-pressed', on ? 'true' : 'false');
+  }
+}
+document.addEventListener('click', function (event) {
+  if (!event.target || !event.target.closest) { return; }
+  var button = event.target.closest('button[data-rate]');
+  if (!button) { return; }
+  var control = button.closest('[data-rate-control]');
+  var row = button.closest('li.item');
+  if (!control || !row) { return; }
+  event.preventDefault();
+  var previous = control.getAttribute('data-rating') || '';
+  var clicked = button.getAttribute('data-rate');
+  var next = previous === clicked ? '' : clicked;
+  applyRating(control, next);
+  fetch('/api/1.0/attention/' + encodeURIComponent(row.getAttribute('data-item-id')) + '/rate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rating: next })
+  }).then(function (response) {
+    if (!response.ok) { throw new Error('rate failed: ' + response.status); }
+    return response.json();
+  }).catch(function (err) {
+    applyRating(control, previous);
+    showNote(row, 'Could not rate this card: ' + err.message, true);
   });
 });
 /* singleAnswer maps one collected entry onto the item-level answer shape.
@@ -1112,6 +1162,10 @@ function replayFailure(row) {
        while hidden arrives here a second time, and two entries for one id
        would restore it twice. */
     parked = parked.filter(function (entry) { return entry.id !== id; });
+    /* Self-carry first: outerHTML serialises attributes, so without it a row
+       restored later would come back with the picks of its LAST swap rather
+       than the ones on screen when it was parked. */
+    carryFormState(row, row);
     parked.push({
       id: id,
       html: row.outerHTML,
@@ -1221,6 +1275,9 @@ function replayFailure(row) {
       var rows = document.querySelectorAll('li.item');
       for (var i = 0; i < rows.length; i++) {
         if (rows[i].getAttribute('data-producer-kind') === kind) { continue; }
+        /* Mirrors filterByProducerKind: a card no live manager can relay is
+           shown whatever its kind, so a streamed one must survive this pass. */
+        if (rows[i].getAttribute('data-uncovered') === 'true') { continue; }
         /* Recorded before the row leaves the document: whether it counts depends
            on whether it was dimmed, which only the node knows. */
         kindStreamed[rows[i].getAttribute('data-item-id')] =
@@ -1364,14 +1421,96 @@ function replayFailure(row) {
      a board whose own switch said it was hidden. Preparing first makes the swap
      the LAST fallible step, and is also how a PARKED row's note is replayed. */
   function preparedHTML(html, itemID) {
-    if (!failures[itemID] && !speaking[itemID]) { return html; }
+    var live = findRow(itemID);
+    var carry = !!(live && live.querySelector('form'));
+    if (!failures[itemID] && !speaking[itemID] && !carry) { return html; }
     var detached = document.createElement('div');
     detached.innerHTML = html;
     var row = detached.firstElementChild;
     if (!row) { return html; }
     if (failures[itemID]) { replayFailure(row); }
     if (speaking[itemID]) { speakButtonState(speakButtonIn(row), true); }
+    if (carry) { carryFormState(live, row); }
     return row.outerHTML;
+  }
+  /* The operator's unsent input, carried from the live row onto the server's
+     rendering before the swap. The server never renders a pick, a typed field
+     or a chosen tab — it cannot know them — so every stream event for a row
+     (a 👍/👎 echo above all, since the operator clicks it WHILE answering)
+     used to replace that row with blank controls and silently discard the
+     answer in progress.
+     ⚠️ Written as ATTRIBUTES, not properties: the prepared node is serialised
+     through outerHTML, which carries the checked and value attributes and drops
+     the live properties. A control the new markup no longer carries (the card
+     became an answered record) has nothing to land on and is dropped, which is
+     right — the answer was given. */
+  /* The key carries the question's own TEXT, so a producer re-push that rewords
+     a question does not keep a pick the operator made against the old wording:
+     the key no longer matches and that panel comes back blank. */
+  function controlKey(input) {
+    var form = input.closest('form');
+    var panel = input.closest('.panel');
+    var question = panel ? panel.querySelector('.question') : null;
+    var key = [
+      form ? form.className : '',
+      panel ? panel.getAttribute('data-question') : '',
+      question ? question.textContent : '',
+      input.type,
+      input.name,
+      input.className
+    ];
+    if (input.type === 'radio' || input.type === 'checkbox') {
+      key.push(input.hasAttribute('data-other') ? 'data-other' : 'option:' + input.value);
+    }
+    return JSON.stringify(key);
+  }
+  function restoreFocus(itemID, key, caret) {
+    var row = findRow(itemID);
+    if (!row) { return; }
+    var inputs = row.querySelectorAll('input');
+    for (var i = 0; i < inputs.length; i++) {
+      if (controlKey(inputs[i]) !== key) { continue; }
+      inputs[i].focus();
+      if (caret) { inputs[i].setSelectionRange(caret[0], caret[1]); }
+      return;
+    }
+  }
+  function carryFormState(live, row) {
+    var targets = {};
+    row.querySelectorAll('input').forEach(function (input) {
+      var key = controlKey(input);
+      if (!targets[key]) { targets[key] = []; }
+      targets[key].push(input);
+    });
+    var seen = {};
+    live.querySelectorAll('input').forEach(function (input) {
+      var key = controlKey(input);
+      var index = seen[key] || 0;
+      seen[key] = index + 1;
+      var target = targets[key] && targets[key][index];
+      if (!target) { return; }
+      if (input.type === 'radio' || input.type === 'checkbox') {
+        if (input.checked) { target.setAttribute('checked', ''); }
+        else { target.removeAttribute('checked'); }
+      } else if (input.type === 'text') {
+        target.setAttribute('value', input.value);
+      }
+    });
+    var activeTab = live.querySelector('.tabs button[data-tab].active');
+    if (!activeTab) { return; }
+    var name = activeTab.getAttribute('data-tab');
+    var match = false;
+    row.querySelectorAll('.tabs button[data-tab]').forEach(function (tab) {
+      if (tab.getAttribute('data-tab') === name) { match = true; }
+    });
+    if (!match) { return; }
+    row.querySelectorAll('.tabs button[data-tab]').forEach(function (tab) {
+      tab.classList.toggle('active', tab.getAttribute('data-tab') === name);
+    });
+    row.querySelectorAll('.panel').forEach(function (panel) {
+      if (panel.getAttribute('data-question') === name) { panel.removeAttribute('hidden'); }
+      else { panel.setAttribute('hidden', ''); }
+    });
   }
   /* The read-aloud control within a row not yet in the document — speakControl
      searches the document, which an uncommitted node is not part of. */
@@ -1411,7 +1550,14 @@ function replayFailure(row) {
     }
     var row = findRow(itemID);
     if (row) {
+      /* The operator may be typing in this row when an unrelated event lands:
+         the text is carried by preparedHTML, and focus and caret are put back
+         here, so the next keystroke still reaches the field. */
+      var focused = document.activeElement;
+      var focusKey = (focused && focused.tagName === 'INPUT' && row.contains(focused)) ? controlKey(focused) : null;
+      var caret = (focusKey && focused.type === 'text') ? [focused.selectionStart, focused.selectionEnd] : null;
       row.outerHTML = prepared;
+      if (focusKey) { restoreFocus(itemID, focusKey, caret); }
     } else {
       var list = ensureList();
       if (!list) { return; }
@@ -1534,7 +1680,7 @@ function replayFailure(row) {
      — and it must be the SAME markup, not a second renderer that would drift
      from this one. The dollar sign inside a sub-template is the value passed to
      it, which is why Speak is carried on the row and read as dot-Speak here. */}}
-{{define "attention-row"}}<li class="item risk-{{ .Risk }}{{if .Dimmed}} dimmed{{end}}" data-item-id="{{ .Item.ItemID }}" data-risk="{{ .Risk }}" data-producer-kind="{{ .Item.ProducerKind }}" data-flagged="{{if .Flagged}}true{{else}}false{{end}}">
+{{define "attention-row"}}<li class="item risk-{{ .Risk }}{{if .Dimmed}} dimmed{{end}}" data-item-id="{{ .Item.ItemID }}" data-risk="{{ .Risk }}" data-producer-kind="{{ .Item.ProducerKind }}"{{if .Provenance.Uncovered}} data-uncovered="true"{{end}} data-flagged="{{if .Flagged}}true{{else}}false{{end}}">
 {{/* The corner X renders on every OPEN row, ungated by mechanism, from
      2026-09-27 — message, ack and permission alike — and is withheld from the
      dimmed record card by the (not .Dimmed) conjunct, added 2026-10-01. It was
@@ -1583,6 +1729,7 @@ function replayFailure(row) {
 {{else if .NoJump}}<button type="button" class="jump-corner" disabled aria-label="Jump to session" title="Jump to session"><svg class="jump-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.75 3.25h8.5a1.5 1.5 0 0 1 1.5 1.5v6.5a1.5 1.5 0 0 1-1.5 1.5h-8.5a1.5 1.5 0 0 1-1.5-1.5v-6.5a1.5 1.5 0 0 1 1.5-1.5z"/><path d="M5.75 6.5 7.5 8.25 5.75 10"/><path d="M9 10h1.75"/></svg></button>
 {{end}}{{if .Info}}<button type="button" class="info-toggle" data-info-toggle aria-expanded="false" aria-label="Card information">i</button>
 {{end}}{{if or .TaskURL .GoalURL .TopicURL .Provenance.SessionName}}<div class="provenance">{{if .TaskURL}}<span class="task"><a href="{{ .TaskURL }}">{{ .Provenance.TaskName }}</a></span>{{end}}{{if .GoalURL}}<span class="goal"><a href="{{ .GoalURL }}">{{ .Provenance.GoalName }}</a></span>{{end}}{{if .TopicURL}}<span class="topic"><a href="{{ .TopicURL }}">{{ .Provenance.TopicName }}</a></span>{{end}}{{if .Provenance.SessionName}}<span class="session-name">{{ .Provenance.SessionName }}</span>{{end}}</div>
+{{end}}{{if .Provenance.Uncovered}}<div class="uncovered-reason" data-uncovered-reason>Shown because no live manager can relay it.</div>
 {{end}}{{if not .Message}}<div class="payload">{{ cardtext .Item.Payload }}</div>
 {{end}}{{if .Item.Context}}<div class="context">{{ cardtext .Item.Context }}</div>
 {{end}}{{if .Dimmed}}<div class="record"><div class="record-question">{{ cardtext .Item.Payload }}</div><div class="record-answer">answered: {{ .Record }}</div></div>
@@ -1616,7 +1763,11 @@ function replayFailure(row) {
      item and the endpoint answers 409 for an answered one, so a control here
      would always fail. */}}{{if not .Dimmed}}<form class="flag" data-flag-control><input class="flag-reason-input" type="text" name="reason" placeholder="Why should this not have reached you?" aria-label="Reason this card was misrouted"><button type="submit" class="flag-submit">⚑ Flag as misrouted</button></form>
 {{end}}{{if .Flagged}}<div class="flag-reason-shown">flagged: {{ cardtext .Item.FlagReason }} <button type="button" class="unflag" data-unflag>Unflag</button></div>
-{{end}}{{/* The undeliverable marker renders on a card whose answer a recorded
+{{end}}{{/* The 👍/👎 pair renders on EVERY row, dimmed record cards included: a
+     rating is a measurement accepted in any state, not an answer, so the
+     record-card rule (no control that offers an answer) does not withhold it.
+     Kept to two buttons so the history's rows stay small. */}}<div class="rate" data-rate-control data-rating="{{ .Item.Rating }}"><button type="button" class="rate-btn{{if eq .Item.Rating "up"}} rated{{end}}" data-rate="up" aria-pressed="{{if eq .Item.Rating "up"}}true{{else}}false{{end}}" aria-label="Good card">👍</button><button type="button" class="rate-btn{{if eq .Item.Rating "down"}} rated{{end}}" data-rate="down" aria-pressed="{{if eq .Item.Rating "down"}}true{{else}}false{{end}}" aria-label="Should not have reached me">👎</button></div>
+{{/* The undeliverable marker renders on a card whose answer a recorded
      attempt says did NOT reach the asking session, and on no other status:
      "delivered" is the good case, "held" is a gate an arm declined to answer on
      purpose, "never_attempted" and "pre_trail_unknown" are absences of an

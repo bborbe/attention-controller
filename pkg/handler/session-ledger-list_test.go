@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 
 	libboltkv "github.com/bborbe/boltkv"
+	libhttp "github.com/bborbe/http"
 	libkv "github.com/bborbe/kv"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -61,6 +62,9 @@ var _ = Describe("SessionLedgerListHandler", func() {
 
 		rec := list(handler.NewSessionLedgerListHandler(store))
 		Expect(rec.Code).To(Equal(http.StatusOK))
+		Expect(
+			rec.Header().Get(libhttp.ContentTypeHeaderName),
+		).To(Equal(libhttp.ApplicationJSONContentType))
 		Expect(rec.Body.String()).To(ContainSubstring(handlerLedgerSessionID))
 		Expect(rec.Body.String()).To(ContainSubstring(handlerLedgerSecondSessionID))
 	})
@@ -100,7 +104,7 @@ var _ = Describe("SessionLedgerListHandler", func() {
 	// "nobody was spawned" from "I could not find out".
 	It("answers 500 — never an empty array — when the store cannot be read", func() {
 		failing := &mocks.SessionLedgerStore{}
-		failing.ListReturns(nil, errors.New("store unavailable"))
+		failing.ListJSONReturns(nil, errors.New("store unavailable"))
 
 		rec := list(handler.NewSessionLedgerListHandler(failing))
 		Expect(rec.Code).To(Equal(http.StatusInternalServerError))

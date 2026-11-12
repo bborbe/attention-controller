@@ -5,7 +5,10 @@
 package pkg
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"sync"
 
 	"github.com/bborbe/errors"
 	libkv "github.com/bborbe/kv"
@@ -57,7 +60,17 @@ type SessionLedgerStore interface {
 	// what lets a reader tell `absent` from `ended`.
 	Get(ctx context.Context, sessionID string) (SessionLedgerEntry, bool, error)
 	// List returns every row the store holds, in no guaranteed order.
+	//
+	// ⚠️ The caller must not modify the returned slice — it is shared with the
+	// next reader, because a cache hit hands back the same backing array rather
+	// than a copy. Callers that need to sort or filter must copy first; the ones
+	// in this repo only range over it, which is why the cache can be shared at
+	// all. ListJSON carries the same warning for the same reason.
 	List(ctx context.Context) (SessionLedgerEntries, error)
+	// ListJSON returns List's rows as the encoded JSON body the list endpoint
+	// answers, served from a cache that every write drops. The caller must not
+	// modify the returned slice — it is shared with the next reader.
+	ListJSON(ctx context.Context) ([]byte, error)
 	// Import adds the rows that are not already present and returns how many it
 	// added. See the implementation for why it is idempotent.
 	Import(ctx context.Context, entries SessionLedgerEntries) (int, error)
@@ -67,6 +80,69 @@ type SessionLedgerStore interface {
 type sessionLedgerStore struct {
 	db      libkv.DB
 	entries libkv.StoreTx[string, SessionLedgerEntry]
+	cache   *ledgerListCache
+}
+
+// ledgerListCache holds the encoded body of the last full List.
+//
+// ⚠️ **It exists because the list endpoint is polled, not because it is slow.**
+// Every supervisor script and manager loop reads the whole ledger on a timer;
+// measured 2026-11-02 on the Mac board, 3,796 rows came to a 3.2 MB response and
+// the endpoint accounted for 53 % of all bytes the process allocated — 14.8 GB in
+// ten minutes, re-decoding and re-encoding an unchanged ledger two to three times
+// a second. That churn drove the heap to a 1.9 GB peak against ~23 MB live, and
+// macOS kept the released pages in the process footprint.
+//
+// ⚠️ **The generation counter is what makes the cache safe, not the mutex.** A
+// List that started before a write would otherwise store a body that predates
+// it, and the next reader would be answered a ledger missing the write. Every
+// write bumps the generation, and a body is only stored if the generation it was
+// read under is still current — so a racing write costs one cache miss, never a
+// stale answer.
+type ledgerListCache struct {
+	mu      sync.Mutex
+	gen     uint64
+	body    []byte
+	entries SessionLedgerEntries
+}
+
+func (c *ledgerListCache) load() ([]byte, uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.body, c.gen
+}
+
+func (c *ledgerListCache) store(gen uint64, body []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.gen == gen {
+		c.body = body
+	}
+}
+
+// loadEntries returns the cached rows and the generation they were read under.
+func (c *ledgerListCache) loadEntries() (SessionLedgerEntries, uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.entries, c.gen
+}
+
+// storeEntries caches rows only when no write landed since they were read, for
+// the same reason store does: a stale answer is worse than a cache miss.
+func (c *ledgerListCache) storeEntries(gen uint64, entries SessionLedgerEntries) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.gen == gen {
+		c.entries = entries
+	}
+}
+
+func (c *ledgerListCache) invalidate() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.gen++
+	c.body = nil
+	c.entries = nil
 }
 
 // NewSessionLedgerStore creates a store over the given database.
@@ -79,11 +155,13 @@ func NewSessionLedgerStore(db libkv.DB) SessionLedgerStore {
 	return &sessionLedgerStore{
 		db:      db,
 		entries: libkv.NewStoreTx[string, SessionLedgerEntry](sessionLedgerBucketName),
+		cache:   &ledgerListCache{},
 	}
 }
 
 // Post stores one row, keyed by its session id.
 func (s *sessionLedgerStore) Post(ctx context.Context, entry SessionLedgerEntry) error {
+	defer s.cache.invalidate()
 	if err := entry.Validate(ctx); err != nil {
 		return errors.Wrap(ctx, err, "validate session ledger entry failed")
 	}
@@ -111,6 +189,7 @@ func (s *sessionLedgerStore) Patch(
 	sessionID string,
 	patch SessionLedgerPatch,
 ) (SessionLedgerEntry, bool, error) {
+	defer s.cache.invalidate()
 	var merged SessionLedgerEntry
 	found := false
 	err := s.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
@@ -186,8 +265,24 @@ func (s *sessionLedgerStore) Get(
 	return entry, found, nil
 }
 
-// List returns every row the store holds.
+// List returns every row the store holds, from the cache when no write has
+// landed since it was read.
+//
+// ⚠️ **The caller must not modify the returned slice** — it is shared with the
+// next reader, exactly as ListJSON's body is.
+//
+// ⚠️ **It is cached for the same reason ListJSON is, and the read it removes was
+// the larger one.** The provenance resolver calls List once per page refresh to
+// build its `session id -> mode` map, and that read decodes every row: measured
+// 2026-11-03 at 37.6 % of all allocation — 654 MB per ten minutes — for a ledger
+// that changes only when a session posts. Caching the decoded rows drops the
+// whole read, so ListJSON's encoder now re-encodes a cached slice rather than
+// re-reading BoltDB.
 func (s *sessionLedgerStore) List(ctx context.Context) (SessionLedgerEntries, error) {
+	cached, gen := s.cache.loadEntries()
+	if cached != nil {
+		return cached, nil
+	}
 	var entries SessionLedgerEntries
 	err := s.db.View(ctx, func(ctx context.Context, tx libkv.Tx) error {
 		got, err := s.entries.List(ctx, tx)
@@ -200,7 +295,32 @@ func (s *sessionLedgerStore) List(ctx context.Context) (SessionLedgerEntries, er
 	if err != nil {
 		return nil, errors.Wrap(ctx, err, "list session ledger entries failed")
 	}
+	s.cache.storeEntries(gen, entries)
 	return entries, nil
+}
+
+// ListJSON returns the encoded List body, from the cache when no write has
+// landed since it was built.
+//
+// The body is encoded exactly as `libhttp.SendJSONResponse` encodes a value —
+// `json.NewEncoder(...).Encode`, trailing newline included — so serving it
+// changes no byte a caller receives.
+func (s *sessionLedgerStore) ListJSON(ctx context.Context) ([]byte, error) {
+	body, gen := s.cache.load()
+	if body != nil {
+		return body, nil
+	}
+	entries, err := s.List(ctx)
+	if err != nil {
+		return nil, errors.Wrap(ctx, err, "build session ledger list body failed")
+	}
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(entries); err != nil {
+		return nil, errors.Wrap(ctx, err, "encode session ledger entries failed")
+	}
+	body = buf.Bytes()
+	s.cache.store(gen, body)
+	return body, nil
 }
 
 // Import adds the rows that are not already present.
@@ -225,6 +345,7 @@ func (s *sessionLedgerStore) Import(
 	ctx context.Context,
 	entries SessionLedgerEntries,
 ) (int, error) {
+	defer s.cache.invalidate()
 	added := 0
 	err := s.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
 		added = 0

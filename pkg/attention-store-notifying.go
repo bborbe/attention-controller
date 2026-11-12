@@ -76,8 +76,9 @@ func (n *notifyingAttentionStore) History(
 	ctx context.Context,
 	limit int,
 	offset int,
+	filters ...HistoryFilter,
 ) (Items, error) {
-	return n.store.History(ctx, limit, offset)
+	return n.store.History(ctx, limit, offset, filters...)
 }
 
 // Answer delegates and signals on success.
@@ -133,6 +134,22 @@ func (n *notifyingAttentionStore) Flag(
 // Unflag delegates and signals on success.
 func (n *notifyingAttentionStore) Unflag(ctx context.Context, itemID ItemID) (*Item, error) {
 	item, err := n.store.Unflag(ctx, itemID)
+	if err != nil {
+		return nil, err
+	}
+	n.notifier.Notify()
+	return item, nil
+}
+
+// Rate delegates and signals on success. The signal re-renders the board row
+// so the highlight follows the stored value; it reaches the board's stream
+// only, never a producer.
+func (n *notifyingAttentionStore) Rate(
+	ctx context.Context,
+	itemID ItemID,
+	rating Rating,
+) (*Item, error) {
+	item, err := n.store.Rate(ctx, itemID, rating)
 	if err != nil {
 		return nil, err
 	}

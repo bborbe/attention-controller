@@ -1,7 +1,19 @@
 DIRS += $(shell find */* -maxdepth 0 -name Makefile -exec dirname "{}" \;)
 
+# BUILD_TARGET selects where `make build` runs. `local` (the default) uses the
+# local Docker daemon; any other value names a cluster alias (sun / nukedev /
+# nukeprod) and builds inside that cluster as a Job rendered from
+# hack/build-job.yaml.
+BUILD_TARGET ?= local
+BUILD_NAMESPACE ?= build
+BUILD_TIMEOUT ?= 3600
+BUILD_REPO_URL ?= https://github.com/$(SERVICE).git
+BUILD_DOCKERFILE ?= Dockerfile
+BUILD_PUSH_SECRET ?= buildkit-push
+
 .PHONY: build
 build:
+ifeq ($(BUILD_TARGET),local)
 	DOCKER_BUILDKIT=1 \
 	docker build \
 	--rm=true \
@@ -13,15 +25,49 @@ build:
 	--build-arg BUILD_DATE=$$(date -u +%Y-%m-%dT%H:%M:%SZ) \
 	-t $(DOCKER_REGISTRY)/$(SERVICE):$(BRANCH) \
 	-f Dockerfile .
+else
+# The cluster arm publishes at VERSION rather than BRANCH: in a detached clone
+# `git rev-parse --abbrev-ref HEAD` prints `HEAD`, so a branch-derived tag would
+# land at `:HEAD`. VERSION deliberately has no default — hack/build-cluster.sh
+# already dies on an empty TAG, while any default would publish a tag the built
+# tree does not correspond to. Pass it explicitly:
+#   make build BUILD_TARGET=sun REF=<full 40-char sha> VERSION=<tag>
+#
+# Both arms publish the same repository here: example.env sets DOCKER_REGISTRY to
+# docker.io and SERVICE to bborbe/attention-controller, so the local tag and the
+# cluster push target are one reference. The build lane's buildkit-push
+# credential authenticates against Docker Hub; the private-mirror copy the
+# deployment pulls is produced by nuke's mirror step, not by this build.
+	BUILD_TARGET='$(BUILD_TARGET)' \
+	NAMESPACE='$(BUILD_NAMESPACE)' \
+	REPO_URL='$(BUILD_REPO_URL)' \
+	REF='$(REF)' \
+	TAG='$(VERSION)' \
+	DOCKERFILE='$(BUILD_DOCKERFILE)' \
+	IMAGE='$(DOCKER_REGISTRY)/$(SERVICE)' \
+	DOCKER_REGISTRY='$(DOCKER_REGISTRY)' \
+	PUSH='true' \
+	PUSH_SECRET='$(BUILD_PUSH_SECRET)' \
+	TIMEOUT='$(BUILD_TIMEOUT)' \
+	hack/build-cluster.sh
+endif
 
+# A remote target pushes from inside the cluster and never loads the image on
+# this machine, so there is nothing here to push and nothing to remove. Guard
+# both, or `make buca BUILD_TARGET=sun` fails at the push step after a build
+# that actually succeeded.
 .PHONY: upload
 upload:
+ifeq ($(BUILD_TARGET),local)
 	docker push $(DOCKER_REGISTRY)/$(SERVICE):$(BRANCH)
+endif
 
 .PHONY: clean
 clean:
+ifeq ($(BUILD_TARGET),local)
 	docker rmi $(DOCKER_REGISTRY)/$(SERVICE):$(BRANCH) || true
 	docker builder prune --max-used-space 21474836480 -f || true
+endif
 
 .PHONY: apply
 apply:

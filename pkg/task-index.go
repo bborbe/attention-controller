@@ -43,6 +43,11 @@ type TaskIndex interface {
 	// session anchors no task: an unnamed or unknown session, a vault that was
 	// not configured, or one that could not be read.
 	Lookup(sessionID string) (Task, bool)
+	// SubjectTitles returns every goal title and every topic title the vault
+	// holds — the set a manager session's name can name. Worker coverage needs
+	// the whole set to decide whether a truncated registry name identifies
+	// exactly one subject.
+	SubjectTitles() []string
 	// ApplyPaths re-reads exactly the named task files and updates the serving
 	// index in place. A path that is not a `.md` file directly under
 	// `25 Tasks/` is skipped; a path whose file is gone removes its entry. An
@@ -70,6 +75,14 @@ type Task struct {
 	// GoalPath is the goal file's path relative to the vault root, e.g.
 	// `24 Goals/Fix the board.md`. Empty exactly when GoalName is.
 	GoalPath string
+	// Goals is every title the task's `goals:` list names that exists as a goal
+	// file, in declaration order. GoalName is its first entry.
+	//
+	// ⚠️ It exists for worker coverage, which must consider every declared goal:
+	// claude-supervisor's `manager_on_chain` walks the whole `goals:` list, so a
+	// task whose second goal has a live manager is covered. Reading GoalName
+	// alone would call that worker uncovered and put its card on the board.
+	Goals []string
 	// TopicName is the title of the topic page that lists this goal under its
 	// `## Goals` heading. Empty when no topic lists it.
 	TopicName string
@@ -200,6 +213,9 @@ type taskIndex struct {
 	// goalTopics maps a goal title to the topic page that lists it under its
 	// `## Goals` heading. A nil or empty map resolves no topic.
 	goalTopics map[string]goalTopic
+	// topics is the set of titles the vault holds as topic pages under
+	// `23 Topics/`. A nil or empty set holds no topic.
+	topics map[string]struct{}
 }
 
 // taskEntry is one indexed task file: the task itself plus the only other
@@ -270,6 +286,7 @@ func (t *taskIndex) build(ctx context.Context) (*taskIndex, bool) {
 		fileStamps:     map[string]fileStamp{},
 		goals:          map[string]struct{}{},
 		goalTopics:     map[string]goalTopic{},
+		topics:         map[string]struct{}{},
 	}
 	if t.vaultDir == "" {
 		return fresh, true
@@ -305,6 +322,7 @@ func (t *taskIndex) install(fresh *taskIndex) bool {
 	t.fileStamps = fresh.fileStamps
 	t.goals = fresh.goals
 	t.goalTopics = fresh.goalTopics
+	t.topics = fresh.topics
 	t.builtAt = t.currentDateTimeGetter.Now()
 	return true
 }
@@ -529,6 +547,7 @@ func (t *taskIndex) reconcile(ctx context.Context) (*taskIndex, bool) {
 		fileStamps:     map[string]fileStamp{},
 		goals:          map[string]struct{}{},
 		goalTopics:     map[string]goalTopic{},
+		topics:         map[string]struct{}{},
 	}
 	fresh.readGoalTitles(t.vaultDir)
 	fresh.readGoalTopics(ctx, t.vaultDir)
@@ -610,6 +629,7 @@ func (t *taskIndex) reresolve(entry taskEntry) taskEntry {
 	goalName, goalPath := resolveGoal(entry.declaredGoals, t.goals)
 	entry.task.GoalName = goalName
 	entry.task.GoalPath = goalPath
+	entry.task.Goals = existingGoals(entry.declaredGoals, t.goals)
 	entry.task.TopicName = ""
 	entry.task.TopicPath = ""
 	if goalName != "" {
@@ -837,6 +857,7 @@ func (t *taskIndex) indexContent(path, name string, content []byte) {
 	goalName, goalPath := resolveGoal(declared, t.goals)
 	task.GoalName = goalName
 	task.GoalPath = goalPath
+	task.Goals = existingGoals(declared, t.goals)
 	if goalName != "" {
 		if topic, ok := t.goalTopics[goalName]; ok {
 			task.TopicName = topic.name
@@ -989,10 +1010,13 @@ func frontmatterValue(content []byte, key string) string {
 		if !ok || strings.TrimSpace(name) != key {
 			continue
 		}
-		// Clone: value is a substring of the whole-file copy frontmatterLines
-		// splits, so returning it uncloned pins the entire file for as long as the
-		// caller keeps the value — measured 2026-11-02 at 135 MB of in-use heap,
-		// one copy of every file in the task directory.
+		// Clone: the value is a substring of the block copy frontmatterLines
+		// splits, so returning it uncloned pins that whole block for as long as the
+		// caller keeps the value. The block is a few hundred bytes, not the file —
+		// frontmatterLines stopped copying the file — so this is no longer the
+		// 135 MB of pinned task files measured 2026-11-02. It still earns its place:
+		// the index holds these values for the life of the process, and cloning
+		// lets the block copy be collected.
 		return strings.Clone(strings.TrimSpace(value))
 	}
 	return ""
@@ -1000,24 +1024,82 @@ func frontmatterValue(content []byte, key string) string {
 
 // frontmatterLines returns the lines between the first two lines that are
 // exactly `---`, or nil when there is no such pair.
+//
+// ⚠️ It splits the frontmatter BLOCK, not the file. The block is a sub-slice of
+// content and is found by scanning, so the only allocation here is a copy of the
+// block itself — a few hundred bytes — instead of a copy of the whole file.
+//
+// ⚠️ The copy mattered. This used to convert all of content to a string and run
+// a CRLF ReplaceAll over it, so every read copied the whole file twice, and
+// indexContent performs three such reads per task file. Measured 2026-11-03 over
+// the operator's vault — 10,132 task files, 118.7 MB — the startup index pass
+// allocated roughly 730 MB, and the process footprint read 605 MB sixteen
+// seconds after start, before a single request was served. That startup peak is
+// the floor a later fix cannot get under: macOS keeps the released pages counted
+// in `phys_footprint`, so the footprint tracks the peak rather than the ~21 MB
+// live heap.
 func frontmatterLines(content []byte) []string {
-	lines := strings.Split(strings.ReplaceAll(string(content), "\r\n", "\n"), "\n")
-	start := -1
-	for i, line := range lines {
-		if line == "---" {
-			start = i
-			break
-		}
-	}
-	if start < 0 {
+	block := frontmatterBlock(content)
+	if block == nil {
 		return nil
 	}
-	for i := start + 1; i < len(lines); i++ {
-		if lines[i] == "---" {
-			return lines[start+1 : i]
+	return strings.Split(strings.ReplaceAll(string(block), "\r\n", "\n"), "\n")
+}
+
+// frontmatterBlock returns the bytes between the first two lines that are
+// exactly `---`, or nil when there is no such pair.
+//
+// ⚠️ It returns a SUB-SLICE of content and never copies it. A task file is
+// ~12 KB on average and its frontmatter is a few hundred bytes, so scanning to
+// the block and copying only that is what keeps the index pass proportional to
+// the frontmatter rather than to the whole corpus.
+func frontmatterBlock(content []byte) []byte {
+	start := -1
+	for pos := 0; pos < len(content); {
+		line, next := contentLine(content, pos)
+		if isFrontmatterDelimiter(line) {
+			if start >= 0 {
+				return content[start:pos]
+			}
+			start = next
 		}
+		pos = next
 	}
 	return nil
+}
+
+// contentLine returns the line beginning at pos and the offset of the line that
+// follows it, with any trailing carriage return trimmed. An unterminated last
+// line reports len(content) as its successor, which ends the caller's scan.
+func contentLine(content []byte, pos int) ([]byte, int) {
+	rest := content[pos:]
+	if i := indexNewline(rest); i >= 0 {
+		return trimCarriageReturn(rest[:i]), pos + i + 1
+	}
+	return trimCarriageReturn(rest), len(content)
+}
+
+// indexNewline returns the offset of the first '\n' in b, or -1.
+func indexNewline(b []byte) int {
+	for i := 0; i < len(b); i++ {
+		if b[i] == '\n' {
+			return i
+		}
+	}
+	return -1
+}
+
+// trimCarriageReturn drops one trailing '\r', the CRLF line ending.
+func trimCarriageReturn(b []byte) []byte {
+	if len(b) > 0 && b[len(b)-1] == '\r' {
+		return b[:len(b)-1]
+	}
+	return b
+}
+
+// isFrontmatterDelimiter reports whether line is exactly the `---` fence.
+func isFrontmatterDelimiter(line []byte) bool {
+	return len(line) == 3 && line[0] == '-' && line[1] == '-' && line[2] == '-'
 }
 
 // frontmatterList returns the entries of the list `key` in content's YAML
@@ -1034,6 +1116,8 @@ func frontmatterLines(content []byte) []string {
 // delimiter. That matters here and not for frontmatterValue: the delimiter line
 // starts with `-`, so a reader that re-split the content itself would collect it
 // as an entry.
+//
+//nolint:unparam // key mirrors frontmatterValue's shape; one key is passed today
 func frontmatterList(content []byte, key string) []string {
 	var entries []string
 	inList := false
@@ -1053,8 +1137,9 @@ func frontmatterList(content []byte, key string) []string {
 		if !strings.HasPrefix(trimmed, "-") {
 			break
 		}
-		// Clone for the same reason frontmatterValue does: an uncloned entry
-		// pins the whole file it was split from.
+		// Clone for the same reason frontmatterValue does: an uncloned entry pins
+		// the block copy it was split from, and the index keeps these for the life
+		// of the process.
 		entries = append(entries, strings.Clone(trimmed))
 	}
 	return entries
@@ -1153,13 +1238,17 @@ func (t *taskIndex) readGoalTitles(vaultDir string) {
 // listing can never walk out of the directory.
 func (t *taskIndex) readGoalTopics(ctx context.Context, vaultDir string) {
 	t.goalTopics = map[string]goalTopic{}
-	if len(t.goals) == 0 {
-		return
-	}
+	t.topics = map[string]struct{}{}
 	topicsDir := filepath.Join(vaultDir, topicDirName)
 	entries, err := os.ReadDir(topicsDir)
 	if err != nil {
 		glog.V(2).Infof("read vault topics dir %s failed: %v", topicsDir, err)
+		return
+	}
+	// Every topic page is a subject a manager can name, whether or not it
+	// lists a goal, so the title set is recorded before the goal-gated walk.
+	t.recordTopicTitles(entries)
+	if len(t.goals) == 0 {
 		return
 	}
 	root, err := os.OpenRoot(topicsDir)
@@ -1231,4 +1320,49 @@ func goalSectionTitles(content []byte) []string {
 		titles = append(titles, title)
 	}
 	return titles
+}
+
+// existingGoals returns the declared goal titles that exist as goal files, in
+// declaration order. The existence guard is resolveGoal's: a frontmatter title
+// is never trusted as a path.
+func existingGoals(declared []string, goals map[string]struct{}) []string {
+	var out []string
+	for _, title := range declared {
+		if _, ok := goals[title]; ok {
+			out = append(out, title)
+		}
+	}
+	return out
+}
+
+// SubjectTitles returns every goal title and every topic title the serving
+// index holds, goals first. The order carries no meaning; callers build a set.
+func (t *taskIndex) SubjectTitles() []string {
+	if t == nil {
+		return nil
+	}
+	t.reconcileIfBackstopLapsed()
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	titles := make([]string, 0, len(t.goals)+len(t.topics))
+	for title := range t.goals {
+		titles = append(titles, title)
+	}
+	for title := range t.topics {
+		titles = append(titles, title)
+	}
+	return titles
+}
+
+// recordTopicTitles records every `*.md` entry of the topics directory as a
+// topic title. It is a fact of its own — the set a manager's name can name —
+// distinct from readGoalTopics' goal-to-topic map, which only goal-listing
+// topics contribute to.
+func (t *taskIndex) recordTopicTitles(entries []os.DirEntry) {
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+			continue
+		}
+		t.topics[strings.TrimSuffix(entry.Name(), ".md")] = struct{}{}
+	}
 }

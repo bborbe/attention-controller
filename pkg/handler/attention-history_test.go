@@ -122,6 +122,37 @@ var _ = Describe("Attention history over HTTP", func() {
 		Expect(itemsOf(rec)).To(HaveLen(1))
 	})
 
+	It("narrows to the named producer_id values", func() {
+		seed(2) // two items from session-a
+		body := `{
+			"producer_id": "session-b",
+			"producer_kind": "session",
+			"liveness_ref": "session:session-b",
+			"dedup_key": "gate-b",
+			"interrupt_class": "pick",
+			"payload": "Which surface should the answer land on?",
+			"answer_mechanism": "message"
+		}`
+		rec := httptest.NewRecorder()
+		pushHandler.ServeHTTP(rec, httptest.NewRequest(
+			http.MethodPost, "/api/1.0/attention", strings.NewReader(body),
+		))
+		Expect(rec.Code).To(Equal(http.StatusCreated))
+
+		onlyB := itemsOf(get("?producer_id=session-b"))
+		Expect(onlyB).To(HaveLen(1))
+		Expect(onlyB[0].ProducerID).To(Equal(pkg.ProducerID("session-b")))
+
+		Expect(itemsOf(get("?producer_id=session-a&producer_id=session-b"))).To(HaveLen(3))
+		Expect(itemsOf(get("?producer_id="))).To(HaveLen(3))
+		Expect(itemsOf(get(""))).To(HaveLen(3))
+
+		// seed's keys are gate-0 and gate-1; session-b's is gate-b.
+		Expect(itemsOf(get("?dedup_key_prefix=gate-b"))).To(HaveLen(1))
+		Expect(itemsOf(get("?dedup_key_prefix=gate-"))).To(HaveLen(3))
+		Expect(itemsOf(get("?dedup_key_prefix=park:"))).To(BeEmpty())
+	})
+
 	It("skips the first offset", func() {
 		seed(3)
 		all := itemsOf(get(""))
@@ -165,8 +196,9 @@ var _ = Describe("Attention history over HTTP", func() {
 		Expect(rec.Code).To(Equal(http.StatusBadRequest))
 	})
 
-	// The unbounded compatibility path, asserted so a caller that needs the whole
-	// store can still be shown to get it.
+	// `limit=0` no longer means "the whole store": it resolves to the maximum
+	// page (historyMaxLimit), so an unbounded response cannot be requested. This
+	// seed is far under the cap, so the page it returns is every item.
 	It("returns every item when the limit is explicitly zero", func() {
 		seed(3)
 		rec := get("?limit=0")

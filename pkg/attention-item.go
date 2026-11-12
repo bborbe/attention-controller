@@ -211,6 +211,18 @@ type Item struct {
 	// unflagging clears both. Distinct from AnsweredAt, which records that a
 	// question was answered — a flag records that it should not have been asked.
 	FlaggedAt *libtime.DateTime `json:"flagged_at,omitempty"`
+	// Rating is the operator's 👍/👎 judgement of the card — "up", "down", or
+	// empty for unrated. It is a measurement and nothing else: it is not an
+	// answer, not a transition and not a flag, it may be written in any state
+	// (open, answered or closed), and nothing reads it to route, hide, reorder
+	// or notify. Kept separate from FlagReason on purpose — a flag is open-only,
+	// carries a reason and parks the card; a rating is none of those. See
+	// docs/attention-item-rating.md.
+	Rating Rating `json:"rating,omitempty"`
+	// RatedAt is when Rating was last written, stamped from the store's own
+	// clock inside the same compare-and-set — present exactly when Rating is
+	// present; clearing the rating clears both.
+	RatedAt *libtime.DateTime `json:"rated_at,omitempty"`
 	// ResolvedBy is which session resolved this item — a session id, never a
 	// pane id and never a boolean, supplied by the caller of the answer path
 	// exactly as AnsweredBy is. It is distinct from AnsweredBy, which names the

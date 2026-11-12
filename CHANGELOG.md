@@ -12,6 +12,65 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 
 - fix: Set `Cache-Control: no-store` on the board's HTML response, so a page load after an answer is served fresh from the handler rather than from a copy a browser or proxy stored before the answer landed. The header is set once beside the existing `Content-Type`, before the body is written, and is unconditional across the board's views; the SSE stream's `no-cache` and the legacy jump page are unchanged.
 
+## v0.70.0
+
+- feat: `make build BUILD_TARGET=<cluster> REF=<sha> VERSION=<tag>` builds the image inside that cluster as a Job rendered from `hack/build-job.yaml`, so the image no longer needs this Mac. `local` stays the default and tags exactly what it tagged before; `upload` and `clean` are guarded on the local arm so `make buca BUILD_TARGET=<cluster>` no longer fails at the push step after a build that succeeded.
+
+## v0.69.3
+
+- chore: restate the do-not-merge contract in the gate workflow
+
+## v0.69.2
+
+- perf: `/api/1.0/attention/history` serves a repeat page from a cache keyed on the request and dropped by every write. The endpoint was the process's largest single allocator — a lifetime `alloc_space` profile on 2026-11-07 put `collectHistoryPage` at 67.9 % cumulative (464 GB of 683 GB over 10.5 h, v0.69.1), with `decodeHistoryIndexEntry` 60.4 %, `json.makeString` 21.3 % and `slices.Grow` 12.0 % behind it. About 22 pollers each re-decoded the full 10,000-row page every 60 s to answer a page that had not changed, and that allocation fed ~0.6 GCs/s against the 112 MiB soft limit. The cache holds one entry, so a second distinct query evicts the first and memory stays bounded; the caller must not modify the returned slice.
+
+## v0.69.1
+
+- fix: A stream update to a card no longer discards the answer the operator is part-way through. Rating a card (whose echo re-renders the row) wiped a checked radio, checked boxes, typed Other text, the unsaved flag reason and the chosen tab; the row swap now carries those controls from the live row onto the server's rendering before committing it, and puts back focus and caret in a field being typed in. Rows still update from the stream, touched or not. A pick is not carried across a re-push that rewords its question, and the flag reason is cleared at submit so the flag's own echo cannot carry it.
+
+## v0.69.0
+
+- feat: Every board card carries a 👍/👎 rating. One click highlights and stores it (`rating` + store-stamped `rated_at`), a second click on the same icon clears it, the other icon switches it. Accepted on open, answered and closed items via `POST /api/1.0/attention/{itemID}/rate`; it is not an answer, not a transition and not a flag — state, answer, flag, visibility and ordering are untouched and no producer is notified. Kept separate from the misroute flag (open-only, reason-carrying, parks the card). Contract: `docs/attention-item-rating.md`.
+
+## v0.68.0
+
+- feat: Show a worker's card in the board's manager-only default view when no live manager could relay it, with a reason line saying so. Coverage mirrors claude-supervisor's `fleet-board.py` grouping (a session is covered only when parented to a live non-root goal manager) and is resolved in-process from the task index, the session registry and the store's own liveness checker; an opt-in parity spec (`ATTENTION_COVERAGE_PARITY=1`) checks the two rules agree session by session over the live fleet.
+
+## v0.67.6
+
+- perf: a "fresh" session-registry listing is reused while the registry directory's mtime is unchanged and it is under a second old. `IsLive` re-listed the registry fresh on every miss, and a dead producer misses forever, so with 56 live sessions and 57 registry files one stat per file ran continuously: a 45 s profile on v0.67.4 put `syscall.rawsyscalln` at 33 % of all CPU, every stack ending in `LiveSessionsFresh → list`, and `ps -o pcpu=` read 28 % with a 5.76 % two-minute mean. A newly registered session still shows at once, because creating its file moves the directory mtime; a listing with an unreadable entry is never reused, so the retry guarantee holds.
+
+## v0.67.5
+
+- docs: the `historyDefaultLimit` comment no longer claims `limit=0` returns the whole store — it resolves to `historyMaxLimit`, the largest page one request may ask for.
+- test: specs for the registry stamp cache's retry guarantee (an unreadable and an unparseable entry are each re-read on the following listing rather than cached as absent) and for concurrent listings against the new `entryMu`/`entryStamps` state. The default gate runs `-race=false`, so the concurrency spec pins agreement under load, not data races.
+
+## v0.67.4
+
+- perf: the session-liveness listing re-reads only the registry files that changed. `IsLive` re-lists the registry on every miss — every attention read whose items include a dead producer — and each listing read and JSON-decoded every `~/.claude/sessions/*.json`. That was 19 % of all allocation (172 MB per ten minutes, 70 % of it through `entrySessionID`) for a directory whose files change only when a session starts, renames itself or exits. Entries are now stamped by size and modification time, and an entry that cannot be read is left unstamped so a transient failure is retried rather than cached.
+- fix: `/api/1.0/attention/history` caps a page at 10,000 rows, and `limit=0` now resolves to that cap instead of the whole store. The page is materialised in memory before it is encoded, so an unbounded one sets the process footprint for hours — macOS keeps released pages counted — and a 50,000-row read allocates roughly 200 MB. No caller reads more than a few thousand rows today; a consumer that needs more walks the pages, which the endpoint's own doc already requires for a stable count.
+
+## v0.67.3
+
+- perf: the frontmatter reader no longer copies the whole task file. It scans to the frontmatter block and splits only that, so a read allocates for the block (a few hundred bytes) rather than the file (12 KB on average). `indexContent` performs three such reads per file, so the startup index pass over the operator's 10,132 task files allocated ~730 MB and the process footprint read 605 MB sixteen seconds after start, before a single request — the floor every later fix inherited, because macOS keeps released pages counted in `phys_footprint`. A spec pins the allocation against a 32 MB body and fails against the old implementation.
+- perf: `sessionLedgerStore.List` is cached and dropped by the same write generation as `ListJSON`. The provenance resolver re-listed and re-decoded the whole ledger on every page refresh to build its `session id -> mode` map — 37.6 % of all allocation, 654 MB per ten minutes, measured 2026-11-03. The caller must not modify the returned slice; the contract is documented on the method.
+
+## v0.67.2
+
+- perf: the session heartbeat store watches its directory through the same platform backend as the task index — FSEvents on darwin with cgo, fsnotify elsewhere. With ~770 heartbeat files rewritten about once a second, fsnotify's darwin kqueue backend re-listed and stat'ed the whole directory on every write: 47 % of all allocation under v0.67.1 (4.4 GB per 20 min, measured 2026-11-03). A watcher error (an overflow or an FSEvents drop) now triggers an immediate reconcile instead of waiting for the 30 s backstop.
+
+## v0.67.1
+
+- perf: on darwin (cgo builds) the task index watches `25 Tasks/` through FSEvents instead of fsnotify. fsnotify's darwin backend is kqueue, which on every directory change re-lists the directory and stats every entry; with 9,920 task files that was 45 % of all allocation (3.7 GB per 15 min, measured 2026-11-03). FSEvents names the changed file, so a save costs one path. Paths are mapped back under the configured vault directory, so a vault reached through a symlink keeps resolving. Linux and `CGO_ENABLED=0` builds keep fsnotify (inotify has no rescan).
+
+## v0.67.0
+
+- feat: `GET /api/1.0/attention/history` accepts `producer_id` (repeatable) and `dedup_key_prefix` to narrow the page, applied before `limit`/`offset`; absent or empty means no narrowing, so existing callers are unchanged. `AttentionStore.History` takes an optional `HistoryFilter`. The store rules a row out from its raw index bytes before decoding it — the needle is the field as the store encoded it, so a JSON-escaped id still matches — and confirms every kept row with an exact compare. Motivation, measured 2026-11-03 on the Mac board: the endpoint was 41 % of all allocation — 8 manager watchers each read `?limit=50000` (≈ the whole history) every 60 s to find `park:` cards, and answered-watchers read it on every reconnect to find their own session's cards.
+
+## v0.66.2
+
+- fix: `GET /api/1.0/session-ledger` serves a cached, pre-encoded body instead of re-listing and re-encoding the whole ledger on every poll — the store keeps the encoded `List` body (`SessionLedgerStore.ListJSON`) and every `Post` / `Patch` / `Import` drops it, with a generation counter so a write racing a rebuild costs a miss, never a stale answer. Measured 2026-11-02 on the Mac board: the endpoint answered 3.2 MB (3,796 rows) two to three times a second and accounted for 53 % of all allocation (14.8 GB in ten minutes), driving a 1.9 GB heap peak against ~23 MB live. The body is byte-identical to the previous `SendJSONResponse` output.
+
 ## v0.66.1
 
 - fix: task index no longer pins a whole-file copy of every task file — `frontmatterValue` and `frontmatterList` now clone the values they return instead of handing back substrings of the full-file split, which kept 135 MB of in-use heap alive against a 135.5 MB task directory (measured 2026-11-02, heap profile)
