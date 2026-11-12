@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.72.4
 
 - docs: add `docs/release-process.md`, which makes `make e2e` the documented gate at the pull request. The repo's release is a side effect of the merge — `.maintainer.yaml` `release.autoRelease: true` makes `github-releaser-agent` tag straight after it — so the pull request is the last moment a person is involved and the suite is the only thing between a branch and a tag. The doc states the red-suite rule (a red suite stops the merge; a spec already red on master is named in the pull request body, not absorbed), pins the count command to `go test -mod=mod -tags e2e -count=1 -v ./e2e/` because `make e2e` runs without `-v` and `go test` discards a passing package's stdout, and links `docs/dod.md`, `scenarios/001` and `scenarios/002`. Scenario 001's cadence sentence said the suite is *never* run per commit or per PR; it now states the pull-request cadence, and its stale `53 of 53 Specs` total moves to `56`.
 
