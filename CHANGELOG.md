@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.72.0
 
 - feat: the watcher's cycle duration reaches the `:18080` registry — `POST /api/1.0/metrics/watcher-cycle` observes it into `attention_watcher_cycle_seconds`, so the cycle is chartable without a second exporter on a second port. The watcher already speaks HTTP to this port to post cards, so only the server half was missing. Registered on the board router only, never inside `registerAttentionAPIRoutes`, so it does not appear on the cluster-reachable bearer-token listener: the measurement can only originate on this host. `seconds` is decoded into a `*float64` so a request that omits it is rejected rather than observed as a zero-duration cycle.
 
