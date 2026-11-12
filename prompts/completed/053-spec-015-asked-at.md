@@ -1,8 +1,10 @@
 ---
-status: approved
+status: completed
 spec: [015-attention-card-timeline]
 created: "2026-11-12T09:49:35Z"
 queued: "2026-11-12T10:21:04Z"
+completed: "2026-11-12T15:34:56Z"
+pr-url: https://github.com/bborbe/attention-controller/pull/189
 ---
 
 # Accept and store the producer's ask time

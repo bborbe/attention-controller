@@ -1,8 +1,10 @@
 ---
-status: approved
+status: completed
 spec: [015-attention-card-timeline]
 created: "2026-11-12T09:49:35Z"
 queued: "2026-11-12T10:21:05Z"
+completed: "2026-11-12T15:55:24Z"
+pr-url: https://github.com/bborbe/attention-controller/pull/191
 ---
 
 # Record that the board painted a card
