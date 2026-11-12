@@ -270,22 +270,33 @@ var _ = Describe("an answer given on the rendered board", func() {
 				Expect(evalErr).NotTo(HaveOccurred())
 			}
 
-			// The composition confirm as Chrome and Firefox report it, then the same
-			// confirm from an IME that only sets keyCode 229.
+			// Three dispatch shapes, because each one fails a different incomplete
+			// guard: the first two are what Chrome/Firefox and the legacy-keyCode IMEs
+			// send, and the third is Enter with `isComposing` alone — a guard that kept
+			// only `keyCode === 229` passes the first two and fails this one.
 			dispatchEnter(229, true)
 			dispatchEnter(229, false)
+			dispatchEnter(13, true)
 
 			events, err := page.Evaluate(`() => window.__compositionEvents`)
 			Expect(err).NotTo(HaveOccurred())
-			observed := events.([]any)
-			Expect(observed).To(HaveLen(2))
+			observed, ok := events.([]any)
+			Expect(ok).To(BeTrue(), "the spy must return a list, got %T", events)
+			Expect(observed).To(HaveLen(3))
 			for _, raw := range observed {
-				Expect(raw.(map[string]any)["defaultPrevented"]).To(BeFalse())
+				event, ok := raw.(map[string]any)
+				Expect(ok).To(BeTrue(), "each spy entry must be a map, got %T", raw)
+				Expect(event["defaultPrevented"]).To(BeFalse())
 			}
 
-			// Neither swallowed nor submitted: the card is still open and the text is
-			// exactly what the case typed.
-			Expect(storedItem(itemID).State).To(Equal(pkg.OpenState))
+			// Neither swallowed nor submitted: the card stays open and the text is
+			// exactly what the case typed. ⚠️ Consistently, not an immediate read — the
+			// submit posts asynchronously, so a regression that DID submit would still
+			// read `open` on the instant after the dispatch. The spy covers a swallowed
+			// keystroke; this window covers a submitted one.
+			Consistently(func() pkg.State {
+				return storedItem(itemID).State
+			}, "500ms", "25ms").Should(Equal(pkg.OpenState))
 			Expect(field.InputValue()).To(Equal("Zoe"))
 
 			// Positive control: an ordinary Enter still submits, so the guard is not
