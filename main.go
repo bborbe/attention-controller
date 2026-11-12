@@ -999,6 +999,12 @@ func registerAttentionAPIRoutes(
 	router.Path("/api/1.0/attention/{itemID}/rate").
 		Methods(http.MethodPost).
 		Handler(factory.CreateAttentionRateHandler(store))
+	// The seen write records that the board painted a card. The store stamps
+	// displayed_at from its own clock, first write wins, and the call is LOCAL —
+	// it is not forwarded upstream, unlike every other per-item write above.
+	router.Path("/api/1.0/attention/{itemID}/seen").
+		Methods(http.MethodPost).
+		Handler(factory.CreateAttentionSeenHandler(store))
 	// The delivery trail. The GET is the one query that answers "did this
 	// item's answer reach the session?"; the POST is called by the arm that
 	// ATTEMPTS delivery — never by the arm that records the answer, which

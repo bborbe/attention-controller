@@ -23,6 +23,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	libtime "github.com/bborbe/time"
 	"github.com/mxschmitt/playwright-go"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -937,6 +938,33 @@ var _ = Describe("the attention board", func() {
 
 		Eventually(func() int { return rowCount(page, openID) }).Should(Equal(1))
 		Consistently(func() int { return rowCount(page, answeredID) }).Should(Equal(0))
+	})
+
+	// The board records that it painted a card, once per card: the first load
+	// stamps displayed_at from the store's own clock, and a second load leaves
+	// that instant identical because the store's first write wins. The card is
+	// open on purpose — the default view parks answered cards, and this case is
+	// about the ordinary painted card.
+	It("records that the board painted a card, and a second load leaves it unchanged", func() {
+		itemID := push("e2e: the seen card", "e2e-seen-card")
+
+		page := newPage("")
+		defer func() { _ = page.Close() }()
+
+		Eventually(func() *libtime.DateTime { return getItem(itemID).DisplayedAt }).
+			ShouldNot(BeNil())
+		first := getItem(itemID).DisplayedAt.String()
+
+		page2 := newPage("")
+		defer func() { _ = page2.Close() }()
+
+		Eventually(func() string {
+			displayed := getItem(itemID).DisplayedAt
+			if displayed == nil {
+				return ""
+			}
+			return displayed.String()
+		}).Should(Equal(first))
 	})
 
 	// ⚠️ The operator's report stated as the invariant it actually is: "if

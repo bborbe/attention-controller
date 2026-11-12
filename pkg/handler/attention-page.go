@@ -1138,6 +1138,24 @@ function replayFailure(row) {
     empty.parentNode.replaceChild(list, empty);
     return list;
   }
+  /* The board records that it painted a card, once per card. The store stamps
+     displayed_at from its own clock on the first call and every later one is
+     inert, so this needs no bookkeeping of its own.
+     ⚠️ It runs BEFORE applyFilter, so a card the filter is about to park is
+     still stamped: the field records that the card was PAINTED, not that the
+     operator looked at it, and the contract says so.
+     The call is fire-and-forget. The board does nothing with the answer, a 404
+     (an item this store does not own) is ignored, and the catch is required so
+     a failure never reaches the unhandledrejection listener above. */
+  function markSeen(row) {
+    var itemID = row.getAttribute('data-item-id');
+    if (!itemID) { return; }
+    fetch('/api/1.0/attention/' + encodeURIComponent(itemID) + '/seen', { method: 'POST' }).catch(function () {});
+  }
+  function markEverySeen() {
+    var rows = document.querySelectorAll('li.item');
+    for (var i = 0; i < rows.length; i++) { markSeen(rows[i]); }
+  }
   function nextRowID(row) {
     var next = row.nextElementSibling;
     while (next && !next.classList.contains('item')) { next = next.nextElementSibling; }
@@ -1380,6 +1398,7 @@ function replayFailure(row) {
      that arrive later. The script runs while the parser is still inside the
      body, so this lands before the first paint rather than as a correction to
      it. */
+  markEverySeen();
   applyFilter();
   syncKindHref();
   updateKindCount();
@@ -1562,6 +1581,10 @@ function replayFailure(row) {
       var list = ensureList();
       if (!list) { return; }
       list.insertAdjacentHTML('beforeend', prepared);
+      /* The inserted card is a first paint, so it is stamped here — the two
+         branches above are re-renders of a card that was already painted. */
+      var added = findRow(itemID);
+      if (added) { markSeen(added); }
     }
     /* The row is complete as committed, so nothing is re-applied to it here.
        The filters still run after: they are board-level views over every row.

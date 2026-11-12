@@ -210,6 +210,26 @@ type AttentionStore interface {
 	// cleared with it. An unknown id is ErrItemNotFound.
 	Rate(ctx context.Context, itemID ItemID, rating Rating) (*Item, error)
 
+	// MarkSeen records that a board rendered this item, stamping DisplayedAt from
+	// the store's own clock. It is a field write, not a transition and not an
+	// answer: State and every answer field are untouched, and it is accepted in
+	// every state, because an answered card is a card the board paints too.
+	//
+	// ⚠️ First write wins, and that is the whole idempotence contract: a second
+	// call leaves the stored value byte-identical and still succeeds, so the
+	// board may call it once per paint without coordinating. There is no
+	// ErrAlreadySeen — a repeat is a valid call, not a lost race.
+	//
+	// The caller supplies no time. A caller can therefore cause a first stamp on
+	// an item that had none, and nothing else; because the first write wins, that
+	// stamp is permanent — which is why the trigger is the board's own paint and
+	// never the server render.
+	//
+	// It is a LOCAL write and is never forwarded to a peer: a federated item is
+	// absent from this store, so the call answers ErrItemNotFound and writes
+	// nothing.
+	MarkSeen(ctx context.Context, itemID ItemID) (*Item, error)
+
 	// Close applies open -> closed or answered -> closed. Closing an item that
 	// is already closed is rejected with ErrIllegalTransition.
 	//

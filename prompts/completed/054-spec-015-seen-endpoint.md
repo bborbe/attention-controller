@@ -1,8 +1,13 @@
 ---
-status: approved
+status: completed
 spec: [015-attention-card-timeline]
+summary: Added store-stamped displayed_at, the MarkSeen write (local-only, first-write-wins), the POST /seen endpoint and route, the board's fire-and-forget first-paint call, plus handler, ordering and browser specs and the scenario/CHANGELOG updates.
+execution_id: attention-controller-timeline-exec-054-spec-015-seen-endpoint
+dark-factory-version: v0.198.17
 created: "2026-11-12T09:49:35Z"
 queued: "2026-11-12T10:21:05Z"
+started: "2026-11-12T15:35:17Z"
+completed: "2026-11-12T15:55:23Z"
 ---
 
 # Record that the board painted a card

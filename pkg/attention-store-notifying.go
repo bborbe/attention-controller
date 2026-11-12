@@ -157,6 +157,18 @@ func (n *notifyingAttentionStore) Rate(
 	return item, nil
 }
 
+// MarkSeen delegates and deliberately does NOT signal.
+//
+// ⚠️ Every other write here wakes the board's stream so a row re-renders with
+// the new value. This one must not: the call is made once per card on every
+// page load, so a signal would turn one page load into one full board render
+// per card, and the row swap that followed would paint the same card again.
+// The value it writes decorates the info panel, which the next load or the
+// next unrelated change renders anyway.
+func (n *notifyingAttentionStore) MarkSeen(ctx context.Context, itemID ItemID) (*Item, error) {
+	return n.store.MarkSeen(ctx, itemID)
+}
+
 // Close delegates and signals on success.
 func (n *notifyingAttentionStore) Close(
 	ctx context.Context,

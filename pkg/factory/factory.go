@@ -111,6 +111,12 @@ func CreateAttentionRateHandler(store pkg.AttentionStore) http.Handler {
 	return handler.NewAttentionRateHandler(store)
 }
 
+// CreateAttentionSeenHandler creates the handler the board calls when it has
+// painted a card, stamping displayed_at from the store's own clock.
+func CreateAttentionSeenHandler(store pkg.AttentionStore) http.Handler {
+	return handler.NewAttentionSeenHandler(store)
+}
+
 // CreateAttentionHistoryHandler creates the handler that returns every item
 // regardless of state, for counting resolutions rather than rendering.
 func CreateAttentionHistoryHandler(store pkg.AttentionStore) http.Handler {
