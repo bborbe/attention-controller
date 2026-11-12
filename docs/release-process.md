@@ -20,7 +20,7 @@ The rule: **run `make e2e` and get a green suite before you open a pull request 
 make e2e
 ```
 
-`make e2e` installs the Playwright Chromium build and runs `go test -tags e2e ./e2e/`. It builds its own binary, serves it on a random port against a temp `DATADIR` and a temp session registry, and stubs the tts endpoint. It never contacts the launchd service on `:18080` — see [[Never Drive a Verification Browser Against the Live Board]] for why that matters, and for the fixture rules (temp datadir, a port other than `18080`, `-sessions-dir`) to follow if you run the suite by hand.
+`make e2e` installs the Playwright Chromium build, then runs `go test -mod=mod -tags e2e -count=1 -timeout 15m ./e2e/`. The suite builds its own binary, serves it on a random port against a temp `DATADIR` and a temp session registry, and stubs the tts endpoint. It never contacts the launchd service on `:18080` — see [[Never Drive a Verification Browser Against the Live Board]] for why that matters, and for the fixture rules (temp datadir, a port other than `18080`, `-sessions-dir`) to follow if you run the suite by hand.
 
 The scenarios in `scenarios/` describe the cases the suite asserts:
 
