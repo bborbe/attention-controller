@@ -12,6 +12,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 
 - feat: accept a producer-supplied `asked_at` on push and store it unchanged — distinct from the store's `created_at`, absent when the push carries none, and reset by a re-push exactly as `created_at` is
 
+## v0.72.4
+
+- docs: add `docs/release-process.md`, which makes `make e2e` the documented gate at the pull request. The repo's release is a side effect of the merge — `.maintainer.yaml` `release.autoRelease: true` makes `github-releaser-agent` tag straight after it — so the pull request is the last moment a person is involved and the suite is the only thing between a branch and a tag. The doc states the red-suite rule (a red suite stops the merge; a spec already red on master is named in the pull request body, not absorbed), pins the count command to `go test -mod=mod -tags e2e -count=1 -v ./e2e/` because `make e2e` runs without `-v` and `go test` discards a passing package's stdout, and links `docs/dod.md`, `scenarios/001` and `scenarios/002`. Scenario 001's cadence sentence said the suite is *never* run per commit or per PR; it now states the pull-request cadence, and its stale `53 of 53 Specs` total moves to `56`.
+
 ## v0.72.3
 
 - test: pin Enter on a multi-tab card to the tab that was typed in. The Enter listener resolves `button.next` on the **form**, not on the panel that fired the keydown, so on a multi-tab card the submitter is the form's first Submit answer rather than the visible tab's. Every `button.next` carries `value="send"`, so the dispatch is identical and the behaviour is correct — nothing pinned it, and a future change that gave the buttons per-tab values would break every tab except the first, silently. The case asserts per question: the typed tab carries the `text` entry, the untouched tab carries no entry. Scenario 002's total moves `55` → `56` and now records that the suite is `54 passed / 1 failed` on master because of a pre-existing failure filed separately.
