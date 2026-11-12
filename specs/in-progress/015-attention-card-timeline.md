@@ -1,6 +1,7 @@
 ---
-status: draft
-created: 2026-11-11
+status: approved
+approved: "2026-11-11T21:33:21Z"
+branch: dark-factory/attention-card-timeline
 ---
 
 ## Summary
