@@ -120,6 +120,15 @@ var _ = Describe("AttentionPageHandler", func() {
 		return resp
 	}
 
+	// getTarget renders the board at an explicit target and returns the recorder,
+	// so a case can assert a view the fixed-target `get` helper cannot reach.
+	getTarget := func(method string, target string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, target, nil)
+		resp := httptest.NewRecorder()
+		httpHandler.ServeHTTP(resp, req)
+		return resp
+	}
+
 	// rowOf returns the rendered HTML for one item's row, so an assertion about
 	// the card is scoped to that item rather than to the whole page: a page-wide
 	// grep would pass on a page where the wrong item carried the controls.
@@ -194,6 +203,43 @@ var _ = Describe("AttentionPageHandler", func() {
 		Expect(
 			strings.Count(resp.Body.String(), `<p class="empty">Nothing needs attention.</p>`),
 		).To(Equal(1))
+	})
+
+	// ⚠️ One header on the successful HTML response, asserted by EXACT equality:
+	// ContainSubstring("no-store") would pass on `private, no-store`, and a
+	// header set only where rows exist or only on the default query would pass a
+	// default-view-only check. Every half is driven through the real handler, and
+	// the empty-store half runs before any Push so the store really is empty.
+	It("serves the board with Cache-Control no-store", func() {
+		// Empty store: the header is unconditional, not tied to rows.
+		empty := getTarget(http.MethodGet, "/?producer_kind=all")
+		Expect(empty.Code).To(Equal(http.StatusOK))
+		Expect(empty.Header().Get("Cache-Control")).To(Equal("no-store"))
+
+		// Populated store: the response is the rendered board, not an error body.
+		item, err := store.Push(
+			ctx,
+			pushRequest("producer-cache", "gate-cache", "deploy prod?"),
+		)
+		Expect(err).To(BeNil())
+
+		populated := getTarget(http.MethodGet, "/?producer_kind=all")
+		Expect(populated.Code).To(Equal(http.StatusOK))
+		Expect(populated.Header().Get("Cache-Control")).To(Equal("no-store"))
+		Expect(populated.Header().Get("Content-Type")).To(Equal("text/html; charset=utf-8"))
+		Expect(populated.Body.String()).To(
+			ContainSubstring(`data-item-id="` + item.ItemID.String() + `"`),
+		)
+
+		// A second board view: the header does not depend on the query string.
+		otherView := getTarget(http.MethodGet, "/?hide=none&flags=none")
+		Expect(otherView.Code).To(Equal(http.StatusOK))
+		Expect(otherView.Header().Get("Cache-Control")).To(Equal("no-store"))
+
+		// HEAD routes to the same handler; net/http suppresses the body.
+		head := getTarget(http.MethodHead, "/")
+		Expect(head.Code).To(Equal(http.StatusOK))
+		Expect(head.Header().Get("Cache-Control")).To(Equal("no-store"))
 	})
 
 	// ⚠️ Driven through the REAL handler with a real *http.Request and a real

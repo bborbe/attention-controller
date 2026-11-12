@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- fix: Set `Cache-Control: no-store` on the board's HTML response, so a page load after an answer is served fresh from the handler rather than from a copy a browser or proxy stored before the answer landed. The header is set once beside the existing `Content-Type`, before the body is written, and is unconditional across the board's views; the SSE stream's `no-cache` and the legacy jump page are unchanged.
+
 ## v0.72.1
 
 - fix: **pressing Enter in a card's `Other…` field submitted `✕ Dismiss` and delivered a DECLINE, discarding the typed text.** The card renders `✕ Dismiss` (`name="kind" value="skip"`) as its first submit button, so HTML implicit submission fired the form's default button: the `skip` branch returned before `collectAnswers()` ever read the field, the store recorded `{"kind":"skip"}`, and the asking session acted on a decline nobody gave while the operator saw a successful submit. Measured on the live board 2026-11-12 with the same text on two cards — Enter stored `{"kind":"skip"}`, a click stored `{"kind":"text","value":"click"}`. A document-delegated `keydown` listener now submits through `✓ Submit answer` with `requestSubmit`, so Enter sends the answer; `form.submit()` was not used because it bypasses the submit event and would have sent nothing. The button order is unchanged. The Playwright case `stores free text submitted with the Enter key as text, never as skip` presses Enter and asserts the stored shape — the case scenario 002 lacked, since its existing free-text case clicks and so stayed green throughout the defect. Scenario 002's expected package total is re-derived (`36` → `55`) from the suite's own `Ran N of N Specs` line.
