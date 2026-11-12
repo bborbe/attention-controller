@@ -12,6 +12,22 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 
 - fix: Set `Cache-Control: no-store` on the board's HTML response, so a page load after an answer is served fresh from the handler rather than from a copy a browser or proxy stored before the answer landed. The header is set once beside the existing `Content-Type`, before the body is written, and is unconditional across the board's views; the SSE stream's `no-cache` and the legacy jump page are unchanged.
 
+## v0.72.1
+
+- fix: **pressing Enter in a card's `Other…` field submitted `✕ Dismiss` and delivered a DECLINE, discarding the typed text.** The card renders `✕ Dismiss` (`name="kind" value="skip"`) as its first submit button, so HTML implicit submission fired the form's default button: the `skip` branch returned before `collectAnswers()` ever read the field, the store recorded `{"kind":"skip"}`, and the asking session acted on a decline nobody gave while the operator saw a successful submit. Measured on the live board 2026-11-12 with the same text on two cards — Enter stored `{"kind":"skip"}`, a click stored `{"kind":"text","value":"click"}`. A document-delegated `keydown` listener now submits through `✓ Submit answer` with `requestSubmit`, so Enter sends the answer; `form.submit()` was not used because it bypasses the submit event and would have sent nothing. The button order is unchanged. The Playwright case `stores free text submitted with the Enter key as text, never as skip` presses Enter and asserts the stored shape — the case scenario 002 lacked, since its existing free-text case clicks and so stayed green throughout the defect. Scenario 002's expected package total is re-derived (`36` → `55`) from the suite's own `Ran N of N Specs` line.
+
+## v0.72.0
+
+- feat: the watcher's cycle duration reaches the `:18080` registry — `POST /api/1.0/metrics/watcher-cycle` observes it into `attention_watcher_cycle_seconds`, so the cycle is chartable without a second exporter on a second port. The watcher already speaks HTTP to this port to post cards, so only the server half was missing. Registered on the board router only, never inside `registerAttentionAPIRoutes`, so it does not appear on the cluster-reachable bearer-token listener: the measurement can only originate on this host. `seconds` is decoded into a `*float64` so a request that omits it is rejected rather than observed as a zero-duration cycle.
+
+## v0.71.1
+
+- chore: update Go to 1.27.4 and github.com/bborbe/argument/v2 to v2.13.10, github.com/bborbe/boltkv to v1.16.8, github.com/bborbe/collection to v1.21.7, github.com/bborbe/errors to v1.6.6, github.com/bborbe/http to v1.26.33, github.com/bborbe/kv to v1.21.29, github.com/bborbe/log to v1.7.8, github.com/bborbe/metrics to v0.6.11, github.com/bborbe/run to v1.11.11, github.com/bborbe/sentry to v1.10.7, github.com/bborbe/service to v1.11.3, github.com/bborbe/time to v1.27.28, github.com/bborbe/validation to v1.5.9, github.com/onsi/ginkgo/v2 to v2.34.0, golang.org/x/text to v0.44.0
+
+## v0.71.0
+
+- feat: the board renders the answering client — `user_agent` and `remote_addr` — beside the recorded answer on a dimmed card, so "who answered this" is readable from the board instead of inferred from a log. `X-Forwarded-For` is recorded in a new `forwarded_for` field beside `remote_addr`, never in place of it: the header is caller-set, so `remote_addr` stays the one member a caller cannot spoof.
+
 ## v0.70.0
 
 - feat: `make build BUILD_TARGET=<cluster> REF=<sha> VERSION=<tag>` builds the image inside that cluster as a Job rendered from `hack/build-job.yaml`, so the image no longer needs this Mac. `local` stays the default and tags exactly what it tagged before; `upload` and `clean` are guarded on the local arm so `make buca BUILD_TARGET=<cluster>` no longer fails at the push step after a build that succeeded.

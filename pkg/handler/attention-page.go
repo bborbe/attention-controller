@@ -275,6 +275,35 @@ document.addEventListener('click', function (event) {
     if (pick) { pick.checked = false; }
   }
 });
+/* Enter in the Other… field is the operator's ordinary way to submit, and it
+   must send the answer rather than the card's first button.
+   ⚠️ Load bearing: HTML implicit submission fires the form's DEFAULT button —
+   the first submit button in tree order — and that is ✕ Dismiss
+   (value="skip"), not ✓ Submit answer. So Enter on a card with text typed
+   recorded {kind:'skip'} and the asking session received a DECLINE while the
+   operator saw a successful submit. Measured on the live board 2026-11-12 with
+   the same text on two cards: Enter → {"kind":"skip"}, click →
+   {"kind":"text","value":"click"}. That is the worst shape this board can
+   produce, because a session that trusts it acts on a decline nobody gave.
+   ⚠️ requestSubmit(next), never form.submit(): form.submit() bypasses the submit
+   event entirely, so the handler below would never run and nothing would be
+   sent. requestSubmit dispatches a real submit event carrying button.next as
+   the submitter, so event.submitter is the button whose value is 'send'.
+   ⚠️ Reordering the buttons was the rejected alternative: making ✓ Submit
+   answer first would fix Enter, but the row's existing specs and the operator's
+   reading of the card both put Dismiss first, and a reorder fixes only the
+   default-button case while this handler states the intent explicitly. */
+document.addEventListener('keydown', function (event) {
+  if (event.key !== 'Enter') { return; }
+  var field = event.target;
+  if (!field || !field.classList || !field.classList.contains('other')) { return; }
+  var form = field.closest('form.answer');
+  if (!form) { return; }
+  var next = form.querySelector('button.next');
+  if (!next) { return; }
+  event.preventDefault();
+  form.requestSubmit(next);
+});
 /* Answer controls exist for message items only, and the form is intercepted so
    a failed answer is shown rather than swallowed into a reload: a bare catch
    that reloads anyway reports a code fault as a connection problem.
@@ -1732,7 +1761,7 @@ function replayFailure(row) {
 {{end}}{{if .Provenance.Uncovered}}<div class="uncovered-reason" data-uncovered-reason>Shown because no live manager can relay it.</div>
 {{end}}{{if not .Message}}<div class="payload">{{ cardtext .Item.Payload }}</div>
 {{end}}{{if .Item.Context}}<div class="context">{{ cardtext .Item.Context }}</div>
-{{end}}{{if .Dimmed}}<div class="record"><div class="record-question">{{ cardtext .Item.Payload }}</div><div class="record-answer">answered: {{ .Record }}</div></div>
+{{end}}{{if .Dimmed}}<div class="record"><div class="record-question">{{ cardtext .Item.Payload }}</div><div class="record-answer">answered: {{ .Record }}</div>{{if .Client}}<div class="record-client">client: {{ .Client }}</div>{{end}}</div>
 {{else if .Message}}<form class="answer" data-multi="{{ .Tabs }}">
 {{if .Tabs}}<div class="tabs">{{range .Questions}}<button type="button" class="tab{{if .Active}} active{{end}}" data-tab="{{ .Tab }}">{{ .Tab }}</button>{{end}}</div>
 <div class="card-title">{{ cardtext .Item.Payload }}</div>

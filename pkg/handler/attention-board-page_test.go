@@ -428,6 +428,77 @@ var _ = Describe("Attention page board controls", func() {
 			Expect(block).To(ContainSubstring("answered: the board"))
 		})
 
+		// The board is the surface the operator actually reads, so "who
+		// answered this" must be on it — the store recording the client is not
+		// enough when nothing renders it.
+		It("renders the recorded client beside the recorded answer", func() {
+			item, err := store.Push(ctx, messageItem("answered-client-1", "Which surface?"))
+			Expect(err).To(BeNil())
+			answer := pkg.Answer{Kind: pkg.TextAnswerKind, Value: "the board"}
+			_, err = store.Answer(
+				ctx,
+				item.ItemID,
+				"attention-board",
+				"",
+				"",
+				&answer,
+				nil,
+				&pkg.AnsweredClient{
+					UserAgent:  "Mozilla/5.0 (Macintosh)",
+					RemoteAddr: "127.0.0.1:51422",
+				},
+			)
+			Expect(err).To(BeNil())
+
+			block := rowBlock(render(), item.ItemID)
+			Expect(block).To(ContainSubstring("record-client"))
+			Expect(block).To(ContainSubstring("client: Mozilla/5.0 (Macintosh) @ 127.0.0.1:51422"))
+		})
+
+		// The forwarded address is a caller declaration, so it renders in its
+		// own parenthetical rather than replacing the peer address — a board that
+		// showed only the forwarded value would present a claim as a fact.
+		It("renders a forwarded address beside the peer address, never instead of it", func() {
+			item, err := store.Push(ctx, messageItem("answered-client-2", "Which surface?"))
+			Expect(err).To(BeNil())
+			answer := pkg.Answer{Kind: pkg.TextAnswerKind, Value: "the board"}
+			_, err = store.Answer(
+				ctx,
+				item.ItemID,
+				"attention-board",
+				"",
+				"",
+				&answer,
+				nil,
+				&pkg.AnsweredClient{
+					UserAgent:    "curl/8.7.1",
+					RemoteAddr:   "127.0.0.1:51423",
+					ForwardedFor: "203.0.113.7",
+				},
+			)
+			Expect(err).To(BeNil())
+
+			block := rowBlock(render(), item.ItemID)
+			Expect(
+				block,
+			).To(ContainSubstring("client: curl/8.7.1 @ 127.0.0.1:51423 (forwarded_for: 203.0.113.7)"))
+		})
+
+		// An item answered before the field existed records no client, and the
+		// card must render no client line rather than an empty one — a blank
+		// "client:" reads as a client that said nothing.
+		It("renders no client line when the item records no client", func() {
+			item, err := store.Push(ctx, messageItem("answered-client-3", "Which surface?"))
+			Expect(err).To(BeNil())
+			answer := pkg.Answer{Kind: pkg.TextAnswerKind, Value: "the board"}
+			_, err = store.Answer(ctx, item.ItemID, "attention-board", "", "", &answer, nil, nil)
+			Expect(err).To(BeNil())
+
+			block := rowBlock(render(), item.ItemID)
+			Expect(block).To(ContainSubstring("record-answer"))
+			Expect(block).NotTo(ContainSubstring("record-client"))
+		})
+
 		It(
 			"renders no form and no acknowledge, dismiss or next control on the dimmed card",
 			func() {

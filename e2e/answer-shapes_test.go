@@ -173,6 +173,33 @@ var _ = Describe("an answer given on the rendered board", func() {
 		Expect(string(item.Answer.Value)).To(Equal("Zoe"))
 	})
 
+	// Enter is how the operator actually submits, and the case above clicks — so
+	// the click path was covered while the Enter path was not, and the defect
+	// shipped. Measured on the live board 2026-11-12 with the same text on two
+	// cards: Enter stored {"kind":"skip"} and the asking session read a DECLINE,
+	// a click stored {"kind":"text","value":"click"}.
+	//
+	// ⚠️ The stored shape is the assertion, not "the card left the board": the
+	// pre-fix build answers the card too — with a skip — so a case that only
+	// waited for `answered` would be green throughout the defect.
+	It("stores free text submitted with the Enter key as text, never as skip", func() {
+		itemID := pushCard(pkg.PushRequest{
+			DedupKey:        "shape-text-enter",
+			Payload:         "e2e: a name entered with Enter",
+			AnswerMechanism: pkg.MessageAnswerMechanism,
+			Options:         options("Anna", "Bob"),
+		})
+		page = newPage("")
+		field := page.Locator(rowSelector(itemID) + " input[name=text]:visible")
+		Expect(field.Fill("Zoe")).To(Succeed())
+		Expect(field.Press("Enter")).To(Succeed())
+
+		item := answeredItem(itemID)
+		Expect(item.Answer).NotTo(BeNil())
+		Expect(item.Answer.Kind).To(Equal(pkg.TextAnswerKind))
+		Expect(string(item.Answer.Value)).To(Equal("Zoe"))
+	})
+
 	// The pick-then-type sequence, which had no coverage at all: the case above
 	// types text WITHOUT picking first, so it passes on a board that drops the
 	// pick.
