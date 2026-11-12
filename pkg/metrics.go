@@ -33,4 +33,16 @@ type Metrics interface {
 	// incremented only inside the shared renderer and so does not move when a
 	// single client loads the page.
 	BoardPageRequestsTotalCounterInc()
+
+	// WatcherCycleSecondsHistogramObserve records how long one watcher cycle
+	// took, as reported by the watcher itself.
+	//
+	// The controller exposes it only because the watcher is a separate process
+	// that exports nothing and already speaks HTTP to this port; the
+	// measurement is the watcher's, and this method is the transport for it.
+	// A cycle the watcher never reports therefore leaves the series absent
+	// rather than observed at zero — an absent sample is a fact about the
+	// transport, while a zero would be a claim about the cycle that nothing
+	// measured.
+	WatcherCycleSecondsHistogramObserve(seconds float64)
 }
