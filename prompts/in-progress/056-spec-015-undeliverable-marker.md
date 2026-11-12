@@ -23,7 +23,7 @@ Widen `attentionPageRow.Undeliverable()` from `failed` to `failed || never_attem
 </objective>
 
 <context>
-**Dependency: prompt `3-spec-015-panel-timeline.md` must already be complete.** This prompt assumes the panel renders the timeline and the delivery-outcome line, and that `DeliveryOutcome()` exists on the row. If either is absent, STOP and report `status: failed` naming the missing prompt — do not implement it here.
+**Dependency: prompt `055-spec-015-panel-timeline.md` must already be complete.** This prompt assumes the panel renders the timeline and the delivery-outcome line, and that `DeliveryOutcome()` exists on the row. If either is absent, STOP and report `status: failed` naming the missing prompt — do not implement it here.
 
 There is no `CLAUDE.md` in this repo — follow the coding plugin docs below. Read `docs/dod.md`.
 
@@ -36,7 +36,7 @@ Read before changing anything:
 - `pkg/handler/attention-page.go` — the marker's template block (`{{if .Undeliverable}}<div class="delivery-undeliverable">undeliverable</div>`) and the info panel. The marker stays exactly where it is.
 - `pkg/delivery-attempt.go` — `DeliveryTrailEpoch` (the ship **instant**, not the ship date) and the five `DeliveryStatus` constants.
 - `pkg/delivery-attempt_test.go` — the movable-clock store fixture, which this prompt's five-card case needs.
-- `CHANGELOG.md` — its head. There is **no** `## Unreleased` section today; the newest heading is `## v0.71.0`.
+- `CHANGELOG.md` — its head. Read it before editing: `## Unreleased` may already exist at your head, and `## v0.72.0` and `## v0.71.1` have shipped since this prompt was written. Never create a second `## Unreleased` heading.
 
 Reference docs (in-container paths):
 - `/home/node/.claude/plugins/marketplaces/coding/docs/changelog-guide.md`
@@ -146,7 +146,7 @@ Reference docs (in-container paths):
 
 ### D. The changelog
 
-6. Create an `## Unreleased` section at the top of `CHANGELOG.md`, immediately before `## v0.71.0` (after the intro block that ends with the Semantic Versioning bullets), and add two bullets following `/home/node/.claude/plugins/marketplaces/coding/docs/changelog-guide.md`:
+6. Add two bullets to `CHANGELOG.md` following `/home/node/.claude/plugins/marketplaces/coding/docs/changelog-guide.md`. If `## Unreleased` already exists at your head, append them to the end of that section; only if it is absent do you create it, immediately above the newest released heading (after the intro block that ends with the Semantic Versioning bullets):
 
    ```markdown
    - feat: Each attention card's info panel now shows its own timeline — the instant the gate was asked, when the store received it, when a board first painted it, when it was answered and by which arm, when the answer was delivered and the gate released, and when it closed and why — with the deltas between stages as whole seconds and an em dash for a stage that did not happen. `asked_at` is accepted from the producer and never re-stamped; `displayed_at` is stamped by the store on the board's first paint through the new `POST /api/1.0/attention/{itemID}/seen`, which is local and never forwarded to a federating peer. Contract: `docs/attention-item-timeline.md`.
@@ -157,7 +157,7 @@ Reference docs (in-container paths):
 </requirements>
 
 <constraints>
-- Dependency ordering: prompt `3-spec-015-panel-timeline.md` must already have shipped. Absent prerequisites are a `status: failed` report naming the missing prompt, never `needs_input`.
+- Dependency ordering: prompt `055-spec-015-panel-timeline.md` must already have shipped. Absent prerequisites are a `status: failed` report naming the missing prompt, never `needs_input`.
 - The contract doc is authoritative for the marker's predicate and for the four outcome names. Do not redefine it.
 - **The marker keeps its class and its row-level position.** Only the predicate widens: from `failed` to `failed || never_attempted`. No second element, no move into the info panel.
 - **A `held` card renders no delivery-outcome line and no marker.** `held` is a deliberate state, not a failure; silence is the interim rendering until the doc's `held` gap is resolved. Do not add a fifth outcome name.
@@ -174,7 +174,7 @@ Reference docs (in-container paths):
 Run in the repo root:
 
 - `make test` — the suite passes, including the inverted case and the five-card matrix.
-- `grep -c 'NeverAttemptedStatus' pkg/handler/attention-page-data.go` — prints `1`.
+- `grep -c 'NeverAttemptedStatus' pkg/handler/attention-page-data.go` — prints `2` after prompt 3 has shipped: one in the widened `Undeliverable()` predicate, one in the delivery-outcome mapping. Prompt 3 deleted `deliveryStatusOf`, which held the file's only occurrence before, so a count of `1` means the widening did not land.
 - `! grep -q 'HeldStatus' pkg/handler/attention-page-data.go` — succeeds only when the predicate mentions no held status (a `held` marker is the regression this guards).
 - `grep -c 'delivery-undeliverable' pkg/handler/attention-page.go` — prints `1` (one element, in its old position; a second would mean the widening added one).
 - `grep -c '^## Unreleased' CHANGELOG.md` — prints `1`.
