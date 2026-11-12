@@ -154,6 +154,19 @@ type Item struct {
 	State State `json:"state"`
 	// CreatedAt is when the item entered the stack. Written by the store.
 	CreatedAt libtime.DateTime `json:"created_at"`
+	// AskedAt is when the gate was actually asked — the pane hook event's own
+	// timestamp, forwarded by the watcher. Supplied by the producer, never
+	// derived, and never written by the store.
+	//
+	// It is distinct from CreatedAt, which is when the STORE received the item:
+	// the gap between the two is the forwarding lag, and exposing that gap is the
+	// only reason the field exists.
+	//
+	// Absent on every item pushed before the field existed, and on any push whose
+	// producer carries no ask timestamp. A reader renders that absence as absent
+	// and must never fall back to CreatedAt: a fabricated zero delta hides exactly
+	// the lag the field exists to expose. See docs/attention-item-timeline.md.
+	AskedAt *libtime.DateTime `json:"asked_at,omitempty"`
 
 	// AnsweredAt is when an answer arrived. Absent while unanswered.
 	AnsweredAt *libtime.DateTime `json:"answered_at,omitempty"`

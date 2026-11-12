@@ -1,8 +1,13 @@
 ---
-status: approved
+status: completed
 spec: [015-attention-card-timeline]
+summary: Added producer-supplied asked_at to Item and PushRequest, copied it through newItem and updateExistingIfLive, and proved round-trip plus absence with four real-store specs
+execution_id: attention-controller-timeline-exec-053-spec-015-asked-at
+dark-factory-version: v0.198.17
 created: "2026-11-12T09:49:35Z"
 queued: "2026-11-12T10:21:04Z"
+started: "2026-11-12T15:10:38Z"
+completed: "2026-11-12T15:34:53Z"
 ---
 
 # Accept and store the producer's ask time
