@@ -1,6 +1,6 @@
 module github.com/bborbe/attention-controller
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/bborbe/argument/v2 v2.13.7
