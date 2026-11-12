@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- refactor: Move the attention board's inline HTML document and script out of `pkg/handler/attention-page.go` into embedded assets (`pkg/handler/static/attention-page.html`, `pkg/handler/static/attention-page.js`) compiled into the binary with `//go:embed`. The document is assembled from the two assets plus the existing stylesheet constant before `html/template` parses it, so the served page is byte-identical; a missing or duplicated placeholder panics at startup, and `attention-page.go` drops from 1,995 lines to 177.
+
 ## v0.72.6
 
 - test: correct the board's stream-path kind spec, which had been red on master since `v0.69.0`. `keeps a session-kind card pushed while the page is open off the managers-only view` asserted that a streamed session-kind card is withheld from `?producer_kind=manager`, but `97b2f49` (2026-11-05) deliberately inverted that rule: an **uncovered** card — one no live manager can relay — is shown whatever its kind, on the server render and on the stream alike. The suite starts the binary without `-vault-dir`, so its task index is empty and every session-kind card it pushes resolves uncovered — which is exactly what the board is meant to show. The case now pushes an **agent**-kind card, which is never resolved uncovered and therefore still exercises the client-side filter on the stream path, and it reads `keeps an agent-kind card pushed while the page is open off the managers-only view`. Both scenario counts lose their "the suite is currently red" clause; the total stays `57 of 57`.

@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Attention</title>
+<style>/*__ATTENTION_PAGE_STYLES__*/</style>
+</head>
+<body>
+<h1>Attention</h1>
+{{/* Rendered whether or not the board has rows. A control that appears and
+     disappears as the store changes would move under the operator's cursor,
+     and an empty board is a state the board is in often. With no rows to
+     filter it is inert rather than absent.
+     The label names the set it hides rather than the set it leaves, because
+     that is the half the ruling settled: it hides the dimmed answered records
+     and keeps every permission card, which is actionable but carries no
+     answering control. "Only answerable" would read as excluding them.
+     ⚠️ The label stays VISIBLE beside the switch. v0.18.0 rejected an
+     icon-only read-aloud control because it would have moved the control's
+     meaning into a hover-only title plus an aria-label only assistive tech
+     sees, and this board's governing complaint was cards whose controls were
+     not discoverable at all. A bare switch here would repeat that mistake —
+     the operator would have to remember what it does. The switch carries the
+     STATE and the label carries the MEANING; neither substitutes for the
+     other. role="switch" with aria-checked is the shape a two-state control
+     is meant to have, and it replaces the aria-pressed this control shipped
+     with in v0.20.0.
+     ⚠️ The row also carries the board's stream health: a span saying the board
+     has stopped tracking the store and is showing the last state it received.
+     It sits here rather than on a card because it describes the BOARD, not an
+     item — the same reason the switch sits here. It ships hidden and is shown
+     only by the stream's own onerror, so a healthy board, a quiet board and an
+     empty board all render exactly what they rendered before. */}}
+<div class="board-controls"><a class="board-filter" data-board-kind href="{{ .KindHref }}" data-all-kinds="{{if .AllKinds}}true{{else}}false{{end}}" data-hidden-open="{{ .HiddenOpen }}" data-hidden-all="{{ .HiddenAll }}"><svg class="switch" viewBox="0 0 44 24" aria-hidden="true" focusable="false"><rect class="switch-track" x="1" y="1" width="42" height="22" rx="11"/><circle class="switch-knob" cx="12" cy="12" r="8"/></svg><span class="switch-label">{{if .AllKinds}}Managers only{{else}}Show all kinds{{end}}</span></a>{{if .HiddenCount}}<span class="kind-hidden" data-kind-hidden>{{ .HiddenCount }} hidden</span>{{end}}<button type="button" class="board-filter" data-board-filter role="switch" aria-checked="{{if .HideAnswered}}true{{else}}false{{end}}"><svg class="switch" viewBox="0 0 44 24" aria-hidden="true" focusable="false"><rect class="switch-track" x="1" y="1" width="42" height="22" rx="11"/><circle class="switch-knob" cx="12" cy="12" r="8"/></svg><span class="switch-label">Hide answered</span></button><button type="button" class="board-filter flag-filter" data-flag-filter role="switch" aria-checked="{{if .FlagFilter}}true{{else}}false{{end}}"><svg class="switch" viewBox="0 0 44 24" aria-hidden="true" focusable="false"><rect class="switch-track" x="1" y="1" width="42" height="22" rx="11"/><circle class="switch-knob" cx="12" cy="12" r="8"/></svg><span class="switch-label">Hide flagged</span></button><span class="stream-stale" data-stream-stale hidden>Not tracking the store - showing the last known state.</span></div>
+{{if .Items}}<ul class="items">
+{{range .Items}}{{template "attention-row" .}}{{end}}</ul>
+{{else}}<p class="empty">{{if .HiddenCount}}No cards of this kind need attention. The others are hidden by the kind filter above.{{else}}Nothing needs attention.{{end}}</p>
+{{end}}
+{{/* The board's own provenance: the answer to "which build am I looking at",
+     on the surface a human is already reading. It exists because that question
+     was answered twice in one turn from the file's mtime and the two readings
+     disagreed — a filesystem fact standing in for an artifact identity, which
+     is the wrong answer to it whenever the checkout and the binary have
+     diverged.
+     ⚠️ Every value is the BINARY's own VCS stamp, read at startup. A value read
+     from the repo at render time would answer "which commit is the checkout
+     at" — a different question, and one that agrees with this footer right up
+     until the day the two disagree, which is the day the answer matters.
+     ⚠️ The absent state renders EXPLICITLY, never as a placeholder. A build
+     carrying no stamp must say so: a dev default, an empty span and a
+     plausible-looking sha are all answers a reader would take at face value.
+     The three fields are
+     labelled rather than bare so that version and commit reading identically —
+     true of any build given no release tag — reads as the fact it is, not as a
+     rendering fault. See pkg/buildidentity. */}}
+<footer class="build-identity">{{if .BuildIdentity.Known}}version <span class="bi-value">{{.BuildIdentity.Version}}</span> · commit <span class="bi-value">{{.BuildIdentity.Commit}}</span> · committed <span class="bi-value">{{.BuildIdentity.CommitTime}}</span>{{else}}<span class="bi-absent">No build identity: this binary carries no VCS stamp, so it cannot say which source it was built from.</span>{{end}}</footer>
+<script>/*__ATTENTION_PAGE_SCRIPT__*/</script>
+</body>
+</html>
+{{/* One item row, as a sub-template rather than inline in the list. The live
+     stream sends a changed row to the open page as rendered HTML and the page
+     swaps that node in place, so the row markup has to be renderable on its own
+     — and it must be the SAME markup, not a second renderer that would drift
+     from this one. The dollar sign inside a sub-template is the value passed to
+     it, which is why Speak is carried on the row and read as dot-Speak here. */}}
+{{define "attention-row"}}<li class="item risk-{{ .Risk }}{{if .Dimmed}} dimmed{{end}}" data-item-id="{{ .Item.ItemID }}" data-risk="{{ .Risk }}" data-producer-kind="{{ .Item.ProducerKind }}"{{if .Provenance.Uncovered}} data-uncovered="true"{{end}} data-flagged="{{if .Flagged}}true{{else}}false{{end}}">
+{{/* The corner X renders on every OPEN row, ungated by mechanism, from
+     2026-09-27 — message, ack and permission alike — and is withheld from the
+     dimmed record card by the (not .Dimmed) conjunct, added 2026-10-01. It was
+     gated on Message-or-Ack until 2026-09-27, which excepted permission rows —
+     an exception the operator disowned (it had been read off a yes on a menu
+     they did not write). ⚠️ That disowned exception was a MECHANISM gate
+     (permission), and mechanism gates are what the operator's ruling forbids: a
+     permission row carries the X because the X is not itself an answer control —
+     its act is the mechanism's own dominant act, dispatched per class, adding no
+     transition and no field. ⚠️ AMENDED 2026-10-16: this sentence read "clearing
+     a card is not answering a gate — the X closes it, routes no answer, and
+     leaves the asking session frozen and the gate operator-only", and that is
+     FALSE on a permission row whose Deny control renders. The X ANSWERS there
+     (open -> answered, decision: deny). A clear would not leave the gate
+     operator-only — it would CONSUME it, because closed is terminal and the
+     table carries no closed -> answered row, so the asking session's own arm
+     answer is refused with ITEM_CLOSED. See the dispatch comment on the
+     data-corner-x handler below. ⚠️ .Dimmed is not a mechanism but a
+     STATE (item.State == pkg.AnsweredState — the dimmed record card), so
+     (not .Dimmed) does NOT re-create that exception: it withholds the X from no
+     mechanism. The schema page already draws this boundary — the dimmed record
+     card is a record, not a prompt, rendering no control that offers an answer
+     — and the X's act on a message card is a clear / dismissal, so that rule
+     reaches it. ⚠️ Without the conjunct the X's fall-through below closes the
+     item and deletes the record the dimmed card exists to preserve. See
+     [[Attention Item Schema]] § The corner X, and the dispatch comment on the
+     data-corner-x handler below. */}}{{if not .Dimmed}}<button type="button" class="corner-x" data-corner-x aria-label="{{if .Decide}}Deny this request{{else}}Hide (handled elsewhere){{end}}">✕</button>{{end}}
+{{/* The read-aloud control renders on every row whose Speak is set, from
+     2026-09-27 — except the dimmed record card, from 2026-09-27. It was gated on
+     'and .Message .Speak', which excepted permission rows on the reasoning that
+     read-aloud is an answer control — it is not; it is a utility that records no
+     answer, and the operator ruled that permission cards carry it too. ⚠️ The
+     two gates reconciled here are the X task's (the X becomes ungated) and this
+     one's (the Message conjunct is dropped); they sat on adjacent lines and were
+     merged on 2026-09-27. See [[Attention Item Schema]] § Answer routing.
+     ⚠️ The dimmed record card is a record, not a prompt, so it carries no
+     control that offers an answer — this one included: it asks the tts server to
+     read the QUESTION aloud, which is the act of a prompt on a row whose whole
+     purpose is to be a record. The (not .Dimmed) conjunct renders that rule, and
+     it is the same idiom the ack control below already uses. .Dimmed is exactly
+     'item.State == AnsweredState', so the one conjunct covers every mechanism a
+     dimmed card can reach — the dimmed message and dimmed permission cards alike
+     — while leaving the control on every open row. ⚠️ The '.Speak' conjunct must
+     stay: with no tts server configured, no row renders a speaker. */}}{{if and .Speak (not .Dimmed)}}<button type="button" class="speak" data-speak aria-label="Read aloud" title="Read aloud"><svg class="speak-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2.75 5.25 5.5H2.75v5h2.5L9 13.25z"/><path d="M11.5 5.75a3.25 3.25 0 0 1 0 4.5"/><path d="M13.5 3.75a6 6 0 0 1 0 8.5"/></svg></button>
+{{end}}{{if .JumpURL}}<button type="button" class="jump-corner" data-jump="{{ .JumpURL }}" aria-label="Jump to session" title="Jump to session"><svg class="jump-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.75 3.25h8.5a1.5 1.5 0 0 1 1.5 1.5v6.5a1.5 1.5 0 0 1-1.5 1.5h-8.5a1.5 1.5 0 0 1-1.5-1.5v-6.5a1.5 1.5 0 0 1 1.5-1.5z"/><path d="M5.75 6.5 7.5 8.25 5.75 10"/><path d="M9 10h1.75"/></svg></button>
+{{else if .NoJump}}<button type="button" class="jump-corner" disabled aria-label="Jump to session" title="Jump to session"><svg class="jump-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.75 3.25h8.5a1.5 1.5 0 0 1 1.5 1.5v6.5a1.5 1.5 0 0 1-1.5 1.5h-8.5a1.5 1.5 0 0 1-1.5-1.5v-6.5a1.5 1.5 0 0 1 1.5-1.5z"/><path d="M5.75 6.5 7.5 8.25 5.75 10"/><path d="M9 10h1.75"/></svg></button>
+{{end}}{{if .Info}}<button type="button" class="info-toggle" data-info-toggle aria-expanded="false" aria-label="Card information">i</button>
+{{end}}{{if or .TaskURL .GoalURL .TopicURL .Provenance.SessionName}}<div class="provenance">{{if .TaskURL}}<span class="task"><a href="{{ .TaskURL }}">{{ .Provenance.TaskName }}</a></span>{{end}}{{if .GoalURL}}<span class="goal"><a href="{{ .GoalURL }}">{{ .Provenance.GoalName }}</a></span>{{end}}{{if .TopicURL}}<span class="topic"><a href="{{ .TopicURL }}">{{ .Provenance.TopicName }}</a></span>{{end}}{{if .Provenance.SessionName}}<span class="session-name">{{ .Provenance.SessionName }}</span>{{end}}</div>
+{{end}}{{if .Provenance.Uncovered}}<div class="uncovered-reason" data-uncovered-reason>Shown because no live manager can relay it.</div>
+{{end}}{{if not .Message}}<div class="payload">{{ cardtext .Item.Payload }}</div>
+{{end}}{{if .Item.Context}}<div class="context">{{ cardtext .Item.Context }}</div>
+{{end}}{{if .Dimmed}}<div class="record"><div class="record-question">{{ cardtext .Item.Payload }}</div><div class="record-answer">answered: {{ .Record }}</div>{{if .Client}}<div class="record-client">client: {{ .Client }}</div>{{end}}</div>
+{{else if .Message}}<form class="answer" data-multi="{{ .Tabs }}">
+{{if .Tabs}}<div class="tabs">{{range .Questions}}<button type="button" class="tab{{if .Active}} active{{end}}" data-tab="{{ .Tab }}">{{ .Tab }}</button>{{end}}</div>
+<div class="card-title">{{ cardtext .Item.Payload }}</div>
+{{end}}{{range .Questions}}{{$question := .}}<div class="panel" data-question="{{ $question.Tab }}" data-multi-pick="{{ $question.Multi }}"{{if not $question.Active}} hidden{{end}}>
+<div class="question">{{ cardtext $question.Payload }}{{if $question.Hint}} <span class="hint">({{ $question.Hint }})</span>{{end}}</div>
+{{/* The Other control is a member of the option group when the question
+     declares options, and a bare field only when it declares none. An answer is
+     option OR text (pkg/answer.go), so a field sitting BESIDE the group could
+     only ever contradict it: the operator reads a filled radio as a live pick
+     while collectAnswers sends the text alone and drops the pick. Making it a
+     group member puts the shown state and the sent state on one control — the
+     input listener below is the other half, and data-other is what keeps the
+     control out of the collected picks. */}}
+{{if $question.Options}}<div class="options">
+{{range $question.Options}}<label class="option"><input type="{{ if $question.Multi }}checkbox{{ else }}radio{{ end }}" name="{{ $question.Name }}" value="{{ .Label }}" data-option="{{ .Label }}"{{if .Exclusive}} data-exclusive{{end}}><span class="option-body"><span class="option-label">{{ .Label }}{{if .Recommended}} <span class="recommended">(Recommended)</span>{{end}}</span>{{if .Description}}<span class="option-desc">{{ .Description }}</span>{{end}}</span></label>
+{{end}}<label class="option option-other"><input type="{{ if $question.Multi }}checkbox{{ else }}radio{{ end }}" name="{{ $question.Name }}" value="" data-other><span class="option-body"><span class="option-label">Other…</span><input class="other" type="text" name="text" placeholder="Type your answer"></span></label></div>
+{{else}}<input class="other" type="text" name="text" placeholder="Other...">{{end}}
+</div>
+{{end}}<div class="actions"><button type="submit" name="kind" value="skip" class="dismiss">✕ Dismiss</button><button type="submit" name="kind" value="send" class="next">✓ Submit answer</button><button type="submit" name="kind" value="hidden" class="corner-hide" hidden>Hide</button></div>
+</form>
+{{end}}{{/* The flag control is its OWN form, never nested inside form.answer: nested
+     forms are invalid HTML and the browser drops the inner <form>, which would
+     leave the flag field and submit button owned by the answer form. It carries
+     no action and no method, so it cannot navigate the board away; the page's
+     delegated listener handles it. The class is "flag", never "answer", so
+     row.querySelector('form.answer') keeps resolving the answer form alone.
+     ⚠️ Withheld from the dimmed record card: a flag is a field write on an open
+     item and the endpoint answers 409 for an answered one, so a control here
+     would always fail. */}}{{if not .Dimmed}}<form class="flag" data-flag-control><input class="flag-reason-input" type="text" name="reason" placeholder="Why should this not have reached you?" aria-label="Reason this card was misrouted"><button type="submit" class="flag-submit">⚑ Flag as misrouted</button></form>
+{{end}}{{if .Flagged}}<div class="flag-reason-shown">flagged: {{ cardtext .Item.FlagReason }} <button type="button" class="unflag" data-unflag>Unflag</button></div>
+{{end}}{{/* The 👍/👎 pair renders on EVERY row, dimmed record cards included: a
+     rating is a measurement accepted in any state, not an answer, so the
+     record-card rule (no control that offers an answer) does not withhold it.
+     Kept to two buttons so the history's rows stay small. */}}<div class="rate" data-rate-control data-rating="{{ .Item.Rating }}"><button type="button" class="rate-btn{{if eq .Item.Rating "up"}} rated{{end}}" data-rate="up" aria-pressed="{{if eq .Item.Rating "up"}}true{{else}}false{{end}}" aria-label="Good card">👍</button><button type="button" class="rate-btn{{if eq .Item.Rating "down"}} rated{{end}}" data-rate="down" aria-pressed="{{if eq .Item.Rating "down"}}true{{else}}false{{end}}" aria-label="Should not have reached me">👎</button></div>
+{{/* The undeliverable marker renders on a card whose answer a recorded
+     attempt says did NOT reach the asking session, and on no other status:
+     "delivered" is the good case, "held" is a gate an arm declined to answer on
+     purpose, "never_attempted" and "pre_trail_unknown" are absences of an
+     attempt rather than failures of one, and the empty status is a read that
+     failed. The gate is the row's own Undeliverable method, so the
+     comparison against the status constant stays in Go rather than becoming a
+     string literal here that could drift from it. It is a marker, not a control
+     — the board cannot retry a delivery — so it carries no handler and sits
+     outside the actions row. ⚠️ No backticks anywhere in this block: the whole
+     page is one Go raw-string literal, so a backtick closes it. */}}{{if .Undeliverable}}<div class="delivery-undeliverable">undeliverable</div>
+{{end}}{{if and .Ack (not .Dimmed)}}<div class="actions"><button type="button" class="ack" data-ack>Acknowledge</button></div>
+{{end}}{{if and .Decide (not .Dimmed)}}<div class="actions"><button type="button" class="dismiss" data-decision="deny">✕ Deny</button><button type="button" class="next" data-decision="allow">✓ Allow</button></div>
+{{end}}{{if or .Jump .JumpURL}}<div class="jump">{{if .Jump}}<span>Approve in the session that asked: <code>{{ .Jump }}</code></span>{{end}}</div>
+{{else if .NoJump}}<div class="jump-reason"><span class="no-jump">{{ .NoJump }}</span></div>
+{{end}}{{/* [[Attention Item Schema]] silence 26's placement rule implemented,
+     as amended 2026-10-03: the ask-first rule is scoped to the card's MACHINE
+     identity — producer, host, cwd, tool, pane and the state/timestamp line —
+     which relocates into this per-card panel behind the info affordance, while
+     the navigation spans lead the card above the ask. The panel is
+     server-rendered and carries the hidden attribute, so a card with no
+     JavaScript still serves its values and a stream row-swap renders the same
+     markup a fresh load does. The rule is implemented here rather than
+     restated; the schema page owns its statement. */}}{{if .Info}}<div class="info-panel" data-info-panel hidden>{{if or .Item.ProducerID .Item.ProducerKind}}<div class="producer">{{ .Item.ProducerID }} ({{ .Item.ProducerKind }})</div>{{end}}{{if .Provenance.Host}}<span class="host">{{ .Provenance.Host }}</span>{{end}}{{if .Provenance.Cwd}}<span class="cwd">{{ .Provenance.Cwd }}</span>{{end}}{{if .Provenance.Tool}}<span class="tool">{{ .Provenance.Tool }}</span>{{end}}{{if .Provenance.Pane}}<span class="pane">pane {{ .Provenance.Pane }}</span>{{else if .Provenance.PaneListingUnreadable}}<span class="pane">pane {{ .Provenance.RecordedPane }}</span><span class="unvalidated">unvalidated</span>{{else if .Provenance.PaneRecorded}}<span class="unroutable">unroutable</span>{{end}}{{if .Meta}}<div class="meta">{{ .Meta }}</div>{{end}}</div>
+{{end}}</li>{{end}}
