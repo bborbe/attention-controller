@@ -12,6 +12,11 @@ env:
   # `make test`/`precommit` then run with no package args, silently testing
   # only the repo root and exiting 0. Disable VCS stamping to restore it.
   GOFLAGS: "-buildvcs=false"
+  # The image ships Go 1.27.3, which carries GO-2026-6859 (net/http
+  # MaxBytesReader header race, fixed in 1.27.4), so `make vulncheck` — and
+  # therefore `make precommit` — fails in the container regardless of the tree.
+  # Pin the toolchain to the version the repo's gate requires.
+  GOTOOLCHAIN: go1.27.4
 extraMounts:
   - src: ${GOPATH}/pkg
     dst: /home/node/go/pkg
