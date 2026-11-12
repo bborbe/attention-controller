@@ -497,6 +497,41 @@ var _ = Describe("an answer given on the rendered board", func() {
 		Expect(byQuestion["Toppings"].Values).To(ConsistOf("Cheese", "Ham"))
 	})
 
+	// Enter on a multi-tab card. The keydown listener resolves `button.next` on
+	// the FORM rather than on the panel that fired, so on a multi-tab card the
+	// submitter is whichever Submit answer the form holds first — not the tab the
+	// operator is looking at. Every `button.next` carries value="send", so the
+	// dispatch is identical and the behaviour is correct; nothing pinned that,
+	// and a future change that gave the buttons per-tab values would break the
+	// other tabs silently. The assertion is per-question for that reason: the tab
+	// that was typed in carries the text, and the untouched tab carries nothing.
+	It("stores Enter on a multi-tab card against the tab that was typed in", func() {
+		itemID := pushCard(pkg.PushRequest{
+			DedupKey:        "shape-tabs-enter",
+			Payload:         "e2e: two questions, answered with Enter",
+			AnswerMechanism: pkg.MessageAnswerMechanism,
+			Questions: pkg.Questions{
+				{Tab: "Fruit", Payload: "e2e: which fruit", Options: options("Apple", "Cherry")},
+				{
+					Tab:     "Toppings",
+					Payload: "e2e: which toppings",
+					Options: options("Cheese", "Ham"),
+				},
+			},
+		})
+		page = newPage("")
+		clickTab(page, itemID, "Toppings")
+		field := page.Locator(rowSelector(itemID) + " input[name=text]:visible")
+		Expect(field.Fill("Basil")).To(Succeed())
+		Expect(field.Press("Enter")).To(Succeed())
+
+		item := answeredItem(itemID)
+		Expect(item.Answers).To(HaveLen(1))
+		Expect(item.Answers[0].Question).To(Equal("Toppings"))
+		Expect(item.Answers[0].Kind).To(Equal(pkg.TextAnswerKind))
+		Expect(string(item.Answers[0].Value)).To(Equal("Basil"))
+	})
+
 	It("stores Dismiss as skip on every question, never as an option", func() {
 		itemID := pushCard(pkg.PushRequest{
 			DedupKey:        "shape-dismiss",
