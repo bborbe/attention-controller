@@ -294,6 +294,17 @@ document.addEventListener('click', function (event) {
    reading of the card both put Dismiss first, and a reorder fixes only the
    default-button case while this handler states the intent explicitly. */
 document.addEventListener('keydown', function (event) {
+  /* An IME composition confirm is a keydown too. Treating it as an answer
+     submits a partial word: preventDefault swallows the confirm and
+     requestSubmit takes the card off the board mid-word, so the operator can
+     neither finish typing nor correct it. Same shown-versus-sent class as the
+     Dismiss defect above, reached from the other side.
+     ⚠️ Return BEFORE preventDefault. A guard that calls preventDefault and then
+     returns still eats the keystroke — the card stays open but the composition
+     is gone, which is the harder failure to notice.
+     ⚠️ keyCode 229 is the only signal some Safari/iOS and Android IMEs give;
+     isComposing alone misses them. */
+  if (event.isComposing || event.keyCode === 229) { return; }
   if (event.key !== 'Enter') { return; }
   var field = event.target;
   if (!field || !field.classList || !field.classList.contains('other')) { return; }
