@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.72.3
 
 - test: pin Enter on a multi-tab card to the tab that was typed in. The Enter listener resolves `button.next` on the **form**, not on the panel that fired the keydown, so on a multi-tab card the submitter is the form's first Submit answer rather than the visible tab's. Every `button.next` carries `value="send"`, so the dispatch is identical and the behaviour is correct — nothing pinned it, and a future change that gave the buttons per-tab values would break every tab except the first, silently. The case asserts per question: the typed tab carries the `text` entry, the untouched tab carries no entry. Scenario 002's total moves `55` → `56` and now records that the suite is `54 passed / 1 failed` on master because of a pre-existing failure filed separately.
 
