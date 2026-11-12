@@ -120,7 +120,7 @@ Reference docs (in-container paths):
 
 4. Invert the existing case `renders no marker on a card with no attempt record`. Rename it `renders the marker on a card with no attempt record after the trail`, keep its precondition pin (assert `store.Delivery` returns `pkg.NeverAttemptedStatus` before rendering, so the fixture cannot pass on a card that was actually attempted), and change the assertion from `NotTo(ContainSubstring("delivery-undeliverable"))` to `To(ContainSubstring(marker))`. Add a comment recording that this assertion is the one the widening inverts — the old predicate is now the defect.
 
-   The `delivered` and `held` cases stay exactly as they are: both still assert no marker.
+   The existing `delivered` case stays exactly as it is: it still asserts no marker. This file has no `held` case today — its cases are failed, delivered, no-attempt, read-fails and failed-beside-delivered — so do not go looking for one to preserve; the five-card matrix's `held` row is that coverage.
 
 ### C. The five-card matrix
 
@@ -179,7 +179,7 @@ Run in the repo root:
 - `grep -c 'delivery-undeliverable' pkg/handler/attention-page.go` — prints `1` (one element, in its old position; a second would mean the widening added one).
 - `grep -c '^## Unreleased' CHANGELOG.md` — prints `1`.
 - `awk '/^## /{sec=$0} /feat: Each attention card/{print "sits under: " sec}' CHANGELOG.md` — prints exactly one line, `sits under: ## Unreleased`. ⚠️ `grep -n 'feat: Each attention card' CHANGELOG.md` alone cannot see placement: a bullet appended under `## v0.71.0` passes it.
-- `grep -c '54 of 54 Specs' scenarios/001-board-browser-cases.md` — prints `1`. Prompt 2 set that count and this prompt changes no browser case, so any other value means a scenario edit leaked in. If you believe the count needs a change, that is prompt 2's file and a finding to report.
+- `grep -c '57 of 57 Specs' scenarios/001-board-browser-cases.md` — prints `1`. Prompt 054 set that count (56 → 57 for its new browser case) and this prompt changes no browser case, so any other value means a scenario edit leaked in. If you believe the count needs a change, that is prompt 054's file and a finding to report.
 - `ROOTDIR=/workspace make precommit` — must exit 0. ⚠️ The explicit `ROOTDIR` is required in this container: `.git` is masked here, so the Makefile cannot resolve `ROOTDIR`/`BRANCH` from the checkout on its own. This is the same form earlier prompts in this repo use.
 
 Operator-side verification is NOT part of this prompt: the deployed board check (`curl -s http://127.0.0.1:18080/ | grep -o 'commit <span class="bi-value">[^<]*'`), the browser suite and `make install` live in the spec's § Verification → Operator-executable ladder and its Post-Deploy AC. This container cannot run a browser, reach the live board or reload a launchd job.

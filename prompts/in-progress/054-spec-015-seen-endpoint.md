@@ -308,10 +308,10 @@ Reference docs (in-container paths):
 
 14. Update `scenarios/001-board-browser-cases.md`:
     - add one bullet to the **Expected** list naming the case above, in the file's existing voice (one line, stating the discriminating half: a load stamps the card and a second load leaves the stored instant identical);
-    - change the package total `53 of 53 Specs` to `54 of 54 Specs` in the case-list bullet that carries it;
+    - change the package total `56 of 56 Specs` to `57 of 57 Specs` in the case-list bullet that carries it; read the current total from the file rather than assuming this number — the `v0.72.x` merges moved it three times in one day;
     - change the intro's literal behaviour count `thirty-seven` to `thirty-eight`;
     - keep the existing `v0.69.0` known-red note untouched — it describes an unrelated failing case and is still true;
-    - after the edit, `! grep -q '53 of 53' scenarios/001-board-browser-cases.md` must succeed — write absence as `! grep -q`, never `grep -c … must print 0`, because `grep -c` exits 1 when the count is zero.
+    - after the edit, `! grep -q '56 of 56' scenarios/001-board-browser-cases.md` must succeed — write absence as `! grep -q`, never `grep -c … must print 0`, because `grep -c` exits 1 when the count is zero.
 </requirements>
 
 <constraints>
@@ -343,8 +343,8 @@ Run in the repo root:
 - `grep -n '/seen' main.go` — at least one line.
 - `grep -c 'markEverySeen' pkg/handler/attention-page.go` — at least `2` (the declaration and the load-time call).
 - `! grep -q 'timeline' pkg/handler/attention-page-helpers.go` — succeeds only when no timeline style leaked into this prompt.
-- `! grep -q '53 of 53' scenarios/001-board-browser-cases.md` — succeeds only when the old package total is gone.
-- `grep -c '54 of 54 Specs' scenarios/001-board-browser-cases.md` — prints at least `1`.
+- `! grep -q '56 of 56' scenarios/001-board-browser-cases.md` — succeeds only when the old package total is gone.
+- `grep -c '57 of 57 Specs' scenarios/001-board-browser-cases.md` — prints at least `1`.
 - `go vet -mod=mod -tags e2e ./e2e/` — type-checks the new browser case without launching a browser.
 - `ROOTDIR=/workspace make precommit` — must exit 0. It regenerates `mocks/` from the counterfeiter directives, which the new interface method requires. ⚠️ The explicit `ROOTDIR` is required in this container: `.git` is masked here, so the Makefile cannot resolve `ROOTDIR`/`BRANCH` from the checkout on its own. This is the same form earlier prompts in this repo use.
 
