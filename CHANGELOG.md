@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## v0.72.0
+
+- feat: the watcher's cycle duration reaches the `:18080` registry — `POST /api/1.0/metrics/watcher-cycle` observes it into `attention_watcher_cycle_seconds`, so the cycle is chartable without a second exporter on a second port. The watcher already speaks HTTP to this port to post cards, so only the server half was missing. Registered on the board router only, never inside `registerAttentionAPIRoutes`, so it does not appear on the cluster-reachable bearer-token listener: the measurement can only originate on this host. `seconds` is decoded into a `*float64` so a request that omits it is rejected rather than observed as a zero-duration cycle.
+
 ## v0.71.1
 
 - chore: update Go to 1.27.4 and github.com/bborbe/argument/v2 to v2.13.10, github.com/bborbe/boltkv to v1.16.8, github.com/bborbe/collection to v1.21.7, github.com/bborbe/errors to v1.6.6, github.com/bborbe/http to v1.26.33, github.com/bborbe/kv to v1.21.29, github.com/bborbe/log to v1.7.8, github.com/bborbe/metrics to v0.6.11, github.com/bborbe/run to v1.11.11, github.com/bborbe/sentry to v1.10.7, github.com/bborbe/service to v1.11.3, github.com/bborbe/time to v1.27.28, github.com/bborbe/validation to v1.5.9, github.com/onsi/ginkgo/v2 to v2.34.0, golang.org/x/text to v0.44.0

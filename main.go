@@ -756,6 +756,18 @@ func (a *application) createHTTPServer(
 		// Business routes live under /api/1.0/, never in the admin block above.
 		registerAttentionAPIRoutes(router, store, a.TTSURL)
 
+		// The watcher's cycle-duration ingest.
+		//
+		// ⚠️ Registered on THIS router only, deliberately not inside
+		// registerAttentionAPIRoutes — the same reason the heartbeat surface below
+		// is kept out of it. That function is shared with the cluster-reachable
+		// bearer-token listener, and this endpoint is written by a process on this
+		// host over loopback, once per cycle. Serving it remotely would widen the
+		// surface for a measurement that can only ever originate here.
+		router.Path("/api/1.0/metrics/watcher-cycle").
+			Methods(http.MethodPost).
+			Handler(factory.CreateAttentionWatcherCycleHandler(boardMetrics))
+
 		// The session-heartbeat surface.
 		//
 		// ⚠️ It is registered on THIS router only, deliberately not inside
