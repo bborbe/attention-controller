@@ -174,7 +174,7 @@ Reference docs (in-container paths):
 Run in the repo root:
 
 - `make test` — the suite passes, including the inverted case and the five-card matrix.
-- `grep -c 'NeverAttemptedStatus' pkg/handler/attention-page-data.go` — prints `2` after prompt 3 has shipped: one in the widened `Undeliverable()` predicate, one in the delivery-outcome mapping. Prompt 3 deleted `deliveryStatusOf`, which held the file's only occurrence before, so a count of `1` means the widening did not land.
+- `grep -c 'NeverAttemptedStatus' pkg/handler/attention-page-data.go` — prints `1`. That one occurrence is the widened `Undeliverable()` predicate this prompt adds. Do not expect two: prompt 055 deletes `deliveryStatusOf` (the file's only occurrence before this change) and puts `DeliveryOutcome()` in the new `pkg/handler/attention-page-timeline.go`, so the outcome mapping is not counted here. A count of `0` means the widening did not land.
 - `! grep -q 'HeldStatus' pkg/handler/attention-page-data.go` — succeeds only when the predicate mentions no held status (a `held` marker is the regression this guards).
 - `grep -c 'delivery-undeliverable' pkg/handler/attention-page.go` — prints `1` (one element, in its old position; a second would mean the widening added one).
 - `grep -c '^## Unreleased' CHANGELOG.md` — prints `1`.
