@@ -308,10 +308,10 @@ Reference docs (in-container paths):
 
 14. Update `scenarios/001-board-browser-cases.md`:
     - add one bullet to the **Expected** list naming the case above, in the file's existing voice (one line, stating the discriminating half: a load stamps the card and a second load leaves the stored instant identical);
-    - change the package total `56 of 56 Specs` to `57 of 57 Specs` in the case-list bullet that carries it; read the current total from the file rather than assuming this number — the `v0.72.x` merges moved it three times in one day;
+    - raise the package total by exactly one. Read the total the file carries at edit time (it read `57 of 57 Specs` when this prompt was written) and write `<N+1> of <N+1>`. Do NOT copy a number from this prompt: the `v0.72.x` merges moved that total three times in one day, and a hardcoded target makes the edit a silent no-op when the file has already moved, or a false failure when it has not;
     - change the intro's literal behaviour count `thirty-seven` to `thirty-eight`;
     - keep the existing `v0.69.0` known-red note untouched — it describes an unrelated failing case and is still true;
-    - after the edit, `! grep -q '56 of 56' scenarios/001-board-browser-cases.md` must succeed — write absence as `! grep -q`, never `grep -c … must print 0`, because `grep -c` exits 1 when the count is zero.
+    - verify by the delta, not by a literal: capture `BEFORE` as the numeric package total *before* editing, then after the edit `grep -q "$((BEFORE+1)) of $((BEFORE+1)) Specs" scenarios/001-board-browser-cases.md` must succeed. A hardcoded literal cannot distinguish the three outcomes — it passes when the edit was a no-op, and fails when the edit was correct but the file had already moved.
 </requirements>
 
 <constraints>
@@ -343,8 +343,7 @@ Run in the repo root:
 - `grep -n '/seen' main.go` — at least one line.
 - `grep -c 'markEverySeen' pkg/handler/attention-page.go` — at least `2` (the declaration and the load-time call).
 - `! grep -q 'timeline' pkg/handler/attention-page-helpers.go` — succeeds only when no timeline style leaked into this prompt.
-- `! grep -q '56 of 56' scenarios/001-board-browser-cases.md` — succeeds only when the old package total is gone.
-- `grep -c '57 of 57 Specs' scenarios/001-board-browser-cases.md` — prints at least `1`.
+- the scenario package total is exactly one higher than before the edit: `BEFORE=$(grep -o '[0-9]* of [0-9]* Specs' scenarios/001-board-browser-cases.md | head -1 | cut -d' ' -f1)` recorded before, then `grep -q "$((BEFORE+1)) of $((BEFORE+1)) Specs" scenarios/001-board-browser-cases.md` after. Do not assert a literal — `57 of 57` is what the file reads today, so a literal passes a no-op edit and fails a correct one that followed another merge.
 - `go vet -mod=mod -tags e2e ./e2e/` — type-checks the new browser case without launching a browser.
 - `ROOTDIR=/workspace make precommit` — must exit 0. It regenerates `mocks/` from the counterfeiter directives, which the new interface method requires. ⚠️ The explicit `ROOTDIR` is required in this container: `.git` is masked here, so the Makefile cannot resolve `ROOTDIR`/`BRANCH` from the checkout on its own. This is the same form earlier prompts in this repo use.
 
