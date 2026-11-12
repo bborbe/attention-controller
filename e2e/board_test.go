@@ -904,10 +904,15 @@ var _ = Describe("the attention board", func() {
 			// this one keep a card whose Provenance.Uncovered is true, whatever
 			// its kind: the manager-only view rests on a manager relaying the
 			// worker's question, and an uncovered card has no manager to relay
-			// it. This fixture runs with an empty registry, so every session-kind
-			// card it pushes is uncovered and is deliberately shown. Agent, cron
-			// and dark-factory cards are never asked that question, so an
-			// agent-kind card is what still exercises the filter on this path.
+			// it. Every session-kind card pushed here resolves uncovered,
+			// because startBinary passes no -vault-dir: the task index is empty,
+			// the session has no task, and workerUncovered answers true on that.
+			// ⚠️ An EMPTY registry would answer the other way — covered — which
+			// is why the fixture seeds its own; emptying sessionsDir to "match"
+			// this comment would make the session card hidden and this spec pass
+			// for the wrong reason. Agent, cron and dark-factory cards are never
+			// asked the coverage question at all, so an agent-kind card is what
+			// still exercises the filter on this path.
 			page := newPage("?producer_kind=manager")
 			defer func() { _ = page.Close() }()
 
