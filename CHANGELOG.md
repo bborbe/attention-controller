@@ -8,9 +8,14 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- test: correct the board's stream-path kind spec, which had been red on master since `v0.69.0`. `keeps a session-kind card pushed while the page is open off the managers-only view` asserted that a streamed session-kind card is withheld from `?producer_kind=manager`, but `97b2f49` (2026-11-05) deliberately inverted that rule: an **uncovered** card — one no live manager can relay — is shown whatever its kind, on the server render and on the stream alike. The suite starts the binary without `-vault-dir`, so its task index is empty and every session-kind card it pushes resolves uncovered — which is exactly what the board is meant to show. The case now pushes an **agent**-kind card, which is never resolved uncovered and therefore still exercises the client-side filter on the stream path, and it reads `keeps an agent-kind card pushed while the page is open off the managers-only view`. Both scenario counts lose their "the suite is currently red" clause; the total stays `57 of 57`.
+
 ## v0.72.5
 
 - fix: **confirming an IME composition in a card's `Other…` field submitted the card mid-word.** The `keydown` listener added in v0.72.1 answers on any `Enter`, and a composition confirm arrives as a keydown too — so a Japanese, Chinese or Korean operator finishing a word had the card leave the board carrying the partial text that existed at that instant, and `preventDefault()` swallowed the confirm, so the composition could be neither finished nor corrected. The listener now returns **before** `preventDefault` when `event.isComposing` is true or `event.keyCode` is `229`; the legacy `keyCode` is checked because some Safari/iOS and Android IMEs set it without `isComposing`. Ordinary Enter is unchanged. The Playwright case `leaves the card open and the text intact on the keydown that confirms an IME composition` installs a `preventDefault` spy and dispatches all three shapes — `isComposing`, legacy `keyCode 229`, and Enter with `isComposing` alone — then holds the card open under `Consistently` and asserts a positive control that an ordinary Enter still submits. A guard that calls `preventDefault` and then returns passes a submit-only assertion while still eating the keystroke, so the spy is the assertion that separates them; the `Consistently` window is what catches a build that still submits, since the answer posts asynchronously. Red on `origin/master` (`Expected <bool>: true to be false` at the spy assertion), green with the fix. Scenario 002's expected package total moves `56` → `57`.
+
 
 ## v0.72.4
 
