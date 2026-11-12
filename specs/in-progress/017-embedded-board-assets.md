@@ -29,16 +29,23 @@ The board's document and script each live in their own embedded asset file, comp
 - Reformatting, reindenting, re-wrapping or "tidying" the moved bytes, and changing any template action. The document moves as bytes.
 - Making the script's new file status an invitation to modernise it: the removal of the raw-string restriction is a side effect of the move, not a licence to use it. The script stays byte-identical, backtick-free though it now may use them.
 
+## Assumptions
+
+- The document's only two non-literal parts are the stylesheet, which is already a separate constant, and the script, which is the block between `<script>` and `</script>`. Nothing else in the literal is assembled from anywhere.
+- `html/template` parses the document after assembly, so its behaviour is a function of the assembled string and not of how the string was built. This is why byte identity is a sufficient proof of unchanged behaviour at the document level.
+- `//go:embed` of a directory compiles the whole directory into the binary at build time, so no runtime path, mount or flag is needed.
+- The one red e2e spec is deterministic across two runs of the same tree, so "the same failing spec names" is a stable comparison rather than a coin flip. It failed on every recorded run since before this task existed.
+- `origin/master` is reachable from the container's clone. Where it is not, the byte-identity check fetches it first rather than skipping.
+
 ## Acceptance Criteria
 
 - [ ] `make precommit` exits 0.
-- [ ] **The served document is byte-identical to `origin/master`'s** — evidence: the check in § Verification reconstructs master's document from `git show origin/master:pkg/handler/attention-page.go` plus the stylesheet constant in `attention-page-helpers.go`, reconstructs the branch's document from the two asset files with their placeholders substituted, and compares them; it prints `identical: 119788 bytes served` and exits 0. ⚠️ `{{/* … */}}` template comments are stripped from both sides before the comparison, because they never reach the browser; every byte that does reach the browser must match exactly.
-- [ ] **The moved bytes are the old bytes, not a rewrite** — evidence: the HTML asset plus the script asset, with the two placeholders removed, reassemble to master's literal with no other difference, which is what the AC above compares; and `git show origin/master:pkg/handler/attention-page.go | wc -c` versus the branch's asset sizes account for every byte (master literal 117,238-byte file → 19,876-byte HTML asset + 83,224-byte script asset + the stylesheet, which stays in Go).
-- [ ] **`pkg/handler/attention-page.go` no longer carries the document** — evidence: `wc -l` reports 268 lines (from 1,995), `grep -c '<!DOCTYPE html>' pkg/handler/attention-page.go` is 0, and `grep -c 'addEventListener' pkg/handler/attention-page.go` is 0 while the same grep against `pkg/handler/static/attention-page.js` is non-zero.
+- [ ] **The served document is byte-identical to `origin/master`'s, and the old file no longer carries it** — evidence: the check in § Verification reconstructs master's document from `git show origin/master:pkg/handler/attention-page.go` plus the stylesheet constant in `attention-page-helpers.go`, reconstructs the branch's document from the two asset files with their placeholders substituted, and compares them; it prints `identical: 119788 bytes served` and exits 0. The byte arithmetic must account for every byte: master's 117,238-byte file holds a 103,042-byte document (19,876-byte HTML asset + 83,224-byte script asset + the two placeholders) plus the stylesheet, which stays in Go. Alongside it, `wc -l pkg/handler/attention-page.go` is **≤ 300** (from 1,995), `grep -c '<!DOCTYPE html>' pkg/handler/attention-page.go` is 0, and `grep -c 'addEventListener' pkg/handler/attention-page.go` is 0 while the same grep against `pkg/handler/static/attention-page.js` is non-zero. ⚠️ `{{/* … */}}` template comments are stripped from both sides before the comparison, because they never reach the browser; every byte that does reach the browser must match exactly.
+- [ ] **Go's assembled output is the pinned document** — evidence: a spec asserts `hex.EncodeToString(sha256.Sum256([]byte(attentionPageTemplate))[:])` equals `e919452e21188873e422ca8323a8a2c3c2380043f3c9bc07e58410073257a86a`, the 130,273-byte unstripped document. ⚠️ **This is the assertion the file-level check cannot make.** That check reads the asset files on disk and never runs the Go assembly, so an assembly that trimmed, re-encoded or dropped a trailing newline from an embedded asset would pass every other criterion while serving something master never served. The digest pins what `buildAttentionPage` actually produced.
 - [ ] **Both parts are separate embedded assets in the vault-ui shape** — evidence: `pkg/handler/static/attention-page.html` and `pkg/handler/static/attention-page.js` exist, `pkg/handler/static_embed.go` carries `//go:embed static` and no other embed directive exists in the package, and `go build ./...` succeeds with no asset read at runtime.
 - [ ] **The assembly cannot silently serve an empty stylesheet or an empty script** — evidence: a spec asserts `buildAttentionPage` substitutes both placeholders, panics with a message naming the placeholder when it is absent, and panics when it is duplicated; the doctored inputs are the asset strings with one placeholder removed and one duplicated.
 - [ ] **The browser suite shows no new failure against pristine `origin/master`** — evidence: `go test -mod=mod -tags e2e -count=1 -v ./e2e/` run on the branch and run again in a detached `origin/master` worktree produce the **same** `Ran N of N Specs` line and the **same** set of failing spec names. ⚠️ This is not "the suite is green": it is not, and has not been since before this change. `keeps a session-kind card pushed while the page is open off the managers-only view` (`e2e/board_test.go:894`) fails on `origin/master` and is named in the pull request body as pre-existing, per `docs/release-process.md` § When the suite is red. ⚠️ Read the count with that command, never with `make e2e`, which omits `-v` and discards Ginkgo's summary.
-- [ ] **`CHANGELOG.md` carries an `## Unreleased` bullet** describing the move for a reader, since `.maintainer.yaml` sets `release.autoRelease: true` and a merge without one cuts no tag.
+- [ ] **`CHANGELOG.md` carries an `## Unreleased` bullet** describing the move for a reader, since `.maintainer.yaml` sets `release.autoRelease: true` and a merge without one cuts no tag — evidence: `awk '/^## /{s=$0} /embedded asset|inline HTML|attention-page/{print s}' CHANGELOG.md` prints `## Unreleased`, and `grep -c '^## Unreleased$' CHANGELOG.md` prints `1` (not two headings).
 
 ## Verification
 
@@ -47,6 +54,13 @@ The board's document and script each live in their own embedded asset file, comp
 - `make precommit` — format, lint, unit tests, licence and security checks clean
 - `go test -mod=mod ./pkg/handler/` — the handler suite, including the new assembly specs, passes
 - `go build -mod=mod ./...` — the embedded assets compile into the binary
+- The pinned-digest assertion, which reads Go's assembled output rather than the files:
+
+```bash
+go test -mod=mod ./pkg/handler/ 2>&1 | tail -3
+# the spec asserts sha256(attentionPageTemplate) ==
+# e919452e21188873e422ca8323a8a2c3c2380043f3c9bc07e58410073257a86a
+```
 - The byte-identity check, from the repository root:
 
 ```bash
@@ -119,7 +133,7 @@ Observable: both runs print the same `Ran N of N Specs` line, and the failing sp
 1. The board's document is produced by one assembly step from two embedded files plus the existing stylesheet constant, and the bytes it produces are exactly the bytes the single-literal form produced.
 2. The HTML asset is the whole document — head, body, both sub-templates and every template action — and it carries exactly two placeholders: one inside `<style>` where the stylesheet goes, one inside `<script>` where the script goes.
 3. The script asset is the whole inline script as a standalone `.js` file, byte-identical to the text that sits between `<script>` and `</script>` today.
-4. Assembly happens before `html/template` parses the document, so the engine still sees one document: CSS comments are still stripped in the style context, template actions are still escaped in their own contexts, and the script is not handed to the JS escaper.
+4. Assembly happens before `html/template` parses the document, so the engine still sees one document: CSS comments are still stripped in the style context, template actions are still escaped in their own contexts, and the script is not handed to the JS escaper. The placeholders are inert either way — neither `/*__ATTENTION_PAGE_STYLES__*/` nor `/*__ATTENTION_PAGE_SCRIPT__*/` contains `{{`, so the parser would read both as ordinary text if a substitution were ever skipped; the panic is what stops that from being served.
 5. A missing or duplicated placeholder stops the process at startup with a message naming the placeholder, rather than serving a page whose stylesheet or script came out empty.
 6. Both assets are compiled into the binary. The deployment is unchanged: one artefact, no new mount, no file read at runtime, no new flag.
 7. `pkg/handler/attention-page.go` becomes a handler again — its remaining content is the handler, its documentation and its data types, with no served bytes in it.
@@ -142,6 +156,8 @@ Observable: both runs print the same `Ran N of N Specs` line, and the failing sp
 |---|---|---|
 | A placeholder is deleted or duplicated while editing an asset | `buildAttentionPage` panics at startup with a message naming the placeholder and its count | Restore the placeholder; the panic names it, so the fix is one edit |
 | An asset path in the embed directive is wrong | `go build` fails with an embed error rather than the binary starting without an asset | Fix the path; the embed error names the missing file |
+| A file is missing *inside* `static/` while the directory itself exists | The build succeeds — `//go:embed static` embeds whatever is there — and the process panics at startup from `fs.ReadFile` with the asset name | Add the file back; the panic names it, and `go test ./pkg/handler/` fails first |
+| The e2e failing-spec set differs between the two runs because of flakiness rather than a change | The comparison cannot distinguish a regression from a flake | Re-run both sides once; if the sets still differ, name the spec that differs rather than reporting a match |
 | A byte of the moved document changes during the move | The byte-identity check prints a unified diff and exits non-zero | Diff the two sides and restore the byte; do not "fix" the check |
 | Someone reformats the script while moving it | Same as above — the check fails on the first changed byte | Revert the reformatting; a formatting change is a separate change |
 | The handler suite fails after the move | The assembly produced a different document than the engine was parsing before | Compare the assembled document against master's with the check before reading any test failure as a behaviour change |
@@ -156,8 +172,8 @@ The change adds no input surface: no HTTP parameter, no request-derived path and
 
 | # | Prompt focus | Covers DBs | Covers ACs | Depends on |
 |---|---|---|---|---|
-| 1 | Split the document into `static/attention-page.html` + `static/attention-page.js`, add the `//go:embed static` shim and the assembly with its placeholder panics, wire `attention-page-template.go` to the assembled value, and correct that file's now-false rationale comment | 1, 2, 3, 4, 5, 6, 7 | 1, 2, 3, 4 | — |
-| 2 | The assembly specs: both placeholders substituted, panic on absent, panic on duplicated, embedded script served verbatim | 5 | 5 | prompt 1 |
+| 1 | Split the document into `static/attention-page.html` + `static/attention-page.js`, add the `//go:embed static` shim and the assembly with its placeholder panics, wire `attention-page-template.go` to the assembled value, and correct that file's now-false rationale comment | 1, 2, 3, 4, 5, 6, 7 | 1, 2, 4 | — |
+| 2 | The assembly specs: both placeholders substituted, panic on absent, panic on duplicated, embedded script served verbatim, and the pinned SHA-256 of the assembled document | 5 | 3, 5 | prompt 1 |
 | 3 | `CHANGELOG.md` `## Unreleased` bullet | — | 7 | prompt 1 |
 
 Rationale: prompt 1 is the move and must land as one commit so the byte-identity check has a single tree to run against; prompt 2 depends on the assembly existing and locks the failure the panic exists for; prompt 3 is the release-hygiene tail. The e2e comparison (AC6) is the pull-request gate and is owned by no prompt, because the container cannot run a browser suite.
