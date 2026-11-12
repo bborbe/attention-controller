@@ -21,6 +21,11 @@ type Metrics struct {
 	boardRowsRenderedTotalCounterAddArgsForCall []struct {
 		arg1 int
 	}
+	WatcherCycleSecondsHistogramObserveStub        func(float64)
+	watcherCycleSecondsHistogramObserveMutex       sync.RWMutex
+	watcherCycleSecondsHistogramObserveArgsForCall []struct {
+		arg1 float64
+	}
 	invocations      map[string][][]interface{}
 	invocationsMutex sync.RWMutex
 }
@@ -102,6 +107,38 @@ func (fake *Metrics) BoardRowsRenderedTotalCounterAddArgsForCall(i int) int {
 	fake.boardRowsRenderedTotalCounterAddMutex.RLock()
 	defer fake.boardRowsRenderedTotalCounterAddMutex.RUnlock()
 	argsForCall := fake.boardRowsRenderedTotalCounterAddArgsForCall[i]
+	return argsForCall.arg1
+}
+
+func (fake *Metrics) WatcherCycleSecondsHistogramObserve(arg1 float64) {
+	fake.watcherCycleSecondsHistogramObserveMutex.Lock()
+	fake.watcherCycleSecondsHistogramObserveArgsForCall = append(fake.watcherCycleSecondsHistogramObserveArgsForCall, struct {
+		arg1 float64
+	}{arg1})
+	stub := fake.WatcherCycleSecondsHistogramObserveStub
+	fake.recordInvocation("WatcherCycleSecondsHistogramObserve", []interface{}{arg1})
+	fake.watcherCycleSecondsHistogramObserveMutex.Unlock()
+	if stub != nil {
+		fake.WatcherCycleSecondsHistogramObserveStub(arg1)
+	}
+}
+
+func (fake *Metrics) WatcherCycleSecondsHistogramObserveCallCount() int {
+	fake.watcherCycleSecondsHistogramObserveMutex.RLock()
+	defer fake.watcherCycleSecondsHistogramObserveMutex.RUnlock()
+	return len(fake.watcherCycleSecondsHistogramObserveArgsForCall)
+}
+
+func (fake *Metrics) WatcherCycleSecondsHistogramObserveCalls(stub func(float64)) {
+	fake.watcherCycleSecondsHistogramObserveMutex.Lock()
+	defer fake.watcherCycleSecondsHistogramObserveMutex.Unlock()
+	fake.WatcherCycleSecondsHistogramObserveStub = stub
+}
+
+func (fake *Metrics) WatcherCycleSecondsHistogramObserveArgsForCall(i int) float64 {
+	fake.watcherCycleSecondsHistogramObserveMutex.RLock()
+	defer fake.watcherCycleSecondsHistogramObserveMutex.RUnlock()
+	argsForCall := fake.watcherCycleSecondsHistogramObserveArgsForCall[i]
 	return argsForCall.arg1
 }
 
