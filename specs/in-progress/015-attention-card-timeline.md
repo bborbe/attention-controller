@@ -1,6 +1,8 @@
 ---
-status: approved
+status: prompted
 approved: "2026-11-11T21:33:21Z"
+generating: "2026-11-12T10:21:30Z"
+prompted: "2026-11-12T10:21:30Z"
 branch: dark-factory/attention-card-timeline
 ---
 

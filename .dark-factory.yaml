@@ -7,6 +7,11 @@ env:
   GOPATH: /home/node/go
   GOCACHE: /home/node/.cache/go-build
   GOLANGCI_LINT_CACHE: /home/node/.cache/golangci-lint
+  # workflow: worktree masks .git, so `go list ./...` exits 1 with
+  # "error obtaining VCS status" and the package list comes back empty —
+  # `make test`/`precommit` then run with no package args, silently testing
+  # only the repo root and exiting 0. Disable VCS stamping to restore it.
+  GOFLAGS: "-buildvcs=false"
 extraMounts:
   - src: ${GOPATH}/pkg
     dst: /home/node/go/pkg
