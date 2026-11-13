@@ -113,6 +113,19 @@ func (a *attentionStore) Push(ctx context.Context, request PushRequest) (*Item, 
 	return result, nil
 }
 
+// askedAtOrNil drops the zero instant, so a producer that serialised an
+// uninitialised libtime.DateTime does not store 0001-01-01 and render a
+// fabricated forwarding lag. `omitempty` cannot cover this: the field is a
+// pointer, so a non-nil pointer to the zero value marshals as a present
+// timestamp. Absent means absent — the same rule the field's contract states,
+// applied on the write path rather than left to every producer to remember.
+func askedAtOrNil(askedAt *libtime.DateTime) *libtime.DateTime {
+	if askedAt == nil || askedAt.Time().IsZero() {
+		return nil
+	}
+	return askedAt
+}
+
 // newItem builds a fresh item in the open state. The store owns ItemID, State,
 // CreatedAt and the answer fields; the producer owns everything else.
 func (a *attentionStore) newItem(ctx context.Context, request PushRequest) (*Item, error) {
@@ -137,6 +150,7 @@ func (a *attentionStore) newItem(ctx context.Context, request PushRequest) (*Ite
 		Questions:         request.Questions,
 		State:             OpenState,
 		CreatedAt:         a.currentDateTimeGetter.Now(),
+		AskedAt:           askedAtOrNil(request.AskedAt),
 		ExpiresAt:         request.ExpiresAt,
 	}
 	if err := item.Validate(ctx); err != nil {
@@ -1865,6 +1879,12 @@ func (a *attentionStore) updateExistingIfLive(
 	existing.InterruptClass = request.InterruptClass
 	existing.ProvenanceClass = request.ProvenanceClass
 	existing.ExpiresAt = request.ExpiresAt
+	// A suppressed re-push is a re-ask of the same question, and this block
+	// already resets CreatedAt to now for exactly that reason — so the ask time
+	// follows the same rule, including the case where the re-push carries none
+	// (the field returns to absent rather than keeping a stale instant from the
+	// previous push).
+	existing.AskedAt = askedAtOrNil(request.AskedAt)
 	existing.CreatedAt = a.currentDateTimeGetter.Now()
 	if err := a.putItem(ctx, tx, *existing); err != nil {
 		return nil, errors.Wrap(ctx, err, "update existing item failed")

@@ -306,6 +306,14 @@ type PushRequest struct {
 	AnswerCardinality AnswerCardinality `json:"answer_cardinality,omitempty"`
 	Questions         Questions         `json:"questions,omitempty"`
 	ExpiresAt         *libtime.DateTime `json:"expires_at,omitempty"`
+	// AskedAt is when the producer's own hook event says the gate was asked.
+	// Supplied, never derived; absent is legal and means the producer carries no
+	// ask timestamp, which is what every producer predating the field does.
+	//
+	// ⚠️ Without this field on the REQUEST the declaration never reaches the
+	// store at all: the body carries it, Item has a place to put it, and nothing
+	// joins the two — the same silent drop `Risk` documents.
+	AskedAt *libtime.DateTime `json:"asked_at,omitempty"`
 }
 
 // Validate returns an error when the declaration violates the schema's rules

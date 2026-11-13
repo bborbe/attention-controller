@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- feat: accept a producer-supplied `asked_at` on push and store it unchanged — distinct from the store's `created_at`, absent when the push carries none, and reset by a re-push exactly as `created_at` is
+
 ## v0.72.6
 
 - test: correct the board's stream-path kind spec, which had been red on master since `v0.69.0`. `keeps a session-kind card pushed while the page is open off the managers-only view` asserted that a streamed session-kind card is withheld from `?producer_kind=manager`, but `97b2f49` (2026-11-05) deliberately inverted that rule: an **uncovered** card — one no live manager can relay — is shown whatever its kind, on the server render and on the stream alike. The suite starts the binary without `-vault-dir`, so its task index is empty and every session-kind card it pushes resolves uncovered — which is exactly what the board is meant to show. The case now pushes an **agent**-kind card, which is never resolved uncovered and therefore still exercises the client-side filter on the stream path, and it reads `keeps an agent-kind card pushed while the page is open off the managers-only view`. Both scenario counts lose their "the suite is currently red" clause; the total stays `57 of 57`.
