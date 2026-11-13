@@ -811,10 +811,13 @@ func (a *application) createHTTPServer(
 		// under one context, so a failure in either takes the process down and
 		// launchd restarts both: a half-up state — board serving, jumps dead — is
 		// exactly the two-lifecycle problem the fold exists to remove.
-		// Six slots, not two: the legacy jump listener is a second long-running
+		// Eleven slots, not two: the legacy jump listener is a second long-running
 		// function under the same context, the bearer-token-gated business-API
-		// listener is a third, the task index watcher is a fourth, the answered
-		// sweep is a fifth, and the session-heartbeat watcher is a sixth.
+		// listener is a third, the task index watcher a fourth, the answered sweep
+		// a fifth, the session-heartbeat watcher a sixth, the metrics push job a
+		// seventh, the class-D refusal watch an eighth, the fleet-digest notify
+		// job a ninth, the heartbeat 48 h watch a tenth, and the sweep-gate notify
+		// job an eleventh.
 		//
 		// ⚠️ It does NOT share the listeners' failure semantics, and saying so here
 		// matters because the difference is deliberate: the sweep returns nil on
@@ -824,8 +827,17 @@ func (a *application) createHTTPServer(
 		// slot is for the goroutine, not for a shared failure path. The watcher's
 		// slot is the same story: it returns nil on cancellation and logs-and-
 		// continues when it cannot watch at all, because an unwatchable vault
-		// costs a slower index and loses nothing.
-		runner := run.NewConcurrentRunner(6)
+		// costs a slower index and loses nothing. The metrics push slot is the same
+		// story again: it returns nil on cancellation and logs-and-continues on a
+		// failed cycle, because a push that fails costs one interval of dashboard
+		// freshness and loses nothing — and the class-D refusal watch shares it.
+		// The fleet-digest notify job shares it for the same reason: a missed tick
+		// costs one interval of fleet watching — and the heartbeat 48 h watch
+		// shares it too, where a missed tick costs one interval of window
+		// tracking. The sweep-gate notify job shares it as well: a missed subject
+		// costs one interval of digest watching and loses nothing, which is why its
+		// pass walks every subject and logs a failure rather than returning one.
+		runner := run.NewConcurrentRunner(11)
 		defer runner.Close()
 
 		glog.V(2).Infof("starting http server listen on %s", a.Listen)
@@ -842,20 +854,114 @@ func (a *application) createHTTPServer(
 		// cannot make a liveness read serialise behind 1,600 file reads.
 		runner.Add(ctx, sessionHeartbeatStore.Run)
 
-		// ⚠️ This sweep is what keeps the live index bounded. The index admits
-		// `answered` items — liveIndexWorthy is `State != ClosedState` — so an
-		// answered item that is never closed is decoded on every read for the life
-		// of the store. Measured 2026-10-03: 2,547 answered against 16 open, so
-		// every read decoded ~2,563 items and ~3.4 MB to return 16, on an API every
-		// supervisor polls twice every 2 s.
-		answeredMaxAge, err := parseAnsweredMaxAge(ctx, a.AnsweredMaxAge)
-		if err != nil {
+		if err := a.addAnsweredSweep(ctx, runner, store); err != nil {
 			return err
 		}
-		runner.Add(ctx, runAnsweredSweep(store, answeredMaxAge, answeredSweepInterval))
+		if err := a.addInProcessJobs(ctx, runner, store); err != nil {
+			return err
+		}
 
 		return runner.Run(ctx)
 	}
+}
+
+// addAnsweredSweep registers the sweep that closes answered items past their
+// max age, which is what keeps the live index bounded.
+//
+// ⚠️ The index admits `answered` items — liveIndexWorthy is
+// `State != ClosedState` — so an answered item that is never closed is decoded
+// on every read for the life of the store. Measured 2026-10-03: 2,547 answered
+// against 16 open, so every read decoded ~2,563 items and ~3.4 MB to return 16,
+// on an API every supervisor polls twice every 2 s.
+func (a *application) addAnsweredSweep(
+	ctx context.Context,
+	runner run.ConcurrentRunner,
+	store pkg.AttentionStore,
+) error {
+	answeredMaxAge, err := parseAnsweredMaxAge(ctx, a.AnsweredMaxAge)
+	if err != nil {
+		return errors.Wrap(ctx, err, "parse answered max age failed")
+	}
+	runner.Add(ctx, runAnsweredSweep(store, answeredMaxAge, answeredSweepInterval))
+	return nil
+}
+
+// addInProcessJobs registers the jobs that run inside this process rather than
+// as a launchd tick.
+//
+// ⚠️ The first two are in-process for the same reason: each replaced a separate
+// process whose only effects were inside THIS process — the push reads the
+// registry this process serves, and the watch writes a card into this process's
+// store. A loopback hop between two halves of one process is a dependency that
+// can fail for reasons neither half controls.
+//
+// ⚠️ The fleet-digest notify job is here for a DIFFERENT reason, and the
+// difference is worth stating because its effects are not local: it keeps its
+// engine and its publish as external commands, so what moves in-process is only
+// the tick. A 60 s launchd interval became a slot in a supervised service that
+// already restarts as one unit — one lifecycle to observe instead of two, with
+// the engine's rules and the publish's credential left exactly where they were.
+//
+// It is a method rather than three blocks in createHTTPServer because that
+// function sits at the linter's length bound, and each job's comment explains a
+// decision that belongs beside the job.
+func (a *application) addInProcessJobs(
+	ctx context.Context,
+	runner run.ConcurrentRunner,
+	store pkg.AttentionStore,
+) error {
+	runner.Add(ctx, pkg.NewMetricsPushJob(
+		prometheus.DefaultGatherer,
+		pkg.MetricsPushDefaultEndpoint,
+		pkg.MetricsPushDefaultInterval,
+		pkg.NewTeamVaultMetricsPushCredentials(),
+		&http.Client{Timeout: metricsPushHTTPTimeout},
+		libtime.NewCurrentDateTime(),
+	))
+
+	// ⚠️ The transcript root, state directory and plugin cache the watch reads
+	// are the paths the launchd job used, resolved by the constructor: an
+	// unresolvable home directory is an error rather than a watch armed on a
+	// guessed path, which would scan nothing and look exactly like a quiet one.
+	classDRefusalWatch, err := pkg.NewDefaultClassDRefusalWatchJob(ctx, store)
+	if err != nil {
+		return errors.Wrap(ctx, err, "create class-d refusal watch job failed")
+	}
+	runner.Add(ctx, classDRefusalWatch)
+
+	// ⚠️ The engine script, the write script and the state directory are the
+	// paths the launchd job used, resolved by the constructor: an unresolvable
+	// home directory is an error rather than a job armed on a guessed path, which
+	// would check nothing and look exactly like a healthy fleet.
+	fleetDigestNotify, err := pkg.NewDefaultFleetDigestNotifyJob(ctx)
+	if err != nil {
+		return errors.Wrap(ctx, err, "create fleet digest notify job failed")
+	}
+	runner.Add(ctx, fleetDigestNotify)
+
+	// ⚠️ The prod kubeconfig and the state directory are the paths the launchd
+	// job used, resolved by the constructor: an unresolvable home directory is an
+	// error rather than a watch armed on a guessed path, which would read nothing
+	// and look exactly like a quiet window. Its cards go to THIS process's store,
+	// so the push is the whole delivery — no second hop.
+	heartbeat48hWatch, err := pkg.NewDefaultHeartbeat48hWatchJob(ctx, store)
+	if err != nil {
+		return errors.Wrap(ctx, err, "create heartbeat 48h watch job failed")
+	}
+	runner.Add(ctx, heartbeat48hWatch)
+
+	// ⚠️ The subject enumerator, the gate, the classifier, the prod write script
+	// and the card poster are the paths the launchd job used, resolved by the
+	// constructor: an unresolvable home directory is an error rather than a job
+	// armed on a guessed path, which would tick nothing and look exactly like a
+	// quiet pass. The gate's rules stay in the Personal vault and ~/.claude —
+	// only the 3600 s lifecycle moves in here.
+	sweepGateNotify, err := pkg.NewDefaultSweepGateNotifyJob(ctx)
+	if err != nil {
+		return errors.Wrap(ctx, err, "create sweep gate notify job failed")
+	}
+	runner.Add(ctx, sweepGateNotify)
+	return nil
 }
 
 // answeredMaxAgeCeiling is the largest max age the store accepts.
@@ -911,6 +1017,11 @@ const answeredSweepInterval = time.Minute
 // sweep cannot push one tick into the next, and far above the few milliseconds a
 // sweep of the bounded index actually takes.
 const answeredSweepTimeout = 30 * time.Second
+
+// metricsPushHTTPTimeout bounds one import POST. It is far above a healthy round
+// trip and well under the five-minute push interval, so a stalled far end costs
+// one cycle rather than pushing the next tick into the first.
+const metricsPushHTTPTimeout = 60 * time.Second
 
 // runAnsweredSweep closes answered items older than maxAge on a ticker.
 //
