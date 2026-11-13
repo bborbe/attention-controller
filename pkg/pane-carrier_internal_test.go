@@ -75,9 +75,16 @@ func (f *fakePaneWriter) SessionEntry(_ context.Context, sessionID string) (Sess
 }
 
 // fakeTranscriptReader is a scripted TranscriptReader.
+//
+// ⚠️ `holds` is consulted only when a byte mark (`since`) is supplied, and
+// `holdsAny` regardless. The carrier's submit proof always passes the mark it
+// took at typing time; its pre-type duplicate guard passes nil. Keeping the two
+// apart is what lets one fake model "nothing delivered yet" before typing and
+// "delivered" after it, without a real transcript.
 type fakeTranscriptReader struct {
 	offsets    map[string]int64
 	holds      map[string]bool
+	holdsAny   map[string]bool
 	turnEnded  map[string]bool
 	holdCalls  []string
 	pathBySess map[string]string
@@ -90,9 +97,12 @@ func (f *fakeTranscriptReader) Offset(sessionID string) (int64, bool) {
 	return offset, ok
 }
 
-func (f *fakeTranscriptReader) HoldsLine(sessionID string, line string, _ *int64) bool {
+func (f *fakeTranscriptReader) HoldsLine(sessionID string, line string, since *int64) bool {
 	f.holdCalls = append(f.holdCalls, line)
-	return f.holds[sessionID]
+	if f.holdsAny[sessionID] {
+		return true
+	}
+	return f.holds[sessionID] && since != nil
 }
 
 func (f *fakeTranscriptReader) TurnEnded(sessionID string) bool { return f.turnEnded[sessionID] }
@@ -127,6 +137,7 @@ var _ = Describe("pane carrier", func() {
 		transcript = &fakeTranscriptReader{
 			offsets:   map[string]int64{sessionID: 100},
 			holds:     map[string]bool{sessionID: true},
+			holdsAny:  map[string]bool{},
 			turnEnded: map[string]bool{},
 		}
 		carrier = &paneCarrier{
@@ -169,6 +180,14 @@ var _ = Describe("pane carrier", func() {
 		delivery.PendingLine = "Operator answer, via attention board: allow [" + storeID + "]"
 		delivery.PendingAt = 50
 		delivery.HasPendingAt = true
+		verdict, reason := carrier.TypeIntoPane(ctx, delivery, "allow", false)
+		Expect(verdict).To(Equal(DeliveryOK))
+		Expect(reason).To(ContainSubstring("already delivered"))
+		Expect(writer.sent).To(BeEmpty())
+	})
+
+	It("does not re-type a line the transcript holds with no pending marker", func() {
+		transcript.holdsAny[sessionID] = true
 		verdict, reason := carrier.TypeIntoPane(ctx, delivery, "allow", false)
 		Expect(verdict).To(Equal(DeliveryOK))
 		Expect(reason).To(ContainSubstring("already delivered"))

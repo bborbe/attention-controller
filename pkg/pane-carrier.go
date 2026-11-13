@@ -156,7 +156,7 @@ func (c *paneCarrier) TypeIntoPane(
 		return verdict, why
 	}
 	line := c.renderLine(delivery, text, bare)
-	if verdict, why := c.retypeGuard(ctx, delivery, pane, line); verdict != "" {
+	if verdict, why := c.retypeGuard(ctx, delivery, pane, line, bare); verdict != "" {
 		return verdict, why
 	}
 	return c.send(ctx, delivery, pane, line, bare)
@@ -187,6 +187,7 @@ func (c *paneCarrier) retypeGuard(
 	delivery *PaneDelivery,
 	pane int,
 	line string,
+	bare bool,
 ) (DeliveryVerdict, string) {
 	pending := delivery.PendingLine
 	if pending != "" && pending != line {
@@ -196,6 +197,16 @@ func (c *paneCarrier) retypeGuard(
 		delivery.HasPendingAt = false
 	}
 	if pending == "" {
+		// ⚠️ Check the transcript BEFORE typing even with no marker. A delivery
+		// arm that rebuilds its entry every cycle (the in-process job does) has
+		// no persisted `PendingLine`, so a lost attempt record would otherwise
+		// re-type a copy the session already received. The rendered line carries
+		// the card's store id, so a match is card-specific. Bare trio commands
+		// are exempt: re-sending one is legitimate and the trio owns its own
+		// ordering.
+		if !bare && c.transcripts.HoldsLine(delivery.SessionID, line, nil) {
+			return DeliveryOK, "already delivered to pane " + strconv.Itoa(pane) + " (transcript)"
+		}
 		state := c.writer.ComposerState(ctx, pane)
 		if state != ComposerEmpty {
 			return DeliveryRetry, "pane " + strconv.Itoa(pane) + " composer is " + string(state)

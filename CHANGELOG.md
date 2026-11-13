@@ -16,6 +16,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 - Run the Sentry heartbeat 48 h window watch in-process as a job, keeping the prod cluster read as an injected `kubectl` subprocess seam and posting its cards to this process's own attention store
 - Run the sweep-gate notify tick in-process as a job, keeping the subject enumerator, the gate, the change classifier, the prod notification and the card poster as injected subprocess seams; the single-flight mkdir lock is dropped because one goroutine walking the subject list sequentially makes overlap structurally impossible
 - Add the pane text writer (send-text, composer gate, tty re-proof), the session transcript reader (delivered-line proof and turn-end), the claude-wrapper client (loopback probe and answer) and the routine-gate policy the attention-watcher port needs
+- Add the attention-watcher delivery arm as an in-process job that carries an answered card into its session's pane and records the delivery attempt
 
 ## v0.78.0
 
