@@ -6,6 +6,20 @@ package pkg
 
 //counterfeiter:generate -o ../mocks/metrics.go --fake-name Metrics . Metrics
 
+// LostAnswerCounter records one lost answer — an item that was answered, then
+// closed, with no delivery attempt ever recorded.
+//
+// It is a separate interface from Metrics so the store depends on the single
+// counter it writes rather than on the board's render port. boardMetrics
+// satisfies both, so the process injects the same value into each.
+type LostAnswerCounter interface {
+	// LostAnswersTotalCounterInc records one answered item that was closed
+	// without any delivery attempt ever being recorded. It is edge-triggered on
+	// the close transition, never re-scanned: a store scan over the same closed
+	// items must not move it again.
+	LostAnswersTotalCounterInc()
+}
+
 // Metrics counts what the board does — the shared renderer's work and the
 // per-client page requests — so the fan-out ratio and the request rate can be
 // read off the deployed binary's /metrics rather than only proven by a spec.
@@ -15,6 +29,8 @@ package pkg
 // back without touching the process-wide default registry the running
 // service serves.
 type Metrics interface {
+	LostAnswerCounter
+
 	// BoardRendersTotalCounterInc records that the shared renderer completed
 	// one render of the board. It is called from the shared renderer, never
 	// from a per-client path, so N attached streams and M store changes move

@@ -204,7 +204,13 @@ func (a *application) Run(ctx context.Context, sentryClient libsentry.Client) er
 	if err != nil {
 		return err
 	}
-	rawStore, err := a.createAttentionStore(ctx, db, livenessChecker)
+	// Built once per process and injected, so every counter is registered on the
+	// default registry — the one /metrics serves — exactly once. A second
+	// registration of the same collector panics. It is built BEFORE the store so
+	// the store can count a lost answer on its close transition.
+	boardMetrics := boardmetrics.NewMetrics(prometheus.DefaultRegisterer)
+
+	rawStore, err := a.createAttentionStore(ctx, db, livenessChecker, boardMetrics)
 	if err != nil {
 		return err
 	}
@@ -223,10 +229,18 @@ func (a *application) Run(ctx context.Context, sentryClient libsentry.Client) er
 	// for a store that did not move.
 	store := a.federate(pkg.NewNotifyingAttentionStore(rawStore, notifier))
 
-	// Built once per process and injected, so the two counters are registered on
-	// the default registry — the one /metrics serves — exactly once. A second
-	// registration of the same collector panics.
-	boardMetrics := boardmetrics.NewMetrics(prometheus.DefaultRegisterer)
+	// The stage-delta histogram is registered on the same default registry, and
+	// takes the process context so a cancelled process stops its reads. Its
+	// source is the FEDERATED store, deliberately: a federated card's attempts
+	// stay on its owning store, which is what makes this instance's
+	// answered→delivered a statement about this store's population rather than
+	// a merged one.
+	boardmetrics.NewStageDeltaCollector(
+		ctx,
+		prometheus.DefaultRegisterer,
+		store,
+		libtime.NewCurrentDateTime(),
+	)
 
 	return service.Run(
 		ctx,
@@ -270,6 +284,7 @@ func (a *application) createAttentionStore(
 	ctx context.Context,
 	db libkv.DB,
 	livenessChecker pkg.SessionLivenessChecker,
+	lostAnswers pkg.LostAnswerCounter,
 ) (pkg.AttentionStore, error) {
 	heartbeatWindow, err := libtime.ParseDuration(ctx, a.HeartbeatWindow)
 	if err != nil {
@@ -281,6 +296,7 @@ func (a *application) createAttentionStore(
 		livenessChecker,
 		libtime.NewCurrentDateTime(),
 		*heartbeatWindow,
+		lostAnswers,
 	), nil
 }
 

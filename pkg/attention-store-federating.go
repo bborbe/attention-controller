@@ -291,6 +291,20 @@ func (f *federatingAttentionStore) Delivery(
 	return f.local.Delivery(ctx, itemID)
 }
 
+// DeliveryAttempts delegates to the LOCAL store only.
+//
+// ⚠️ A peer's attempts are deliberately not merged in. The timeline contract
+// states that a card federated from an upstream store renders its store-written
+// stages as absent rather than reading a peer's field; the same rule applies
+// here, so an attempt recorded on the peer is simply not measured on this
+// instance. Merging would attribute a peer's delivery time to this store's
+// population.
+func (f *federatingAttentionStore) DeliveryAttempts(
+	ctx context.Context,
+) (map[ItemID]DeliveryAttempt, error) {
+	return f.local.DeliveryAttempts(ctx)
+}
+
 // isRemote reports whether the peer, rather than the local store, owns this
 // item.
 //
