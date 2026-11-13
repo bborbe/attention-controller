@@ -52,6 +52,10 @@ type WrapperQuestion struct {
 	// Input is the question payload, which carries the tool name and its
 	// arguments the routine policy evaluates.
 	Input json.RawMessage `json:"input"`
+	// Raw is the whole question object as the wrapper sent it, kept so the
+	// routine policy sees the envelope it was written for
+	// (`question.input.arguments`) rather than a re-marshalled subset.
+	Raw json.RawMessage `json:"-"`
 }
 
 // WrapperSession is the wrapper's record for one session.
@@ -153,11 +157,22 @@ func (c *claudeWrapperClient) Probe(
 	case len(body) == 0:
 		return WrapperProbeNone, nil
 	}
-	var session WrapperSession
-	if err := json.Unmarshal(body, &session); err != nil {
+	var envelope struct {
+		State    string          `json:"state"`
+		Question json.RawMessage `json:"question"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
 		return WrapperProbeNone, nil
 	}
-	return WrapperProbeOK, &session
+	session := &WrapperSession{State: envelope.State}
+	if len(envelope.Question) > 0 && string(envelope.Question) != "null" {
+		var question WrapperQuestion
+		if err := json.Unmarshal(envelope.Question, &question); err == nil {
+			question.Raw = envelope.Question
+			session.Question = &question
+		}
+	}
+	return WrapperProbeOK, session
 }
 
 // AnswerViaWrapper delivers an existing answer.
