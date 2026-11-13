@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.79.0
 
 - feat: Run the VictoriaMetrics metrics push in-process as a job
 - feat: Run the class-D refusal watch in-process as a job, with a Go transcript phrase tailer
