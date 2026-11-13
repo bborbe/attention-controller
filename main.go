@@ -92,12 +92,21 @@ type application struct {
 	// answer that is wrong whichever way it guesses.
 	SessionLiveness   string `required:"false" arg:"session-liveness"            env:"SESSION_LIVENESS"            usage:"how producer liveness is resolved: 'registry' prunes an item whose producer is gone from the session registry; 'off' never prunes (a cluster backend)"                  default:"registry"`
 	AttentionStateDir string `required:"false" arg:"attention-state-dir"         env:"ATTENTION_STATE_DIR"         usage:"directory holding the producers' event logs the page resolves item provenance from"`
+
+	// UnforwardedStateDir is the directory the unforwarded-closers job scans. It
+	// is a SEPARATE setting from AttentionStateDir on purpose: the job is the
+	// port of a launchd tick that carried its own `--state-dir`, and pointing
+	// that tick at a bad path is exactly how its error path is probed. Sharing
+	// the provenance setting would make that probe also blind the page's
+	// provenance read, which is a different failure.
+	UnforwardedStateDir string `required:"false" arg:"unforwarded-state-dir" env:"UNFORWARDED_STATE_DIR" usage:"directory the unforwarded-closers job scans for attention event logs (empty resolves to ~/.claude/state/attention)"`
+
 	// VaultDir is the directory holding the vault whose task files record the
 	// session each task belongs to. ⚠️ Deliberately without a `default:`, unlike
 	// SessionsDir and AttentionStateDir: an unset vault is a legitimate state,
 	// and defaulting it would point the board at a guessed path instead of
 	// simply rendering no task names.
-	VaultDir string `required:"false" arg:"vault-dir"                   env:"VAULT_DIR"                   usage:"directory holding the vault whose task files record the session each task belongs to (empty renders no task names)"`
+	VaultDir string `required:"false" arg:"vault-dir"              env:"VAULT_DIR"                usage:"directory holding the vault whose task files record the session each task belongs to (empty renders no task names)"`
 	// JumpListen is the address of the legacy pane-addressed jump listener.
 	//
 	// ⚠️ It is NOT the fleet-jump server's origin any more — that server is
@@ -111,7 +120,7 @@ type application struct {
 	// ⚠️ Empty disables the legacy listener entirely. That is the switch for the
 	// day the last consumer is re-pointed, and it is a configuration change
 	// rather than a code change on purpose.
-	JumpListen string `required:"false" arg:"jump-listen"                 env:"JUMP_LISTEN"                 usage:"address of the legacy pane-addressed jump listener (empty disables it)"                                                                                                 default:"127.0.0.1:1337"`
+	JumpListen string `required:"false" arg:"jump-listen"            env:"JUMP_LISTEN"              usage:"address of the legacy pane-addressed jump listener (empty disables it)"                                                     default:"127.0.0.1:1337"`
 	// JumpTokenPath is the file holding the jump token the legacy pane-addressed
 	// route requires.
 	// Empty resolves to ~/.claude/secrets/jump-token, the same path
@@ -124,7 +133,7 @@ type application struct {
 	// rule, and the tag costs nothing but a less useful startup line. Both the
 	// local review funnel and the bot flagged the omission, and a tag that is
 	// correct for a credential-adjacent field is the cheaper default.
-	JumpTokenPath string `required:"false" arg:"jump-token-path"             env:"JUMP_TOKEN_PATH"             usage:"file holding the jump token the legacy pane-addressed jump route requires (empty resolves to ~/.claude/secrets/jump-token)"                            display:"length"`
+	JumpTokenPath string `required:"false" arg:"jump-token-path"        env:"JUMP_TOKEN_PATH"          usage:"file holding the jump token the legacy pane-addressed jump route requires (empty resolves to ~/.claude/secrets/jump-token)"                                  display:"length"`
 	// AttentionStoreListen is the address of the second, cluster-reachable
 	// listener. It serves the business API only, and every request to it must
 	// carry the bearer token in AttentionStoreToken.
@@ -134,7 +143,7 @@ type application struct {
 	// has, and the store then serves exactly as it does today. It is logged
 	// rather than silent, so a client that stops reaching the store is traceable
 	// to the setting that disabled it instead of to a bug.
-	AttentionStoreListen string `required:"false" arg:"attention-store-listen"      env:"ATTENTION_STORE_LISTEN"      usage:"address of the second listener serving the business API behind a bearer token (empty disables it)"`
+	AttentionStoreListen string `required:"false" arg:"attention-store-listen" env:"ATTENTION_STORE_LISTEN"   usage:"address of the second listener serving the business API behind a bearer token (empty disables it)"`
 	// AttentionStoreToken is the bearer token every request to the second
 	// listener must present.
 	//
@@ -144,7 +153,7 @@ type application struct {
 	// ⚠️ Empty disables the second listener entirely — the store never serves
 	// the API unauthenticated on a non-loopback address. That is the
 	// fail-closed default, not a degenerate configuration.
-	AttentionStoreToken string `required:"false" arg:"attention-store-token"       env:"ATTENTION_STORE_TOKEN"       usage:"bearer token every request to the second listener must present (empty disables the listener)"                                                          display:"length"`
+	AttentionStoreToken string `required:"false" arg:"attention-store-token"  env:"ATTENTION_STORE_TOKEN"    usage:"bearer token every request to the second listener must present (empty disables the listener)"                                                                display:"length"`
 	// AttentionUpstreamURL is the base URL of a PEER attention store whose open
 	// items this instance merges into its own board.
 	//
@@ -157,7 +166,7 @@ type application struct {
 	// ⚠️ It is the peer's BUSINESS API listener — the bearer-gated one — not its
 	// board. The board listener renders HTML and is deliberately not exposed; the
 	// business API is the surface a token can gate.
-	AttentionUpstreamURL string `required:"false" arg:"attention-upstream-url"      env:"ATTENTION_UPSTREAM_URL"      usage:"base URL of a peer attention store whose open items are merged into this instance's board (empty disables federation)"`
+	AttentionUpstreamURL string `required:"false" arg:"attention-upstream-url" env:"ATTENTION_UPSTREAM_URL"   usage:"base URL of a peer attention store whose open items are merged into this instance's board (empty disables federation)"`
 	// AttentionUpstreamToken is the bearer token the peer's business API
 	// requires.
 	//
@@ -176,15 +185,15 @@ type application struct {
 	// are required TOGETHER: a URL with no token would call a gated API that
 	// answers 401, which is a configured-looking instance that silently federates
 	// nothing.
-	AttentionUpstreamToken string `required:"false"                                   env:"ATTENTION_UPSTREAM_TOKEN"    usage:"bearer token the peer attention store's business API requires (empty disables federation)"                                                             display:"length"`
+	AttentionUpstreamToken string `required:"false"                              env:"ATTENTION_UPSTREAM_TOKEN" usage:"bearer token the peer attention store's business API requires (empty disables federation)"                                                                   display:"length"`
 	// TTSURL is the tts server's base URL. Optional: with no value the
 	// read-aloud route is not registered and the page renders no read-aloud
 	// control, so a host without a tts server serves the same page minus one
 	// control rather than one that always fails.
-	TTSURL          string            `required:"false" arg:"tts-url"                     env:"TTS_URL"                     usage:"base URL of the tts server the board's read-aloud control forwards to (empty disables it)"                                                                              default:"http://127.0.0.1:12000"`
-	BuildGitVersion string            `required:"false" arg:"build-git-version"           env:"BUILD_GIT_VERSION"           usage:"Build Git version"                                                                                                                                                      default:"dev"`
-	BuildGitCommit  string            `required:"false" arg:"build-git-commit"            env:"BUILD_GIT_COMMIT"            usage:"Build Git commit hash"                                                                                                                                                  default:"none"`
-	BuildDate       *libtime.DateTime `required:"false" arg:"build-date"                  env:"BUILD_DATE"                  usage:"Build timestamp (RFC3339)"`
+	TTSURL          string            `required:"false" arg:"tts-url"                env:"TTS_URL"                  usage:"base URL of the tts server the board's read-aloud control forwards to (empty disables it)"                                  default:"http://127.0.0.1:12000"`
+	BuildGitVersion string            `required:"false" arg:"build-git-version"      env:"BUILD_GIT_VERSION"        usage:"Build Git version"                                                                                                          default:"dev"`
+	BuildGitCommit  string            `required:"false" arg:"build-git-commit"       env:"BUILD_GIT_COMMIT"         usage:"Build Git commit hash"                                                                                                      default:"none"`
+	BuildDate       *libtime.DateTime `required:"false" arg:"build-date"             env:"BUILD_DATE"               usage:"Build timestamp (RFC3339)"`
 }
 
 func (a *application) Run(ctx context.Context, sentryClient libsentry.Client) error {
@@ -566,6 +575,57 @@ func defaultAttentionStateDir(ctx context.Context) (string, error) {
 	return filepath.Join(home, ".claude", "state", "attention"), nil
 }
 
+// addUnforwardedClosersJob registers the in-process port of the
+// `attention-unforwarded-closers` launchd tick.
+//
+// ⚠️ It scans once at startup and then every 900 s — the interval the plist
+// carried — so the first cycle's line is present right after a restart and a
+// bad state dir is visible without waiting a full interval.
+//
+// ⚠️ It is non-fatal when its paths cannot be resolved: the check is a
+// diagnostic over other processes' state, and taking the board down over a
+// missing home directory would cost the operator the surface the diagnostic
+// exists to protect.
+func (a *application) addUnforwardedClosersJob(
+	ctx context.Context,
+	runner run.ConcurrentRunner,
+	store pkg.AttentionStore,
+) {
+	stateDir := a.UnforwardedStateDir
+	if stateDir == "" {
+		resolved, err := defaultAttentionStateDir(ctx)
+		if err != nil {
+			glog.Warningf("unforwarded-closers disabled: resolve state dir failed: %v", err)
+			return
+		}
+		stateDir = resolved
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		glog.Warningf("unforwarded-closers disabled: resolve home dir failed: %v", err)
+		return
+	}
+	scanner := pkg.NewUnforwardedClosersScanner(pkg.UnforwardedClosersConfig{
+		StateDir:       stateDir,
+		WatcherLog:     filepath.Join(home, "Library", "Logs", "attention-watcher.log"),
+		TranscriptRoot: filepath.Join(home, ".claude", "projects"),
+		Now:            libtime.NewCurrentDateTime(),
+	})
+	// ⚠️ glog.Infof at V(0), not V(2): the cycle line is the operator-visible
+	// measurement this job exists to produce, and it is read from the launchd
+	// stderr log at default verbosity. A V-gated line would be invisible exactly
+	// when the count matters.
+	runner.Add(
+		ctx,
+		pkg.NewUnforwardedClosersJob(
+			scanner,
+			store,
+			pkg.UnforwardedClosersInterval,
+			glog.Infof,
+		).Run,
+	)
+}
+
 // defaultJumpTokenPath resolves ~/.claude/secrets/jump-token, the file
 // claude-supervisor's jump-link.py reads. The path is shared rather than
 // duplicated so the board and the managers' handovers cannot drift onto
@@ -811,13 +871,13 @@ func (a *application) createHTTPServer(
 		// under one context, so a failure in either takes the process down and
 		// launchd restarts both: a half-up state — board serving, jumps dead — is
 		// exactly the two-lifecycle problem the fold exists to remove.
-		// Ten slots, not two: the legacy jump listener is a second long-running
+		// Twelve slots, not two: the legacy jump listener is a second long-running
 		// function under the same context, the bearer-token-gated business-API
-		// listener is a third, the task index watcher a fourth, the answered sweep
+		// listener a third, the task index watcher a fourth, the answered sweep
 		// a fifth, the session-heartbeat watcher a sixth, the metrics push job a
 		// seventh, the class-D refusal watch an eighth, the fleet-digest notify
-		// job a ninth, the heartbeat 48 h watch a tenth, and the sweep-gate notify
-		// job an eleventh.
+		// job a ninth, the heartbeat 48 h watch a tenth, the sweep-gate notify
+		// job an eleventh, and the unforwarded-closers check a twelfth.
 		//
 		// ⚠️ It does NOT share the listeners' failure semantics, and saying so here
 		// matters because the difference is deliberate: the sweep returns nil on
@@ -837,7 +897,10 @@ func (a *application) createHTTPServer(
 		// tracking. The sweep-gate notify job shares it as well: a missed subject
 		// costs one interval of digest watching and loses nothing, which is why its
 		// pass walks every subject and logs a failure rather than returning one.
-		runner := run.NewConcurrentRunner(11)
+		// The unforwarded-closers check shares it too: a failed scan costs one
+		// interval of loss counting and loses nothing, so it logs action=error and
+		// keeps ticking.
+		runner := run.NewConcurrentRunner(12)
 		defer runner.Close()
 
 		glog.V(2).Infof("starting http server listen on %s", a.Listen)
@@ -961,6 +1024,12 @@ func (a *application) addInProcessJobs(
 		return errors.Wrap(ctx, err, "create sweep gate notify job failed")
 	}
 	runner.Add(ctx, sweepGateNotify)
+
+	// The unforwarded-closers check is in-process for the fleet-digest reason:
+	// what moves is only the tick. It re-reads state this process already owns
+	// and writes its count as a log line, so there is no second lifecycle to
+	// deploy, version or observe.
+	a.addUnforwardedClosersJob(ctx, runner, store)
 	return nil
 }
 

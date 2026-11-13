@@ -1170,7 +1170,10 @@ func (l *sweepGateCommandSubjectLister) List(ctx context.Context) ([]SweepGateSu
 	// resolved by the default constructor; no caller or gate output reaches the
 	// command line.
 	cmd := exec.CommandContext(ctx, l.python, l.script)
-	cmd.Env = append(os.Environ(), sweepGateManagersEnv+"="+l.managersDir)
+	// ⚠️ An allowlisted environment plus this job's own SWEEP_GATE_* pair, never
+	// the inherited one: this service holds ATTENTION_STORE_TOKEN and
+	// ATTENTION_UPSTREAM_TOKEN, and the enumerator needs neither.
+	cmd.Env = childEnv(sweepGateManagersEnv + "=" + l.managersDir)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
@@ -1242,7 +1245,7 @@ func (g *sweepGateCommandGate) Tick(
 		"--vault", vault,
 		"--tick",
 	)
-	cmd.Env = append(os.Environ(), sweepGateStateDirEnv+"="+stateDir)
+	cmd.Env = childEnv(sweepGateStateDirEnv + "=" + stateDir)
 	var output bytes.Buffer
 	cmd.Stdout = &output
 	cmd.Stderr = &output
@@ -1291,7 +1294,7 @@ func (c *sweepGateCommandClassifier) Classify(
 		"--vault", vault,
 		"--gate-verdict", gateVerdict,
 	)
-	cmd.Env = append(os.Environ(), sweepGateStateDirEnv+"="+stateDir)
+	cmd.Env = childEnv(sweepGateStateDirEnv + "=" + stateDir)
 	var output bytes.Buffer
 	cmd.Stdout = &output
 	cmd.Stderr = &output
@@ -1339,9 +1342,11 @@ func (p *sweepGateCommandAdhocPass) Run(
 	// #nosec G204 -- the interpreter and the script are compile-time constants;
 	// the pass takes no arguments, so no gate output reaches the command line.
 	cmd := exec.CommandContext(commandCtx, p.python, p.script)
-	cmd.Env = append(
-		os.Environ(),
-		sweepGateAdhocStateEnv+"="+filepath.Join(stateDir, sweepGateAdhocStateFileName),
+	// ⚠️ An allowlisted environment plus this pass's own SWEEP_GATE_ADHOC_STATE,
+	// never the inherited one: this service holds ATTENTION_STORE_TOKEN and
+	// ATTENTION_UPSTREAM_TOKEN, and the pass needs neither.
+	cmd.Env = childEnv(
+		sweepGateAdhocStateEnv + "=" + filepath.Join(stateDir, sweepGateAdhocStateFileName),
 	)
 	var output bytes.Buffer
 	cmd.Stdout = &output
@@ -1400,6 +1405,10 @@ func (p *sweepGateCommandCardPoster) Post(
 	// #nosec G204 -- the script and the producer identity are compile-time
 	// constants; every variable argument is an argv word, never a shell word.
 	cmd := exec.CommandContext(commandCtx, p.python, args...)
+	// ⚠️ An allowlisted environment, not the inherited one: attention-ask.py
+	// resolves its own store credential, and this service's two tokens have no
+	// business in it.
+	cmd.Env = childEnv()
 	var output bytes.Buffer
 	cmd.Stdout = &output
 	cmd.Stderr = &output

@@ -10,14 +10,21 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 
 ## Unreleased
 
-- Run the VictoriaMetrics metrics push in-process as a job
-- Run the class-D refusal watch in-process as a job, with a Go transcript phrase tailer
-- Run the fleet-digest notify tick in-process as a job, keeping the staleness engine and the prod notification as injected subprocess seams
-- Run the Sentry heartbeat 48 h window watch in-process as a job, keeping the prod cluster read as an injected `kubectl` subprocess seam and posting its cards to this process's own attention store
-- Run the sweep-gate notify tick in-process as a job, keeping the subject enumerator, the gate, the change classifier, the prod notification and the card poster as injected subprocess seams; the single-flight mkdir lock is dropped because one goroutine walking the subject list sequentially makes overlap structurally impossible
 - Add the pane text writer (send-text, composer gate, tty re-proof), the session transcript reader (delivered-line proof and turn-end), the claude-wrapper client (loopback probe and answer) and the routine-gate policy the attention-watcher port needs
 - Add the attention-watcher delivery arm as an in-process job that carries an answered card into its session's pane and records the delivery attempt
 - Add the routine-gate settle arm as an in-process job that answers a wrapper child's path-scoped Read gate through the wrapper and records the rule that admitted or held it
+
+## v0.80.0
+
+- feat: run the `attention-unforwarded-closers` check inside the controller on a 900 s interval instead of as a launchd Python tick. It re-reads the attention event logs and the watcher log and reports both detectors — an `idle` row whose turn's final assistant message carries a waiting-verb closer (with its four exemptions: `suppressed.jsonl`, `PARKED`, `NO_REPLY` and a posted card), and a `question`/`permission` row with no forward line after the grace window — writing one `job=attention-unforwarded-closers action=scan|error` line per cycle. The launchd job's three-outcome exit contract is preserved as a distinct `read-error` outcome plus the `action=error` line, so a read failure can never read as "nothing lost".
+
+## v0.79.0
+
+- feat: Run the VictoriaMetrics metrics push in-process as a job
+- feat: Run the class-D refusal watch in-process as a job, with a Go transcript phrase tailer
+- feat: Run the fleet-digest notify tick in-process as a job, keeping the staleness engine and the prod notification as injected subprocess seams
+- feat: Run the Sentry heartbeat 48 h window watch in-process as a job, keeping the prod cluster read as an injected `kubectl` subprocess seam and posting its cards to this process's own attention store
+- feat: Run the sweep-gate notify tick in-process as a job, keeping the subject enumerator, the gate, the change classifier, the prod notification and the card poster as injected subprocess seams; the single-flight mkdir lock is dropped because one goroutine walking the subject list sequentially makes overlap structurally impossible
 
 ## v0.78.0
 

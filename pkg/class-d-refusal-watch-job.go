@@ -62,6 +62,30 @@ const (
 	classDRefusalHeartbeatFileName = "heartbeat"
 	classDRefusalHitsFileName      = "hits.log"
 	classDRefusalOffsetsFileName   = "offsets.json"
+	classDRefusalLedgerFileName    = "ledger.txt"
+
+	// The ledger's `notified` values, carried over byte-for-byte from the shell's
+	// `class-d-refusal-watch-tick.sh`: an operator reading ledger.txt across the
+	// port must not have to learn a second vocabulary for the same four outcomes.
+	classDRefusalNotifiedNotSent       = "-"
+	classDRefusalNotifiedSent          = "sent"
+	classDRefusalNotifiedClauseGone    = "clause-gone"
+	classDRefusalNotifiedFailure       = "FAILED: "
+	classDRefusalNotifiedClauseFailure = "clause-gone/FAILED: "
+
+	// classDRefusalLedgerOutputLimit is the shell's `cut -c1-200` on a failed
+	// post's response, so one verbose failure cannot push the ledger's later
+	// columns off the row.
+	classDRefusalLedgerOutputLimit = 200
+
+	// classDRefusalClausePresent and classDRefusalClauseAbsent are the ledger's
+	// `clause=` column. The shell wrote `grep -c`'s count, and the only value it
+	// ever tested was zero, so the boolean the probe answers renders as 1 / 0 and
+	// keeps the column's meaning. `-` is recorded when the probe itself failed,
+	// where the shell's `grep` would have reported 0 for a file it could not read.
+	classDRefusalClausePresent = "1"
+	classDRefusalClauseAbsent  = "0"
+	classDRefusalClauseUnknown = "-"
 )
 
 // classDRefusalWatchInfof and classDRefusalWatchErrorf are package variables so
@@ -261,8 +285,10 @@ func (j *classDRefusalWatchJob) run(ctx context.Context) error {
 	}
 }
 
-// cycle runs one pass: touch the heartbeat, scan, report.
+// cycle runs one pass: touch the heartbeat, scan, report, ledger.
 func (j *classDRefusalWatchJob) cycle(ctx context.Context) {
+	timestamp := j.now.Now().Time().UTC().Format(time.RFC3339)
+
 	// ⚠️ A cycle whose heartbeat cannot be written RETURNS BEFORE SCANNING, and
 	// that ordering is the point: a scan advances the per-file offsets, so a scan
 	// whose hits could not be posted would move past the occurrence and never
@@ -283,6 +309,14 @@ func (j *classDRefusalWatchJob) cycle(ctx context.Context) {
 			classDRefusalWatchJobName,
 			err,
 		)
+		// ⚠️ The ledger row is written even for a scan that failed, as the shell
+		// wrote it for every run: a cycle whose only trace is an error line is
+		// indistinguishable from a cycle that never happened once glog has rotated.
+		j.appendLedger(ctx, timestamp, 0, classDRefusalClauseUnknown,
+			classDRefusalNotifiedFailure+classDRefusalOneLine(
+				err.Error(),
+				classDRefusalLedgerOutputLimit,
+			))
 		return
 	}
 	// ⚠️ The cycle line is logged even when nothing was found. It is the evidence
@@ -294,19 +328,46 @@ func (j *classDRefusalWatchJob) cycle(ctx context.Context) {
 		len(hits),
 	)
 
-	if len(hits) > 0 {
-		j.reportHits(ctx, hits)
-		return
+	// ⚠️ The probe runs on EVERY cycle, not only a quiet one, because the ledger's
+	// `clause=` column records it on every row. It is one file read, and it only
+	// decides a CARD on a cycle with no hits: an occurrence is the stronger fact,
+	// and a stale-clause card beside a real hit would read as "the watch is broken"
+	// at the one moment it just proved it works.
+	shipped, clausePath, clauseErr := j.clause.Shipped(ctx)
+	if clauseErr != nil {
+		classDRefusalWatchErrorf(
+			"job=%s action=clause_error error=%v",
+			classDRefusalWatchJobName,
+			clauseErr,
+		)
 	}
-	j.reportStaleClause(ctx)
+	notified := classDRefusalNotifiedNotSent
+	switch {
+	case len(hits) > 0:
+		notified = j.reportHits(ctx, hits)
+	case clauseErr == nil && !shipped:
+		notified = j.reportStaleClause(ctx, clausePath)
+	}
+
+	j.appendLedger(
+		ctx,
+		timestamp,
+		len(hits),
+		classDRefusalClauseValue(shipped, clauseErr),
+		notified,
+	)
 }
 
-// reportHits appends the hits to the durable hits log and posts ONE card.
+// reportHits appends the hits to the durable hits log and posts ONE card,
+// returning the ledger's `notified` value.
 //
 // ⚠️ One card per cycle, not one per hit: the card is the operator's signal that
 // the observable fired at all, and five of them say the same thing five times.
 // The full lines stay in the hits log, which is where SC1's evidence lives.
-func (j *classDRefusalWatchJob) reportHits(ctx context.Context, hits TranscriptPhraseHits) {
+func (j *classDRefusalWatchJob) reportHits(
+	ctx context.Context,
+	hits TranscriptPhraseHits,
+) string {
 	lines := make([]string, 0, len(hits))
 	for _, hit := range hits {
 		lines = append(lines, hit.String())
@@ -329,7 +390,10 @@ func (j *classDRefusalWatchJob) reportHits(ctx context.Context, hits TranscriptP
 			classDRefusalHitDedupKey,
 			err,
 		)
-		return
+		return classDRefusalNotifiedFailure + classDRefusalOneLine(
+			err.Error(),
+			classDRefusalLedgerOutputLimit,
+		)
 	}
 	if item == nil {
 		classDRefusalWatchErrorf(
@@ -337,7 +401,7 @@ func (j *classDRefusalWatchJob) reportHits(ctx context.Context, hits TranscriptP
 			classDRefusalWatchJobName,
 			classDRefusalHitDedupKey,
 		)
-		return
+		return classDRefusalNotifiedFailure + "store returned no item"
 	}
 	classDRefusalWatchInfof(
 		"job=%s action=create card=%s dedup_key=%s",
@@ -345,30 +409,18 @@ func (j *classDRefusalWatchJob) reportHits(ctx context.Context, hits TranscriptP
 		item.ItemID,
 		classDRefusalHitDedupKey,
 	)
+	return classDRefusalNotifiedSent
 }
 
 // reportStaleClause posts one card when the clause the watch observes has gone
-// from the shipped plugin.
-//
-// ⚠️ It runs only on a cycle with no hits, matching the shell's `elif`: an
-// occurrence is the stronger fact, and a stale-clause card beside a real hit
-// would read as "the watch is broken" at the one moment it just proved it works.
-func (j *classDRefusalWatchJob) reportStaleClause(ctx context.Context) {
-	shipped, path, err := j.clause.Shipped(ctx)
-	if err != nil {
-		classDRefusalWatchErrorf(
-			"job=%s action=clause_error error=%v",
-			classDRefusalWatchJobName,
-			err,
-		)
-		return
-	}
-	if shipped {
-		return
-	}
+// from the shipped plugin, and returns the ledger's `notified` value.
+func (j *classDRefusalWatchJob) reportStaleClause(
+	ctx context.Context,
+	clausePath string,
+) string {
 	item, err := j.store.Push(ctx, j.request(
 		classDRefusalClauseGoneDedupKey,
-		classDRefusalClauseGonePayload(path),
+		classDRefusalClauseGonePayload(clausePath),
 	))
 	if err != nil {
 		classDRefusalWatchErrorf(
@@ -377,7 +429,10 @@ func (j *classDRefusalWatchJob) reportStaleClause(ctx context.Context) {
 			classDRefusalClauseGoneDedupKey,
 			err,
 		)
-		return
+		return classDRefusalNotifiedClauseFailure + classDRefusalOneLine(
+			err.Error(),
+			classDRefusalLedgerOutputLimit,
+		)
 	}
 	if item == nil {
 		classDRefusalWatchErrorf(
@@ -385,7 +440,7 @@ func (j *classDRefusalWatchJob) reportStaleClause(ctx context.Context) {
 			classDRefusalWatchJobName,
 			classDRefusalClauseGoneDedupKey,
 		)
-		return
+		return classDRefusalNotifiedClauseFailure + "store returned no item"
 	}
 	classDRefusalWatchInfof(
 		"job=%s action=create card=%s dedup_key=%s",
@@ -393,6 +448,7 @@ func (j *classDRefusalWatchJob) reportStaleClause(ctx context.Context) {
 		item.ItemID,
 		classDRefusalClauseGoneDedupKey,
 	)
+	return classDRefusalNotifiedClauseGone
 }
 
 // request builds the push declaration both cards share.
@@ -462,6 +518,78 @@ func (j *classDRefusalWatchJob) appendHits(ctx context.Context, lines []string) 
 // heartbeatPath is the file the card's liveness ref names.
 func (j *classDRefusalWatchJob) heartbeatPath() string {
 	return filepath.Join(j.stateDir, classDRefusalHeartbeatFileName)
+}
+
+// appendLedger appends one row per cycle, in the shell's own shape:
+// `<ts>\thits=<n>\tclause=<0|1|->\t<notified>`.
+//
+// ⚠️ A failure here is logged and the cycle still ends: the card is the signal
+// and the ledger is the evidence, so losing the second must not cost the operator
+// the first.
+func (j *classDRefusalWatchJob) appendLedger(
+	ctx context.Context,
+	timestamp string,
+	hits int,
+	clause string,
+	notified string,
+) {
+	if err := os.MkdirAll(j.stateDir, 0o750); err != nil {
+		classDRefusalWatchErrorf(
+			"job=%s action=ledger_error error=%v",
+			classDRefusalWatchJobName,
+			errors.Wrapf(ctx, err, "create state dir '%s' failed", j.stateDir),
+		)
+		return
+	}
+	line := timestamp + "\thits=" + strconv.Itoa(hits) + "\tclause=" + clause +
+		"\t" + notified + "\n"
+	path := j.ledgerPath()
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		classDRefusalWatchErrorf(
+			"job=%s action=ledger_error error=%v",
+			classDRefusalWatchJobName,
+			errors.Wrapf(ctx, err, "open ledger '%s' failed", path),
+		)
+		return
+	}
+	defer file.Close()
+	if _, err := file.WriteString(line); err != nil {
+		classDRefusalWatchErrorf(
+			"job=%s action=ledger_error error=%v",
+			classDRefusalWatchJobName,
+			errors.Wrapf(ctx, err, "append to ledger '%s' failed", path),
+		)
+	}
+}
+
+// ledgerPath is the per-cycle evidence trail.
+func (j *classDRefusalWatchJob) ledgerPath() string {
+	return filepath.Join(j.stateDir, classDRefusalLedgerFileName)
+}
+
+// classDRefusalClauseValue renders the ledger's `clause=` column.
+func classDRefusalClauseValue(shipped bool, err error) string {
+	if err != nil {
+		return classDRefusalClauseUnknown
+	}
+	if shipped {
+		return classDRefusalClausePresent
+	}
+	return classDRefusalClauseAbsent
+}
+
+// classDRefusalOneLine collapses value onto one line and bounds it to limit
+// characters.
+//
+// ⚠️ Trailing newlines are trimmed FIRST, mirroring the shell's `$(...)` command
+// substitution: without it every ledger row would end in a stray space. The
+// bound counts characters rather than bytes so a multi-byte response cannot be
+// cut mid-rune.
+func classDRefusalOneLine(value string, limit int) string {
+	oneLine := strings.ReplaceAll(strings.TrimRight(value, "\r\n"), "\r\n", "\n")
+	oneLine = strings.ReplaceAll(oneLine, "\n", " ")
+	return classDRefusalTruncate(oneLine, limit)
 }
 
 // hitsPath is the durable log of every reported hit.

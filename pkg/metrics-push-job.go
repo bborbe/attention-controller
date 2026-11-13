@@ -7,9 +7,11 @@ package pkg
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	stderrors "errors"
 	"io"
 	"net/http"
+	"net/url"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -38,10 +40,18 @@ const (
 	// than a label that happens to read well.
 	metricsPushJobName = "attention-metrics-push"
 
+	// metricsPushImportPath and metricsPushExportPath are the two halves of the
+	// store this job talks to: the import it writes through, and the export it
+	// reads back through. The export URL is derived from the import endpoint, so a
+	// job pointed at another store verifies against that store rather than against
+	// the production one.
+	metricsPushImportPath = "/api/v1/import/prometheus"
+	metricsPushExportPath = "/api/v1/export"
+
 	// MetricsPushDefaultEndpoint is the VictoriaMetrics import endpoint the Python
 	// job posted to.
 	MetricsPushDefaultEndpoint = "https://victoriametrics.prod.nuke.benjamin-borbe.de" +
-		"/api/v1/import/prometheus"
+		metricsPushImportPath
 
 	// MetricsPushDefaultInterval is the cadence the Python job ran at, under
 	// `StartInterval 300` in com.bborbe.attention-metrics-push. A daily cadence
@@ -53,6 +63,20 @@ const (
 	// retry budget.
 	metricsPushAttempts   = 6
 	metricsPushRetryDelay = 45 * time.Second
+
+	// metricsPushReadBackAttempts and metricsPushReadBackDelay mirror the Python
+	// job's read-back budget: a 2xx from the import endpoint says the request was
+	// accepted, not that the points are queryable, and the store answers the
+	// export from a separate read path that lags the write.
+	metricsPushReadBackAttempts = 6
+	metricsPushReadBackDelay    = 10 * time.Second
+
+	// metricsPushReadBackBodyLimit bounds the export response this job buffers.
+	// The query is the whole attention_ family, so the body is a few hundred
+	// kilobytes in practice; the limit is what keeps a far end that answers with
+	// far more than it was asked for from growing this process's heap against its
+	// 112 MiB GOMEMLIMIT.
+	metricsPushReadBackBodyLimit = 8 << 20
 
 	// metricsPushCredentialAttempts and metricsPushCredentialRetryDelay mirror the
 	// Python job's TeamVault retry budget: a TeamVault outage is transient far more
@@ -238,11 +262,38 @@ func (j *metricsPushJob) push(ctx context.Context) {
 		)
 		return
 	}
+	// ⚠️ A 2xx is NOT the effect. The import endpoint acknowledges a request it
+	// has queued, and a queued point that never became queryable leaves every
+	// dashboard panel flat while this job reports success every five minutes — the
+	// Python job this replaces read the samples back for exactly that reason.
+	verified, err := verifyMetricsPush(
+		ctx,
+		j.client,
+		j.endpoint,
+		auth,
+		stampMS,
+		metricsPushReadBackAttempts,
+		metricsPushReadBackDelay,
+	)
+	if err != nil {
+		// ⚠️ A distinct action, not push_error: the POST landed. What failed is
+		// the proof, and an operator grepping action=push must not see a line
+		// claiming an effect this cycle could not confirm.
+		metricsPushErrorf(
+			"job=%s action=push_unverified series=%d stamp=%d error=%v",
+			metricsPushJobName,
+			len(samples),
+			stampMS,
+			err,
+		)
+		return
+	}
 	metricsPushInfof(
-		"job=%s action=push series=%d stamp=%d",
+		"job=%s action=push series=%d stamp=%d verified=%d",
 		metricsPushJobName,
 		len(samples),
 		stampMS,
+		verified,
 	)
 }
 
@@ -423,6 +474,129 @@ func pushMetricsOnce(
 	}
 }
 
+// metricsPushExportURL derives the export endpoint from the import endpoint, so a
+// job pointed at another store reads its samples back from that same store.
+func metricsPushExportURL(endpoint string) string {
+	return strings.TrimSuffix(endpoint, metricsPushImportPath) + metricsPushExportPath
+}
+
+// metricsPushExportSeries is the part of one export line this job reads.
+//
+// ⚠️ The timestamps are json.Number rather than int64: the field carries
+// millisecond integers, and a store that renders them as a float or a string
+// would otherwise fail to decode the whole line and report a landed push as
+// unverified.
+type metricsPushExportSeries struct {
+	Timestamps []json.Number `json:"timestamps"`
+}
+
+// verifyMetricsPush counts the series carrying exactly this push's stamp,
+// retrying a read-back that has not caught up yet.
+//
+// ⚠️ The assertion is "did MY push land", not "does the family exist": a family
+// left over from an earlier push answers the second question and not the first,
+// so the stamp is matched rather than the series name. A zero count after the
+// last attempt is an error — the caller logs it as push_unverified rather than as
+// a push.
+func verifyMetricsPush(
+	ctx context.Context,
+	client *http.Client,
+	endpoint string,
+	auth MetricsPushAuth,
+	stampMS int64,
+	attempts int,
+	delay time.Duration,
+) (int, error) {
+	if attempts < 1 {
+		attempts = 1
+	}
+	var last error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		count, err := countMetricsPushStamp(ctx, client, endpoint, auth, stampMS)
+		if err == nil && count > 0 {
+			return count, nil
+		}
+		if err != nil {
+			last = err
+		} else {
+			last = errors.Errorf(ctx, "no series carried stamp %d", stampMS)
+		}
+		if attempt < attempts {
+			if waitErr := waitMetricsPushRetry(ctx, delay); waitErr != nil {
+				return 0, errors.Wrapf(ctx, waitErr, "wait before metrics read-back retry failed")
+			}
+		}
+	}
+	return 0, errors.Wrapf(
+		ctx,
+		last,
+		"read back metrics from %s failed after %d attempts",
+		endpoint,
+		attempts,
+	)
+}
+
+// countMetricsPushStamp performs one export query and counts the series whose
+// timestamps carry stampMS.
+func countMetricsPushStamp(
+	ctx context.Context,
+	client *http.Client,
+	endpoint string,
+	auth MetricsPushAuth,
+	stampMS int64,
+) (int, error) {
+	selector := `{__name__=~"` + metricsPushPrefix + `.+"}`
+	requestURL := metricsPushExportURL(endpoint) + "?match[]=" + url.QueryEscape(selector)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
+	if err != nil {
+		return 0, errors.Wrapf(ctx, err, "create metrics export request failed")
+	}
+	req.SetBasicAuth(auth.Username, auth.Password)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, errors.Wrapf(ctx, err, "read metrics back from %s failed", requestURL)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// The body is drained before the status is acted on so the connection can
+		// be reused; nothing in it is read, since an error body is not a sample.
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, metricsPushReadBackBodyLimit))
+		return 0, errors.Errorf(ctx, "metrics export failed: HTTP %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, metricsPushReadBackBodyLimit))
+	if err != nil {
+		return 0, errors.Wrapf(ctx, err, "read metrics export response failed")
+	}
+	return countMetricsPushStampInExport(body, stampMS), nil
+}
+
+// countMetricsPushStampInExport counts the export lines carrying stampMS.
+//
+// ⚠️ The export is NDJSON — one series object per line — and a line that does not
+// parse is skipped rather than failing the count: one malformed series says
+// nothing about whether this push landed.
+func countMetricsPushStampInExport(body []byte, stampMS int64) int {
+	stamp := strconv.FormatInt(stampMS, 10)
+	count := 0
+	for _, line := range bytes.Split(body, []byte("\n")) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var series metricsPushExportSeries
+		if err := json.Unmarshal(line, &series); err != nil {
+			continue
+		}
+		for _, timestamp := range series.Timestamps {
+			if timestamp.String() == stamp {
+				count++
+				break
+			}
+		}
+	}
+	return count
+}
+
 // waitMetricsPushRetry waits delay, or returns as soon as ctx is cancelled.
 func waitMetricsPushRetry(ctx context.Context, delay time.Duration) error {
 	if delay <= 0 {
@@ -526,6 +700,11 @@ func readTeamVaultField(ctx context.Context, field string) (string, error) {
 	)
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
+	// ⚠️ An allowlisted environment, not the inherited one: this service holds
+	// ATTENTION_STORE_TOKEN and ATTENTION_UPSTREAM_TOKEN, and teamvault-cli needs
+	// neither. HOME is what it does need — its config lives under it — so a child
+	// that cannot find its credentials without HOME still works.
+	cmd.Env = childEnv()
 	if err := cmd.Run(); err != nil {
 		return "", errors.Wrapf(ctx, err, "run teamvault-cli %s failed", field)
 	}
