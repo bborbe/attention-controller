@@ -1,5 +1,5 @@
 ---
-status: failed
+status: approved
 spec: [015-attention-card-timeline]
 created: "2026-11-12T09:49:35Z"
 queued: "2026-11-12T10:21:06Z"
