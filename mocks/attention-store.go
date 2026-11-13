@@ -121,6 +121,20 @@ type AttentionStore struct {
 		result1 pkg.Items
 		result2 error
 	}
+	MarkSeenStub        func(context.Context, pkg.ItemID) (*pkg.Item, error)
+	markSeenMutex       sync.RWMutex
+	markSeenArgsForCall []struct {
+		arg1 context.Context
+		arg2 pkg.ItemID
+	}
+	markSeenReturns struct {
+		result1 *pkg.Item
+		result2 error
+	}
+	markSeenReturnsOnCall map[int]struct {
+		result1 *pkg.Item
+		result2 error
+	}
 	PushStub        func(context.Context, pkg.PushRequest) (*pkg.Item, error)
 	pushMutex       sync.RWMutex
 	pushArgsForCall []struct {
@@ -688,6 +702,71 @@ func (fake *AttentionStore) HistoryReturnsOnCall(i int, result1 pkg.Items, resul
 	}
 	fake.historyReturnsOnCall[i] = struct {
 		result1 pkg.Items
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *AttentionStore) MarkSeen(arg1 context.Context, arg2 pkg.ItemID) (*pkg.Item, error) {
+	fake.markSeenMutex.Lock()
+	ret, specificReturn := fake.markSeenReturnsOnCall[len(fake.markSeenArgsForCall)]
+	fake.markSeenArgsForCall = append(fake.markSeenArgsForCall, struct {
+		arg1 context.Context
+		arg2 pkg.ItemID
+	}{arg1, arg2})
+	stub := fake.MarkSeenStub
+	fakeReturns := fake.markSeenReturns
+	fake.recordInvocation("MarkSeen", []interface{}{arg1, arg2})
+	fake.markSeenMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *AttentionStore) MarkSeenCallCount() int {
+	fake.markSeenMutex.RLock()
+	defer fake.markSeenMutex.RUnlock()
+	return len(fake.markSeenArgsForCall)
+}
+
+func (fake *AttentionStore) MarkSeenCalls(stub func(context.Context, pkg.ItemID) (*pkg.Item, error)) {
+	fake.markSeenMutex.Lock()
+	defer fake.markSeenMutex.Unlock()
+	fake.MarkSeenStub = stub
+}
+
+func (fake *AttentionStore) MarkSeenArgsForCall(i int) (context.Context, pkg.ItemID) {
+	fake.markSeenMutex.RLock()
+	defer fake.markSeenMutex.RUnlock()
+	argsForCall := fake.markSeenArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2
+}
+
+func (fake *AttentionStore) MarkSeenReturns(result1 *pkg.Item, result2 error) {
+	fake.markSeenMutex.Lock()
+	defer fake.markSeenMutex.Unlock()
+	fake.MarkSeenStub = nil
+	fake.markSeenReturns = struct {
+		result1 *pkg.Item
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *AttentionStore) MarkSeenReturnsOnCall(i int, result1 *pkg.Item, result2 error) {
+	fake.markSeenMutex.Lock()
+	defer fake.markSeenMutex.Unlock()
+	fake.MarkSeenStub = nil
+	if fake.markSeenReturnsOnCall == nil {
+		fake.markSeenReturnsOnCall = make(map[int]struct {
+			result1 *pkg.Item
+			result2 error
+		})
+	}
+	fake.markSeenReturnsOnCall[i] = struct {
+		result1 *pkg.Item
 		result2 error
 	}{result1, result2}
 }

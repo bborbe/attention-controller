@@ -23,6 +23,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	libtime "github.com/bborbe/time"
 	"github.com/mxschmitt/playwright-go"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -891,13 +892,28 @@ var _ = Describe("the attention board", func() {
 	)
 
 	It(
-		"keeps a session-kind card pushed while the page is open off the managers-only view",
+		"keeps an agent-kind card pushed while the page is open off the managers-only view",
 		func() {
 			// ⚠️ The one half the Go suite cannot reach: the stream path's kind
 			// filter is client-side JS, and the CHANGELOG claims a card pushed
 			// while the board is open cannot leak onto a filtered view. Without
 			// this spec that claim is untested, and the failure is silent — the
 			// row simply appears.
+			//
+			// ⚠️ NOT a session-kind card. Since 97b2f49 "Show uncovered worker
+			// cards in the default view" (2026-11-05) both the server filter and
+			// this one keep a card whose Provenance.Uncovered is true, whatever
+			// its kind: the manager-only view rests on a manager relaying the
+			// worker's question, and an uncovered card has no manager to relay
+			// it. Every session-kind card pushed here resolves uncovered,
+			// because startBinary passes no -vault-dir: the task index is empty,
+			// the session has no task, and workerUncovered answers true on that.
+			// ⚠️ An EMPTY registry would answer the other way — covered — which
+			// is why the fixture seeds its own; emptying sessionsDir to "match"
+			// this comment would make the session card hidden and this spec pass
+			// for the wrong reason. Agent, cron and dark-factory cards are never
+			// asked the coverage question at all, so an agent-kind card is what
+			// still exercises the filter on this path.
 			page := newPage("?producer_kind=manager")
 			defer func() { _ = page.Close() }()
 
@@ -906,8 +922,10 @@ var _ = Describe("the attention board", func() {
 			// would encode the suite's ordering.
 			hiddenBefore := kindHiddenCount(page)
 
-			sessionID := push("e2e: streamed session card", "e2e-kind-stream-session")
-			Consistently(func() int { return rowCount(page, sessionID) }).Should(Equal(0))
+			agentID := pushOfKind(
+				"e2e: streamed agent card", "e2e-kind-stream-agent", pkg.AgentProducerKind,
+			)
+			Consistently(func() int { return rowCount(page, agentID) }).Should(Equal(0))
 			// The count follows the stream. The server renders it once at load, so
 			// without the script recomputing it a card that arrives later is
 			// withheld by a board that does not say so — on the element that stops
@@ -937,6 +955,33 @@ var _ = Describe("the attention board", func() {
 
 		Eventually(func() int { return rowCount(page, openID) }).Should(Equal(1))
 		Consistently(func() int { return rowCount(page, answeredID) }).Should(Equal(0))
+	})
+
+	// The board records that it painted a card, once per card: the first load
+	// stamps displayed_at from the store's own clock, and a second load leaves
+	// that instant identical because the store's first write wins. The card is
+	// open on purpose — the default view parks answered cards, and this case is
+	// about the ordinary painted card.
+	It("records that the board painted a card, and a second load leaves it unchanged", func() {
+		itemID := push("e2e: the seen card", "e2e-seen-card")
+
+		page := newPage("")
+		defer func() { _ = page.Close() }()
+
+		Eventually(func() *libtime.DateTime { return getItem(itemID).DisplayedAt }).
+			ShouldNot(BeNil())
+		first := getItem(itemID).DisplayedAt.String()
+
+		page2 := newPage("")
+		defer func() { _ = page2.Close() }()
+
+		Eventually(func() string {
+			displayed := getItem(itemID).DisplayedAt
+			if displayed == nil {
+				return ""
+			}
+			return displayed.String()
+		}).Should(Equal(first))
 	})
 
 	// ⚠️ The operator's report stated as the invariant it actually is: "if

@@ -1,10 +1,13 @@
 ---
 status: completed
 spec: [015-attention-card-timeline]
+summary: Added producer-supplied asked_at to Item and PushRequest, copied it through newItem and updateExistingIfLive, and proved round-trip plus absence with four real-store specs
+execution_id: attention-controller-timeline-exec-053-spec-015-asked-at
+dark-factory-version: v0.198.17
 created: "2026-11-12T09:49:35Z"
 queued: "2026-11-12T10:21:04Z"
-completed: "2026-11-12T15:34:56Z"
-pr-url: https://github.com/bborbe/attention-controller/pull/189
+started: "2026-11-12T15:10:38Z"
+completed: "2026-11-12T15:34:53Z"
 ---
 
 # Accept and store the producer's ask time
@@ -133,7 +136,7 @@ Reference docs (in-container paths):
 - Use `libtime.DateTime` with the store's injected clock, never `time.Now()`. Use the import alias the files already use: `libtime "github.com/bborbe/time"` in `pkg/` production files, and whatever alias the new test file's neighbours use (`stdtime` for the standard library).
 - Existing wire shapes do not change: a push without the new field produces a byte-identical body to today's, and every existing route's request and response shape is unchanged.
 - Do **not** touch `pkg/handler/`, `pkg/factory/`, `main.go`, the page template, the store's `AttentionStore` interface or `CHANGELOG.md` — later prompts own those. This prompt adds a field and its two write-path copies, nothing else.
-- Do not add a `Validate` rule for the new field, and do not add a zero-instant guard.
+- Do not add a `Validate` rule for the new field. ⚠️ **Superseded during review, 2026-11-13:** this line originally also said "and do not add a zero-instant guard". That was wrong for an explicit zero — a non-nil pointer to the zero `libtime.DateTime` bypasses `omitempty`, so a producer serialising an uninitialised value stored `0001-01-01` as a present timestamp and rendered a fabricated forwarding lag. The shipped code adds `askedAtOrNil` on both write paths, and the "keeps that instant exactly as pushed" summary bullet is therefore wrong for an explicit zero: a zero is dropped, not kept.
 - Do NOT commit — dark-factory handles git.
 - Existing tests must still pass.
 - End with the completion report dark-factory appends, followed by a `## Improvements` section (categorise each suggestion PROMPT / GUIDE / GLOBAL).
