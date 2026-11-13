@@ -140,6 +140,13 @@ type attentionPageRow struct {
 	// `never_attempted`, which is a real answer about the item rather than about
 	// this render.
 	DeliveryStatus pkg.DeliveryStatus
+	// AnsweredAt is when the answer arrived, copied straight off the item. It is
+	// carried here because the undeliverable marker must distinguish an answer
+	// that went nowhere from a card nobody has answered yet, and the delivery
+	// status alone cannot: Delivery derives `never_attempted` for an unanswered
+	// item too, by falling back to its created_at, so a predicate keyed on the
+	// status alone would mark every open card. Nil while the item is unanswered.
+	AnsweredAt *libtime.DateTime
 	// DeliveryAttemptedAt is when the attempting arm recorded its outcome, read
 	// off the same Delivery report DeliveryStatus comes from. Nil when no attempt
 	// record exists — the honest absence, never a zero instant.
@@ -234,11 +241,33 @@ type attentionPageRow struct {
 // and the row would then carry two values that could disagree about one fact,
 // and the constant it compares against stays in Go rather than being spelled as
 // a string literal in the template — the same reason the row carries no
-// mechanism comparison. A `delivered`, `never_attempted` or `pre_trail_unknown`
-// answer renders nothing: only a recorded failure is something the operator can
-// act on, and the other three would put a marker on every card.
+// mechanism comparison.
+//
+// ⚠️ The predicate was `DeliveryStatus == pkg.FailedStatus` alone, on the
+// recorded rationale that only a recorded failure is something the operator
+// can act on and the other three would put a marker on every card. That
+// rationale is superseded for never_attempted, and only for it: measured
+// 2026-11-11, 166 of 736 answered cards read never_attempted against 40
+// failed, so the SILENT half was the larger one and rendered as an ordinary
+// answered card. The other three stay unmarked and each for its own reason:
+// delivered is the good case, held (245 of the same 736) is a gate an arm
+// declined to answer on purpose and flagging it would send the operator
+// looking for a fault that is not there, and pre_trail_unknown predates the
+// trail so its answer's fate was never measured. See
+// docs/attention-item-timeline.md.
+//
+// ⚠️ The AnsweredAt == nil guard is load-bearing, not defensive. Delivery()
+// derives never_attempted for an item with no attempt record, falling back to
+// created_at when there is no answered_at — so a predicate keyed on the status
+// alone matches every open card, and the board paints "undeliverable" on cards
+// that are merely waiting for a human. The marker's entire signal is that the
+// answer went nowhere; a card nobody has answered yet has no answer to lose.
 func (r attentionPageRow) Undeliverable() bool {
-	return r.DeliveryStatus == pkg.FailedStatus
+	if r.AnsweredAt == nil {
+		return false
+	}
+	return r.DeliveryStatus == pkg.FailedStatus ||
+		r.DeliveryStatus == pkg.NeverAttemptedStatus
 }
 
 // attentionPageData is what the template renders: the items the store's read

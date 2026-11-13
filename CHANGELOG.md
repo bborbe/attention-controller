@@ -11,6 +11,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 ## v0.75.0
 
 - feat: render the card's timeline in its info panel — the seven stages with their raw instants, the four floored deltas (`asked→created`, `created→displayed`, `displayed→answered`, `answered→delivered`), an em dash for a stage that did not happen, the derived gate-released and close-reason stages, and the delivery-outcome line naming exactly the contract's four reader-visible outcomes (a `held` card renders no outcome line)
+- feat: The board's `delivery-undeliverable` marker now covers `never_attempted` as well as `failed`, so the silent half of undelivered answers is visible on the card instead of looking like an ordinary answered record. `delivered`, `held` and `pre_trail_unknown` stay unmarked, and a `held` card renders no delivery-outcome line at all.
 
 ## v0.74.0
 

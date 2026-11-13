@@ -96,6 +96,7 @@ func newAttentionPageRow(
 		TaskURL:    vaultFileURL(vaultName, provenance.TaskPath),
 		GoalURL:    vaultFileURL(vaultName, provenance.GoalPath),
 		TopicURL:   vaultFileURL(vaultName, provenance.TopicPath),
+		AnsweredAt: item.AnsweredAt,
 	}
 	// A nil report leaves both fields at their zero values, which is the
 	// fail-soft state the panel renders as an absent delivery stage.

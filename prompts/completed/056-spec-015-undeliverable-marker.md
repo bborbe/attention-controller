@@ -1,8 +1,13 @@
 ---
-status: approved
+status: completed
 spec: [015-attention-card-timeline]
+summary: 'Widened attentionPageRow.Undeliverable() to failed||never_attempted behind an AnsweredAt guard, inverted the shipped no-attempt assertion, added the six-fixture outcome matrix, and recorded both feature bullets under a new ## Unreleased.'
+execution_id: attention-controller-timeline-exec-056-spec-015-undeliverable-marker
+dark-factory-version: v0.198.17
 created: "2026-11-12T09:49:35Z"
 queued: "2026-11-12T10:21:06Z"
+started: "2026-11-13T06:06:27Z"
+completed: "2026-11-13T06:12:23Z"
 ---
 
 # Widen the undeliverable marker to the silent half
