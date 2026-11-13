@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.75.0
 
 - feat: render the card's timeline in its info panel — the seven stages with their raw instants, the four floored deltas (`asked→created`, `created→displayed`, `displayed→answered`, `answered→delivered`), an em dash for a stage that did not happen, the derived gate-released and close-reason stages, and the delivery-outcome line naming exactly the contract's four reader-visible outcomes (a `held` card renders no outcome line)
 
