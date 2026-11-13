@@ -160,7 +160,15 @@ var _ = Describe("pushMetrics", func() {
 		))
 		defer server.Close()
 
-		err := pushMetrics(ctx, server.Client(), server.URL, []byte("attention_x 1 1\n"), auth, 3, 0)
+		err := pushMetrics(
+			ctx,
+			server.Client(),
+			server.URL,
+			[]byte("attention_x 1 1\n"),
+			auth,
+			3,
+			0,
+		)
 
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("HTTP 400"))
@@ -182,7 +190,15 @@ var _ = Describe("pushMetrics", func() {
 		))
 		defer server.Close()
 
-		err := pushMetrics(ctx, server.Client(), server.URL, []byte("attention_x 1 1\n"), auth, 3, 0)
+		err := pushMetrics(
+			ctx,
+			server.Client(),
+			server.URL,
+			[]byte("attention_x 1 1\n"),
+			auth,
+			3,
+			0,
+		)
 
 		Expect(err).To(BeNil())
 		Expect(requests.Load()).To(Equal(int32(3)))
@@ -199,7 +215,15 @@ var _ = Describe("pushMetrics", func() {
 		))
 		defer server.Close()
 
-		err := pushMetrics(ctx, server.Client(), server.URL, []byte("attention_x 1 1\n"), auth, 2, 0)
+		err := pushMetrics(
+			ctx,
+			server.Client(),
+			server.URL,
+			[]byte("attention_x 1 1\n"),
+			auth,
+			2,
+			0,
+		)
 
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("after 2 attempts"))
@@ -270,7 +294,11 @@ var _ = Describe("metrics push job", func() {
 		registry.MustRegister(counter)
 		counter.Inc()
 
-		start(registry, &recordingCredentials{err: stderrors.New("teamvault down")}, "http://127.0.0.1:1/import")
+		start(
+			registry,
+			&recordingCredentials{err: stderrors.New("teamvault down")},
+			"http://127.0.0.1:1/import",
+		)
 
 		Eventually(func() bool {
 			_, found := capture.find("action=push_error")

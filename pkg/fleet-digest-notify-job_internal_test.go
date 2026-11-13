@@ -185,7 +185,9 @@ var _ = Describe("fleet digest notify job", func() {
 		_, suppressed := capture.find("job=fleet-digest-notify action=publish_suppressed rc=2")
 		Expect(suppressed).To(BeTrue())
 		Expect(readLedger()).To(HaveLen(2))
-		Expect(readLedger()[1]).To(HaveSuffix("\tsuppressed: FAILED streak continues (alerted once)"))
+		Expect(
+			readLedger()[1],
+		).To(HaveSuffix("\tsuppressed: FAILED streak continues (alerted once)"))
 	})
 
 	It("writes the alert file on a failed publish and removes it on the next success", func() {
