@@ -8,6 +8,39 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## v0.74.0
+
+- feat: record that the board painted a card — a new `POST /api/1.0/attention/{itemID}/seen` stamps `displayed_at` from the store's own clock, first write wins, and the write stays local (a federated card records nothing and answers 404)
+
+## v0.73.0
+
+- feat: accept a producer-supplied `asked_at` on push and store it unchanged — distinct from the store's `created_at`, absent when the push carries none, and reset by a re-push exactly as `created_at` is
+
+## v0.72.6
+
+- test: correct the board's stream-path kind spec, which had been red on master since `v0.69.0`. `keeps a session-kind card pushed while the page is open off the managers-only view` asserted that a streamed session-kind card is withheld from `?producer_kind=manager`, but `97b2f49` (2026-11-05) deliberately inverted that rule: an **uncovered** card — one no live manager can relay — is shown whatever its kind, on the server render and on the stream alike. The suite starts the binary without `-vault-dir`, so its task index is empty and every session-kind card it pushes resolves uncovered — which is exactly what the board is meant to show. The case now pushes an **agent**-kind card, which is never resolved uncovered and therefore still exercises the client-side filter on the stream path, and it reads `keeps an agent-kind card pushed while the page is open off the managers-only view`. Both scenario counts lose their "the suite is currently red" clause; the total stays `57 of 57`.
+
+## v0.72.5
+
+- fix: **confirming an IME composition in a card's `Other…` field submitted the card mid-word.** The `keydown` listener added in v0.72.1 answers on any `Enter`, and a composition confirm arrives as a keydown too — so a Japanese, Chinese or Korean operator finishing a word had the card leave the board carrying the partial text that existed at that instant, and `preventDefault()` swallowed the confirm, so the composition could be neither finished nor corrected. The listener now returns **before** `preventDefault` when `event.isComposing` is true or `event.keyCode` is `229`; the legacy `keyCode` is checked because some Safari/iOS and Android IMEs set it without `isComposing`. Ordinary Enter is unchanged. The Playwright case `leaves the card open and the text intact on the keydown that confirms an IME composition` installs a `preventDefault` spy and dispatches all three shapes — `isComposing`, legacy `keyCode 229`, and Enter with `isComposing` alone — then holds the card open under `Consistently` and asserts a positive control that an ordinary Enter still submits. A guard that calls `preventDefault` and then returns passes a submit-only assertion while still eating the keystroke, so the spy is the assertion that separates them; the `Consistently` window is what catches a build that still submits, since the answer posts asynchronously. Red on `origin/master` (`Expected <bool>: true to be false` at the spy assertion), green with the fix. Scenario 002's expected package total moves `56` → `57`.
+
+
+## v0.72.4
+
+- docs: add `docs/release-process.md`, which makes `make e2e` the documented gate at the pull request. The repo's release is a side effect of the merge — `.maintainer.yaml` `release.autoRelease: true` makes `github-releaser-agent` tag straight after it — so the pull request is the last moment a person is involved and the suite is the only thing between a branch and a tag. The doc states the red-suite rule (a red suite stops the merge; a spec already red on master is named in the pull request body, not absorbed), pins the count command to `go test -mod=mod -tags e2e -count=1 -v ./e2e/` because `make e2e` runs without `-v` and `go test` discards a passing package's stdout, and links `docs/dod.md`, `scenarios/001` and `scenarios/002`. Scenario 001's cadence sentence said the suite is *never* run per commit or per PR; it now states the pull-request cadence, and its stale `53 of 53 Specs` total moves to `56`.
+
+## v0.72.3
+
+- test: pin Enter on a multi-tab card to the tab that was typed in. The Enter listener resolves `button.next` on the **form**, not on the panel that fired the keydown, so on a multi-tab card the submitter is the form's first Submit answer rather than the visible tab's. Every `button.next` carries `value="send"`, so the dispatch is identical and the behaviour is correct — nothing pinned it, and a future change that gave the buttons per-tab values would break every tab except the first, silently. The case asserts per question: the typed tab carries the `text` entry, the untouched tab carries no entry. Scenario 002's total moves `55` → `56` and now records that the suite is `54 passed / 1 failed` on master because of a pre-existing failure filed separately.
+
+## v0.72.2
+
+- fix: Set `Cache-Control: no-store` on the board's HTML response, so a page load after an answer is served fresh from the handler rather than from a copy a browser or proxy stored before the answer landed. The header is set once beside the existing `Content-Type`, before the body is written, and is unconditional across the board's views; the SSE stream's `no-cache` and the legacy jump page are unchanged.
+
+## v0.72.1
+
+- fix: **pressing Enter in a card's `Other…` field submitted `✕ Dismiss` and delivered a DECLINE, discarding the typed text.** The card renders `✕ Dismiss` (`name="kind" value="skip"`) as its first submit button, so HTML implicit submission fired the form's default button: the `skip` branch returned before `collectAnswers()` ever read the field, the store recorded `{"kind":"skip"}`, and the asking session acted on a decline nobody gave while the operator saw a successful submit. Measured on the live board 2026-11-12 with the same text on two cards — Enter stored `{"kind":"skip"}`, a click stored `{"kind":"text","value":"click"}`. A document-delegated `keydown` listener now submits through `✓ Submit answer` with `requestSubmit`, so Enter sends the answer; `form.submit()` was not used because it bypasses the submit event and would have sent nothing. The button order is unchanged. The Playwright case `stores free text submitted with the Enter key as text, never as skip` presses Enter and asserts the stored shape — the case scenario 002 lacked, since its existing free-text case clicks and so stayed green throughout the defect. Scenario 002's expected package total is re-derived (`36` → `55`) from the suite's own `Ran N of N Specs` line.
+
 ## v0.72.0
 
 - feat: the watcher's cycle duration reaches the `:18080` registry — `POST /api/1.0/metrics/watcher-cycle` observes it into `attention_watcher_cycle_seconds`, so the cycle is chartable without a second exporter on a second port. The watcher already speaks HTTP to this port to post cards, so only the server half was missing. Registered on the board router only, never inside `registerAttentionAPIRoutes`, so it does not appear on the cluster-reachable bearer-token listener: the measurement can only originate on this host. `seconds` is decoded into a `*float64` so a request that omits it is rejected rather than observed as a zero-duration cycle.

@@ -4,18 +4,6 @@
 
 package handler
 
-import (
-	"bytes"
-	"context"
-	"net/http"
-
-	"github.com/bborbe/errors"
-	libhttp "github.com/bborbe/http"
-
-	"github.com/bborbe/attention-controller/pkg"
-	"github.com/bborbe/attention-controller/pkg/buildidentity"
-)
-
 // attentionPageTemplate is the whole page: one document, inline styles, no
 // external stylesheet, no framework, no build step. It lives here as a string
 // constant so the page ships inside the binary rather than as an asset.
@@ -274,6 +262,46 @@ document.addEventListener('click', function (event) {
     field.value = '';
     if (pick) { pick.checked = false; }
   }
+});
+/* Enter in the Other… field is the operator's ordinary way to submit, and it
+   must send the answer rather than the card's first button.
+   ⚠️ Load bearing: HTML implicit submission fires the form's DEFAULT button —
+   the first submit button in tree order — and that is ✕ Dismiss
+   (value="skip"), not ✓ Submit answer. So Enter on a card with text typed
+   recorded {kind:'skip'} and the asking session received a DECLINE while the
+   operator saw a successful submit. Measured on the live board 2026-11-12 with
+   the same text on two cards: Enter → {"kind":"skip"}, click →
+   {"kind":"text","value":"click"}. That is the worst shape this board can
+   produce, because a session that trusts it acts on a decline nobody gave.
+   ⚠️ requestSubmit(next), never form.submit(): form.submit() bypasses the submit
+   event entirely, so the handler below would never run and nothing would be
+   sent. requestSubmit dispatches a real submit event carrying button.next as
+   the submitter, so event.submitter is the button whose value is 'send'.
+   ⚠️ Reordering the buttons was the rejected alternative: making ✓ Submit
+   answer first would fix Enter, but the row's existing specs and the operator's
+   reading of the card both put Dismiss first, and a reorder fixes only the
+   default-button case while this handler states the intent explicitly. */
+document.addEventListener('keydown', function (event) {
+  /* An IME composition confirm is a keydown too. Treating it as an answer
+     submits a partial word: preventDefault swallows the confirm and
+     requestSubmit takes the card off the board mid-word, so the operator can
+     neither finish typing nor correct it. Same shown-versus-sent class as the
+     Dismiss defect above, reached from the other side.
+     ⚠️ Return BEFORE preventDefault. A guard that calls preventDefault and then
+     returns still eats the keystroke — the card stays open but the composition
+     is gone, which is the harder failure to notice.
+     ⚠️ keyCode 229 is the only signal some Safari/iOS and Android IMEs give;
+     isComposing alone misses them. */
+  if (event.isComposing || event.keyCode === 229) { return; }
+  if (event.key !== 'Enter') { return; }
+  var field = event.target;
+  if (!field || !field.classList || !field.classList.contains('other')) { return; }
+  var form = field.closest('form.answer');
+  if (!form) { return; }
+  var next = form.querySelector('button.next');
+  if (!next) { return; }
+  event.preventDefault();
+  form.requestSubmit(next);
 });
 /* Answer controls exist for message items only, and the form is intercepted so
    a failed answer is shown rather than swallowed into a reload: a bare catch
@@ -1138,6 +1166,24 @@ function replayFailure(row) {
     empty.parentNode.replaceChild(list, empty);
     return list;
   }
+  /* The board records that it painted a card, once per card. The store stamps
+     displayed_at from its own clock on the first call and every later one is
+     inert, so this needs no bookkeeping of its own.
+     ⚠️ It runs BEFORE applyFilter, so a card the filter is about to park is
+     still stamped: the field records that the card was PAINTED, not that the
+     operator looked at it, and the contract says so.
+     The call is fire-and-forget. The board does nothing with the answer, a 404
+     (an item this store does not own) is ignored, and the catch is required so
+     a failure never reaches the unhandledrejection listener above. */
+  function markSeen(row) {
+    var itemID = row.getAttribute('data-item-id');
+    if (!itemID) { return; }
+    fetch('/api/1.0/attention/' + encodeURIComponent(itemID) + '/seen', { method: 'POST' }).catch(function () {});
+  }
+  function markEverySeen() {
+    var rows = document.querySelectorAll('li.item');
+    for (var i = 0; i < rows.length; i++) { markSeen(rows[i]); }
+  }
   function nextRowID(row) {
     var next = row.nextElementSibling;
     while (next && !next.classList.contains('item')) { next = next.nextElementSibling; }
@@ -1380,6 +1426,7 @@ function replayFailure(row) {
      that arrive later. The script runs while the parser is still inside the
      body, so this lands before the first paint rather than as a correction to
      it. */
+  markEverySeen();
   applyFilter();
   syncKindHref();
   updateKindCount();
@@ -1562,6 +1609,10 @@ function replayFailure(row) {
       var list = ensureList();
       if (!list) { return; }
       list.insertAdjacentHTML('beforeend', prepared);
+      /* The inserted card is a first paint, so it is stamped here — the two
+         branches above are re-renders of a card that was already painted. */
+      var added = findRow(itemID);
+      if (added) { markSeen(added); }
     }
     /* The row is complete as committed, so nothing is re-applied to it here.
        The filters still run after: they are board-level views over every row.
@@ -1793,162 +1844,3 @@ function replayFailure(row) {
      restated; the schema page owns its statement. */}}{{if .Info}}<div class="info-panel" data-info-panel hidden>{{if or .Item.ProducerID .Item.ProducerKind}}<div class="producer">{{ .Item.ProducerID }} ({{ .Item.ProducerKind }})</div>{{end}}{{if .Provenance.Host}}<span class="host">{{ .Provenance.Host }}</span>{{end}}{{if .Provenance.Cwd}}<span class="cwd">{{ .Provenance.Cwd }}</span>{{end}}{{if .Provenance.Tool}}<span class="tool">{{ .Provenance.Tool }}</span>{{end}}{{if .Provenance.Pane}}<span class="pane">pane {{ .Provenance.Pane }}</span>{{else if .Provenance.PaneListingUnreadable}}<span class="pane">pane {{ .Provenance.RecordedPane }}</span><span class="unvalidated">unvalidated</span>{{else if .Provenance.PaneRecorded}}<span class="unroutable">unroutable</span>{{end}}{{if .Meta}}<div class="meta">{{ .Meta }}</div>{{end}}</div>
 {{end}}</li>{{end}}
 `
-
-// NewAttentionPageHandler creates the read-only HTML page a human opens to see
-// what currently needs attention.
-//
-// ⚠️ This handler reverses the contract it was built with, and the reversal is
-// deliberate rather than drift. It previously performed **no render-time
-// lookup at all**, on the reasoning that ProducerID is a session id, the
-// registry deletes its entry when the session exits, and a render-time lookup
-// would therefore find nothing and present an unresolvable value as resolved.
-// That reasoning is still honoured — an unresolvable value renders absent, and
-// a pane is shown only when it validates — but its blanket prohibition could
-// not survive the operator's ask, which is precisely for values the store does
-// not carry: the store's fifteen-field Item has no host, cwd, tool or pane.
-//
-// The join is best-effort and the page stays usable without it. Every source is
-// read through a resolver that fails soft: a host with no WezTerm, a store with
-// no Claude Code state directory, an unreadable registry — each resolves to no
-// values for that row, and the page renders exactly what it rendered before.
-// That is the honest scoping of this page's standalone claim: it still works
-// without Claude Code, but it works *with provenance absent* rather than
-// without looking.
-//
-// ⚠️ The Jump button is gated on the pane alone, and the token gate that used
-// to sit here was REMOVED by the jump fold rather than merely dropped. It read
-// the jump token per render and suppressed the button when the token was
-// unreadable — a precondition that held while the button's endpoint forwarded
-// to the Python fleet-jump server, which authenticated with that token. The
-// endpoint now performs the jump in-process (NewAttentionJumpHandler) and never
-// reads a token, so the gate had become a false one: it would hide a working
-// control because of a credential the control no longer touches. The token
-// survives on the legacy pane-addressed route, which is the one surface that
-// still needs it.
-//
-// vaultDir is the configured vault directory, and the vault's own *name* is
-// derived from it as `filepath.Base(vaultDir)` — the name the Obsidian URL
-// addresses, which is the directory's base name rather than anything stored in
-// the vault. It is derived once per request rather than once per row, since
-// every row on the page shares it, and an empty vaultDir yields an empty name
-// so a host with no vault renders no task link. ⚠️ The guard on the empty
-// directory is load-bearing: filepath.Base("") is "." rather than "", so
-// without it an unconfigured vault would name a vault called `.`.
-// buildIdentity is the running binary's own provenance, rendered in the page's
-// footer. It is a parameter rather than a call to buildidentity.Read inside the
-// handler so the handler stays a pure renderer: the value is read once at
-// startup, from the binary, and a handler that re-read it per request would be
-// re-deriving a constant while making the page's footer untestable.
-//
-// metrics is the process-wide instance `main` builds on the registry /metrics serves.
-func NewAttentionPageHandler(store pkg.AttentionStore,
-	provenance pkg.ProvenanceResolver,
-	speakEnabled bool,
-	vaultDir string,
-	buildIdentity buildidentity.Identity,
-	metrics pkg.Metrics,
-) http.Handler {
-	// Parsed once at construction rather than per request: the template is a
-	// compile-time constant, so a parse failure is a programming error, and
-	// template.Must makes it a startup failure rather than a per-request one.
-	page := newAttentionPageTemplate()
-	return libhttp.NewJSONErrorHandler(
-		libhttp.WithErrorFunc(
-			func(ctx context.Context, resp http.ResponseWriter, req *http.Request) error {
-				// ⚠️ Per request, before the store read: a failed render still counts.
-				metrics.BoardPageRequestsTotalCounterInc()
-				// Parsed before the store read: a rejected parameter must cost a
-				// 400, not a full board read that is then thrown away.
-				producerKind, allKinds, err := boardProducerKindOf(ctx, req)
-				if err != nil {
-					return libhttp.WrapWithCode(
-						err,
-						libhttp.ErrorCodeValidation,
-						http.StatusBadRequest,
-					)
-				}
-				// ReadBoard, not Read: the board renders the answered items as
-				// dimmed records as well as the open ones. Read stays as it is
-				// for the JSON read API, whose consumers act on what they are
-				// given and must not be handed an already-answered item.
-				items, err := store.ReadBoard(ctx)
-				if err != nil {
-					return libhttp.WrapWithCode(
-						errors.Wrap(ctx, err, "read failed"),
-						libhttp.ErrorCodeInternal,
-						http.StatusInternalServerError,
-					)
-				}
-				// Resolved for the whole page at once, so the host-wide reads
-				// behind it (the pane listing, the session registry) happen once
-				// rather than once per row.
-				provenances := provenance.Resolve(ctx, items)
-				// ⚠️ No token is read here. The Jump button is gated on the
-				// resolved pane alone — see the constructor's comment on why the
-				// token gate was removed rather than kept.
-				//
-				// Derived once per request rather than per row: every row on the
-				// page addresses the same vault.
-				vaultName := vaultNameFromDir(vaultDir)
-				rows := make([]attentionPageRow, 0, len(items))
-				for _, item := range items {
-					rows = append(
-						rows,
-						newAttentionPageRow(
-							item,
-							provenances[item.ItemID],
-							deliveryStatusOf(ctx, store, item.ItemID),
-							speakEnabled,
-							vaultName,
-						),
-					)
-				}
-				// Rendered into a buffer first so a render failure can still
-				// produce the standard JSON error body. Writing straight to the
-				// response would commit a 200 and a partial document before the
-				// error handler had a chance to report anything.
-				var body bytes.Buffer
-				// Read once per render so the served markup agrees with the URL
-				// the operator is looking at. A no-JS client cannot filter at
-				// all, so this is not the filter — it is the switch's initial
-				// position, and the script applies the same reading.
-				//
-				// The default is ON: only an explicit `?hide=none` turns the
-				// filter off, and absence (or any unrecognised value) leaves it
-				// on.
-				flagsParam := req.URL.Query().Get(boardFlagsParam)
-				hideAnswered := req.URL.Query().Get(boardHideParam) != boardHideNone
-				// Read from its own parameter alone: the flag switch's position
-				// is not derived from the answered switch's, so `?hide=none`
-				// leaves it on. The script applies the same independent reading.
-				flagFilter := flagsParam != boardFlagsNone
-				shown, hiddenOpen, hiddenAll := filterByProducerKind(
-					rows, producerKind, allKinds,
-				)
-				data := attentionPageData{
-					Items:         shown,
-					Speak:         speakEnabled,
-					HideAnswered:  hideAnswered,
-					FlagFilter:    flagFilter,
-					AllKinds:      allKinds,
-					KindHref:      boardProducerKindHref(req.URL, allKinds),
-					HiddenOpen:    hiddenOpen,
-					HiddenAll:     hiddenAll,
-					BuildIdentity: buildIdentity,
-				}
-				data.setKindCount(hideAnswered)
-				if err := page.Execute(&body, data); err != nil {
-					return errors.Wrap(ctx, err, "render page failed")
-				}
-				resp.Header().Set(
-					libhttp.ContentTypeHeaderName,
-					libhttp.TextHTML+"; charset=utf-8",
-				)
-				if _, err := resp.Write(body.Bytes()); err != nil {
-					return errors.Wrap(ctx, err, "write response failed")
-				}
-				return nil
-			},
-		),
-	)
-}

@@ -23,7 +23,7 @@ Widen `attentionPageRow.Undeliverable()` from `failed` to `failed || never_attem
 </objective>
 
 <context>
-**Dependency: prompt `3-spec-015-panel-timeline.md` must already be complete.** This prompt assumes the panel renders the timeline and the delivery-outcome line, and that `DeliveryOutcome()` exists on the row. If either is absent, STOP and report `status: failed` naming the missing prompt — do not implement it here.
+**Dependency: prompt `055-spec-015-panel-timeline.md` must already be complete.** This prompt assumes the panel renders the timeline and the delivery-outcome line, and that `DeliveryOutcome()` exists on the row. If either is absent, STOP and report `status: failed` naming the missing prompt — do not implement it here.
 
 There is no `CLAUDE.md` in this repo — follow the coding plugin docs below. Read `docs/dod.md`.
 
@@ -36,7 +36,7 @@ Read before changing anything:
 - `pkg/handler/attention-page.go` — the marker's template block (`{{if .Undeliverable}}<div class="delivery-undeliverable">undeliverable</div>`) and the info panel. The marker stays exactly where it is.
 - `pkg/delivery-attempt.go` — `DeliveryTrailEpoch` (the ship **instant**, not the ship date) and the five `DeliveryStatus` constants.
 - `pkg/delivery-attempt_test.go` — the movable-clock store fixture, which this prompt's five-card case needs.
-- `CHANGELOG.md` — its head. There is **no** `## Unreleased` section today; the newest heading is `## v0.71.0`.
+- `CHANGELOG.md` — its head. Read it before editing: `## Unreleased` may already exist at your head, and `## v0.72.0` and `## v0.71.1` have shipped since this prompt was written. Never create a second `## Unreleased` heading.
 
 Reference docs (in-container paths):
 - `/home/node/.claude/plugins/marketplaces/coding/docs/changelog-guide.md`
@@ -51,10 +51,15 @@ Reference docs (in-container paths):
 
    ```go
    func (r attentionPageRow) Undeliverable() bool {
+       if r.AnsweredAt == nil {
+           return false
+       }
        return r.DeliveryStatus == pkg.FailedStatus ||
            r.DeliveryStatus == pkg.NeverAttemptedStatus
    }
    ```
+
+   ⚠️ **The `AnsweredAt == nil` guard is load-bearing, not defensive.** `Delivery()` derives `never_attempted` for an item with no attempt record, falling back to `created_at` when there is no `answered_at` — so a predicate keyed on the status alone matches **every open card**, and the board paints "undeliverable" on cards that are merely waiting for a human. The marker's entire signal is *the answer went nowhere*; a card nobody has answered yet has no answer to lose. The row does **not** carry `AnsweredAt` today — add `AnsweredAt *libtime.DateTime` to `attentionPageRow` beside `DeliveryStatus`, and populate it from `Item.AnsweredAt` at both `newAttentionPageRow` call sites (the page and the stream), exactly as `DeliveryStatus` is.
 
 2. Rewrite the method's doc comment. Keep the existing "a method rather than a second boolean field" paragraph (the template and the row must not carry two values that could disagree about one fact, and the constant stays in Go rather than becoming a string literal in the template). Replace the closing paragraph that says a `never_attempted` answer renders nothing with the superseded rationale:
 
@@ -120,16 +125,17 @@ Reference docs (in-container paths):
 
 4. Invert the existing case `renders no marker on a card with no attempt record`. Rename it `renders the marker on a card with no attempt record after the trail`, keep its precondition pin (assert `store.Delivery` returns `pkg.NeverAttemptedStatus` before rendering, so the fixture cannot pass on a card that was actually attempted), and change the assertion from `NotTo(ContainSubstring("delivery-undeliverable"))` to `To(ContainSubstring(marker))`. Add a comment recording that this assertion is the one the widening inverts — the old predicate is now the defect.
 
-   The `delivered` and `held` cases stay exactly as they are: both still assert no marker.
+   The existing `delivered` case stays exactly as it is: it still asserts no marker. This file has no `held` case today — its cases are failed, delivered, no-attempt, read-fails and failed-beside-delivered — so do not go looking for one to preserve; the five-card matrix's `held` row is that coverage.
 
 ### C. The five-card matrix
 
-5. Add one spec to the same file: `marks exactly the failed and never-attempted rows among the five outcomes`. Build five cards in one store and render them on one page:
+5. Add one spec to the same file: `marks exactly the failed and never-attempted rows among the five outcomes, and never an open card`. Build five cards in one store and render them on one page, plus a sixth that is still open:
 
    - **delivered** — `answered(...)` then `store.RecordAttempt(ctx, id, "attention-watcher", pkg.DeliveredOutcome)`.
    - **failed** — `answered(...)` then `RecordAttempt(..., pkg.FailedOutcome)`.
    - **held** — `answered(...)` then `RecordAttempt(..., pkg.HeldOutcome)`.
    - **never_attempted** — `answered(...)` with no attempt record, answered after the epoch (the initial clock reading).
+   - **open, unanswered, no attempt record** — pushed and never answered. `Delivery()` derives `never_attempted` for it too (the `created_at` fallback), so this row is what proves the `AnsweredAt == nil` guard: it must carry **no** marker. Without this sixth card the five-card matrix passes a predicate that marks every open card on the board.
    - **pre_trail_unknown** — `setClock(pkg.DeliveryTrailEpoch.Add(-stdtime.Hour))` **before** the `answered(...)` call so its `answered_at` is before the epoch, then `setClock(stdtime.Now().UTC())` again for the remaining fixtures. Pin the precondition: `store.Delivery` returns `pkg.PreTrailUnknownStatus` for it.
 
    Give each card its own dedup key and payload, as the existing cases do.
@@ -138,15 +144,16 @@ Reference docs (in-container paths):
 
    a. `rowBlock(body, failed.ItemID)` and `rowBlock(body, neverItem.ItemID)` each contain the `marker` literal.
    b. `rowBlock(body, delivered.ItemID)`, `rowBlock(body, held.ItemID)` and `rowBlock(body, preTrail.ItemID)` each contain no `delivery-undeliverable`.
-   c. The total over the five rows is exactly two: `strings.Count(rowBlock(body, id), "delivery-undeliverable")` summed over the five ids equals `2`. ⚠️ Never `strings.Count(body, …)`: the class is also a stylesheet selector, so a body-wide count passes whatever the rows render.
+   c. The total over **all six** rows is exactly two: `strings.Count(rowBlock(body, id), "delivery-undeliverable")` summed over the six ids equals `2`. ⚠️ Never `strings.Count(body, …)`: the class is also a stylesheet selector, so a body-wide count passes whatever the rows render.
    d. For the delivered, failed, never_attempted and pre_trail_unknown rows, `panelOf(row)` contains the exact element `<div class="delivery-outcome">delivered</div>`, `<div class="delivery-outcome">failed</div>`, `<div class="delivery-outcome">never_attempted</div>` and `<div class="delivery-outcome">pre_trail_unknown</div>` respectively. ⚠️ Assert the whole element, never the bare word: the delivered row's timeline already carries the stage label `delivered`, so a bare-word assertion would pass on a panel with no outcome line at all.
    e. For the held row, `panelOf(row)` contains neither `delivery-outcome` nor `held`: assert `!strings.Contains(strings.ToLower(panel), "held")`, so a `Held` label fails the check rather than slipping past it. ⚠️ The panel renders `Item.ProducerID`, and `answered(...)` derives it as `"producer-" + dedupKey`, so the held card's dedup key and payload must NOT contain `held` — a key like `undeliverable-held` puts the word in the producer div and fails this assertion on a correct implementation. Name it `undeliverable-declined`.
+   f. **The open card carries no marker** — `rowBlock(body, openItem.ItemID)` contains no `delivery-undeliverable`, asserted by name and not merely folded into the total in (c). This is the assertion the sixth fixture exists for: without it the matrix passes a predicate that marks every open card, because the other five are all answered and so cannot distinguish a guarded predicate from an unguarded one. Pin the precondition too — `store.Delivery(ctx, openItem.ItemID)` returns `pkg.NeverAttemptedStatus` for this card, so the test proves the guard is what suppresses the marker and not an absence of status.
 
    Add a `panelOf(row string) string` helper slicing from `<div class="info-panel"`, the idiom `pkg/handler/attention-card-info-page_test.go` uses.
 
 ### D. The changelog
 
-6. Create an `## Unreleased` section at the top of `CHANGELOG.md`, immediately before `## v0.71.0` (after the intro block that ends with the Semantic Versioning bullets), and add two bullets following `/home/node/.claude/plugins/marketplaces/coding/docs/changelog-guide.md`:
+6. Add two bullets to `CHANGELOG.md` following `/home/node/.claude/plugins/marketplaces/coding/docs/changelog-guide.md`. If `## Unreleased` already exists at your head, append them to the end of that section; only if it is absent do you create it, immediately above the newest released heading (after the intro block that ends with the Semantic Versioning bullets):
 
    ```markdown
    - feat: Each attention card's info panel now shows its own timeline — the instant the gate was asked, when the store received it, when a board first painted it, when it was answered and by which arm, when the answer was delivered and the gate released, and when it closed and why — with the deltas between stages as whole seconds and an em dash for a stage that did not happen. `asked_at` is accepted from the producer and never re-stamped; `displayed_at` is stamped by the store on the board's first paint through the new `POST /api/1.0/attention/{itemID}/seen`, which is local and never forwarded to a federating peer. Contract: `docs/attention-item-timeline.md`.
@@ -157,7 +164,7 @@ Reference docs (in-container paths):
 </requirements>
 
 <constraints>
-- Dependency ordering: prompt `3-spec-015-panel-timeline.md` must already have shipped. Absent prerequisites are a `status: failed` report naming the missing prompt, never `needs_input`.
+- Dependency ordering: prompt `055-spec-015-panel-timeline.md` must already have shipped. Absent prerequisites are a `status: failed` report naming the missing prompt, never `needs_input`.
 - The contract doc is authoritative for the marker's predicate and for the four outcome names. Do not redefine it.
 - **The marker keeps its class and its row-level position.** Only the predicate widens: from `failed` to `failed || never_attempted`. No second element, no move into the info panel.
 - **A `held` card renders no delivery-outcome line and no marker.** `held` is a deliberate state, not a failure; silence is the interim rendering until the doc's `held` gap is resolved. Do not add a fifth outcome name.
@@ -174,12 +181,12 @@ Reference docs (in-container paths):
 Run in the repo root:
 
 - `make test` — the suite passes, including the inverted case and the five-card matrix.
-- `grep -c 'NeverAttemptedStatus' pkg/handler/attention-page-data.go` — prints `1`.
+- `grep -c 'NeverAttemptedStatus' pkg/handler/attention-page-data.go` — prints `1`. That one occurrence is the widened `Undeliverable()` predicate this prompt adds. Do not expect two: prompt 055 deletes `deliveryStatusOf` (the file's only occurrence before this change) and puts `DeliveryOutcome()` in the new `pkg/handler/attention-page-timeline.go`, so the outcome mapping is not counted here. A count of `0` means the widening did not land.
 - `! grep -q 'HeldStatus' pkg/handler/attention-page-data.go` — succeeds only when the predicate mentions no held status (a `held` marker is the regression this guards).
 - `grep -c 'delivery-undeliverable' pkg/handler/attention-page.go` — prints `1` (one element, in its old position; a second would mean the widening added one).
 - `grep -c '^## Unreleased' CHANGELOG.md` — prints `1`.
 - `awk '/^## /{sec=$0} /feat: Each attention card/{print "sits under: " sec}' CHANGELOG.md` — prints exactly one line, `sits under: ## Unreleased`. ⚠️ `grep -n 'feat: Each attention card' CHANGELOG.md` alone cannot see placement: a bullet appended under `## v0.71.0` passes it.
-- `grep -c '54 of 54 Specs' scenarios/001-board-browser-cases.md` — prints `1`. Prompt 2 set that count and this prompt changes no browser case, so any other value means a scenario edit leaked in. If you believe the count needs a change, that is prompt 2's file and a finding to report.
+- the scenario package total is **unchanged** by this prompt: capture `BEFORE=$(grep -o '[0-9]* of [0-9]* Specs' scenarios/001-board-browser-cases.md | head -1 | cut -d' ' -f1)` before you start, and after the change `grep -q "$BEFORE of $BEFORE Specs" scenarios/001-board-browser-cases.md` must succeed. Do **not** hardcode a number — prompt 054 raises that total by one, so a literal here fails a correct implementation, and the same literal drifts again the next time a sibling prompt adds a case. This prompt changes no browser case; any change to the total means a scenario edit leaked in.
 - `ROOTDIR=/workspace make precommit` — must exit 0. ⚠️ The explicit `ROOTDIR` is required in this container: `.git` is masked here, so the Makefile cannot resolve `ROOTDIR`/`BRANCH` from the checkout on its own. This is the same form earlier prompts in this repo use.
 
 Operator-side verification is NOT part of this prompt: the deployed board check (`curl -s http://127.0.0.1:18080/ | grep -o 'commit <span class="bi-value">[^<]*'`), the browser suite and `make install` live in the spec's § Verification → Operator-executable ladder and its Post-Deploy AC. This container cannot run a browser, reach the live board or reload a launchd job.

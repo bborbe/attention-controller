@@ -173,6 +173,142 @@ var _ = Describe("an answer given on the rendered board", func() {
 		Expect(string(item.Answer.Value)).To(Equal("Zoe"))
 	})
 
+	// Enter is how the operator actually submits, and the case above clicks — so
+	// the click path was covered while the Enter path was not, and the defect
+	// shipped. Measured on the live board 2026-11-12 with the same text on two
+	// cards: Enter stored {"kind":"skip"} and the asking session read a DECLINE,
+	// a click stored {"kind":"text","value":"click"}.
+	//
+	// ⚠️ The stored shape is the assertion, not "the card left the board": the
+	// pre-fix build answers the card too — with a skip — so a case that only
+	// waited for `answered` would be green throughout the defect.
+	It("stores free text submitted with the Enter key as text, never as skip", func() {
+		itemID := pushCard(pkg.PushRequest{
+			DedupKey:        "shape-text-enter",
+			Payload:         "e2e: a name entered with Enter",
+			AnswerMechanism: pkg.MessageAnswerMechanism,
+			Options:         options("Anna", "Bob"),
+		})
+		page = newPage("")
+		field := page.Locator(rowSelector(itemID) + " input[name=text]:visible")
+		Expect(field.Fill("Zoe")).To(Succeed())
+		Expect(field.Press("Enter")).To(Succeed())
+
+		item := answeredItem(itemID)
+		Expect(item.Answer).NotTo(BeNil())
+		Expect(item.Answer.Kind).To(Equal(pkg.TextAnswerKind))
+		Expect(string(item.Answer.Value)).To(Equal("Zoe"))
+	})
+
+	// An IME composition confirm arrives as a keydown too. Before the guard it
+	// answered the card with whatever text existed at that instant and swallowed
+	// the confirm, so the operator could neither finish the word nor correct it.
+	//
+	// ⚠️ The spy is what separates a real guard from a guard that calls
+	// preventDefault and THEN returns. That shape passes a submit-only assertion —
+	// the card stays open — while still eating the keystroke, which is the harder
+	// failure to notice. The value and the open state prove nothing was submitted;
+	// only the spy proves nothing was swallowed.
+	// ⚠️ The spy sits on the document in the BUBBLE phase, registered after the
+	// board's own listener was registered at page load, so it runs after that
+	// handler and reads the final defaultPrevented. A capture-phase spy would read
+	// the event before the board ever saw it and report false on every build.
+	// ⚠️ keyCode 229 is dispatched as its own case because some Safari/iOS and
+	// Android IMEs set it WITHOUT isComposing. A guard reading isComposing alone
+	// is green on the first dispatch and broken on the second.
+	// ⚠️ A synthetic KeyboardEvent approximates the browser's composition pipeline;
+	// it does not reproduce it. The click-through on the deployed board is the only
+	// step that exercises a real IME.
+	It(
+		"leaves the card open and the text intact on the keydown that confirms an IME composition",
+		func() {
+			itemID := pushCard(pkg.PushRequest{
+				DedupKey:        "shape-text-composition",
+				Payload:         "e2e: a name entered through an IME",
+				AnswerMechanism: pkg.MessageAnswerMechanism,
+				Options:         options("Anna", "Bob"),
+			})
+			page = newPage("")
+			field := page.Locator(rowSelector(itemID) + " input[name=text]:visible")
+			// ⚠️ The selector handed to Evaluate is plain CSS, without Playwright's
+			// `:visible` pseudo-class — querySelector rejects it. The row pins the item,
+			// so one input[name=text] is the only match on a message card.
+			selector := rowSelector(itemID) + " input[name=text]"
+			Expect(field.Fill("Zoe")).To(Succeed())
+
+			_, err := page.Evaluate(`(selector) => {
+			window.__compositionEvents = [];
+			document.addEventListener('keydown', (event) => {
+				if (event.key !== 'Enter') { return; }
+				window.__compositionEvents.push({
+					isComposing: event.isComposing,
+					keyCode: event.keyCode,
+					defaultPrevented: event.defaultPrevented,
+				});
+			});
+		}`, selector)
+			Expect(err).NotTo(HaveOccurred())
+
+			// keyCode/which are defined on the event rather than passed through the
+			// init dict: Chrome does not reliably honour the legacy members there, and a
+			// silently-zero keyCode would make the 229 case green for the wrong reason.
+			dispatchEnter := func(keyCode int, isComposing bool) {
+				_, evalErr := page.Evaluate(`(args) => {
+				const field = document.querySelector(args.selector);
+				field.focus();
+				const event = new KeyboardEvent('keydown', {
+					key: 'Enter',
+					code: 'Enter',
+					isComposing: args.isComposing,
+					bubbles: true,
+					cancelable: true,
+				});
+				Object.defineProperty(event, 'keyCode', { get: () => args.keyCode });
+				Object.defineProperty(event, 'which', { get: () => args.keyCode });
+				field.dispatchEvent(event);
+			}`, map[string]any{"selector": selector, "keyCode": keyCode, "isComposing": isComposing})
+				Expect(evalErr).NotTo(HaveOccurred())
+			}
+
+			// Three dispatch shapes, because each one fails a different incomplete
+			// guard: the first two are what Chrome/Firefox and the legacy-keyCode IMEs
+			// send, and the third is Enter with `isComposing` alone — a guard that kept
+			// only `keyCode === 229` passes the first two and fails this one.
+			dispatchEnter(229, true)
+			dispatchEnter(229, false)
+			dispatchEnter(13, true)
+
+			events, err := page.Evaluate(`() => window.__compositionEvents`)
+			Expect(err).NotTo(HaveOccurred())
+			observed, ok := events.([]any)
+			Expect(ok).To(BeTrue(), "the spy must return a list, got %T", events)
+			Expect(observed).To(HaveLen(3))
+			for _, raw := range observed {
+				event, ok := raw.(map[string]any)
+				Expect(ok).To(BeTrue(), "each spy entry must be a map, got %T", raw)
+				Expect(event["defaultPrevented"]).To(BeFalse())
+			}
+
+			// Neither swallowed nor submitted: the card stays open and the text is
+			// exactly what the case typed. ⚠️ Consistently, not an immediate read — the
+			// submit posts asynchronously, so a regression that DID submit would still
+			// read `open` on the instant after the dispatch. The spy covers a swallowed
+			// keystroke; this window covers a submitted one.
+			Consistently(func() pkg.State {
+				return storedItem(itemID).State
+			}, "500ms", "25ms").Should(Equal(pkg.OpenState))
+			Expect(field.InputValue()).To(Equal("Zoe"))
+
+			// Positive control: an ordinary Enter still submits, so the guard is not
+			// swallowing every Enter on the board.
+			Expect(field.Press("Enter")).To(Succeed())
+			item := answeredItem(itemID)
+			Expect(item.Answer).NotTo(BeNil())
+			Expect(item.Answer.Kind).To(Equal(pkg.TextAnswerKind))
+			Expect(string(item.Answer.Value)).To(Equal("Zoe"))
+		},
+	)
+
 	// The pick-then-type sequence, which had no coverage at all: the case above
 	// types text WITHOUT picking first, so it passes on a board that drops the
 	// pick.
@@ -468,6 +604,41 @@ var _ = Describe("an answer given on the rendered board", func() {
 		Expect(byQuestion["Fruit"].Kind).To(Equal(pkg.OptionAnswerKind))
 		Expect(string(byQuestion["Fruit"].Value)).To(Equal("Cherry"))
 		Expect(byQuestion["Toppings"].Values).To(ConsistOf("Cheese", "Ham"))
+	})
+
+	// Enter on a multi-tab card. The keydown listener resolves `button.next` on
+	// the FORM rather than on the panel that fired, so on a multi-tab card the
+	// submitter is whichever Submit answer the form holds first — not the tab the
+	// operator is looking at. Every `button.next` carries value="send", so the
+	// dispatch is identical and the behaviour is correct; nothing pinned that,
+	// and a future change that gave the buttons per-tab values would break the
+	// other tabs silently. The assertion is per-question for that reason: the tab
+	// that was typed in carries the text, and the untouched tab carries nothing.
+	It("stores Enter on a multi-tab card against the tab that was typed in", func() {
+		itemID := pushCard(pkg.PushRequest{
+			DedupKey:        "shape-tabs-enter",
+			Payload:         "e2e: two questions, answered with Enter",
+			AnswerMechanism: pkg.MessageAnswerMechanism,
+			Questions: pkg.Questions{
+				{Tab: "Fruit", Payload: "e2e: which fruit", Options: options("Apple", "Cherry")},
+				{
+					Tab:     "Toppings",
+					Payload: "e2e: which toppings",
+					Options: options("Cheese", "Ham"),
+				},
+			},
+		})
+		page = newPage("")
+		clickTab(page, itemID, "Toppings")
+		field := page.Locator(rowSelector(itemID) + " input[name=text]:visible")
+		Expect(field.Fill("Basil")).To(Succeed())
+		Expect(field.Press("Enter")).To(Succeed())
+
+		item := answeredItem(itemID)
+		Expect(item.Answers).To(HaveLen(1))
+		Expect(item.Answers[0].Question).To(Equal("Toppings"))
+		Expect(item.Answers[0].Kind).To(Equal(pkg.TextAnswerKind))
+		Expect(string(item.Answers[0].Value)).To(Equal("Basil"))
 	})
 
 	It("stores Dismiss as skip on every question, never as an option", func() {
