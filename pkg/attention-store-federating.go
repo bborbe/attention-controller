@@ -240,6 +240,18 @@ func (f *federatingAttentionStore) Rate(
 	return f.local.Rate(ctx, itemID, rating)
 }
 
+// MarkSeen delegates to the LOCAL store and is deliberately never proxied.
+//
+// ⚠️ Unlike Flag, Rate, Answer, Close and Escalate, this write is not
+// forwarded upstream: displayed_at is per item on the store that owns it, so
+// proxying would write a peer's field from this board. A peer-owned item is
+// absent from the local store, so the call returns ErrItemNotFound and the
+// handler answers 404 — which is exactly the contract: a federated card
+// records nothing and the panel renders its stage as absent.
+func (f *federatingAttentionStore) MarkSeen(ctx context.Context, itemID ItemID) (*Item, error) {
+	return f.local.MarkSeen(ctx, itemID)
+}
+
 // Close proxies to the peer when the peer owns the item, and applies locally
 // otherwise.
 func (f *federatingAttentionStore) Close(
