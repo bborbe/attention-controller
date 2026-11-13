@@ -21,6 +21,10 @@ type Metrics struct {
 	boardRowsRenderedTotalCounterAddArgsForCall []struct {
 		arg1 int
 	}
+	LostAnswersTotalCounterIncStub        func()
+	lostAnswersTotalCounterIncMutex       sync.RWMutex
+	lostAnswersTotalCounterIncArgsForCall []struct {
+	}
 	WatcherCycleSecondsHistogramObserveStub        func(float64)
 	watcherCycleSecondsHistogramObserveMutex       sync.RWMutex
 	watcherCycleSecondsHistogramObserveArgsForCall []struct {
@@ -108,6 +112,30 @@ func (fake *Metrics) BoardRowsRenderedTotalCounterAddArgsForCall(i int) int {
 	defer fake.boardRowsRenderedTotalCounterAddMutex.RUnlock()
 	argsForCall := fake.boardRowsRenderedTotalCounterAddArgsForCall[i]
 	return argsForCall.arg1
+}
+
+func (fake *Metrics) LostAnswersTotalCounterInc() {
+	fake.lostAnswersTotalCounterIncMutex.Lock()
+	fake.lostAnswersTotalCounterIncArgsForCall = append(fake.lostAnswersTotalCounterIncArgsForCall, struct {
+	}{})
+	stub := fake.LostAnswersTotalCounterIncStub
+	fake.recordInvocation("LostAnswersTotalCounterInc", []interface{}{})
+	fake.lostAnswersTotalCounterIncMutex.Unlock()
+	if stub != nil {
+		fake.LostAnswersTotalCounterIncStub()
+	}
+}
+
+func (fake *Metrics) LostAnswersTotalCounterIncCallCount() int {
+	fake.lostAnswersTotalCounterIncMutex.RLock()
+	defer fake.lostAnswersTotalCounterIncMutex.RUnlock()
+	return len(fake.lostAnswersTotalCounterIncArgsForCall)
+}
+
+func (fake *Metrics) LostAnswersTotalCounterIncCalls(stub func()) {
+	fake.lostAnswersTotalCounterIncMutex.Lock()
+	defer fake.lostAnswersTotalCounterIncMutex.Unlock()
+	fake.LostAnswersTotalCounterIncStub = stub
 }
 
 func (fake *Metrics) WatcherCycleSecondsHistogramObserve(arg1 float64) {

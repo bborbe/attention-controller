@@ -56,12 +56,22 @@ func NewMetrics(registry prometheus.Registerer) pkg.Metrics {
 			0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300,
 		},
 	})
-	registry.MustRegister(renders, rowsRendered, pageRequests, watcherCycle)
+	// ⚠️ A Counter, never a Gauge, even though the thing it counts is a
+	// population. A Gauge named `_total` breaks increase(): the Grafana panel
+	// and goal SC3 both read this as a rate, and a Gauge would render a flat
+	// line that never fires. It is edge-triggered at the close transition, so
+	// it is a true monotonic counter over events, not a snapshot of state.
+	lostAnswers := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "attention_lost_answers_total",
+		Help: "Total number of answers lost: an item that was answered, then closed, with no delivery attempt ever recorded.",
+	})
+	registry.MustRegister(renders, rowsRendered, pageRequests, watcherCycle, lostAnswers)
 	return &boardMetrics{
 		renders:      renders,
 		rowsRendered: rowsRendered,
 		pageRequests: pageRequests,
 		watcherCycle: watcherCycle,
+		lostAnswers:  lostAnswers,
 	}
 }
 
@@ -70,6 +80,7 @@ type boardMetrics struct {
 	rowsRendered prometheus.Counter
 	pageRequests prometheus.Counter
 	watcherCycle prometheus.Histogram
+	lostAnswers  prometheus.Counter
 }
 
 // BoardRendersTotalCounterInc records that the shared renderer completed one
@@ -94,4 +105,10 @@ func (m *boardMetrics) BoardPageRequestsTotalCounterInc() {
 // WatcherCycleSecondsHistogramObserve records one watcher cycle's duration.
 func (m *boardMetrics) WatcherCycleSecondsHistogramObserve(seconds float64) {
 	m.watcherCycle.Observe(seconds)
+}
+
+// LostAnswersTotalCounterInc records one answered item that was closed without
+// any delivery attempt ever being recorded.
+func (m *boardMetrics) LostAnswersTotalCounterInc() {
+	m.lostAnswers.Inc()
 }
