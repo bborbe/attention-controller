@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- feat: Add `DeliveryAttempts(ctx)` to `AttentionStore` — a single read-only `View` over the attempts bucket returning every delivery-attempt record keyed by item id, so a metrics collector can join attempts to items without one `Delivery` call per item. The notifying wrapper forwards it without signalling and the federating wrapper reads only the local store, never the peer.
+
 ## v0.76.1
 
 - refactor: Move the attention board's inline HTML document and script out of `pkg/handler/attention-page.go` into embedded assets (`pkg/handler/static/attention-page.html`, `pkg/handler/static/attention-page.js`) compiled into the binary with `//go:embed`. The document is assembled from the two assets plus the existing stylesheet constant before `html/template` parses it, so the served page is byte-identical; a missing or duplicated placeholder panics at startup, and `attention-page.go` drops from 1,995 lines to 178.

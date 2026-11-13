@@ -291,6 +291,16 @@ func (f *federatingAttentionStore) Delivery(
 	return f.local.Delivery(ctx, itemID)
 }
 
+// DeliveryAttempts delegates to the local store and is never proxied. The
+// delivery trail is the LOCAL arm's bookkeeping about a delivery this
+// process performed; a peer holds no record of it, so a federated card
+// contributes no attempt-derived observation here.
+func (f *federatingAttentionStore) DeliveryAttempts(
+	ctx context.Context,
+) (map[ItemID]DeliveryAttempt, error) {
+	return f.local.DeliveryAttempts(ctx)
+}
+
 // isRemote reports whether the peer, rather than the local store, owns this
 // item.
 //

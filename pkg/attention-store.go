@@ -293,6 +293,14 @@ type AttentionStore interface {
 	// delivered — and reading it as delivered would repeat the overstatement
 	// this record exists to remove.
 	Delivery(ctx context.Context, itemID ItemID) (*DeliveryReport, error)
+
+	// DeliveryAttempts returns every delivery-attempt record the store holds,
+	// keyed by the item id it belongs to. It is the bulk read a population-wide
+	// reader uses: one read transaction for the whole store, never one Delivery
+	// call per item.
+	//
+	// It is read-only. It never prunes, never mutates and never consults a peer.
+	DeliveryAttempts(ctx context.Context) (map[ItemID]DeliveryAttempt, error)
 }
 
 // Items is a collection of Item.
