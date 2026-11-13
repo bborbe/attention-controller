@@ -202,7 +202,7 @@ func (s *UnforwardedClosersScanner) Scan(ctx context.Context) UnforwardedScan {
 		now:         now,
 		forwarded:   forwarded,
 		suppressed:  suppressed,
-		transcripts: make(map[string][]transcriptMessage),
+		transcripts: make(map[string][]unforwardedTranscriptMessage),
 	}
 	findings, scanned, err := s.scanEventFiles(ctx, window)
 	if err != nil {
@@ -231,11 +231,11 @@ type unforwardedWindow struct {
 	now         float64
 	forwarded   map[string]struct{}
 	suppressed  map[string][]float64
-	transcripts map[string][]transcriptMessage
+	transcripts map[string][]unforwardedTranscriptMessage
 }
 
-// transcriptMessage is one assistant text message from a transcript.
-type transcriptMessage struct {
+// unforwardedTranscriptMessage is one assistant text message from a transcript.
+type unforwardedTranscriptMessage struct {
 	At   float64
 	Text string
 }
@@ -593,7 +593,7 @@ func (s *UnforwardedClosersScanner) safeTranscript(path string) string {
 func finalAssistantMessage(
 	path string,
 	at float64,
-	cache map[string][]transcriptMessage,
+	cache map[string][]unforwardedTranscriptMessage,
 ) string {
 	if path == "" {
 		return ""
@@ -615,13 +615,13 @@ func finalAssistantMessage(
 // readAssistantMessages parses a transcript's assistant text messages, sorted by
 // timestamp. A transcript is JSONL and grows after the fact, so it is read once
 // per scan rather than cached across cycles.
-func readAssistantMessages(path string) []transcriptMessage {
+func readAssistantMessages(path string) []unforwardedTranscriptMessage {
 	fh, err := os.Open(path)
 	if err != nil {
 		return nil
 	}
 	defer fh.Close()
-	messages := make([]transcriptMessage, 0, 8)
+	messages := make([]unforwardedTranscriptMessage, 0, 8)
 	scanner := newLineScanner(fh)
 	for scanner.Scan() {
 		line := scanner.Bytes()
@@ -643,7 +643,7 @@ func readAssistantMessages(path string) []transcriptMessage {
 		if strings.TrimSpace(text) == "" {
 			continue
 		}
-		messages = append(messages, transcriptMessage{At: at, Text: text})
+		messages = append(messages, unforwardedTranscriptMessage{At: at, Text: text})
 	}
 	sort.SliceStable(messages, func(i int, j int) bool {
 		return messages[i].At < messages[j].At
