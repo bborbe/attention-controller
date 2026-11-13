@@ -795,10 +795,11 @@ func (a *application) createHTTPServer(
 		// under one context, so a failure in either takes the process down and
 		// launchd restarts both: a half-up state — board serving, jumps dead — is
 		// exactly the two-lifecycle problem the fold exists to remove.
-		// Six slots, not two: the legacy jump listener is a second long-running
+		// Seven slots, not two: the legacy jump listener is a second long-running
 		// function under the same context, the bearer-token-gated business-API
 		// listener is a third, the task index watcher is a fourth, the answered
-		// sweep is a fifth, and the session-heartbeat watcher is a sixth.
+		// sweep is a fifth, the session-heartbeat watcher is a sixth, and the
+		// metrics push job is a seventh.
 		//
 		// ⚠️ It does NOT share the listeners' failure semantics, and saying so here
 		// matters because the difference is deliberate: the sweep returns nil on
@@ -808,8 +809,11 @@ func (a *application) createHTTPServer(
 		// slot is for the goroutine, not for a shared failure path. The watcher's
 		// slot is the same story: it returns nil on cancellation and logs-and-
 		// continues when it cannot watch at all, because an unwatchable vault
-		// costs a slower index and loses nothing.
-		runner := run.NewConcurrentRunner(6)
+		// costs a slower index and loses nothing. The metrics push slot is the same
+		// story again: it returns nil on cancellation and logs-and-continues on a
+		// failed cycle, because a push that fails costs one interval of dashboard
+		// freshness and loses nothing.
+		runner := run.NewConcurrentRunner(7)
 		defer runner.Close()
 
 		glog.V(2).Infof("starting http server listen on %s", a.Listen)
@@ -837,6 +841,19 @@ func (a *application) createHTTPServer(
 			return err
 		}
 		runner.Add(ctx, runAnsweredSweep(store, answeredMaxAge, answeredSweepInterval))
+
+		// ⚠️ The push runs in-process because the scrape target is: the Python job
+		// it replaces scraped this process's own :18080/metrics, and a loopback HTTP
+		// hop between two halves of one process is a dependency that can fail for
+		// reasons neither half controls. The registry is the source instead.
+		runner.Add(ctx, pkg.NewMetricsPushJob(
+			prometheus.DefaultGatherer,
+			pkg.MetricsPushDefaultEndpoint,
+			pkg.MetricsPushDefaultInterval,
+			pkg.NewTeamVaultMetricsPushCredentials(),
+			&http.Client{Timeout: metricsPushHTTPTimeout},
+			libtime.NewCurrentDateTime(),
+		))
 
 		return runner.Run(ctx)
 	}
@@ -895,6 +912,11 @@ const answeredSweepInterval = time.Minute
 // sweep cannot push one tick into the next, and far above the few milliseconds a
 // sweep of the bounded index actually takes.
 const answeredSweepTimeout = 30 * time.Second
+
+// metricsPushHTTPTimeout bounds one import POST. It is far above a healthy round
+// trip and well under the five-minute push interval, so a stalled far end costs
+// one cycle rather than pushing the next tick into the first.
+const metricsPushHTTPTimeout = 60 * time.Second
 
 // runAnsweredSweep closes answered items older than maxAge on a ticker.
 //
