@@ -252,6 +252,9 @@ func (s *UnforwardedClosersScanner) readForwarded(
 	forwarded := make(map[string]struct{})
 	scanner := newLineScanner(fh)
 	for scanner.Scan() {
+		if err := checkCanceled(ctx); err != nil {
+			return nil, err
+		}
 		for _, match := range forwardLinePattern.FindAllStringSubmatch(scanner.Text(), -1) {
 			if len(match) > 1 {
 				forwarded[match[1]] = struct{}{}
@@ -283,6 +286,9 @@ func (s *UnforwardedClosersScanner) readSuppressed(
 	suppressed := make(map[string][]float64)
 	scanner := newLineScanner(fh)
 	for scanner.Scan() {
+		if err := checkCanceled(ctx); err != nil {
+			return nil, err
+		}
 		var record map[string]any
 		if json.Unmarshal(scanner.Bytes(), &record) != nil {
 			continue
@@ -315,6 +321,9 @@ func (s *UnforwardedClosersScanner) scanEventFiles(
 	findings := make([]UnforwardedFinding, 0, 4)
 	scanned := 0
 	for _, path := range paths {
+		if err := checkCanceled(ctx); err != nil {
+			return nil, 0, err
+		}
 		fileFindings, fileScanned, err := s.scanEventFile(ctx, path, window)
 		if err != nil {
 			return nil, 0, err
@@ -340,7 +349,10 @@ func (s *UnforwardedClosersScanner) scanEventFile(
 	scanned := 0
 	scanner := newLineScanner(fh)
 	for scanner.Scan() {
-		finding, counted := s.scanEvent(scanner.Bytes(), window)
+		if err := checkCanceled(ctx); err != nil {
+			return nil, 0, err
+		}
+		finding, counted := s.scanEvent(ctx, scanner.Bytes(), window)
 		if !counted {
 			continue
 		}
@@ -358,6 +370,7 @@ func (s *UnforwardedClosersScanner) scanEventFile(
 // scanEvent classifies one event record. It returns the finding (nil when the
 // row is not a loss) and whether the row counted toward `scanned`.
 func (s *UnforwardedClosersScanner) scanEvent(
+	ctx context.Context,
 	line []byte,
 	window unforwardedWindow,
 ) (*UnforwardedFinding, bool) {
@@ -381,7 +394,7 @@ func (s *UnforwardedClosersScanner) scanEvent(
 		if asString(record["event"]) != "Stop" {
 			return nil, true
 		}
-		return s.idleFinding(at, item, record, window), true
+		return s.idleFinding(ctx, at, item, record, window), true
 	default:
 		return nil, true
 	}
@@ -413,6 +426,7 @@ func (s *UnforwardedClosersScanner) questionFinding(
 // idleFinding reports an idle row whose turn's final assistant message carries
 // a waiting closer, after subtracting the four hook-contract exemptions.
 func (s *UnforwardedClosersScanner) idleFinding(
+	ctx context.Context,
 	at float64,
 	item string,
 	record map[string]any,
@@ -423,7 +437,7 @@ func (s *UnforwardedClosersScanner) idleFinding(
 		return nil
 	}
 	transcript := s.safeTranscript(asString(record["transcript"]))
-	message := finalAssistantMessage(transcript, at, window.transcripts)
+	message := finalAssistantMessage(ctx, transcript, at, window.transcripts)
 	ask := waitingAsk(message)
 	if ask == "" {
 		return nil
@@ -591,6 +605,7 @@ func (s *UnforwardedClosersScanner) safeTranscript(path string) string {
 // finalAssistantMessage returns the last assistant text at or before `at`
 // (+1 s slack), or "" when the transcript cannot be read.
 func finalAssistantMessage(
+	ctx context.Context,
 	path string,
 	at float64,
 	cache map[string][]unforwardedTranscriptMessage,
@@ -600,7 +615,7 @@ func finalAssistantMessage(
 	}
 	messages, ok := cache[path]
 	if !ok {
-		messages = readAssistantMessages(path)
+		messages = readAssistantMessages(ctx, path)
 		cache[path] = messages
 	}
 	index := sort.Search(len(messages), func(i int) bool {
@@ -615,7 +630,7 @@ func finalAssistantMessage(
 // readAssistantMessages parses a transcript's assistant text messages, sorted by
 // timestamp. A transcript is JSONL and grows after the fact, so it is read once
 // per scan rather than cached across cycles.
-func readAssistantMessages(path string) []unforwardedTranscriptMessage {
+func readAssistantMessages(ctx context.Context, path string) []unforwardedTranscriptMessage {
 	fh, err := os.Open(path)
 	if err != nil {
 		return nil
@@ -624,6 +639,9 @@ func readAssistantMessages(path string) []unforwardedTranscriptMessage {
 	messages := make([]unforwardedTranscriptMessage, 0, 8)
 	scanner := newLineScanner(fh)
 	for scanner.Scan() {
+		if err := checkCanceled(ctx); err != nil {
+			return nil
+		}
 		line := scanner.Bytes()
 		if !bytes.Contains(line, []byte(`"assistant"`)) || !bytes.Contains(line, []byte(`"text"`)) {
 			continue
@@ -730,6 +748,20 @@ func newLineScanner(fh *os.File) *bufio.Scanner {
 	scanner := bufio.NewScanner(fh)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	return scanner
+}
+
+// checkCanceled returns a cancellation error when ctx is done.
+//
+// ⚠️ The live scan walks thousands of records and can take seconds, so each
+// loop checks it: without this a shutdown waits for the whole walk, and a
+// cancelled context would be ignored until the scan finished anyway.
+func checkCanceled(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return errors.Wrap(ctx, ctx.Err(), "scan cancelled")
+	default:
+		return nil
+	}
 }
 
 // asString renders a decoded JSON value as a string. A non-string value renders

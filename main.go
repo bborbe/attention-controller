@@ -610,6 +610,10 @@ func (a *application) addUnforwardedClosersJob(
 		TranscriptRoot: filepath.Join(home, ".claude", "projects"),
 		Now:            libtime.NewCurrentDateTime(),
 	})
+	// ⚠️ glog.Infof at V(0), not V(2): the cycle line is the operator-visible
+	// measurement this job exists to produce, and it is read from the launchd
+	// stderr log at default verbosity. A V-gated line would be invisible exactly
+	// when the count matters.
 	runner.Add(
 		ctx,
 		pkg.NewUnforwardedClosersJob(scanner, pkg.UnforwardedClosersInterval, glog.Infof).Run,
