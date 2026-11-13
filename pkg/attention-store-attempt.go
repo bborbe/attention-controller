@@ -139,3 +139,34 @@ func (a *attentionStore) Delivery(
 	}
 	return report, nil
 }
+
+// DeliveryAttempts returns every recorded delivery attempt, keyed by item id.
+//
+// ⚠️ One read transaction for the whole population, and that is the reason it
+// exists rather than a loop over Delivery: Delivery opens a transaction per
+// item, which a metrics scrape over every card cannot afford. Both read the
+// same records, so the two can disagree about the number of transactions and
+// never about an attempt.
+//
+// The key is the item id as the attempts bucket stores it, converted back to
+// ItemID rather than carrying a second key space. An empty bucket yields an
+// empty non-nil map, so a caller can range over it without a nil check.
+func (a *attentionStore) DeliveryAttempts(
+	ctx context.Context,
+) (map[ItemID]DeliveryAttempt, error) {
+	attempts := make(map[ItemID]DeliveryAttempt)
+	err := a.db.View(ctx, func(ctx context.Context, tx libkv.Tx) error {
+		return a.attempts.Map(
+			ctx,
+			tx,
+			func(ctx context.Context, key string, attempt DeliveryAttempt) error {
+				attempts[ItemID(key)] = attempt
+				return nil
+			},
+		)
+	})
+	if err != nil {
+		return nil, errors.Wrap(ctx, err, "delivery attempts failed")
+	}
+	return attempts, nil
+}
