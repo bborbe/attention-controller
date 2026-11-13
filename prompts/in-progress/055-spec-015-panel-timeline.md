@@ -3,10 +3,12 @@ status: failed
 spec: [015-attention-card-timeline]
 created: "2026-11-12T09:49:35Z"
 queued: "2026-11-12T10:21:06Z"
-completed: "2026-11-12T15:55:35Z"
+completed: "2026-11-13T04:32:23Z"
 lastFailReason: |-
     setup workflow: sync with remote: git merge origin default branch: merge origin/master: error: Your local changes to the following files would be overwritten by merge:
-      prompts/completed/053-spec-015-asked-at.md prompts/completed/054-spec-015-seen-endpoint.md
+    	prompts/in-progress/055-spec-015-panel-timeline.md
+    Please commit your changes or stash them before you merge.
+    Aborting
     Merge with strategy ort failed.: git merge origin/master failed: exit status 2
 ---
 
