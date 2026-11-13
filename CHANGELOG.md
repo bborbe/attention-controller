@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.78.0
 
 - feat: The controller exposes `attention_lost_answers_total`, a counter incremented once when an answered item is closed without any delivery attempt ever being recorded — the reading the goal's "zero lost answers per week" criterion depends on. It is edge-triggered on the close transition, so a store re-scan over the same items does not double it, and one shared close helper increments it from all three close sites so a fourth site cannot silently miss it.
 
