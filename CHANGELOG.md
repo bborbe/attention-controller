@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- feat: run the `attention-unforwarded-closers` check inside the controller on a 900 s interval instead of as a launchd Python tick. It re-reads the attention event logs and the watcher log and reports both detectors — an `idle` row whose turn's final assistant message carries a waiting-verb closer (with its four exemptions: `suppressed.jsonl`, `PARKED`, `NO_REPLY` and a posted card), and a `question`/`permission` row with no forward line after the grace window — writing one `job=attention-unforwarded-closers action=scan|error` line per cycle. The launchd job's three-outcome exit contract is preserved as a distinct `read-error` outcome plus the `action=error` line, so a read failure can never read as "nothing lost".
+
 ## v0.78.0
 
 - feat: The controller exposes `attention_lost_answers_total`, a counter incremented once when an answered item is closed without any delivery attempt ever being recorded — the reading the goal's "zero lost answers per week" criterion depends on. It is edge-triggered on the close transition, so a store re-scan over the same items does not double it, and one shared close helper increments it from all three close sites so a fourth site cannot silently miss it.
