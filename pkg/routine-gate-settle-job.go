@@ -117,7 +117,7 @@ func (j *routineGateSettleJob) settle(ctx context.Context, item Item) {
 	if item.State != OpenState || item.AnswerMechanism != PermissionAnswerMechanism {
 		return
 	}
-	sessionID, ok := itemSessionID(item)
+	sessionID, ok := itemSessionID(ctx, item)
 	if !ok {
 		return
 	}

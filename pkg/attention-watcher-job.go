@@ -104,7 +104,7 @@ func (j *attentionWatcherJob) DeliverOnce(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return nil
 		}
-		if !j.deliverable(item, attempts) {
+		if !j.deliverable(ctx, item, attempts) {
 			continue
 		}
 		j.deliver(ctx, item)
@@ -114,6 +114,7 @@ func (j *attentionWatcherJob) DeliverOnce(ctx context.Context) error {
 
 // deliverable reports whether the item is an answered card this arm should carry.
 func (j *attentionWatcherJob) deliverable(
+	ctx context.Context,
 	item Item,
 	attempts map[ItemID]DeliveryAttempt,
 ) bool {
@@ -127,7 +128,7 @@ func (j *attentionWatcherJob) deliverable(
 	if attempt, ok := attempts[item.ItemID]; ok && attempt.Outcome == DeliveredOutcome {
 		return false
 	}
-	if _, ok := itemSessionID(item); !ok {
+	if _, ok := itemSessionID(ctx, item); !ok {
 		return false
 	}
 	_, ok := answerText(item)
@@ -136,7 +137,7 @@ func (j *attentionWatcherJob) deliverable(
 
 // deliver carries one answer and records what it observed.
 func (j *attentionWatcherJob) deliver(ctx context.Context, item Item) {
-	sessionID, ok := itemSessionID(item)
+	sessionID, ok := itemSessionID(ctx, item)
 	if !ok {
 		return
 	}
@@ -185,8 +186,8 @@ func (j *attentionWatcherJob) recordAttempt(
 }
 
 // itemSessionID returns the session the item belongs to, from its liveness ref.
-func itemSessionID(item Item) (string, bool) {
-	model, value, err := item.LivenessRef.Parse(context.Background())
+func itemSessionID(ctx context.Context, item Item) (string, bool) {
+	model, value, err := item.LivenessRef.Parse(ctx)
 	if err != nil || value == "" {
 		return "", false
 	}
