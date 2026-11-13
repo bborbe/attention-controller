@@ -1819,16 +1819,18 @@ function replayFailure(row) {
      record-card rule (no control that offers an answer) does not withhold it.
      Kept to two buttons so the history's rows stay small. */}}<div class="rate" data-rate-control data-rating="{{ .Item.Rating }}"><button type="button" class="rate-btn{{if eq .Item.Rating "up"}} rated{{end}}" data-rate="up" aria-pressed="{{if eq .Item.Rating "up"}}true{{else}}false{{end}}" aria-label="Good card">👍</button><button type="button" class="rate-btn{{if eq .Item.Rating "down"}} rated{{end}}" data-rate="down" aria-pressed="{{if eq .Item.Rating "down"}}true{{else}}false{{end}}" aria-label="Should not have reached me">👎</button></div>
 {{/* The undeliverable marker renders on a card whose answer a recorded
-     attempt says did NOT reach the asking session, and on no other status:
-     "delivered" is the good case, "held" is a gate an arm declined to answer on
-     purpose, "never_attempted" and "pre_trail_unknown" are absences of an
-     attempt rather than failures of one, and the empty status is a read that
-     failed. The gate is the row's own Undeliverable method, so the
-     comparison against the status constant stays in Go rather than becoming a
-     string literal here that could drift from it. It is a marker, not a control
-     — the board cannot retry a delivery — so it carries no handler and sits
-     outside the actions row. ⚠️ No backticks anywhere in this block: the whole
-     page is one Go raw-string literal, so a backtick closes it. */}}{{if .Undeliverable}}<div class="delivery-undeliverable">undeliverable</div>
+     attempt says did NOT reach the asking session, or whose answer was never
+     attempted at all: the predicate is failed || never_attempted, and no
+     other status. "delivered" is the good case, "held" is a gate an arm
+     declined to answer on purpose, "pre_trail_unknown" predates the trail so
+     its answer's fate was never measured, and the empty status is a read
+     that failed. The gate is the row's own Undeliverable method, so the
+     comparison against the status constants stays in Go rather than becoming
+     a string literal here that could drift from it. It is a marker, not a
+     control — the board cannot retry a delivery — so it carries no handler
+     and sits outside the actions row. ⚠️ No backticks anywhere in this
+     block: the whole page is one Go raw-string literal, so a backtick closes
+     it. */}}{{if .Undeliverable}}<div class="delivery-undeliverable">undeliverable</div>
 {{end}}{{if and .Ack (not .Dimmed)}}<div class="actions"><button type="button" class="ack" data-ack>Acknowledge</button></div>
 {{end}}{{if and .Decide (not .Dimmed)}}<div class="actions"><button type="button" class="dismiss" data-decision="deny">✕ Deny</button><button type="button" class="next" data-decision="allow">✓ Allow</button></div>
 {{end}}{{if or .Jump .JumpURL}}<div class="jump">{{if .Jump}}<span>Approve in the session that asked: <code>{{ .Jump }}</code></span>{{end}}</div>
@@ -1841,6 +1843,8 @@ function replayFailure(row) {
      server-rendered and carries the hidden attribute, so a card with no
      JavaScript still serves its values and a stream row-swap renders the same
      markup a fresh load does. The rule is implemented here rather than
-     restated; the schema page owns its statement. */}}{{if .Info}}<div class="info-panel" data-info-panel hidden>{{if or .Item.ProducerID .Item.ProducerKind}}<div class="producer">{{ .Item.ProducerID }} ({{ .Item.ProducerKind }})</div>{{end}}{{if .Provenance.Host}}<span class="host">{{ .Provenance.Host }}</span>{{end}}{{if .Provenance.Cwd}}<span class="cwd">{{ .Provenance.Cwd }}</span>{{end}}{{if .Provenance.Tool}}<span class="tool">{{ .Provenance.Tool }}</span>{{end}}{{if .Provenance.Pane}}<span class="pane">pane {{ .Provenance.Pane }}</span>{{else if .Provenance.PaneListingUnreadable}}<span class="pane">pane {{ .Provenance.RecordedPane }}</span><span class="unvalidated">unvalidated</span>{{else if .Provenance.PaneRecorded}}<span class="unroutable">unroutable</span>{{end}}{{if .Meta}}<div class="meta">{{ .Meta }}</div>{{end}}</div>
+     restated; the schema page owns its statement. */}}{{if .Info}}<div class="info-panel" data-info-panel hidden>{{if or .Item.ProducerID .Item.ProducerKind}}<div class="producer">{{ .Item.ProducerID }} ({{ .Item.ProducerKind }})</div>{{end}}{{if .Provenance.Host}}<span class="host">{{ .Provenance.Host }}</span>{{end}}{{if .Provenance.Cwd}}<span class="cwd">{{ .Provenance.Cwd }}</span>{{end}}{{if .Provenance.Tool}}<span class="tool">{{ .Provenance.Tool }}</span>{{end}}{{if .Provenance.Pane}}<span class="pane">pane {{ .Provenance.Pane }}</span>{{else if .Provenance.PaneListingUnreadable}}<span class="pane">pane {{ .Provenance.RecordedPane }}</span><span class="unvalidated">unvalidated</span>{{else if .Provenance.PaneRecorded}}<span class="unroutable">unroutable</span>{{end}}{{if .Meta}}<div class="meta">{{ .Meta }}</div>{{end}}{{if .Timeline}}<div class="timeline" data-timeline>{{range .Timeline}}<div class="timeline-line">{{ . }}</div>{{end}}</div>
+{{end}}{{if .DeliveryOutcome}}<div class="delivery-outcome">{{ .DeliveryOutcome }}</div>
+{{end}}</div>
 {{end}}</li>{{end}}
 `

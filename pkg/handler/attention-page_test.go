@@ -473,9 +473,15 @@ var _ = Describe("AttentionPageHandler", func() {
 		// An absent field renders blank, never a placeholder. A stand-in would be
 		// an unresolvable value presented as resolved, which is the one failure
 		// this task exists to avoid.
+		//
+		// ⚠️ The guard is scoped to the card FACE, not the whole page. The info
+		// panel now renders an em dash for a timeline stage that did not happen,
+		// which is a fact about the item rather than an invented provenance
+		// placeholder — the fields this guard protects all render above the panel.
 		Expect(body).NotTo(ContainSubstring(`class="tool"`))
+		face, _, _ := strings.Cut(body, `<div class="info-panel"`)
 		for _, placeholder := range []string{"unknown", "n/a", "N/A", "—", "??"} {
-			Expect(body).NotTo(ContainSubstring(placeholder))
+			Expect(face).NotTo(ContainSubstring(placeholder))
 		}
 	})
 

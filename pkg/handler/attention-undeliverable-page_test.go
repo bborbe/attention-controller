@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	stdtime "time"
 
 	libboltkv "github.com/bborbe/boltkv"
 	"github.com/bborbe/errors"
@@ -41,9 +42,19 @@ var _ = Describe("the undeliverable marker on the served page", func() {
 	var store pkg.AttentionStore
 	var httpHandler http.Handler
 
+	// now is the store's clock. It is MOVABLE so a fixture's answered_at can be
+	// placed on either side of DeliveryTrailEpoch: the pre-trail case cannot be
+	// produced by a wall clock, because every item such a store creates sits after
+	// the epoch.
+	var now stdtime.Time
+	setClock := func(when stdtime.Time) { now = when }
+
 	BeforeEach(func() {
 		ctx = context.Background()
 		var err error
+		// The clock's initial reading is "now", so every existing case keeps its
+		// meaning: an answered card is still after DeliveryTrailEpoch.
+		now = stdtime.Now().UTC()
 		// A real boltkv DB and a real store, not a fake of either: the marker is
 		// rendered from the store's own Delivery read, so the fixture has to be
 		// written through the same write path the attempting arm uses.
@@ -60,7 +71,9 @@ var _ = Describe("the undeliverable marker on the served page", func() {
 			db,
 			pkg.NewItemIDGenerator(),
 			sessionLivenessChecker,
-			libtime.NewCurrentDateTime(),
+			libtime.CurrentDateTimeGetterFunc(func() libtime.DateTime {
+				return libtime.DateTime(now)
+			}),
 			libtime.Duration(15*60*1e9),
 		)
 
@@ -125,6 +138,14 @@ var _ = Describe("the undeliverable marker on the served page", func() {
 		return resp.Body.String()
 	}
 
+	// panelOf slices a row at its info panel, the idiom the card-info spec uses,
+	// so a panel assertion cannot pass on a line rendered elsewhere in the row.
+	panelOf := func(row string) string {
+		at := strings.Index(row, `<div class="info-panel"`)
+		Expect(at).To(BeNumerically(">=", 0), "info panel not found in row")
+		return row[at:]
+	}
+
 	// The exact markup the marker renders, written as a hand-written literal
 	// rather than built from the production constant: a shared builder would
 	// agree with itself whatever it produced.
@@ -152,7 +173,7 @@ var _ = Describe("the undeliverable marker on the served page", func() {
 		Expect(row).NotTo(ContainSubstring("delivery-undeliverable"))
 	})
 
-	It("renders no marker on a card with no attempt record", func() {
+	It("renders the marker on a card with no attempt record after the trail", func() {
 		item := answered("undeliverable-never", "Which surface?")
 		// Pin the fixture's meaning: no attempt record on an item answered after
 		// the trail shipped derives `never_attempted`, not `failed`.
@@ -162,7 +183,11 @@ var _ = Describe("the undeliverable marker on the served page", func() {
 
 		row := rowBlock(render(), item.ItemID)
 		Expect(row).To(ContainSubstring(item.Payload.String()))
-		Expect(row).NotTo(ContainSubstring("delivery-undeliverable"))
+		// ⚠️ This is the assertion the widening inverts. It used to assert no
+		// marker, pinning the old `failed`-only predicate; that predicate is now
+		// the defect, because the silent half of undelivered answers was the
+		// larger one.
+		Expect(row).To(ContainSubstring(marker))
 	})
 
 	// ⚠️ A mocked store is deliberate here and is the only reachable construction
@@ -222,4 +247,122 @@ var _ = Describe("the undeliverable marker on the served page", func() {
 		Expect(rowBlock(body, failed.ItemID)).To(ContainSubstring(marker))
 		Expect(rowBlock(body, delivered.ItemID)).NotTo(ContainSubstring("delivery-undeliverable"))
 	})
+
+	It(
+		"marks exactly the failed and never-attempted rows among the five outcomes, and never an open card",
+		func() {
+			// The pre-trail card is created on a clock before the trail epoch, then the
+			// clock returns to now so the remaining fixtures are all after it.
+			setClock(pkg.DeliveryTrailEpoch.Add(-stdtime.Hour))
+			preTrail := answered("undeliverable-pre-trail", "Pre-trail?")
+			setClock(stdtime.Now().UTC())
+
+			delivered := answered("undeliverable-outcome-delivered", "Deliver?")
+			_, err := store.RecordAttempt(
+				ctx,
+				delivered.ItemID,
+				"attention-watcher",
+				pkg.DeliveredOutcome,
+			)
+			Expect(err).To(BeNil())
+
+			failed := answered("undeliverable-outcome-failed", "Fail?")
+			_, err = store.RecordAttempt(ctx, failed.ItemID, "attention-watcher", pkg.FailedOutcome)
+			Expect(err).To(BeNil())
+
+			// ⚠️ The dedup key and payload must not contain "held": the panel renders
+			// Item.ProducerID, which answered derives as "producer-" + dedupKey, and the
+			// held assertion below forbids the word anywhere in the panel.
+			held := answered("undeliverable-declined", "Decline?")
+			_, err = store.RecordAttempt(ctx, held.ItemID, "attention-watcher", pkg.HeldOutcome)
+			Expect(err).To(BeNil())
+
+			neverItem := answered("undeliverable-outcome-never", "Never?")
+
+			// The open card is pushed and never answered. Delivery derives
+			// never_attempted for it too (the created_at fallback), so this row is what
+			// proves the AnsweredAt guard suppresses the marker.
+			openProducer := pkg.ProducerID("producer-undeliverable-open")
+			openItem, err := store.Push(ctx, pkg.PushRequest{
+				ProducerID:      openProducer,
+				ProducerKind:    pkg.SessionProducerKind,
+				LivenessRef:     pkg.LivenessRef("session:" + openProducer.String()),
+				DedupKey:        "undeliverable-open",
+				InterruptClass:  "pick",
+				Payload:         "Open?",
+				AnswerMechanism: pkg.MessageAnswerMechanism,
+			})
+			Expect(err).To(BeNil())
+
+			// Pin each fixture's derived status, so the matrix cannot pass on a card
+			// that was actually attempted (or, for the open card, on an absence of
+			// status rather than on the guard).
+			for itemID, want := range map[pkg.ItemID]pkg.DeliveryStatus{
+				delivered.ItemID: pkg.DeliveredStatus,
+				failed.ItemID:    pkg.FailedStatus,
+				held.ItemID:      pkg.HeldStatus,
+				neverItem.ItemID: pkg.NeverAttemptedStatus,
+				preTrail.ItemID:  pkg.PreTrailUnknownStatus,
+				openItem.ItemID:  pkg.NeverAttemptedStatus,
+			} {
+				report, deliveryErr := store.Delivery(ctx, itemID)
+				Expect(deliveryErr).To(BeNil())
+				Expect(report.Status).To(Equal(want), "delivery status for %s", itemID)
+			}
+
+			body := render()
+
+			// (a) exactly the failed and never-attempted rows carry the marker.
+			Expect(rowBlock(body, failed.ItemID)).To(ContainSubstring(marker))
+			Expect(rowBlock(body, neverItem.ItemID)).To(ContainSubstring(marker))
+
+			// (b) the other three answered outcomes carry none.
+			Expect(
+				rowBlock(body, delivered.ItemID),
+			).NotTo(ContainSubstring("delivery-undeliverable"))
+			Expect(rowBlock(body, held.ItemID)).NotTo(ContainSubstring("delivery-undeliverable"))
+			Expect(
+				rowBlock(body, preTrail.ItemID),
+			).NotTo(ContainSubstring("delivery-undeliverable"))
+
+			// (c) exactly two markers over all six rows. ⚠️ Never count over the body:
+			// the class is also a stylesheet selector, so a body-wide count is vacuous.
+			total := 0
+			for _, itemID := range []pkg.ItemID{
+				delivered.ItemID,
+				failed.ItemID,
+				held.ItemID,
+				neverItem.ItemID,
+				preTrail.ItemID,
+				openItem.ItemID,
+			} {
+				total += strings.Count(rowBlock(body, itemID), "delivery-undeliverable")
+			}
+			Expect(total).To(Equal(2))
+
+			// (d) the four reader-visible outcomes name themselves in the panel. Assert
+			// the whole element, never the bare word: the delivered row's timeline
+			// already carries the stage label "delivered".
+			Expect(panelOf(rowBlock(body, delivered.ItemID))).
+				To(ContainSubstring(`<div class="delivery-outcome">delivered</div>`))
+			Expect(panelOf(rowBlock(body, failed.ItemID))).
+				To(ContainSubstring(`<div class="delivery-outcome">failed</div>`))
+			Expect(panelOf(rowBlock(body, neverItem.ItemID))).
+				To(ContainSubstring(`<div class="delivery-outcome">never_attempted</div>`))
+			Expect(panelOf(rowBlock(body, preTrail.ItemID))).
+				To(ContainSubstring(`<div class="delivery-outcome">pre_trail_unknown</div>`))
+
+			// (e) a held card renders no delivery-outcome line and no held label at all.
+			heldPanel := panelOf(rowBlock(body, held.ItemID))
+			Expect(heldPanel).NotTo(ContainSubstring("delivery-outcome"))
+			Expect(strings.Contains(strings.ToLower(heldPanel), "held")).To(BeFalse())
+
+			// (f) the open card carries no marker. This is the assertion the sixth
+			// fixture exists for: the other five are all answered, so they cannot tell a
+			// guarded predicate from an unguarded one.
+			Expect(
+				rowBlock(body, openItem.ItemID),
+			).NotTo(ContainSubstring("delivery-undeliverable"))
+		},
+	)
 })

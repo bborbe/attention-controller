@@ -13,6 +13,8 @@ import (
 	"context"
 	"html/template"
 
+	libtime "github.com/bborbe/time"
+
 	"github.com/bborbe/attention-controller/pkg"
 	"github.com/bborbe/attention-controller/pkg/buildidentity"
 )
@@ -138,6 +140,17 @@ type attentionPageRow struct {
 	// `never_attempted`, which is a real answer about the item rather than about
 	// this render.
 	DeliveryStatus pkg.DeliveryStatus
+	// AnsweredAt is when the answer arrived, copied straight off the item. It is
+	// carried here because the undeliverable marker must distinguish an answer
+	// that went nowhere from a card nobody has answered yet, and the delivery
+	// status alone cannot: Delivery derives `never_attempted` for an unanswered
+	// item too, by falling back to its created_at, so a predicate keyed on the
+	// status alone would mark every open card. Nil while the item is unanswered.
+	AnsweredAt *libtime.DateTime
+	// DeliveryAttemptedAt is when the attempting arm recorded its outcome, read
+	// off the same Delivery report DeliveryStatus comes from. Nil when no attempt
+	// record exists — the honest absence, never a zero instant.
+	DeliveryAttemptedAt *libtime.DateTime
 	// Jump is the copyable command handing a non-`message` item back to the
 	// session that raised it. Empty when no pane resolved — an unresolvable
 	// value renders absent rather than as a stand-in, per the schema's silence 7.
@@ -228,11 +241,33 @@ type attentionPageRow struct {
 // and the row would then carry two values that could disagree about one fact,
 // and the constant it compares against stays in Go rather than being spelled as
 // a string literal in the template — the same reason the row carries no
-// mechanism comparison. A `delivered`, `never_attempted` or `pre_trail_unknown`
-// answer renders nothing: only a recorded failure is something the operator can
-// act on, and the other three would put a marker on every card.
+// mechanism comparison.
+//
+// ⚠️ The predicate was `DeliveryStatus == pkg.FailedStatus` alone, on the
+// recorded rationale that only a recorded failure is something the operator
+// can act on and the other three would put a marker on every card. That
+// rationale is superseded for never_attempted, and only for it: measured
+// 2026-11-11, 166 of 736 answered cards read never_attempted against 40
+// failed, so the SILENT half was the larger one and rendered as an ordinary
+// answered card. The other three stay unmarked and each for its own reason:
+// delivered is the good case, held (245 of the same 736) is a gate an arm
+// declined to answer on purpose and flagging it would send the operator
+// looking for a fault that is not there, and pre_trail_unknown predates the
+// trail so its answer's fate was never measured. See
+// docs/attention-item-timeline.md.
+//
+// ⚠️ The AnsweredAt == nil guard is load-bearing, not defensive. Delivery()
+// derives never_attempted for an item with no attempt record, falling back to
+// created_at when there is no answered_at — so a predicate keyed on the status
+// alone matches every open card, and the board paints "undeliverable" on cards
+// that are merely waiting for a human. The marker's entire signal is that the
+// answer went nowhere; a card nobody has answered yet has no answer to lose.
 func (r attentionPageRow) Undeliverable() bool {
-	return r.DeliveryStatus == pkg.FailedStatus
+	if r.AnsweredAt == nil {
+		return false
+	}
+	return r.DeliveryStatus == pkg.FailedStatus ||
+		r.DeliveryStatus == pkg.NeverAttemptedStatus
 }
 
 // attentionPageData is what the template renders: the items the store's read
@@ -360,35 +395,23 @@ const (
 	boardFlagsNone    = "none"
 )
 
-// deliveryStatusOf reads one card's derived delivery status for its row, and
-// answers the zero value when the read fails.
+// deliveryReportOf reads one card's delivery report for its row, and answers
+// nil when the read fails.
 //
-// ⚠️ The failure is swallowed deliberately, and it is the same fail-soft rule
-// provenance.Resolve follows one function up: the status DECORATES a card that
-// is already on the board, so a read that fails — a bbolt View error, or an item
-// removed between ReadBoard and this call — must not turn the whole page into a
-// 500. The card itself is still readable, and the marker is an addition to it,
-// never a precondition for rendering it.
-//
-// ⚠️ The zero value is what makes that safe rather than merely quiet: it is no
-// status the store ever returns, so the row renders no marker and degrades to
-// exactly what it rendered before the marker existed. Returning
-// NeverAttemptedStatus here instead would assert something about the item that
-// this call did not learn.
-func deliveryStatusOf(
+// ⚠️ The failure is swallowed deliberately, on the same fail-soft rule as
+// before: the report DECORATES a card that is already on the board, so a read
+// that fails must not turn the whole page into a 500. Nil is what makes that
+// safe rather than merely quiet — it is no status the store ever returns, so
+// the row renders the delivery stage as absent and degrades to exactly what it
+// rendered before the timeline existed.
+func deliveryReportOf(
 	ctx context.Context,
 	store pkg.AttentionStore,
 	itemID pkg.ItemID,
-) pkg.DeliveryStatus {
+) *pkg.DeliveryReport {
 	report, err := store.Delivery(ctx, itemID)
-	// ⚠️ The nil check is part of the same fail-soft rule rather than
-	// defensiveness for its own sake: a store that answers no report and no
-	// error has told this row nothing, and dereferencing it would take the whole
-	// page down for one card. The mock store in the identity spec is exactly
-	// such a caller, and it is right to be — the read it is faking is not the
-	// subject of that spec.
 	if err != nil || report == nil {
-		return ""
+		return nil
 	}
-	return report.Status
+	return report
 }
