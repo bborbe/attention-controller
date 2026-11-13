@@ -28,7 +28,7 @@ Add the store-stamped `displayed_at` field, the `MarkSeen` store write, its HTTP
 </objective>
 
 <context>
-**Dependency: prompt `1-spec-015-asked-at.md` must already be complete.** This prompt assumes `Item.AskedAt`/`PushRequest.AskedAt` exist. If they are absent, STOP and report `status: failed` naming the missing prompt — do not implement them here.
+**Dependency: prompt `053-spec-015-asked-at.md` must already be complete.** This prompt assumes `Item.AskedAt`/`PushRequest.AskedAt` exist. If they are absent, STOP and report `status: failed` naming the missing prompt — do not implement them here.
 
 There is no `CLAUDE.md` in this repo — follow the coding plugin docs below. Read `docs/dod.md`.
 
@@ -65,8 +65,13 @@ Reference docs (in-container paths):
    ```go
    // DisplayedAt is when a board first rendered this card. Stamped from the
    // STORE's own clock inside the compare-and-set that handles the board's
-   // "seen" call — never supplied by the caller, and first write wins, exactly as
-   // FlaggedAt and EscalatedAt are stamped.
+   // "seen" call — never supplied by the caller, and first write wins.
+   //
+   // Only the "caller supplies nothing" half is shared with FlaggedAt and
+   // EscalatedAt; their first-write behaviour is NOT. FlaggedAt is
+   // last-writer-wins (re-flagging restamps it), so do not cite it as a
+   // first-write precedent — DisplayedAt is the only one of the three that keeps
+   // its first value.
    //
    // One value per item, recorded by the store that OWNS it: a card federated
    // from an upstream store records nothing here, because writing it would write
@@ -281,7 +286,7 @@ Reference docs (in-container paths):
 
     ⚠️ Constraints on this script change: no backtick anywhere (the page is one Go raw-string literal), no `{{` sequence, single quotes only, and no new entry in the `attention board: ` action-log family (that prefix is reserved and its count is pinned by a spec).
 
-    Do **not** add styles here: the `.timeline` and `.delivery-outcome` elements do not exist until prompt `3-spec-015-panel-timeline.md`, which owns their rules.
+    Do **not** add styles here: the `.timeline` and `.delivery-outcome` elements do not exist until prompt `055-spec-015-panel-timeline.md`, which owns their rules.
 
 ### E. Specs
 
@@ -313,14 +318,14 @@ Reference docs (in-container paths):
 
 14. Update `scenarios/001-board-browser-cases.md`:
     - add one bullet to the **Expected** list naming the case above, in the file's existing voice (one line, stating the discriminating half: a load stamps the card and a second load leaves the stored instant identical);
-    - change the package total `53 of 53 Specs` to `54 of 54 Specs` in the case-list bullet that carries it;
+    - raise the package total by exactly one. Read the total the file carries at edit time (it read `57 of 57 Specs` when this prompt was written) and write `<N+1> of <N+1>`. Do NOT copy a number from this prompt: the `v0.72.x` merges moved that total three times in one day, and a hardcoded target makes the edit a silent no-op when the file has already moved, or a false failure when it has not;
     - change the intro's literal behaviour count `thirty-seven` to `thirty-eight`;
     - keep the existing `v0.69.0` known-red note untouched — it describes an unrelated failing case and is still true;
-    - after the edit, `! grep -q '53 of 53' scenarios/001-board-browser-cases.md` must succeed — write absence as `! grep -q`, never `grep -c … must print 0`, because `grep -c` exits 1 when the count is zero.
+    - verify by the delta, not by a literal: capture `BEFORE` as the numeric package total *before* editing, then after the edit `grep -q "$((BEFORE+1)) of $((BEFORE+1)) Specs" scenarios/001-board-browser-cases.md` must succeed. A hardcoded literal cannot distinguish the three outcomes — it passes when the edit was a no-op, and fails when the edit was correct but the file had already moved.
 </requirements>
 
 <constraints>
-- Dependency ordering: prompt `1-spec-015-asked-at.md` must already have shipped. Absent prerequisites are a `status: failed` report naming the missing prompt, never `needs_input`.
+- Dependency ordering: prompt `053-spec-015-asked-at.md` must already have shipped. Absent prerequisites are a `status: failed` report naming the missing prompt, never `needs_input`.
 - The contract doc is authoritative for `displayed_at` and for the seen write's local-only rule. Do not redefine it.
 - **`displayed_at` is per item, on the store that owns it.** A card federated from an upstream store records nothing: the seen call answers 404 and writes nothing, and the panel renders the stage as absent. Do **not** add `MarkSeen` to `RemoteAttentionStore` and do not proxy it.
 - **The seen write is local and is NOT forwarded upstream**, unlike Flag / Rate / Answer / Close / Escalate. Copying that `isRemote` branch would write a peer's field.
@@ -330,7 +335,7 @@ Reference docs (in-container paths):
 - No new authentication surface: the endpoint sits behind the board's existing access path, like the flag and rating writes.
 - The store write uses `libtime.DateTime` with the store's injected clock, never `time.Now()`.
 - ⚠️ The page template is one Go raw-string literal: no backticks, no `{{` in the script, single quotes only.
-- Do **not** touch the timeline rendering, the info panel, the undeliverable marker, `Undeliverable()`, `pkg/handler/attention-undeliverable-page_test.go`, the stylesheet or `CHANGELOG.md` — prompts 3 and 4 own those.
+- Do **not** touch the timeline rendering, the info panel, the undeliverable marker, `Undeliverable()`, `pkg/handler/attention-undeliverable-page_test.go`, the stylesheet or `CHANGELOG.md` — prompts 055 and 056 own those.
 - Do NOT commit — dark-factory handles git.
 - Existing tests must still pass.
 - End with the completion report dark-factory appends, followed by a `## Improvements` section (categorise each suggestion PROMPT / GUIDE / GLOBAL).
@@ -348,8 +353,7 @@ Run in the repo root:
 - `grep -n '/seen' main.go` — at least one line.
 - `grep -c 'markEverySeen' pkg/handler/attention-page.go` — at least `2` (the declaration and the load-time call).
 - `! grep -q 'timeline' pkg/handler/attention-page-helpers.go` — succeeds only when no timeline style leaked into this prompt.
-- `! grep -q '53 of 53' scenarios/001-board-browser-cases.md` — succeeds only when the old package total is gone.
-- `grep -c '54 of 54 Specs' scenarios/001-board-browser-cases.md` — prints at least `1`.
+- the scenario package total is exactly one higher than before the edit: `BEFORE=$(grep -o '[0-9]* of [0-9]* Specs' scenarios/001-board-browser-cases.md | head -1 | cut -d' ' -f1)` recorded before, then `grep -q "$((BEFORE+1)) of $((BEFORE+1)) Specs" scenarios/001-board-browser-cases.md` after. Do not assert a literal — `57 of 57` is what the file reads today, so a literal passes a no-op edit and fails a correct one that followed another merge.
 - `go vet -mod=mod -tags e2e ./e2e/` — type-checks the new browser case without launching a browser.
 - `ROOTDIR=/workspace make precommit` — must exit 0. It regenerates `mocks/` from the counterfeiter directives, which the new interface method requires. ⚠️ The explicit `ROOTDIR` is required in this container: `.git` is masked here, so the Makefile cannot resolve `ROOTDIR`/`BRANCH` from the checkout on its own. This is the same form earlier prompts in this repo use.
 

@@ -148,6 +148,13 @@ func CreateAttentionAttemptRecordHandler(store pkg.AttentionStore) http.Handler 
 	return handler.NewAttentionAttemptRecordHandler(store)
 }
 
+// CreateAttentionWatcherCycleHandler creates the handler the attention watcher
+// POSTs one cycle duration to, so the cycle is chartable without a second
+// exporter and a second port.
+func CreateAttentionWatcherCycleHandler(metrics pkg.Metrics) http.Handler {
+	return handler.NewAttentionWatcherCycleHandler(metrics)
+}
+
 // CreateAttentionPageHandler creates the read-only HTML page an operator opens
 // to see what currently needs attention, without Claude Code, vault-cli or the
 // task system.

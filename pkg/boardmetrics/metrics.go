@@ -41,11 +41,27 @@ func NewMetrics(registry prometheus.Registerer) pkg.Metrics {
 		Name: "attention_board_page_requests_total",
 		Help: "Total number of requests for the board page made by a client.",
 	})
-	registry.MustRegister(renders, rowsRendered, pageRequests)
+	// The watcher's cycle duration. A plain Histogram rather than a
+	// HistogramVec: the cycle has no dimension worth splitting on, and a label
+	// with one value would only add a series to keep in sync.
+	//
+	// The bucket edges are chosen around what a cycle actually costs — most of
+	// a cycle is a vault scan, so the interesting resolution is between a
+	// fraction of a second and a few minutes, not in the millisecond range a
+	// request-duration histogram would need.
+	watcherCycle := prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name: "attention_watcher_cycle_seconds",
+		Help: "Duration of one attention-watcher cycle in seconds, reported by the watcher over HTTP.",
+		Buckets: []float64{
+			0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300,
+		},
+	})
+	registry.MustRegister(renders, rowsRendered, pageRequests, watcherCycle)
 	return &boardMetrics{
 		renders:      renders,
 		rowsRendered: rowsRendered,
 		pageRequests: pageRequests,
+		watcherCycle: watcherCycle,
 	}
 }
 
@@ -53,6 +69,7 @@ type boardMetrics struct {
 	renders      prometheus.Counter
 	rowsRendered prometheus.Counter
 	pageRequests prometheus.Counter
+	watcherCycle prometheus.Histogram
 }
 
 // BoardRendersTotalCounterInc records that the shared renderer completed one
@@ -72,4 +89,9 @@ func (m *boardMetrics) BoardRowsRenderedTotalCounterAdd(rows int) {
 // page.
 func (m *boardMetrics) BoardPageRequestsTotalCounterInc() {
 	m.pageRequests.Inc()
+}
+
+// WatcherCycleSecondsHistogramObserve records one watcher cycle's duration.
+func (m *boardMetrics) WatcherCycleSecondsHistogramObserve(seconds float64) {
+	m.watcherCycle.Observe(seconds)
 }

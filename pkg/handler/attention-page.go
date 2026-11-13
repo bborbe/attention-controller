@@ -275,6 +275,46 @@ document.addEventListener('click', function (event) {
     if (pick) { pick.checked = false; }
   }
 });
+/* Enter in the Other… field is the operator's ordinary way to submit, and it
+   must send the answer rather than the card's first button.
+   ⚠️ Load bearing: HTML implicit submission fires the form's DEFAULT button —
+   the first submit button in tree order — and that is ✕ Dismiss
+   (value="skip"), not ✓ Submit answer. So Enter on a card with text typed
+   recorded {kind:'skip'} and the asking session received a DECLINE while the
+   operator saw a successful submit. Measured on the live board 2026-11-12 with
+   the same text on two cards: Enter → {"kind":"skip"}, click →
+   {"kind":"text","value":"click"}. That is the worst shape this board can
+   produce, because a session that trusts it acts on a decline nobody gave.
+   ⚠️ requestSubmit(next), never form.submit(): form.submit() bypasses the submit
+   event entirely, so the handler below would never run and nothing would be
+   sent. requestSubmit dispatches a real submit event carrying button.next as
+   the submitter, so event.submitter is the button whose value is 'send'.
+   ⚠️ Reordering the buttons was the rejected alternative: making ✓ Submit
+   answer first would fix Enter, but the row's existing specs and the operator's
+   reading of the card both put Dismiss first, and a reorder fixes only the
+   default-button case while this handler states the intent explicitly. */
+document.addEventListener('keydown', function (event) {
+  /* An IME composition confirm is a keydown too. Treating it as an answer
+     submits a partial word: preventDefault swallows the confirm and
+     requestSubmit takes the card off the board mid-word, so the operator can
+     neither finish typing nor correct it. Same shown-versus-sent class as the
+     Dismiss defect above, reached from the other side.
+     ⚠️ Return BEFORE preventDefault. A guard that calls preventDefault and then
+     returns still eats the keystroke — the card stays open but the composition
+     is gone, which is the harder failure to notice.
+     ⚠️ keyCode 229 is the only signal some Safari/iOS and Android IMEs give;
+     isComposing alone misses them. */
+  if (event.isComposing || event.keyCode === 229) { return; }
+  if (event.key !== 'Enter') { return; }
+  var field = event.target;
+  if (!field || !field.classList || !field.classList.contains('other')) { return; }
+  var form = field.closest('form.answer');
+  if (!form) { return; }
+  var next = form.querySelector('button.next');
+  if (!next) { return; }
+  event.preventDefault();
+  form.requestSubmit(next);
+});
 /* Answer controls exist for message items only, and the form is intercepted so
    a failed answer is shown rather than swallowed into a reload: a bare catch
    that reloads anyway reports a code fault as a connection problem.
@@ -1967,6 +2007,7 @@ func NewAttentionPageHandler(store pkg.AttentionStore,
 					libhttp.ContentTypeHeaderName,
 					libhttp.TextHTML+"; charset=utf-8",
 				)
+				resp.Header().Set("Cache-Control", "no-store")
 				if _, err := resp.Write(body.Bytes()); err != nil {
 					return errors.Wrap(ctx, err, "write response failed")
 				}

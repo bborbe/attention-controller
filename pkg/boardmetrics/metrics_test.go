@@ -67,6 +67,29 @@ var _ = Describe("Metrics", func() {
 		Expect(counterValue(registry, "attention_board_page_requests_total")).To(Equal(3.0))
 	})
 
+	It("records a watcher cycle duration on the registry it was given", func() {
+		metrics.WatcherCycleSecondsHistogramObserve(2.5)
+
+		family := metricFamily(registry, "attention_watcher_cycle_seconds")
+		Expect(family).ShouldNot(BeNil())
+		histogram := family.GetMetric()[0].GetHistogram()
+		Expect(histogram.GetSampleCount()).To(Equal(uint64(1)))
+		Expect(histogram.GetSampleSum()).To(BeNumerically("~", 2.5, 1e-9))
+	})
+
+	It("exposes the watcher cycle histogram at zero observations", func() {
+		// ⚠️ This is the trap the readiness audit caught, pinned so it cannot
+		// regress: a registered histogram exposes `_bucket` lines and `_count 0`
+		// IMMEDIATELY. A probe that counts `_bucket` lines therefore passes on a
+		// histogram that was registered and never observed, so it proves nothing
+		// about whether the pipeline measured anything. The count is the only
+		// reading that distinguishes the two states, which is why SC1 asserts
+		// `_count > 0` and keeps the bucket grep as a registration pre-check only.
+		family := metricFamily(registry, "attention_watcher_cycle_seconds")
+		Expect(family).ShouldNot(BeNil())
+		Expect(family.GetMetric()[0].GetHistogram().GetSampleCount()).To(Equal(uint64(0)))
+	})
+
 	It("gives each counter a distinct non-empty description", func() {
 		rendersHelp := metricFamily(registry, "attention_board_renders_total").GetHelp()
 		rowsHelp := metricFamily(registry, "attention_board_rows_rendered_total").GetHelp()
