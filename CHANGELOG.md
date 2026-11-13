@@ -11,11 +11,11 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 ## Unreleased
 
 - refactor: Move the attention board's inline HTML document and script out of `pkg/handler/attention-page.go` into embedded assets (`pkg/handler/static/attention-page.html`, `pkg/handler/static/attention-page.js`) compiled into the binary with `//go:embed`. The document is assembled from the two assets plus the existing stylesheet constant before `html/template` parses it, so the served page is byte-identical; a missing or duplicated placeholder panics at startup, and `attention-page.go` drops from 1,995 lines to 172.
+- feat: The board's `delivery-undeliverable` marker now covers `never_attempted` as well as `failed`, so the silent half of undelivered answers is visible on the card instead of looking like an ordinary answered record. `delivered`, `held` and `pre_trail_unknown` stay unmarked, and a `held` card renders no delivery-outcome line at all.
 
 ## v0.75.0
 
 - feat: render the card's timeline in its info panel — the seven stages with their raw instants, the four floored deltas (`asked→created`, `created→displayed`, `displayed→answered`, `answered→delivered`), an em dash for a stage that did not happen, the derived gate-released and close-reason stages, and the delivery-outcome line naming exactly the contract's four reader-visible outcomes (a `held` card renders no outcome line)
-- feat: The board's `delivery-undeliverable` marker now covers `never_attempted` as well as `failed`, so the silent half of undelivered answers is visible on the card instead of looking like an ordinary answered record. `delivered`, `held` and `pre_trail_unknown` stay unmarked, and a `held` card renders no delivery-outcome line at all.
 
 ## v0.74.0
 
