@@ -3,6 +3,10 @@ status: approved
 spec: [015-attention-card-timeline]
 created: "2026-11-12T09:49:35Z"
 queued: "2026-11-12T10:21:06Z"
+completed: "2026-11-13T05:46:29Z"
+lastFailReason: |-
+    setup workflow: add worktree: git worktree add (path=/var/folders/57/0m88xb757nq2s4ll2vpvpvkc0000gn/T/dark-factory/attention-controller-timeline-056-spec-015-undeliverable-marker branch=dark-factory/056-spec-015-undeliverable-marker exists=true): Preparing worktree (checking out 'dark-factory/056-spec-015-undeliverable-marker')
+    fatal: '/var/folders/57/0m88xb757nq2s4ll2vpvpvkc0000gn/T/dark-factory/attention-controller-timeline-056-spec-015-undeliverable-marker' already exists: git worktree add failed: exit status 128
 ---
 
 # Widen the undeliverable marker to the silent half
