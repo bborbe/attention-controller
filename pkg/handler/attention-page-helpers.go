@@ -2,19 +2,20 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// Package-level note: this file holds what attention-page.go cannot carry — the
-// page's pure derivations (an item into the row it renders as, and a task or pane
-// reference into the URL it links to), plus the board's stylesheet as
-// attentionPageStyles. Both are here for one reason: attention-page.go crossed
-// revive's 2000-line file-length limit.
+// Package-level note: this file holds the page's pure derivations (an item into
+// the row it renders as, and a task or pane reference into the URL it links to),
+// plus the board's stylesheet as attentionPageStyles. The derivations are here
+// because attention-page.go crossed revive's 2000-line file-length limit when
+// they landed.
 //
-// The template itself still lives in attention-page.go rather than here, because
-// a live sibling branch edits its JavaScript and moving it would collide. ⚠️ The
-// stylesheet is the one part of the document that HAS moved: it is concatenated
-// back into the template at the point it was cut from, so the SEAM is unchanged —
-// but the block's contents were edited in the same change, and the template's
-// source is no longer byte-identical either. An earlier version of this note said
-// the served bytes were unchanged, which was wrong on both counts.
+// The document itself no longer lives in attention-page.go: it is
+// pkg/handler/static/attention-page.html, and the script beside it is
+// static/attention-page.js, both embedded and assembled by buildAttentionPage in
+// attention-page-template.go. ⚠️ The stylesheet is the one part of the document
+// that is still a Go string: the HTML asset carries a placeholder for it and the
+// assembly substitutes it in, so the seam is unchanged and the served bytes are
+// byte-identical to what the single-literal form served. An earlier version of
+// this note said the served bytes had changed; that was wrong.
 package handler
 
 import (

@@ -9,10 +9,13 @@ package handler
 // returned.
 //
 // ⚠️ It lives in its own file rather than beside the page handler because
-// attention-page.go sits at the revive file-length ceiling, and this is the one
-// cohesive unit in it that can move without dragging the template or the
-// handler with it. Nothing here renders: the template reads only the values the
-// handler computes from these functions.
+// attention-page.go carried the whole document and sat at the revive
+// file-length ceiling when this landed, and this was the one cohesive unit in
+// it that could move without dragging the template or the handler with it. The
+// document has since moved to embedded assets, so the ceiling is gone — the
+// file split remains, and this note is kept because the reasoning still explains
+// why the filter is not beside the handler. Nothing here renders: the template
+// reads only the values the handler computes from these functions.
 
 import (
 	"context"

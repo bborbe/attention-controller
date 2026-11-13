@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- refactor: Move the attention board's inline HTML document and script out of `pkg/handler/attention-page.go` into embedded assets (`pkg/handler/static/attention-page.html`, `pkg/handler/static/attention-page.js`) compiled into the binary with `//go:embed`. The document is assembled from the two assets plus the existing stylesheet constant before `html/template` parses it, so the served page is byte-identical; a missing or duplicated placeholder panics at startup, and `attention-page.go` drops from 1,995 lines to 178.
+
 ## v0.76.0
 
 - feat: The board's `delivery-undeliverable` marker now covers `never_attempted` as well as `failed`, so the silent half of undelivered answers is visible on the card instead of looking like an ordinary answered record. `delivered`, `held` and `pre_trail_unknown` stay unmarked, and a `held` card renders no delivery-outcome line at all.
