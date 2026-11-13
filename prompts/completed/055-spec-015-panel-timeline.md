@@ -1,10 +1,10 @@
 ---
-status: approved
+status: completed
 spec: [015-attention-card-timeline]
 created: "2026-11-12T09:49:35Z"
 queued: "2026-11-12T10:21:06Z"
-completed: "2026-11-13T04:55:51Z"
-lastFailReason: 'setup workflow: sync with remote: git merge origin default branch: merge origin/master: : git merge origin/master failed: exit status 1'
+completed: "2026-11-13T05:27:18Z"
+pr-url: https://github.com/bborbe/attention-controller/pull/198
 ---
 
 # Render the card's timeline in its info panel
