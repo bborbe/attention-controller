@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.76.0
 
 - feat: The board's `delivery-undeliverable` marker now covers `never_attempted` as well as `failed`, so the silent half of undelivered answers is visible on the card instead of looking like an ordinary answered record. `delivered`, `held` and `pre_trail_unknown` stay unmarked, and a `held` card renders no delivery-outcome line at all.
 
