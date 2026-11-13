@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- feat: run the `attention-unforwarded-closers` check inside the controller on a 900 s interval instead of as a launchd Python tick. It re-reads the attention event logs and the watcher log and reports both detectors — an `idle` row whose turn's final assistant message carries a waiting-verb closer (with its four exemptions: `suppressed.jsonl`, `PARKED`, `NO_REPLY` and a posted card), and a `question`/`permission` row with no forward line after the grace window — writing one `job=attention-unforwarded-closers action=scan|error` line per cycle. The launchd job's three-outcome exit contract is preserved as a distinct `read-error` outcome plus the `action=error` line, so a read failure can never read as "nothing lost".
+
 ## v0.79.0
 
 - feat: Run the VictoriaMetrics metrics push in-process as a job
