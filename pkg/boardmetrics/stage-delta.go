@@ -53,6 +53,13 @@ var stageDeltaBuckets = []float64{
 // It is deliberately not pkg.AttentionStore: the collector only reads, and
 // taking the whole interface would let a future edit reach a write method
 // without anything objecting. pkg.AttentionStore satisfies it.
+//
+// ⚠️ It carries no //counterfeiter:generate directive, and the specs use a
+// hand-written fake instead. The fake is not a substitute for a generated one:
+// the refresh and concurrency specs need to count calls and to hold a read open
+// while a second scrape arrives, and neither is expressible through a
+// Counterfeiter stub. A generated fake here would be dead code beside it, which
+// is a worse drift risk than the one the directive prevents.
 type StageDeltaSource interface {
 	// History returns the store's items, newest first. limit <= 0 is the
 	// unbounded form, which is the population this collector measures. It is
@@ -291,6 +298,15 @@ func (c *stageDeltaCollector) compute() ([]stageDeltaHistogram, error) {
 	}
 
 	for _, item := range items {
+		// The population is in the tens of thousands, so a cancelled process
+		// should stop the scan rather than finish it: this loop is the only
+		// long-running one here, and the caller of a scrape is a process
+		// shutting down as often as it is a Prometheus server.
+		select {
+		case <-c.ctx.Done():
+			return nil, c.ctx.Err()
+		default:
+		}
 		for i, pair := range stageDeltaPairs {
 			seconds, ok := pair.seconds(item, attempts)
 			if !ok {
