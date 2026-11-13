@@ -21,14 +21,18 @@ import (
 // store treats the producer as finished. ⚠️ The schema requires the check but
 // declares no field carrying the window — it is a recorded silence, and this
 // parameter is the store's own resolution of it rather than a schema value.
+//
+// lostAnswers is optional and variadic so existing call sites need not pass a
+// nil; at most the first is honoured, and without one the counter is not written.
 func NewAttentionStore(
 	db libkv.DB,
 	itemIDGenerator ItemIDGenerator,
 	sessionLivenessChecker SessionLivenessChecker,
 	currentDateTimeGetter libtime.CurrentDateTimeGetter,
 	heartbeatWindow libtime.Duration,
+	lostAnswers ...LostAnswerCounter,
 ) AttentionStore {
-	return &attentionStore{
+	store := &attentionStore{
 		store:        libkv.NewStoreTx[string, Item](AttentionStoreBucketName),
 		liveIndex:    libkv.NewStoreTx[string, Item](attentionLiveIndexBucketName),
 		openIndex:    libkv.NewStoreTx[string, Item](attentionOpenIndexBucketName),
@@ -44,6 +48,10 @@ func NewAttentionStore(
 		heartbeatWindow:        heartbeatWindow,
 		historyPage:            &historyPageCache{},
 	}
+	if len(lostAnswers) > 0 {
+		store.lostAnswers = lostAnswers[0]
+	}
+	return store
 }
 
 type attentionStore struct {
@@ -61,6 +69,9 @@ type attentionStore struct {
 	// historyPage caches the last history page, dropped by every write. See
 	// historyPageCache for why the endpoint needs one.
 	historyPage *historyPageCache
+	// lostAnswers is the counter every close site increments through closeItem.
+	// Nil when the store was built without one, which is the spec default.
+	lostAnswers LostAnswerCounter
 }
 
 func (a *attentionStore) Push(ctx context.Context, request PushRequest) (*Item, error) {
@@ -1541,9 +1552,6 @@ func (a *attentionStore) Close(
 		if err := ValidateTransition(ctx, from, ClosedState); err != nil {
 			return err
 		}
-		now := a.currentDateTimeGetter.Now()
-		item.State = ClosedState
-		item.ClosedAt = &now
 		// The arm is recorded on the open -> closed row only — that row is the
 		// acknowledgement of an `ack` item, which the schema routes to
 		// answered_by with answered_at left unset because nothing is routed
@@ -1575,7 +1583,7 @@ func (a *attentionStore) Close(
 				item.AnsweredClient = answeredClient
 			}
 		}
-		if err := a.putItem(ctx, tx, *item); err != nil {
+		if err := a.closeItem(ctx, tx, item); err != nil {
 			return errors.Wrap(ctx, err, "update item failed")
 		}
 		result = item
@@ -1715,13 +1723,10 @@ func (a *attentionStore) closeAnsweredItem(
 	if err := ValidateTransition(ctx, item.State, ClosedState); err != nil {
 		return false, err
 	}
-	now := a.currentDateTimeGetter.Now()
-	item.State = ClosedState
-	item.ClosedAt = &now
 	// answeredBy is deliberately NOT written: this is the answered -> closed
 	// row, and that field already names the arm that answered. Overwriting it
 	// here would replace the answerer with the sweeper.
-	if err := a.putItem(ctx, tx, *item); err != nil {
+	if err := a.closeItem(ctx, tx, item); err != nil {
 		return false, errors.Wrapf(ctx, err, "close answered item %s failed", key)
 	}
 	return true, nil
@@ -1834,16 +1839,15 @@ func (a *attentionStore) closeOpenItem(
 	if err := ValidateTransition(ctx, item.State, ClosedState); err != nil {
 		return false, err
 	}
-	now := a.currentDateTimeGetter.Now()
-	item.State = ClosedState
-	item.ClosedAt = &now
 	// answeredBy is deliberately NOT written: the row was resolved without an
 	// answer, and naming a sweeper as the answerer would be a false record.
-	if err := a.putItem(ctx, tx, *item); err != nil {
+	if err := a.closeItem(ctx, tx, item); err != nil {
 		return false, errors.Wrapf(ctx, err, "close open item %s failed", key)
 	}
 	return true, nil
 }
+
+// closeItem and countLostAnswer live in attention-store-close.go.
 
 // updateExistingIfLive applies duplicate suppression. Suppression compares
 // dedup_key *within a live producer_id*: when an open item already carries this

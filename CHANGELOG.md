@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- feat: The controller exposes `attention_lost_answers_total`, a counter incremented once when an answered item is closed without any delivery attempt ever being recorded — the reading the goal's "zero lost answers per week" criterion depends on. It is edge-triggered on the close transition, so a store re-scan over the same items does not double it, and one shared close helper increments it from all three close sites so a fourth site cannot silently miss it.
+
 ## v0.77.0
 
 - feat: The controller exposes `attention_stage_delta_seconds`, a histogram with `from` and `to` labels over the four deltas `docs/attention-item-timeline.md` names — `asked→created`, `created→displayed`, `displayed→answered` and `answered→delivered` — so a dashboard can chart each pipeline leg as percentiles over time. The population is re-read at most once per 300 s and emitted as constant histograms rather than accumulated, an absent stage suppresses only the deltas that touch it, a negative delta is observed unclamped, and only a `delivered` attempt counts as the delivery. The bulk `DeliveryAttempts` read it needs is added to `AttentionStore` and delegates local-only through the federating wrapper.

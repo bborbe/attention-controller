@@ -90,6 +90,19 @@ var _ = Describe("Metrics", func() {
 		Expect(family.GetMetric()[0].GetHistogram().GetSampleCount()).To(Equal(uint64(0)))
 	})
 
+	It("exposes the lost-answer counter as a counter and counts increments", func() {
+		// ⚠️ Type, not just value: a Gauge named `_total` would pass a value-only
+		// assertion and break increase() in the Grafana panel and goal SC3.
+		Expect(counterValue(registry, "attention_lost_answers_total")).To(Equal(0.0))
+
+		metrics.LostAnswersTotalCounterInc()
+
+		family := metricFamily(registry, "attention_lost_answers_total")
+		Expect(family).ShouldNot(BeNil())
+		Expect(family.GetType()).To(Equal(dto.MetricType_COUNTER))
+		Expect(counterValue(registry, "attention_lost_answers_total")).To(Equal(1.0))
+	})
+
 	It("gives each counter a distinct non-empty description", func() {
 		rendersHelp := metricFamily(registry, "attention_board_renders_total").GetHelp()
 		rowsHelp := metricFamily(registry, "attention_board_rows_rendered_total").GetHelp()
