@@ -320,8 +320,30 @@ var _ = Describe("metrics push job", func() {
 
 		var mutex sync.Mutex
 		var bodies []string
+		// The import endpoint acknowledges; the export answers with the series
+		// carrying the stamp the import was given, which is what the read-back
+		// asserts. A store that acknowledges and never makes the points queryable
+		// is the failure this pair of endpoints reproduces.
 		server := httptest.NewServer(http.HandlerFunc(
 			func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet {
+					// One series per captured push, so a read-back always finds the
+					// stamp of the push it is verifying even when the loop has
+					// already pushed again.
+					mutex.Lock()
+					var response strings.Builder
+					for _, pushed := range bodies {
+						lines := strings.Split(strings.TrimSuffix(pushed, "\n"), "\n")
+						fields := strings.Fields(lines[0])
+						response.WriteString(
+							`{"metric":{"__name__":"attention_test_total"},"timestamps":[` +
+								fields[len(fields)-1] + `],"values":[1]}` + "\n",
+						)
+					}
+					mutex.Unlock()
+					_, _ = w.Write([]byte(response.String()))
+					return
+				}
 				body, err := io.ReadAll(r.Body)
 				Expect(err).To(BeNil())
 				mutex.Lock()
@@ -355,5 +377,63 @@ var _ = Describe("metrics push job", func() {
 			_, found := capture.find("job=attention-metrics-push action=push series=")
 			return found
 		}).Should(BeTrue())
+	})
+})
+
+var _ = Describe("verifyMetricsPush", func() {
+	It("fails when no series serves the pushed stamp", func() {
+		// The import is acknowledged and the export answers with a DIFFERENT
+		// stamp, so the push landed nowhere queryable.
+		server := httptest.NewServer(http.HandlerFunc(
+			func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(
+					`{"metric":{"__name__":"attention_test_total"},"timestamps":[1],"values":[1]}` + "\n",
+				))
+			},
+		))
+		defer server.Close()
+
+		count, err := verifyMetricsPush(
+			context.Background(),
+			server.Client(),
+			server.URL,
+			MetricsPushAuth{Username: "u", Password: "p"},
+			1700000000123,
+			2,
+			0,
+		)
+
+		Expect(count).To(Equal(0))
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("no series carried stamp 1700000000123"))
+	})
+
+	It("counts the series carrying the stamp and ignores a malformed line", func() {
+		server := httptest.NewServer(http.HandlerFunc(
+			func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(
+					`{"metric":{"__name__":"attention_a"},"timestamps":[1700000000123],"values":[1]}` +
+						"\n" +
+						`not json` + "\n" +
+						`{"metric":{"__name__":"attention_b"},"timestamps":[1,1700000000123],"values":[1,2]}` +
+						"\n" +
+						`{"metric":{"__name__":"attention_c"},"timestamps":[2],"values":[1]}` + "\n",
+				))
+			},
+		))
+		defer server.Close()
+
+		count, err := verifyMetricsPush(
+			context.Background(),
+			server.Client(),
+			server.URL,
+			MetricsPushAuth{Username: "u", Password: "p"},
+			1700000000123,
+			1,
+			0,
+		)
+
+		Expect(err).To(BeNil())
+		Expect(count).To(Equal(2))
 	})
 })

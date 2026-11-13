@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
+	"sync/atomic"
 	"time"
 
 	libtime "github.com/bborbe/time"
@@ -63,17 +65,15 @@ func (s *recordingAttentionStore) Push(_ context.Context, request PushRequest) (
 // stubTranscriptTailer returns the queued batches in order, then quiet scans.
 type stubTranscriptTailer struct {
 	batches []TranscriptPhraseHits
-	calls   int
+	calls   atomic.Int32
 }
 
 func (t *stubTranscriptTailer) Scan(_ context.Context) (TranscriptPhraseHits, error) {
-	if t.calls >= len(t.batches) {
-		t.calls++
+	index := int(t.calls.Add(1) - 1)
+	if index >= len(t.batches) {
 		return nil, nil
 	}
-	batch := t.batches[t.calls]
-	t.calls++
-	return batch, nil
+	return t.batches[index], nil
 }
 
 // stubClauseProbe answers the clause question from the spec.
@@ -253,6 +253,39 @@ var _ = Describe("class-D refusal watch job", func() {
 		_, errored := capture.find("action=heartbeat_error")
 		Expect(errored).To(BeTrue())
 		Expect(store.pushes).To(BeEmpty())
+	})
+
+	It("appends one ledger row per cycle in the shell's shape", func() {
+		tailer.batches = []TranscriptPhraseHits{{
+			{
+				File:      "/tmp/session-a.jsonl",
+				Session:   "session-a",
+				Timestamp: "2026-10-05T10:00:05Z",
+				Excerpt:   "That is not an answer",
+			},
+		}}
+
+		job.cycle(ctx)
+		job.cycle(ctx)
+
+		content, err := os.ReadFile(filepath.Join(stateDir, classDRefusalLedgerFileName))
+		Expect(err).To(BeNil())
+		rows := strings.Split(strings.TrimSuffix(string(content), "\n"), "\n")
+		Expect(rows).To(HaveLen(2))
+		// One row per cycle, whatever the cycle found: a hit, then a quiet cycle
+		// with the clause still shipped.
+		Expect(rows[0]).To(MatchRegexp(`^\S+\thits=1\tclause=1\tsent$`))
+		Expect(rows[1]).To(MatchRegexp(`^\S+\thits=0\tclause=1\t-$`))
+	})
+
+	It("records the clause column as 0 and the card as clause-gone", func() {
+		probe.shipped = false
+
+		job.cycle(ctx)
+
+		content, err := os.ReadFile(filepath.Join(stateDir, classDRefusalLedgerFileName))
+		Expect(err).To(BeNil())
+		Expect(string(content)).To(MatchRegexp(`^\S+\thits=0\tclause=0\tclause-gone\n$`))
 	})
 
 	It("runs a cycle immediately when the loop starts and stops on cancellation", func() {

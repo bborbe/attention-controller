@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	libtime "github.com/bborbe/time"
@@ -23,12 +24,11 @@ import (
 type stubHeartbeatJobLister struct {
 	results [][]HeartbeatJob
 	errs    []error
-	calls   int
+	calls   atomic.Int32
 }
 
 func (l *stubHeartbeatJobLister) List(_ context.Context) ([]HeartbeatJob, error) {
-	index := l.calls
-	l.calls++
+	index := int(l.calls.Add(1) - 1)
 	if index < len(l.errs) && l.errs[index] != nil {
 		return nil, l.errs[index]
 	}

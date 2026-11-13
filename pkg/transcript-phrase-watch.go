@@ -26,6 +26,18 @@ const (
 	// transcriptPhraseExcerptLimit bounds the text a hit carries, in characters
 	// rather than bytes so a multi-byte transcript cannot be cut mid-rune.
 	transcriptPhraseExcerptLimit = 400
+
+	// transcriptPhraseReadLimit bounds the bytes one cycle reads from one
+	// transcript.
+	//
+	// ⚠️ The read is capped, not unbounded. The first scan after a start arms
+	// every file at its current size, so the appended window is normally small —
+	// but a transcript that grew while the watch was down, or one on a host that
+	// just woke, arrives as one large read, and an unbounded io.ReadAll against a
+	// 112 MiB GOMEMLIMIT is a heap spike this process does not survive. Whatever
+	// does not fit stays unread: the offset advances only to the last COMPLETE
+	// line, and the next cycle continues from there.
+	transcriptPhraseReadLimit = 8 << 20
 )
 
 // transcriptPhraseHandoverPattern matches the closer line that makes a later
@@ -199,7 +211,19 @@ func (t *transcriptPhraseTailer) scanFile(
 	if !transcriptContainsPhrase(raw, t.phrases) {
 		return nil, nil
 	}
-	return t.confirm(ctx, path, effectiveStart, state)
+	hits, err := t.confirm(ctx, path, effectiveStart, state)
+	if err != nil {
+		// ⚠️ The offset goes BACK on a failed confirm. The scan above advanced it
+		// before the confirm could fail, and a saved advance past an occurrence
+		// that was never reported loses it for good — the offsets are the only
+		// record of what has been consumed, so a failure has to leave them where
+		// the unread bytes still are. `effectiveStart` rather than `start`: a
+		// rotated file restarted the read at zero, and restoring a stale offset
+		// above the file's size would skip that file for good.
+		state.Offsets[path] = effectiveStart
+		return nil, err
+	}
+	return hits, nil
 }
 
 // confirm re-reads the whole transcript and returns the occurrences that carry
@@ -518,7 +542,8 @@ func transcriptSize(path string) int64 {
 	return info.Size()
 }
 
-// readTranscriptFrom reads a transcript from offset to EOF and returns the
+// readTranscriptFrom reads a transcript from offset up to EOF or
+// transcriptPhraseReadLimit bytes, whichever comes first, and returns the
 // effective start it read from.
 //
 // ⚠️ A file SHORTER than the stored offset was rotated or truncated. Seeking to
@@ -546,7 +571,10 @@ func readTranscriptFrom(
 	if _, err := file.Seek(offset, io.SeekStart); err != nil {
 		return nil, offset, errors.Wrapf(ctx, err, "seek transcript '%s' failed", path)
 	}
-	raw, err := io.ReadAll(file)
+	// ⚠️ A capped read, not io.ReadAll of the whole appended window. The caller
+	// drops the trailing partial line, so the offset it advances by always lands on
+	// a line boundary and the rest of the window is read next cycle.
+	raw, err := io.ReadAll(io.LimitReader(file, transcriptPhraseReadLimit))
 	if err != nil {
 		return nil, offset, errors.Wrapf(ctx, err, "read transcript '%s' failed", path)
 	}

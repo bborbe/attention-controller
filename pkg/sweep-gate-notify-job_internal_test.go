@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	libtime "github.com/bborbe/time"
@@ -27,11 +28,11 @@ var errSweepGateTestEnumeration = stderrors.New("enumerator exploded")
 type stubSweepGateSubjects struct {
 	subjects []SweepGateSubject
 	err      error
-	calls    int
+	calls    atomic.Int32
 }
 
 func (s *stubSweepGateSubjects) List(_ context.Context) ([]SweepGateSubject, error) {
-	s.calls++
+	s.calls.Add(1)
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -44,7 +45,7 @@ func (s *stubSweepGateSubjects) List(_ context.Context) ([]SweepGateSubject, err
 type stubSweepGateGate struct {
 	results []SweepGateTickResult
 	errs    []error
-	calls   int
+	calls   atomic.Int32
 	onTick  func(stateDir string)
 }
 
@@ -54,8 +55,7 @@ func (g *stubSweepGateGate) Tick(
 	_ string,
 	stateDir string,
 ) (SweepGateTickResult, error) {
-	index := g.calls
-	g.calls++
+	index := int(g.calls.Add(1) - 1)
 	if g.onTick != nil {
 		g.onTick(stateDir)
 	}
@@ -76,7 +76,7 @@ func (g *stubSweepGateGate) Tick(
 type stubSweepGateClassifier struct {
 	results  []SweepGateClassifyResult
 	verdicts []string
-	calls    int
+	calls    atomic.Int32
 }
 
 func (c *stubSweepGateClassifier) Classify(
@@ -87,8 +87,7 @@ func (c *stubSweepGateClassifier) Classify(
 	_ string,
 ) (SweepGateClassifyResult, error) {
 	c.verdicts = append(c.verdicts, gateVerdict)
-	index := c.calls
-	c.calls++
+	index := int(c.calls.Add(1) - 1)
 	if len(c.results) == 0 {
 		return SweepGateClassifyResult{}, nil
 	}
@@ -103,7 +102,7 @@ func (c *stubSweepGateClassifier) Classify(
 type stubSweepGateAdhoc struct {
 	results   []SweepGateAdhocResult
 	errs      []error
-	calls     int
+	calls     atomic.Int32
 	stateDirs []string
 }
 
@@ -112,8 +111,7 @@ func (a *stubSweepGateAdhoc) Run(
 	stateDir string,
 ) (SweepGateAdhocResult, error) {
 	a.stateDirs = append(a.stateDirs, stateDir)
-	index := a.calls
-	a.calls++
+	index := int(a.calls.Add(1) - 1)
 	if index < len(a.errs) && a.errs[index] != nil {
 		return SweepGateAdhocResult{}, a.errs[index]
 	}
@@ -587,7 +585,7 @@ var _ = Describe("sweep gate notify job", func() {
 			)(runCtx)
 		}()
 
-		Eventually(func() int { return gate.calls }).Should(BeNumerically(">", 0))
+		Eventually(func() int { return int(gate.calls.Load()) }).Should(BeNumerically(">", 0))
 		cancel()
 		Expect(awaitJobDone(done)).To(BeNil())
 	})

@@ -811,7 +811,7 @@ func (a *application) createHTTPServer(
 		// under one context, so a failure in either takes the process down and
 		// launchd restarts both: a half-up state — board serving, jumps dead — is
 		// exactly the two-lifecycle problem the fold exists to remove.
-		// Ten slots, not two: the legacy jump listener is a second long-running
+		// Eleven slots, not two: the legacy jump listener is a second long-running
 		// function under the same context, the bearer-token-gated business-API
 		// listener is a third, the task index watcher a fourth, the answered sweep
 		// a fifth, the session-heartbeat watcher a sixth, the metrics push job a

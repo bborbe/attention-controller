@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	libtime "github.com/bborbe/time"
@@ -22,12 +23,11 @@ import (
 type stubFleetDigestChecker struct {
 	results []FleetDigestCheckResult
 	errs    []error
-	calls   int
+	calls   atomic.Int32
 }
 
 func (c *stubFleetDigestChecker) Check(_ context.Context) (FleetDigestCheckResult, error) {
-	index := c.calls
-	c.calls++
+	index := int(c.calls.Add(1) - 1)
 	if index < len(c.errs) && c.errs[index] != nil {
 		return FleetDigestCheckResult{}, c.errs[index]
 	}
@@ -260,7 +260,7 @@ var _ = Describe("fleet digest notify job", func() {
 			)(runCtx)
 		}()
 
-		Eventually(func() int { return check.calls }).Should(BeNumerically(">", 0))
+		Eventually(func() int { return int(check.calls.Load()) }).Should(BeNumerically(">", 0))
 		cancel()
 		Expect(awaitJobDone(done)).To(BeNil())
 	})

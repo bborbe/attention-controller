@@ -550,6 +550,10 @@ func (c *fleetDigestCommandChecker) Check(
 	// resolved by the default constructor; no caller or check output reaches the
 	// command line.
 	cmd := exec.CommandContext(commandCtx, c.python, c.script, "--check")
+	// ⚠️ An allowlisted environment, not the inherited one: this service holds
+	// ATTENTION_STORE_TOKEN and ATTENTION_UPSTREAM_TOKEN, and the staleness engine
+	// needs neither.
+	cmd.Env = childEnv()
 	var output bytes.Buffer
 	cmd.Stdout = &output
 	cmd.Stderr = &output
@@ -611,6 +615,10 @@ func (n *fleetDigestCommandNotifier) Publish(ctx context.Context, message string
 		fleetDigestPublishPath,
 		string(body),
 	)
+	// ⚠️ The write script resolves its own token; it is handed no part of this
+	// service's environment, so neither of this service's credentials can reach
+	// it.
+	cmd.Env = childEnv()
 	var output bytes.Buffer
 	cmd.Stdout = &output
 	cmd.Stderr = &output
