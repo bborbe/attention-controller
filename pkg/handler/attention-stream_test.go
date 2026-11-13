@@ -200,6 +200,23 @@ var _ = Describe("AttentionStreamHandler", func() {
 		))
 	})
 
+	// The timeline must arrive over the live channel as well as on a fresh load.
+	// This pins the requirement that BOTH callers of newAttentionPageRow pass
+	// the delivery report: a stream handler left passing the old argument
+	// compiles and renders a row with no timeline, and a page-only spec cannot
+	// see the difference.
+	It("carries the timeline in a streamed row", func() {
+		reader, cancel := connect()
+		defer cancel()
+
+		push("which timeline is this?")
+
+		event := readEvent(reader)
+		Expect(event["type"]).Should(Equal("upsert"))
+		Expect(event["html"]).Should(ContainSubstring("asked→created"))
+		Expect(event["html"]).Should(ContainSubstring("data-timeline"))
+	})
+
 	// The dimmed record reaches an open board over the live channel, not only
 	// on the next load. The channel reads through ReadBoard, the same reader
 	// the page uses, so an item that is answered arrives as a dimmed upsert

@@ -13,6 +13,8 @@ import (
 	"context"
 	"html/template"
 
+	libtime "github.com/bborbe/time"
+
 	"github.com/bborbe/attention-controller/pkg"
 	"github.com/bborbe/attention-controller/pkg/buildidentity"
 )
@@ -138,6 +140,10 @@ type attentionPageRow struct {
 	// `never_attempted`, which is a real answer about the item rather than about
 	// this render.
 	DeliveryStatus pkg.DeliveryStatus
+	// DeliveryAttemptedAt is when the attempting arm recorded its outcome, read
+	// off the same Delivery report DeliveryStatus comes from. Nil when no attempt
+	// record exists — the honest absence, never a zero instant.
+	DeliveryAttemptedAt *libtime.DateTime
 	// Jump is the copyable command handing a non-`message` item back to the
 	// session that raised it. Empty when no pane resolved — an unresolvable
 	// value renders absent rather than as a stand-in, per the schema's silence 7.
@@ -360,35 +366,23 @@ const (
 	boardFlagsNone    = "none"
 )
 
-// deliveryStatusOf reads one card's derived delivery status for its row, and
-// answers the zero value when the read fails.
+// deliveryReportOf reads one card's delivery report for its row, and answers
+// nil when the read fails.
 //
-// ⚠️ The failure is swallowed deliberately, and it is the same fail-soft rule
-// provenance.Resolve follows one function up: the status DECORATES a card that
-// is already on the board, so a read that fails — a bbolt View error, or an item
-// removed between ReadBoard and this call — must not turn the whole page into a
-// 500. The card itself is still readable, and the marker is an addition to it,
-// never a precondition for rendering it.
-//
-// ⚠️ The zero value is what makes that safe rather than merely quiet: it is no
-// status the store ever returns, so the row renders no marker and degrades to
-// exactly what it rendered before the marker existed. Returning
-// NeverAttemptedStatus here instead would assert something about the item that
-// this call did not learn.
-func deliveryStatusOf(
+// ⚠️ The failure is swallowed deliberately, on the same fail-soft rule as
+// before: the report DECORATES a card that is already on the board, so a read
+// that fails must not turn the whole page into a 500. Nil is what makes that
+// safe rather than merely quiet — it is no status the store ever returns, so
+// the row renders the delivery stage as absent and degrades to exactly what it
+// rendered before the timeline existed.
+func deliveryReportOf(
 	ctx context.Context,
 	store pkg.AttentionStore,
 	itemID pkg.ItemID,
-) pkg.DeliveryStatus {
+) *pkg.DeliveryReport {
 	report, err := store.Delivery(ctx, itemID)
-	// ⚠️ The nil check is part of the same fail-soft rule rather than
-	// defensiveness for its own sake: a store that answers no report and no
-	// error has told this row nothing, and dereferencing it would take the whole
-	// page down for one card. The mock store in the identity spec is exactly
-	// such a caller, and it is right to be — the read it is faking is not the
-	// subject of that spec.
 	if err != nil || report == nil {
-		return ""
+		return nil
 	}
-	return report.Status
+	return report
 }

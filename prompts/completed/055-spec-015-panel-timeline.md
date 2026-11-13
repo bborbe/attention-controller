@@ -1,13 +1,13 @@
 ---
-status: failed
+status: completed
 spec: [015-attention-card-timeline]
+summary: Rendered the seven-stage card timeline and delivery-outcome line in the info panel, computed in Go from stored timestamps and the store's delivery report, with served-HTML specs for the vocabulary, absence, gate-released, close-reason, outcome and stream cases.
+execution_id: attention-controller-timeline-exec-055-spec-015-panel-timeline
+dark-factory-version: v0.198.17
 created: "2026-11-12T09:49:35Z"
 queued: "2026-11-12T10:21:06Z"
-completed: "2026-11-12T15:55:35Z"
-lastFailReason: |-
-    setup workflow: sync with remote: git merge origin default branch: merge origin/master: error: Your local changes to the following files would be overwritten by merge:
-      prompts/completed/053-spec-015-asked-at.md prompts/completed/054-spec-015-seen-endpoint.md
-    Merge with strategy ort failed.: git merge origin/master failed: exit status 2
+started: "2026-11-13T05:20:56Z"
+completed: "2026-11-13T05:27:18Z"
 ---
 
 # Render the card's timeline in its info panel
