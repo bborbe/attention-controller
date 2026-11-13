@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.73.0
 
 - feat: accept a producer-supplied `asked_at` on push and store it unchanged — distinct from the store's `created_at`, absent when the push carries none, and reset by a re-push exactly as `created_at` is
 
