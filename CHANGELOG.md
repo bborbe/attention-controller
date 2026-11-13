@@ -10,7 +10,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 
 ## Unreleased
 
-- feat: Each attention card's info panel now shows its own timeline — the instant the gate was asked, when the store received it, when a board first painted it, when it was answered and by which arm, when the answer was delivered and the gate released, and when it closed and why — with the deltas between stages as whole seconds and an em dash for a stage that did not happen. `asked_at` is accepted from the producer and never re-stamped; `displayed_at` is stamped by the store on the board's first paint through the new `POST /api/1.0/attention/{itemID}/seen`, which is local and never forwarded to a federating peer. Contract: `docs/attention-item-timeline.md`.
+- feat: render the card's timeline in its info panel — the seven stages with their raw instants, the four floored deltas (`asked→created`, `created→displayed`, `displayed→answered`, `answered→delivered`), an em dash for a stage that did not happen, the derived gate-released and close-reason stages, and the delivery-outcome line naming exactly the contract's four reader-visible outcomes (a `held` card renders no outcome line)
 - feat: The board's `delivery-undeliverable` marker now covers `never_attempted` as well as `failed`, so the silent half of undelivered answers is visible on the card instead of looking like an ordinary answered record. `delivered`, `held` and `pre_trail_unknown` stay unmarked, and a `held` card renders no delivery-outcome line at all.
 
 ## v0.74.0
