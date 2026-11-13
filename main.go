@@ -795,11 +795,12 @@ func (a *application) createHTTPServer(
 		// under one context, so a failure in either takes the process down and
 		// launchd restarts both: a half-up state — board serving, jumps dead — is
 		// exactly the two-lifecycle problem the fold exists to remove.
-		// Eight slots, not two: the legacy jump listener is a second long-running
+		// Nine slots, not two: the legacy jump listener is a second long-running
 		// function under the same context, the bearer-token-gated business-API
 		// listener is a third, the task index watcher a fourth, the answered sweep
 		// a fifth, the session-heartbeat watcher a sixth, the metrics push job a
-		// seventh, and the class-D refusal watch an eighth.
+		// seventh, the class-D refusal watch an eighth, and the fleet-digest notify
+		// job a ninth.
 		//
 		// ⚠️ It does NOT share the listeners' failure semantics, and saying so here
 		// matters because the difference is deliberate: the sweep returns nil on
@@ -813,7 +814,9 @@ func (a *application) createHTTPServer(
 		// story again: it returns nil on cancellation and logs-and-continues on a
 		// failed cycle, because a push that fails costs one interval of dashboard
 		// freshness and loses nothing — and the class-D refusal watch shares it.
-		runner := run.NewConcurrentRunner(8)
+		// The fleet-digest notify job shares it for the same reason: a missed tick
+		// costs one interval of fleet watching.
+		runner := run.NewConcurrentRunner(9)
 		defer runner.Close()
 
 		glog.V(2).Infof("starting http server listen on %s", a.Listen)
@@ -865,13 +868,20 @@ func (a *application) addAnsweredSweep(
 // addInProcessJobs registers the jobs that run inside this process rather than
 // as a launchd tick.
 //
-// ⚠️ Both are in-process for the same reason: each replaced a separate process
-// whose only effects were inside THIS process — the push reads the registry this
-// process serves, and the watch writes a card into this process's store. A
-// loopback hop between two halves of one process is a dependency that can fail
-// for reasons neither half controls.
+// ⚠️ The first two are in-process for the same reason: each replaced a separate
+// process whose only effects were inside THIS process — the push reads the
+// registry this process serves, and the watch writes a card into this process's
+// store. A loopback hop between two halves of one process is a dependency that
+// can fail for reasons neither half controls.
 //
-// It is a method rather than two blocks in createHTTPServer because that
+// ⚠️ The fleet-digest notify job is here for a DIFFERENT reason, and the
+// difference is worth stating because its effects are not local: it keeps its
+// engine and its publish as external commands, so what moves in-process is only
+// the tick. A 60 s launchd interval became a slot in a supervised service that
+// already restarts as one unit — one lifecycle to observe instead of two, with
+// the engine's rules and the publish's credential left exactly where they were.
+//
+// It is a method rather than three blocks in createHTTPServer because that
 // function sits at the linter's length bound, and each job's comment explains a
 // decision that belongs beside the job.
 func (a *application) addInProcessJobs(
@@ -897,6 +907,16 @@ func (a *application) addInProcessJobs(
 		return errors.Wrap(ctx, err, "create class-d refusal watch job failed")
 	}
 	runner.Add(ctx, classDRefusalWatch)
+
+	// ⚠️ The engine script, the write script and the state directory are the
+	// paths the launchd job used, resolved by the constructor: an unresolvable
+	// home directory is an error rather than a job armed on a guessed path, which
+	// would check nothing and look exactly like a healthy fleet.
+	fleetDigestNotify, err := pkg.NewDefaultFleetDigestNotifyJob(ctx)
+	if err != nil {
+		return errors.Wrap(ctx, err, "create fleet digest notify job failed")
+	}
+	runner.Add(ctx, fleetDigestNotify)
 	return nil
 }
 

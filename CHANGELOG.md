@@ -12,6 +12,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 
 - Run the VictoriaMetrics metrics push in-process as a job
 - Run the class-D refusal watch in-process as a job, with a Go transcript phrase tailer
+- Run the fleet-digest notify tick in-process as a job, keeping the staleness engine and the prod notification as injected subprocess seams
 
 ## v0.76.1
 
