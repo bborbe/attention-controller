@@ -16,58 +16,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 
+	"github.com/bborbe/attention-controller/mocks"
 	"github.com/bborbe/attention-controller/pkg"
 	"github.com/bborbe/attention-controller/pkg/boardmetrics"
 )
-
-// stageDeltaSource is a fake population the collector reads. It counts its
-// calls so a spec can assert the collector's read discipline, and can block a
-// read so a spec can drive two concurrent scrapes deterministically.
-type stageDeltaSource struct {
-	mu       sync.Mutex
-	items    pkg.Items
-	attempts map[pkg.ItemID]pkg.DeliveryAttempt
-	history  int
-	delivery int
-	entered  chan struct{}
-	block    chan struct{}
-}
-
-func (f *stageDeltaSource) History(
-	_ context.Context,
-	_ int,
-	_ int,
-	_ ...pkg.HistoryFilter,
-) (pkg.Items, error) {
-	f.mu.Lock()
-	f.history++
-	f.mu.Unlock()
-	if f.block != nil {
-		f.entered <- struct{}{}
-		<-f.block
-	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.items, nil
-}
-
-func (f *stageDeltaSource) DeliveryAttempts(
-	_ context.Context,
-) (map[pkg.ItemID]pkg.DeliveryAttempt, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.delivery++
-	if f.attempts == nil {
-		return map[pkg.ItemID]pkg.DeliveryAttempt{}, nil
-	}
-	return f.attempts, nil
-}
-
-func (f *stageDeltaSource) historyCalls() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.history
-}
 
 // stageDeltaFamilyFor gathers the registry and returns the family, failing the
 // spec when it is absent. Every call is one scrape, which is why the specs use
@@ -160,13 +112,15 @@ func pointerTo(at stdtime.Time) *stdtime.Time {
 var _ = Describe("StageDeltaCollector", func() {
 	var (
 		registry *prometheus.Registry
-		source   *stageDeltaSource
+		source   *mocks.StageDeltaSource
 		clock    stdtime.Time
 	)
 
 	BeforeEach(func() {
 		registry = prometheus.NewRegistry()
-		source = &stageDeltaSource{}
+		source = &mocks.StageDeltaSource{}
+		source.HistoryReturns(pkg.Items{}, nil)
+		source.DeliveryAttemptsReturns(map[pkg.ItemID]pkg.DeliveryAttempt{}, nil)
 		clock = stdtime.Date(2026, 11, 13, 10, 0, 0, 0, stdtime.UTC)
 	})
 
@@ -187,7 +141,7 @@ var _ = Describe("StageDeltaCollector", func() {
 	Context("the exposed label set", func() {
 		It("carries exactly from and to, and exactly the four contract pairs", func() {
 			base := clock
-			source.items = pkg.Items{
+			source.HistoryReturns(pkg.Items{
 				itemAt(
 					"a",
 					base,
@@ -195,14 +149,14 @@ var _ = Describe("StageDeltaCollector", func() {
 					pointerTo(base.Add(2*stdtime.Second)),
 					pointerTo(base.Add(9*stdtime.Second)),
 				),
-			}
-			source.attempts = map[pkg.ItemID]pkg.DeliveryAttempt{
+			}, nil)
+			source.DeliveryAttemptsReturns(map[pkg.ItemID]pkg.DeliveryAttempt{
 				"a": {
 					ItemID:      pkg.ItemID("a"),
 					Outcome:     pkg.DeliveredOutcome,
 					AttemptedAt: libtime.DateTime(base.Add(stdtime.Minute)),
 				},
-			}
+			}, nil)
 
 			register()
 
@@ -249,7 +203,7 @@ var _ = Describe("StageDeltaCollector", func() {
 
 	It("suppresses only the deltas touching a missing stage", func() {
 		base := clock
-		source.items = pkg.Items{
+		source.HistoryReturns(pkg.Items{
 			itemAt(
 				"no-asked",
 				base,
@@ -257,14 +211,14 @@ var _ = Describe("StageDeltaCollector", func() {
 				pointerTo(base.Add(2*stdtime.Second)),
 				pointerTo(base.Add(9*stdtime.Second)),
 			),
-		}
-		source.attempts = map[pkg.ItemID]pkg.DeliveryAttempt{
+		}, nil)
+		source.DeliveryAttemptsReturns(map[pkg.ItemID]pkg.DeliveryAttempt{
 			"no-asked": {
 				ItemID:      pkg.ItemID("no-asked"),
 				Outcome:     pkg.DeliveredOutcome,
 				AttemptedAt: libtime.DateTime(base.Add(10 * stdtime.Second)),
 			},
-		}
+		}, nil)
 
 		register()
 
@@ -284,9 +238,9 @@ var _ = Describe("StageDeltaCollector", func() {
 
 	It("observes a negative delta unclamped", func() {
 		base := clock
-		source.items = pkg.Items{
+		source.HistoryReturns(pkg.Items{
 			itemAt("skewed", base, pointerTo(base.Add(30*stdtime.Second)), nil, nil),
-		}
+		}, nil)
 
 		register()
 
@@ -295,15 +249,40 @@ var _ = Describe("StageDeltaCollector", func() {
 		Expect(histogram.GetSampleSum()).To(BeNumerically("<", 0))
 	})
 
+	// ⚠️ An observation above the last finite bound belongs in +Inf alone. It
+	// must still reach the sample count: a count derived from the finite buckets
+	// would drop it while keeping it in the sum, and _sum/_count would then
+	// describe two different populations.
+	It(
+		"counts an observation above the top bucket, and keeps it out of the finite buckets",
+		func() {
+			base := clock
+			source.HistoryReturns(pkg.Items{
+				itemAt("slow", base, nil, pointerTo(base.Add(7*stdtime.Hour)), nil),
+			}, nil)
+
+			register()
+
+			histogram := stageDeltaFor(registry, "created", "displayed")
+			Expect(histogram.GetSampleCount()).To(BeNumerically("==", 1))
+			Expect(histogram.GetSampleSum()).To(BeNumerically("==", (7 * stdtime.Hour).Seconds()))
+			for _, bucket := range histogram.GetBucket() {
+				if bucket.GetUpperBound() <= 21600 {
+					Expect(bucket.GetCumulativeCount()).To(BeNumerically("==", 0))
+				}
+			}
+		},
+	)
+
 	It("counts only a delivered attempt as the delivery", func() {
 		base := clock
-		source.items = pkg.Items{
+		source.HistoryReturns(pkg.Items{
 			itemAt("ok", base, nil, pointerTo(base), pointerTo(base.Add(stdtime.Second))),
 			itemAt("failed", base, nil, pointerTo(base), pointerTo(base.Add(stdtime.Second))),
 			itemAt("held", base, nil, pointerTo(base), pointerTo(base.Add(stdtime.Second))),
-		}
+		}, nil)
 		attempted := libtime.DateTime(base.Add(10 * stdtime.Second))
-		source.attempts = map[pkg.ItemID]pkg.DeliveryAttempt{
+		source.DeliveryAttemptsReturns(map[pkg.ItemID]pkg.DeliveryAttempt{
 			"ok": {
 				ItemID:      pkg.ItemID("ok"),
 				Outcome:     pkg.DeliveredOutcome,
@@ -319,7 +298,7 @@ var _ = Describe("StageDeltaCollector", func() {
 				Outcome:     pkg.HeldOutcome,
 				AttemptedAt: attempted,
 			},
-		}
+		}, nil)
 
 		register()
 
@@ -330,9 +309,9 @@ var _ = Describe("StageDeltaCollector", func() {
 
 	It("reports a snapshot of the population, not an accumulation", func() {
 		base := clock
-		source.items = pkg.Items{
+		source.HistoryReturns(pkg.Items{
 			itemAt("a", base, nil, pointerTo(base.Add(2*stdtime.Second)), nil),
-		}
+		}, nil)
 		register()
 
 		Expect(
@@ -345,10 +324,10 @@ var _ = Describe("StageDeltaCollector", func() {
 		).To(BeNumerically("==", 1))
 
 		// One more item, and the clock past the bound: recomputed, not added to.
-		source.items = append(
-			source.items,
+		source.HistoryReturns(pkg.Items{
+			itemAt("a", base, nil, pointerTo(base.Add(2*stdtime.Second)), nil),
 			itemAt("b", base, nil, pointerTo(base.Add(3*stdtime.Second)), nil),
-		)
+		}, nil)
 		clock = clock.Add(301 * stdtime.Second)
 		Expect(
 			stageDeltaFor(registry, "created", "displayed").GetSampleCount(),
@@ -361,37 +340,51 @@ var _ = Describe("StageDeltaCollector", func() {
 		stageDeltaPairsOf(registry)
 		stageDeltaPairsOf(registry)
 		stageDeltaPairsOf(registry)
-		Expect(source.historyCalls()).To(Equal(1))
+		Expect(source.HistoryCallCount()).To(Equal(1))
 
 		clock = clock.Add(301 * stdtime.Second)
 		stageDeltaPairsOf(registry)
-		Expect(source.historyCalls()).To(Equal(2))
+		Expect(source.HistoryCallCount()).To(Equal(2))
 	})
 
 	It("shares one read between concurrent scrapes", func() {
-		source.block = make(chan struct{})
-		source.entered = make(chan struct{}, 1)
+		block := make(chan struct{})
+		entered := make(chan struct{}, 1)
+		source.HistoryCalls(func(
+			_ context.Context,
+			_ int,
+			_ int,
+			_ ...pkg.HistoryFilter,
+		) (pkg.Items, error) {
+			entered <- struct{}{}
+			<-block
+			return pkg.Items{}, nil
+		})
 		register()
 
 		done := make(chan struct{}, 2)
+		var wg sync.WaitGroup
+		wg.Add(2)
 		go func() {
 			defer GinkgoRecover()
+			defer wg.Done()
 			stageDeltaPairsOf(registry)
 			done <- struct{}{}
 		}()
 		// Wait until the first scrape is inside the population read, so the
 		// second is guaranteed to arrive while the collector holds its lock.
-		<-source.entered
+		<-entered
 		go func() {
 			defer GinkgoRecover()
+			defer wg.Done()
 			stageDeltaPairsOf(registry)
 			done <- struct{}{}
 		}()
 
-		close(source.block)
-		<-done
-		<-done
+		close(block)
+		wg.Wait()
+		close(done)
 
-		Expect(source.historyCalls()).To(Equal(1))
+		Expect(source.HistoryCallCount()).To(Equal(1))
 	})
 })

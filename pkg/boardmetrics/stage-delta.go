@@ -2,11 +2,12 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// Package-level note: this file holds the stage-delta histogram — how long each
-// leg of a card's journey took, derived from the timestamps the store already
-// holds. It is a scrape-time collector rather than a set of write-time hooks,
-// and the reasoning is in NewStageDeltaCollector's doc comment.
 package boardmetrics
+
+// This file holds the stage-delta histogram — how long each leg of a card's
+// journey took, derived from the timestamps the store already holds. It is a
+// scrape-time collector rather than a set of write-time hooks, and the
+// reasoning is in NewStageDeltaCollector's doc comment.
 
 import (
 	"context"
@@ -48,18 +49,13 @@ var stageDeltaBuckets = []float64{
 	0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300, 600, 1800, 3600, 7200, 21600,
 }
 
+//counterfeiter:generate -o ../../mocks/stage-delta-source.go --fake-name StageDeltaSource . StageDeltaSource
+
 // StageDeltaSource is the narrow read surface the collector needs.
 //
 // It is deliberately not pkg.AttentionStore: the collector only reads, and
 // taking the whole interface would let a future edit reach a write method
 // without anything objecting. pkg.AttentionStore satisfies it.
-//
-// ⚠️ It carries no //counterfeiter:generate directive, and the specs use a
-// hand-written fake instead. The fake is not a substitute for a generated one:
-// the refresh and concurrency specs need to count calls and to hold a read open
-// while a second scrape arrives, and neither is expressible through a
-// Counterfeiter stub. A generated fake here would be dead code beside it, which
-// is a worse drift risk than the one the directive prevents.
 type StageDeltaSource interface {
 	// History returns the store's items, newest first. limit <= 0 is the
 	// unbounded form, which is the population this collector measures. It is
@@ -289,10 +285,15 @@ func (c *stageDeltaCollector) compute() ([]stageDeltaHistogram, error) {
 	}
 
 	// Per-bucket counts first, accumulated to cumulative below, which is what
-	// MustNewConstHistogram expects and what Histogram.Observe would have
-	// produced.
+	// MustNewConstHistogram expects. totals is tracked separately and is NOT
+	// derived from the buckets: an observation above the last bound belongs in
+	// the implicit +Inf bucket, which has no entry in the map, so deriving the
+	// sample count from the finite buckets would drop it from _count while
+	// keeping it in _sum. Delivery waits longer than six hours are reachable,
+	// so that divergence is not hypothetical.
 	counts := make([][]uint64, len(stageDeltaPairs))
 	sums := make([]float64, len(stageDeltaPairs))
+	totals := make([]uint64, len(stageDeltaPairs))
 	for i := range counts {
 		counts[i] = make([]uint64, len(stageDeltaBuckets))
 	}
@@ -313,10 +314,12 @@ func (c *stageDeltaCollector) compute() ([]stageDeltaHistogram, error) {
 				continue
 			}
 			sums[i] += seconds
+			totals[i]++
 			// sort.SearchFloat64s returns the first index whose bound is >= the
-			// value, which is exactly the bucket Observe would pick. A negative
-			// value lands at index 0 and therefore in every cumulative bucket,
-			// as Observe places it.
+			// value, which is the bucket Histogram.Observe would increment. A
+			// value above every bound returns len(buckets) and increments no
+			// finite bucket — exactly as Observe leaves it in +Inf alone — so it
+			// is counted by totals and not by counts.
 			if index := sort.SearchFloat64s(stageDeltaBuckets, seconds); index < len(
 				stageDeltaBuckets,
 			) {
@@ -325,12 +328,17 @@ func (c *stageDeltaCollector) compute() ([]stageDeltaHistogram, error) {
 		}
 	}
 
-	return foldToHistograms(counts, sums), nil
+	return foldToHistograms(counts, sums, totals), nil
 }
 
 // foldToHistograms accumulates per-bucket counts into the cumulative form and
-// carries the total count and sum.
-func foldToHistograms(counts [][]uint64, sums []float64) []stageDeltaHistogram {
+// carries the sample count and sum.
+//
+// ⚠️ count comes from totals, never from the cumulative buckets. The buckets
+// describe the finite bounds only, so a population with an observation above
+// the top bound has a count larger than its last cumulative bucket — which is
+// what +Inf is for.
+func foldToHistograms(counts [][]uint64, sums []float64, totals []uint64) []stageDeltaHistogram {
 	histograms := make([]stageDeltaHistogram, len(counts))
 	for i := range counts {
 		cumulative := make(map[float64]uint64, len(stageDeltaBuckets))
@@ -340,7 +348,7 @@ func foldToHistograms(counts [][]uint64, sums []float64) []stageDeltaHistogram {
 			cumulative[bound] = running
 		}
 		histograms[i] = stageDeltaHistogram{
-			count:      running,
+			count:      totals[i],
 			sum:        sums[i],
 			cumulative: cumulative,
 		}
@@ -356,5 +364,9 @@ func emptyStageDeltaHistograms() []stageDeltaHistogram {
 	for i := range counts {
 		counts[i] = make([]uint64, len(stageDeltaBuckets))
 	}
-	return foldToHistograms(counts, make([]float64, len(stageDeltaPairs)))
+	return foldToHistograms(
+		counts,
+		make([]float64, len(stageDeltaPairs)),
+		make([]uint64, len(stageDeltaPairs)),
+	)
 }
