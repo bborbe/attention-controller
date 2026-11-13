@@ -51,10 +51,15 @@ Reference docs (in-container paths):
 
    ```go
    func (r attentionPageRow) Undeliverable() bool {
+       if r.AnsweredAt == nil {
+           return false
+       }
        return r.DeliveryStatus == pkg.FailedStatus ||
            r.DeliveryStatus == pkg.NeverAttemptedStatus
    }
    ```
+
+   ⚠️ **The `AnsweredAt == nil` guard is load-bearing, not defensive.** `Delivery()` derives `never_attempted` for an item with no attempt record, falling back to `created_at` when there is no `answered_at` — so a predicate keyed on the status alone matches **every open card**, and the board paints "undeliverable" on cards that are merely waiting for a human. The marker's entire signal is *the answer went nowhere*; a card nobody has answered yet has no answer to lose. The row does **not** carry `AnsweredAt` today — add `AnsweredAt *libtime.DateTime` to `attentionPageRow` beside `DeliveryStatus`, and populate it from `Item.AnsweredAt` at both `newAttentionPageRow` call sites (the page and the stream), exactly as `DeliveryStatus` is.
 
 2. Rewrite the method's doc comment. Keep the existing "a method rather than a second boolean field" paragraph (the template and the row must not carry two values that could disagree about one fact, and the constant stays in Go rather than becoming a string literal in the template). Replace the closing paragraph that says a `never_attempted` answer renders nothing with the superseded rationale:
 
@@ -124,12 +129,13 @@ Reference docs (in-container paths):
 
 ### C. The five-card matrix
 
-5. Add one spec to the same file: `marks exactly the failed and never-attempted rows among the five outcomes`. Build five cards in one store and render them on one page:
+5. Add one spec to the same file: `marks exactly the failed and never-attempted rows among the five outcomes, and never an open card`. Build five cards in one store and render them on one page, plus a sixth that is still open:
 
    - **delivered** — `answered(...)` then `store.RecordAttempt(ctx, id, "attention-watcher", pkg.DeliveredOutcome)`.
    - **failed** — `answered(...)` then `RecordAttempt(..., pkg.FailedOutcome)`.
    - **held** — `answered(...)` then `RecordAttempt(..., pkg.HeldOutcome)`.
    - **never_attempted** — `answered(...)` with no attempt record, answered after the epoch (the initial clock reading).
+   - **open, unanswered, no attempt record** — pushed and never answered. `Delivery()` derives `never_attempted` for it too (the `created_at` fallback), so this row is what proves the `AnsweredAt == nil` guard: it must carry **no** marker. Without this sixth card the five-card matrix passes a predicate that marks every open card on the board.
    - **pre_trail_unknown** — `setClock(pkg.DeliveryTrailEpoch.Add(-stdtime.Hour))` **before** the `answered(...)` call so its `answered_at` is before the epoch, then `setClock(stdtime.Now().UTC())` again for the remaining fixtures. Pin the precondition: `store.Delivery` returns `pkg.PreTrailUnknownStatus` for it.
 
    Give each card its own dedup key and payload, as the existing cases do.
