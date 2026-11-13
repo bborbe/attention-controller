@@ -24,7 +24,7 @@ Extend the existing `info-panel` with the seven-stage timeline and the delivery-
 </objective>
 
 <context>
-**Dependency: prompts `1-spec-015-asked-at.md` and `2-spec-015-seen-endpoint.md` must already be complete.** This prompt assumes `Item.AskedAt`, `Item.DisplayedAt` and `store.MarkSeen` exist. If any is absent, STOP and report `status: failed` naming the missing prompt — do not implement them here.
+**Dependency: prompts `053-spec-015-asked-at.md` and `054-spec-015-seen-endpoint.md` must already be complete.** This prompt assumes `Item.AskedAt`, `Item.DisplayedAt` and `store.MarkSeen` exist. If any is absent, STOP and report `status: failed` naming the missing prompt — do not implement them here.
 
 There is no `CLAUDE.md` in this repo — follow the coding plugin docs below. Read `docs/dod.md`.
 
@@ -233,7 +233,7 @@ Reference docs (in-container paths):
 
    ```
    {{if .Timeline}}<div class="timeline" data-timeline>{{range .Timeline}}<div class="timeline-line">{{ . }}</div>{{end}}</div>
-   {{end}}{{if .DeliveryOutcome}}<div class="delivery-outcome">{{ . }}</div>
+   {{end}}{{if .DeliveryOutcome}}<div class="delivery-outcome">{{ .DeliveryOutcome }}</div>
    {{end}}
    ```
 

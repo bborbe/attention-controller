@@ -60,8 +60,13 @@ Reference docs (in-container paths):
    ```go
    // DisplayedAt is when a board first rendered this card. Stamped from the
    // STORE's own clock inside the compare-and-set that handles the board's
-   // "seen" call — never supplied by the caller, and first write wins, exactly as
-   // FlaggedAt and EscalatedAt are stamped.
+   // "seen" call — never supplied by the caller, and first write wins.
+   //
+   // Only the "caller supplies nothing" half is shared with FlaggedAt and
+   // EscalatedAt; their first-write behaviour is NOT. FlaggedAt is
+   // last-writer-wins (re-flagging restamps it), so do not cite it as a
+   // first-write precedent — DisplayedAt is the only one of the three that keeps
+   // its first value.
    //
    // One value per item, recorded by the store that OWNS it: a card federated
    // from an upstream store records nothing here, because writing it would write
