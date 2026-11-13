@@ -75,29 +75,35 @@ func affordance(mechanism pkg.AnswerMechanism) (message bool, ack bool) {
 // carried for nothing — and, worse, one a later change could render by
 // accident.
 //
-// deliveryStatus is the store's derived delivery status for this item, read by
-// the caller rather than here: this function is a pure derivation and the read
-// needs a context and the store, which the two callers (the page handler and
-// the SSE stream) hold. Empty when that read failed, which renders no marker —
-// see attentionPageRow.DeliveryStatus.
+// delivery is the store's delivery report for this item, read by the caller
+// rather than here: this function is a pure derivation and the read needs a
+// context and the store, which the two callers (the page handler and the SSE
+// stream) hold. Nil when that read failed, which renders no delivery stage and
+// no outcome line — see attentionPageRow.DeliveryStatus and DeliveryAttemptedAt.
 func newAttentionPageRow(
 	item pkg.Item,
 	provenance pkg.Provenance,
-	deliveryStatus pkg.DeliveryStatus,
+	delivery *pkg.DeliveryReport,
 	speak bool,
 	vaultName string,
 ) attentionPageRow {
 	row := attentionPageRow{
-		Item:           item,
-		Provenance:     provenance,
-		DeliveryStatus: deliveryStatus,
-		Jump:           jumpCommand(item, provenance),
-		JumpURL:        jumpURL(item, provenance),
-		NoJump:         noJumpReason(item, provenance),
-		Speak:          speak,
-		TaskURL:        vaultFileURL(vaultName, provenance.TaskPath),
-		GoalURL:        vaultFileURL(vaultName, provenance.GoalPath),
-		TopicURL:       vaultFileURL(vaultName, provenance.TopicPath),
+		Item:       item,
+		Provenance: provenance,
+		Jump:       jumpCommand(item, provenance),
+		JumpURL:    jumpURL(item, provenance),
+		NoJump:     noJumpReason(item, provenance),
+		Speak:      speak,
+		TaskURL:    vaultFileURL(vaultName, provenance.TaskPath),
+		GoalURL:    vaultFileURL(vaultName, provenance.GoalPath),
+		TopicURL:   vaultFileURL(vaultName, provenance.TopicPath),
+		AnsweredAt: item.AnsweredAt,
+	}
+	// A nil report leaves both fields at their zero values, which is the
+	// fail-soft state the panel renders as an absent delivery stage.
+	if delivery != nil {
+		row.DeliveryStatus = delivery.Status
+		row.DeliveryAttemptedAt = delivery.AttemptedAt
 	}
 	row.Message, row.Ack = affordance(item.AnswerMechanism)
 	// Flagged reports whether this row is parked by the flag filter. It is
@@ -1150,4 +1156,7 @@ li.item.risk-risk {
 .rate-btn { background: none; border: 1px solid var(--border); border-radius: 6px; padding: 2px 8px; cursor: pointer; opacity: .45; }
 .rate-btn.rated { opacity: 1; background: var(--green-bg); border-color: var(--green); }
 .rate-btn[data-rate=down].rated { background: var(--panel); border-color: var(--warn); }
+.timeline { margin: 6px 0 0; }
+.timeline-line { white-space: pre-wrap; }
+.delivery-outcome { margin: 6px 0 0; }
 `

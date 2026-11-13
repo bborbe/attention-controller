@@ -120,7 +120,7 @@ func NewAttentionPageHandler(store pkg.AttentionStore,
 						newAttentionPageRow(
 							item,
 							provenances[item.ItemID],
-							deliveryStatusOf(ctx, store, item.ItemID),
+							deliveryReportOf(ctx, store, item.ItemID),
 							speakEnabled,
 							vaultName,
 						),
