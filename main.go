@@ -795,11 +795,11 @@ func (a *application) createHTTPServer(
 		// under one context, so a failure in either takes the process down and
 		// launchd restarts both: a half-up state — board serving, jumps dead — is
 		// exactly the two-lifecycle problem the fold exists to remove.
-		// Seven slots, not two: the legacy jump listener is a second long-running
+		// Eight slots, not two: the legacy jump listener is a second long-running
 		// function under the same context, the bearer-token-gated business-API
-		// listener is a third, the task index watcher is a fourth, the answered
-		// sweep is a fifth, the session-heartbeat watcher is a sixth, and the
-		// metrics push job is a seventh.
+		// listener is a third, the task index watcher a fourth, the answered sweep
+		// a fifth, the session-heartbeat watcher a sixth, the metrics push job a
+		// seventh, and the class-D refusal watch an eighth.
 		//
 		// ⚠️ It does NOT share the listeners' failure semantics, and saying so here
 		// matters because the difference is deliberate: the sweep returns nil on
@@ -812,8 +812,8 @@ func (a *application) createHTTPServer(
 		// costs a slower index and loses nothing. The metrics push slot is the same
 		// story again: it returns nil on cancellation and logs-and-continues on a
 		// failed cycle, because a push that fails costs one interval of dashboard
-		// freshness and loses nothing.
-		runner := run.NewConcurrentRunner(7)
+		// freshness and loses nothing — and the class-D refusal watch shares it.
+		runner := run.NewConcurrentRunner(8)
 		defer runner.Close()
 
 		glog.V(2).Infof("starting http server listen on %s", a.Listen)
@@ -830,33 +830,74 @@ func (a *application) createHTTPServer(
 		// cannot make a liveness read serialise behind 1,600 file reads.
 		runner.Add(ctx, sessionHeartbeatStore.Run)
 
-		// ⚠️ This sweep is what keeps the live index bounded. The index admits
-		// `answered` items — liveIndexWorthy is `State != ClosedState` — so an
-		// answered item that is never closed is decoded on every read for the life
-		// of the store. Measured 2026-10-03: 2,547 answered against 16 open, so
-		// every read decoded ~2,563 items and ~3.4 MB to return 16, on an API every
-		// supervisor polls twice every 2 s.
-		answeredMaxAge, err := parseAnsweredMaxAge(ctx, a.AnsweredMaxAge)
-		if err != nil {
+		if err := a.addAnsweredSweep(ctx, runner, store); err != nil {
 			return err
 		}
-		runner.Add(ctx, runAnsweredSweep(store, answeredMaxAge, answeredSweepInterval))
-
-		// ⚠️ The push runs in-process because the scrape target is: the Python job
-		// it replaces scraped this process's own :18080/metrics, and a loopback HTTP
-		// hop between two halves of one process is a dependency that can fail for
-		// reasons neither half controls. The registry is the source instead.
-		runner.Add(ctx, pkg.NewMetricsPushJob(
-			prometheus.DefaultGatherer,
-			pkg.MetricsPushDefaultEndpoint,
-			pkg.MetricsPushDefaultInterval,
-			pkg.NewTeamVaultMetricsPushCredentials(),
-			&http.Client{Timeout: metricsPushHTTPTimeout},
-			libtime.NewCurrentDateTime(),
-		))
+		if err := a.addInProcessJobs(ctx, runner, store); err != nil {
+			return err
+		}
 
 		return runner.Run(ctx)
 	}
+}
+
+// addAnsweredSweep registers the sweep that closes answered items past their
+// max age, which is what keeps the live index bounded.
+//
+// ⚠️ The index admits `answered` items — liveIndexWorthy is
+// `State != ClosedState` — so an answered item that is never closed is decoded
+// on every read for the life of the store. Measured 2026-10-03: 2,547 answered
+// against 16 open, so every read decoded ~2,563 items and ~3.4 MB to return 16,
+// on an API every supervisor polls twice every 2 s.
+func (a *application) addAnsweredSweep(
+	ctx context.Context,
+	runner run.ConcurrentRunner,
+	store pkg.AttentionStore,
+) error {
+	answeredMaxAge, err := parseAnsweredMaxAge(ctx, a.AnsweredMaxAge)
+	if err != nil {
+		return errors.Wrap(ctx, err, "parse answered max age failed")
+	}
+	runner.Add(ctx, runAnsweredSweep(store, answeredMaxAge, answeredSweepInterval))
+	return nil
+}
+
+// addInProcessJobs registers the jobs that run inside this process rather than
+// as a launchd tick.
+//
+// ⚠️ Both are in-process for the same reason: each replaced a separate process
+// whose only effects were inside THIS process — the push reads the registry this
+// process serves, and the watch writes a card into this process's store. A
+// loopback hop between two halves of one process is a dependency that can fail
+// for reasons neither half controls.
+//
+// It is a method rather than two blocks in createHTTPServer because that
+// function sits at the linter's length bound, and each job's comment explains a
+// decision that belongs beside the job.
+func (a *application) addInProcessJobs(
+	ctx context.Context,
+	runner run.ConcurrentRunner,
+	store pkg.AttentionStore,
+) error {
+	runner.Add(ctx, pkg.NewMetricsPushJob(
+		prometheus.DefaultGatherer,
+		pkg.MetricsPushDefaultEndpoint,
+		pkg.MetricsPushDefaultInterval,
+		pkg.NewTeamVaultMetricsPushCredentials(),
+		&http.Client{Timeout: metricsPushHTTPTimeout},
+		libtime.NewCurrentDateTime(),
+	))
+
+	// ⚠️ The transcript root, state directory and plugin cache the watch reads
+	// are the paths the launchd job used, resolved by the constructor: an
+	// unresolvable home directory is an error rather than a watch armed on a
+	// guessed path, which would scan nothing and look exactly like a quiet one.
+	classDRefusalWatch, err := pkg.NewDefaultClassDRefusalWatchJob(ctx, store)
+	if err != nil {
+		return errors.Wrap(ctx, err, "create class-d refusal watch job failed")
+	}
+	runner.Add(ctx, classDRefusalWatch)
+	return nil
 }
 
 // answeredMaxAgeCeiling is the largest max age the store accepts.

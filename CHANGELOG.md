@@ -11,6 +11,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 ## Unreleased
 
 - Run the VictoriaMetrics metrics push in-process as a job
+- Run the class-D refusal watch in-process as a job, with a Go transcript phrase tailer
 
 ## v0.76.1
 
