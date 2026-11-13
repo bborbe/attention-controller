@@ -18,6 +18,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/bborbe/attention-controller/mocks"
 	"github.com/bborbe/attention-controller/pkg"
 )
 
@@ -317,7 +318,7 @@ var _ = Describe("UnforwardedOutcome", func() {
 				TranscriptRoot: fixture.root,
 				Now:            unforwardedClock(),
 			})
-			job := pkg.NewUnforwardedClosersJob(scanner, time.Hour, recorder.Logf)
+			job := pkg.NewUnforwardedClosersJob(scanner, nil, time.Hour, recorder.Logf)
 
 			job.RunOnce(context.Background())
 
@@ -335,7 +336,7 @@ var _ = Describe("UnforwardedOutcome", func() {
 			fixture := newUnforwardedFixture()
 			fixture.openRow("s9", "iiiiiiii", "question", "", unforwardedNow-600, "Stop")
 			recorder := &unforwardedLogRecorder{}
-			job := pkg.NewUnforwardedClosersJob(fixture.scanner(), time.Hour, recorder.Logf)
+			job := pkg.NewUnforwardedClosersJob(fixture.scanner(), nil, time.Hour, recorder.Logf)
 
 			job.RunOnce(context.Background())
 
@@ -346,4 +347,49 @@ var _ = Describe("UnforwardedOutcome", func() {
 			))
 		},
 	)
+})
+
+// The card re-presentation the launchd job's `--post` performed. Its own
+// Describe, so the SC2 focus selects exactly its seven specs.
+var _ = Describe("UnforwardedPosting", func() {
+	It(
+		"pushes one card per finding with a dedup key, an owner liveness ref and the two options",
+		func() {
+			fixture := newUnforwardedFixture()
+			fixture.openRow("s10", "jjjjjjjj", "question", "", unforwardedNow-600, "Stop")
+			store := &mocks.AttentionStore{}
+			store.PushReturns(&pkg.Item{ItemID: pkg.ItemID("card-1")}, nil)
+			recorder := &unforwardedLogRecorder{}
+			job := pkg.NewUnforwardedClosersJob(fixture.scanner(), store, time.Hour, recorder.Logf)
+
+			job.RunOnce(context.Background())
+
+			Expect(store.PushCallCount()).To(Equal(1))
+			_, request := store.PushArgsForCall(0)
+			Expect(request.ProducerID).To(Equal(pkg.UnforwardedClosersProducerID))
+			Expect(request.ProducerKind).To(Equal(pkg.CronProducerKind))
+			Expect(request.LivenessRef).To(Equal(
+				pkg.LivenessRef("owner:attention-unforwarded-closers"),
+			))
+			Expect(request.DedupKey).To(Equal(pkg.DedupKey("unforwarded:jjjjjjjj")))
+			Expect(request.Payload).To(Equal(pkg.Payload("lost question gate — no forward line")))
+			Expect(request.AnswerMechanism).To(Equal(pkg.MessageAnswerMechanism))
+			Expect(request.Options).To(HaveLen(2))
+			Expect(request.Options[0].Recommended).To(BeTrue())
+			Expect(request.ExpiresAt).NotTo(BeNil())
+			// The scan line plus one post line.
+			Expect(recorder.Lines()).To(HaveLen(2))
+		},
+	)
+
+	It("does not push when no store is configured", func() {
+		fixture := newUnforwardedFixture()
+		fixture.openRow("s11", "kkkkkkkk", "question", "", unforwardedNow-600, "Stop")
+		recorder := &unforwardedLogRecorder{}
+		job := pkg.NewUnforwardedClosersJob(fixture.scanner(), nil, time.Hour, recorder.Logf)
+
+		job.RunOnce(context.Background())
+
+		Expect(recorder.Lines()).To(HaveLen(1))
+	})
 })

@@ -589,6 +589,7 @@ func defaultAttentionStateDir(ctx context.Context) (string, error) {
 func (a *application) addUnforwardedClosersJob(
 	ctx context.Context,
 	runner run.ConcurrentRunner,
+	store pkg.AttentionStore,
 ) {
 	stateDir := a.UnforwardedStateDir
 	if stateDir == "" {
@@ -616,7 +617,12 @@ func (a *application) addUnforwardedClosersJob(
 	// when the count matters.
 	runner.Add(
 		ctx,
-		pkg.NewUnforwardedClosersJob(scanner, pkg.UnforwardedClosersInterval, glog.Infof).Run,
+		pkg.NewUnforwardedClosersJob(
+			scanner,
+			store,
+			pkg.UnforwardedClosersInterval,
+			glog.Infof,
+		).Run,
 	)
 }
 
@@ -1023,7 +1029,7 @@ func (a *application) addInProcessJobs(
 	// what moves is only the tick. It re-reads state this process already owns
 	// and writes its count as a log line, so there is no second lifecycle to
 	// deploy, version or observe.
-	a.addUnforwardedClosersJob(ctx, runner)
+	a.addUnforwardedClosersJob(ctx, runner, store)
 	return nil
 }
 
