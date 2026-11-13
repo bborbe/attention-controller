@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- feat: The controller exposes `attention_stage_delta_seconds`, a histogram with `from` and `to` labels over the four deltas `docs/attention-item-timeline.md` names — `asked→created`, `created→displayed`, `displayed→answered` and `answered→delivered` — so a dashboard can chart each pipeline leg as percentiles over time. The population is re-read at most once per 300 s and emitted as constant histograms rather than accumulated, an absent stage suppresses only the deltas that touch it, a negative delta is observed unclamped, and only a `delivered` attempt counts as the delivery. The bulk `DeliveryAttempts` read it needs is added to `AttentionStore` and delegates local-only through the federating wrapper.
+
 ## v0.76.1
 
 - refactor: Move the attention board's inline HTML document and script out of `pkg/handler/attention-page.go` into embedded assets (`pkg/handler/static/attention-page.html`, `pkg/handler/static/attention-page.js`) compiled into the binary with `//go:embed`. The document is assembled from the two assets plus the existing stylesheet constant before `html/template` parses it, so the served page is byte-identical; a missing or duplicated placeholder panics at startup, and `attention-page.go` drops from 1,995 lines to 178.

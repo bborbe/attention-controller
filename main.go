@@ -228,6 +228,19 @@ func (a *application) Run(ctx context.Context, sentryClient libsentry.Client) er
 	// registration of the same collector panics.
 	boardMetrics := boardmetrics.NewMetrics(prometheus.DefaultRegisterer)
 
+	// The stage-delta histogram is registered on the same default registry, and
+	// takes the process context so a cancelled process stops its reads. Its
+	// source is the FEDERATED store, deliberately: a federated card's attempts
+	// stay on its owning store, which is what makes this instance's
+	// answered→delivered a statement about this store's population rather than
+	// a merged one.
+	boardmetrics.NewStageDeltaCollector(
+		ctx,
+		prometheus.DefaultRegisterer,
+		store,
+		libtime.NewCurrentDateTime(),
+	)
+
 	return service.Run(
 		ctx,
 		a.createHTTPServer(sentryClient, db, store, notifier, boardMetrics, livenessChecker),

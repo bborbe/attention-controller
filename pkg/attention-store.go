@@ -293,6 +293,21 @@ type AttentionStore interface {
 	// delivered — and reading it as delivered would repeat the overstatement
 	// this record exists to remove.
 	Delivery(ctx context.Context, itemID ItemID) (*DeliveryReport, error)
+
+	// DeliveryAttempts returns every recorded delivery attempt, keyed by item
+	// id.
+	//
+	// It exists for a whole-population read. Delivery opens one read
+	// transaction per item, which is right for a single card and wrong for a
+	// metrics scrape over every card, so this returns the same records in one
+	// transaction. It reads exactly the records Delivery reads, so the two
+	// cannot disagree about an attempt — only about how many transactions it
+	// took to say so.
+	//
+	// ⚠️ The map is non-nil but empty when nothing has ever been attempted. An
+	// absent key means "no attempt recorded", which is not the same as a failed
+	// attempt and must not be read as one.
+	DeliveryAttempts(ctx context.Context) (map[ItemID]DeliveryAttempt, error)
 }
 
 // Items is a collection of Item.

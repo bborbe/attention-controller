@@ -211,6 +211,13 @@ func (n *notifyingAttentionStore) Delivery(
 	return n.store.Delivery(ctx, itemID)
 }
 
+// DeliveryAttempts delegates unchanged. It is a read and signals nothing.
+func (n *notifyingAttentionStore) DeliveryAttempts(
+	ctx context.Context,
+) (map[ItemID]DeliveryAttempt, error) {
+	return n.store.DeliveryAttempts(ctx)
+}
+
 // SweepAnswered delegates and signals ONLY when it closed something.
 //
 // ⚠️ The conditional is the point, not a micro-optimisation. Every other write
