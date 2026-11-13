@@ -302,8 +302,14 @@ var _ = Describe("the card's navigation line on the served page", func() {
 
 		// The page's own guard is case-scoped, so this render is not otherwise
 		// covered: an unresolvable value renders as nothing, never as a stand-in.
+		//
+		// ⚠️ Scoped to the card FACE: the info panel now renders an em dash for a
+		// timeline stage that did not happen, which is a fact about the item, not
+		// an invented navigation placeholder. The navigation line renders above
+		// the panel.
+		face, _, _ := strings.Cut(body, `<div class="info-panel"`)
 		for _, placeholder := range []string{"unknown", "n/a", "N/A", "—", "??"} {
-			Expect(body).NotTo(ContainSubstring(placeholder))
+			Expect(face).NotTo(ContainSubstring(placeholder))
 		}
 	})
 })

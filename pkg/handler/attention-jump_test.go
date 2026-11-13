@@ -230,8 +230,13 @@ var _ = Describe("Attention jump handover", func() {
 				// No stand-in text either. A placeholder would be an unresolvable value
 				// presented as resolved, which is the one failure this task exists to
 				// avoid.
+				//
+				// ⚠️ Scoped to the card FACE: the info panel now renders an em dash
+				// for a timeline stage that did not happen, which is a fact about the
+				// item, not an invented jump placeholder.
+				face, _, _ := strings.Cut(block, `<div class="info-panel"`)
 				for _, placeholder := range []string{"unknown", "n/a", "N/A", "—", "??"} {
-					Expect(block).NotTo(ContainSubstring(placeholder))
+					Expect(face).NotTo(ContainSubstring(placeholder))
 				}
 			},
 		)

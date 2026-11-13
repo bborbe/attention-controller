@@ -1,8 +1,13 @@
 ---
-status: approved
+status: completed
 spec: [015-attention-card-timeline]
+summary: Rendered the seven-stage card timeline and delivery-outcome line in the info panel, computed in Go from stored timestamps and the store's delivery report, with served-HTML specs for the vocabulary, absence, gate-released, close-reason, outcome and stream cases.
+execution_id: attention-controller-timeline-exec-055-spec-015-panel-timeline
+dark-factory-version: v0.198.17
 created: "2026-11-12T09:49:35Z"
 queued: "2026-11-12T10:21:06Z"
+started: "2026-11-13T05:20:56Z"
+completed: "2026-11-13T05:27:18Z"
 ---
 
 # Render the card's timeline in its info panel
