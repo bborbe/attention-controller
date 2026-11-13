@@ -13,6 +13,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 - Run the VictoriaMetrics metrics push in-process as a job
 - Run the class-D refusal watch in-process as a job, with a Go transcript phrase tailer
 - Run the fleet-digest notify tick in-process as a job, keeping the staleness engine and the prod notification as injected subprocess seams
+- Run the Sentry heartbeat 48 h window watch in-process as a job, keeping the prod cluster read as an injected `kubectl` subprocess seam and posting its cards to this process's own attention store
 
 ## v0.76.1
 

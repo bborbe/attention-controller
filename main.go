@@ -795,12 +795,12 @@ func (a *application) createHTTPServer(
 		// under one context, so a failure in either takes the process down and
 		// launchd restarts both: a half-up state — board serving, jumps dead — is
 		// exactly the two-lifecycle problem the fold exists to remove.
-		// Nine slots, not two: the legacy jump listener is a second long-running
+		// Ten slots, not two: the legacy jump listener is a second long-running
 		// function under the same context, the bearer-token-gated business-API
 		// listener is a third, the task index watcher a fourth, the answered sweep
 		// a fifth, the session-heartbeat watcher a sixth, the metrics push job a
-		// seventh, the class-D refusal watch an eighth, and the fleet-digest notify
-		// job a ninth.
+		// seventh, the class-D refusal watch an eighth, the fleet-digest notify
+		// job a ninth, and the heartbeat 48 h watch a tenth.
 		//
 		// ⚠️ It does NOT share the listeners' failure semantics, and saying so here
 		// matters because the difference is deliberate: the sweep returns nil on
@@ -815,8 +815,10 @@ func (a *application) createHTTPServer(
 		// failed cycle, because a push that fails costs one interval of dashboard
 		// freshness and loses nothing — and the class-D refusal watch shares it.
 		// The fleet-digest notify job shares it for the same reason: a missed tick
-		// costs one interval of fleet watching.
-		runner := run.NewConcurrentRunner(9)
+		// costs one interval of fleet watching — and the heartbeat 48 h watch
+		// shares it too, where a missed tick costs one interval of window
+		// tracking.
+		runner := run.NewConcurrentRunner(10)
 		defer runner.Close()
 
 		glog.V(2).Infof("starting http server listen on %s", a.Listen)
@@ -917,6 +919,17 @@ func (a *application) addInProcessJobs(
 		return errors.Wrap(ctx, err, "create fleet digest notify job failed")
 	}
 	runner.Add(ctx, fleetDigestNotify)
+
+	// ⚠️ The prod kubeconfig and the state directory are the paths the launchd
+	// job used, resolved by the constructor: an unresolvable home directory is an
+	// error rather than a watch armed on a guessed path, which would read nothing
+	// and look exactly like a quiet window. Its cards go to THIS process's store,
+	// so the push is the whole delivery — no second hop.
+	heartbeat48hWatch, err := pkg.NewDefaultHeartbeat48hWatchJob(ctx, store)
+	if err != nil {
+		return errors.Wrap(ctx, err, "create heartbeat 48h watch job failed")
+	}
+	runner.Add(ctx, heartbeat48hWatch)
 	return nil
 }
 
