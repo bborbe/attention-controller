@@ -70,9 +70,10 @@ func NewAttentionPageHandler(store pkg.AttentionStore,
 	buildIdentity buildidentity.Identity,
 	metrics pkg.Metrics,
 ) http.Handler {
-	// Parsed once at construction rather than per request: the template is a
-	// compile-time constant, so a parse failure is a programming error, and
-	// template.Must makes it a startup failure rather than a per-request one.
+	// Parsed once at construction rather than per request: the template is built
+	// at package init from embedded assets that cannot change at runtime, so a
+	// parse failure is a programming error, and template.Must makes it a startup
+	// failure rather than a per-request one.
 	page := newAttentionPageTemplate()
 	return libhttp.NewJSONErrorHandler(
 		libhttp.WithErrorFunc(

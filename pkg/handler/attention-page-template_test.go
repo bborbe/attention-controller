@@ -37,9 +37,11 @@ var _ = Describe("buildAttentionPage", func() {
 		Expect(page).NotTo(ContainSubstring(attentionPageScriptPlaceholder))
 	})
 
-	It("inserts the script as literal text, not through the template engine", func() {
-		// A substitution made through a template action would arrive
-		// JS-escaped, so the tags around it are part of what is asserted.
+	It("inserts the script as literal text, tags and all", func() {
+		// The claim is that the substitution is textual, so the assertion is that
+		// the bytes land unchanged between their tags. That the RESULT survives
+		// html/template unescaped is a property of the engine, covered by the
+		// document-level digest below rather than by this function.
 		Expect(buildAttentionPage(html, script)).To(ContainSubstring("<script>var a = 1;</script>"))
 	})
 
@@ -52,6 +54,26 @@ var _ = Describe("buildAttentionPage", func() {
 		}).To(PanicWith(ContainSubstring(attentionPageStylesPlaceholder)))
 	})
 
+	It("panics naming the stylesheet placeholder when it is duplicated", func() {
+		Expect(func() {
+			buildAttentionPage(
+				`<style>/*__ATTENTION_PAGE_STYLES__*/</style>`+
+					`<style>/*__ATTENTION_PAGE_STYLES__*/</style>`+
+					`<script>/*__ATTENTION_PAGE_SCRIPT__*/</script>`,
+				script,
+			)
+		}).To(PanicWith(ContainSubstring("occurs 2 times")))
+	})
+
+	It("panics naming the script placeholder when it is absent", func() {
+		Expect(func() {
+			buildAttentionPage(
+				`<style>/*__ATTENTION_PAGE_STYLES__*/</style><script></script>`,
+				script,
+			)
+		}).To(PanicWith(ContainSubstring(attentionPageScriptPlaceholder)))
+	})
+
 	It("panics naming the script placeholder when it is duplicated", func() {
 		Expect(func() {
 			buildAttentionPage(
@@ -60,7 +82,7 @@ var _ = Describe("buildAttentionPage", func() {
 					`<script>/*__ATTENTION_PAGE_SCRIPT__*/</script>`,
 				script,
 			)
-		}).To(PanicWith(ContainSubstring(attentionPageScriptPlaceholder)))
+		}).To(PanicWith(ContainSubstring("occurs 2 times")))
 	})
 
 	It("assembles the document the board served before the extraction", func() {
