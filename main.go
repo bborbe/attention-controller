@@ -800,7 +800,8 @@ func (a *application) createHTTPServer(
 		// listener is a third, the task index watcher a fourth, the answered sweep
 		// a fifth, the session-heartbeat watcher a sixth, the metrics push job a
 		// seventh, the class-D refusal watch an eighth, the fleet-digest notify
-		// job a ninth, and the heartbeat 48 h watch a tenth.
+		// job a ninth, the heartbeat 48 h watch a tenth, and the sweep-gate notify
+		// job an eleventh.
 		//
 		// ⚠️ It does NOT share the listeners' failure semantics, and saying so here
 		// matters because the difference is deliberate: the sweep returns nil on
@@ -817,8 +818,10 @@ func (a *application) createHTTPServer(
 		// The fleet-digest notify job shares it for the same reason: a missed tick
 		// costs one interval of fleet watching — and the heartbeat 48 h watch
 		// shares it too, where a missed tick costs one interval of window
-		// tracking.
-		runner := run.NewConcurrentRunner(10)
+		// tracking. The sweep-gate notify job shares it as well: a missed subject
+		// costs one interval of digest watching and loses nothing, which is why its
+		// pass walks every subject and logs a failure rather than returning one.
+		runner := run.NewConcurrentRunner(11)
 		defer runner.Close()
 
 		glog.V(2).Infof("starting http server listen on %s", a.Listen)
@@ -930,6 +933,18 @@ func (a *application) addInProcessJobs(
 		return errors.Wrap(ctx, err, "create heartbeat 48h watch job failed")
 	}
 	runner.Add(ctx, heartbeat48hWatch)
+
+	// ⚠️ The subject enumerator, the gate, the classifier, the prod write script
+	// and the card poster are the paths the launchd job used, resolved by the
+	// constructor: an unresolvable home directory is an error rather than a job
+	// armed on a guessed path, which would tick nothing and look exactly like a
+	// quiet pass. The gate's rules stay in the Personal vault and ~/.claude —
+	// only the 3600 s lifecycle moves in here.
+	sweepGateNotify, err := pkg.NewDefaultSweepGateNotifyJob(ctx)
+	if err != nil {
+		return errors.Wrap(ctx, err, "create sweep gate notify job failed")
+	}
+	runner.Add(ctx, sweepGateNotify)
 	return nil
 }
 
