@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.83.0
 
 - Add the pane text writer (send-text, composer gate, tty re-proof), the session transcript reader (delivered-line proof and turn-end), the claude-wrapper client (loopback probe and answer) and the routine-gate policy the attention-watcher port needs
 - Add the attention-watcher delivery arm as an in-process job that carries an answered card into its session's pane and records the delivery attempt
