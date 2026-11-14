@@ -8,9 +8,12 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## v0.80.1
+## Unreleased
 
 - feat: **the in-process sweep-gate job wakes the subject's manager pane on an actionable tick.** The launchd-to-in-process port (v0.79/v0.80) carried the gate's detect / classify / card / ledger steps but dropped the `manager-wake.py` call the shell tick script made, so the gate kept detecting and carding while no manager pane was ever woken — the `wake <Subject>: … WOKEN` line stopped at the moment the shell job stopped. `SweepGateWaker` (a new seam, `NewSweepGateCommandWaker`) invokes `manager-wake.py --vault <vault> --subject <subject>` after an actionable publish; a quiet / progress-only tick still returns before it, so unchanged ticks wake nobody. `pkg/sweep-gate-notify-job.go`, `pkg/sweep-gate-notify-job_internal_test.go`.
+
+## v0.80.1
+
 - fix: **the CI `test` job installs Trivy without `apt-key`.** `ubuntu-latest` moved to Ubuntu 24.04, which removed `apt-key`, so the `Install Trivy` step died at `sudo: 'apt-key': command not found` and every PR's `test` check failed at setup — before any code was built or tested. The key now lands in `/usr/share/keyrings/trivy.gpg` via `gpg --dearmor`, and the repo is pinned with `signed-by=`. `.github/workflows/ci.yml`.
 
 ## v0.80.0
