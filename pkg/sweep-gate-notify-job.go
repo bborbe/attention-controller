@@ -140,6 +140,11 @@ const (
 	sweepGatePublishTimeout  = 60 * time.Second
 	sweepGateCardTimeout     = 60 * time.Second
 
+	// sweepGateWakeTimeout bounds one manager-wake.py run. The wake types one prompt
+	// into a pane and returns in a few seconds; the bound exists so a hung pane
+	// cannot wedge the pass.
+	sweepGateWakeTimeout = 60 * time.Second
+
 	// sweepGateAdhocTimeout bounds the ad-hoc pass. Its scan reads the frontmatter
 	// of ~8.7k vault files, so it is given more room than a classifier call while
 	// still bounding a hung interpreter.
@@ -296,6 +301,21 @@ type SweepGateCardPoster interface {
 	Post(ctx context.Context, card SweepGateCard) (string, error)
 }
 
+// SweepGateWaker wakes the subject's manager pane on an actionable tick.
+//
+// ⚠️ This is the emitter the shell job called and the in-process port dropped:
+// `manager-wake.py` resolves the manager session and its pane, gates the wake
+// through `pane-wake-guard.py`, types the drive prompt, and emits the
+// `wake <Subject>: … WOKEN` line the soak probe reads. Reimplementing the pane
+// check here would be a second copy of that decision, so the script stays the
+// owner and this job only invokes it.
+//
+// It is an interface for the same reason the notifier and the poster are: a spec
+// that ran the real script would type into a live manager pane.
+type SweepGateWaker interface {
+	Wake(ctx context.Context, subject string, vault string) (string, error)
+}
+
 // NewSweepGateNotifyJob walks every sweep-gate subject every interval, until ctx
 // is cancelled.
 //
@@ -364,6 +384,7 @@ func NewSweepGateNotifyJob(
 	adhoc SweepGateAdhocPass,
 	notifier SweepGateNotifier,
 	poster SweepGateCardPoster,
+	waker SweepGateWaker,
 	stateDir string,
 	interval time.Duration,
 	now libtime.CurrentDateTimeGetter,
@@ -375,6 +396,7 @@ func NewSweepGateNotifyJob(
 		adhoc:      adhoc,
 		notifier:   notifier,
 		poster:     poster,
+		waker:      waker,
 		stateDir:   stateDir,
 		interval:   interval,
 		now:        now,
@@ -389,6 +411,7 @@ type sweepGateNotifyJob struct {
 	adhoc      SweepGateAdhocPass
 	notifier   SweepGateNotifier
 	poster     SweepGateCardPoster
+	waker      SweepGateWaker
 	stateDir   string
 	interval   time.Duration
 	now        libtime.CurrentDateTimeGetter
@@ -548,11 +571,47 @@ func (j *sweepGateNotifyJob) reportChangeWake(
 	if classified.ExitCode == sweepGateClassifyQuietCode {
 		return sweepGateNotifiedProgress
 	}
-	return j.publish(
+	notified := j.publish(
 		ctx,
 		"Sweep gate: "+j.tickMarker(ctx, state, slug)+" — needs you:\n"+classified.Output,
 		classified.Output,
 		filepath.Join(state, slug+sweepGateAlertSuffix),
+	)
+	// ⚠️ The wake is the emitter the shell job called and the in-process port
+	// dropped: on an actionable tick, type the drive prompt into the manager's
+	// pane. It runs AFTER the publish so a notification failure cannot also
+	// swallow the wake, and it never runs on a progress-only tick (the quiet
+	// branch returns above) — the suppression half of SC2.
+	j.wake(ctx, subject)
+	return notified
+}
+
+// wake runs the manager-wake emitter for one actionable subject.
+//
+// ⚠️ A failed wake is logged and the pass continues: the notification is the
+// operator-facing signal and the wake is the mechanism lever, so a wake that
+// could not run must not cost the alert. The output is logged on success so a
+// `WOKEN` / `SKIP` / `NO-PANE` verdict is visible in the job log, which is the
+// log the soak probe reads.
+func (j *sweepGateNotifyJob) wake(ctx context.Context, subject SweepGateSubject) {
+	if j.waker == nil {
+		return
+	}
+	output, err := j.waker.Wake(ctx, subject.Name, subject.Vault)
+	if err != nil {
+		sweepGateNotifyErrorf(
+			"job=%s action=wake_error subject=%s error=%v",
+			sweepGateNotifyJobName,
+			subject.Name,
+			err,
+		)
+		return
+	}
+	sweepGateNotifyInfof(
+		"job=%s action=wake subject=%s result=%s",
+		sweepGateNotifyJobName,
+		subject.Name,
+		sweepGateCollapse(output, ";", sweepGateNotifyOutputLimit),
 	)
 }
 
@@ -1423,6 +1482,47 @@ func (p *sweepGateCommandCardPoster) Post(
 	return output.String(), nil
 }
 
+// NewSweepGateCommandWaker builds the manager-wake emitter over its script.
+func NewSweepGateCommandWaker(python, script string) SweepGateWaker {
+	return &sweepGateCommandWaker{python: python, script: script}
+}
+
+type sweepGateCommandWaker struct {
+	python string
+	script string
+}
+
+// Wake runs manager-wake.py for one subject and returns its output.
+//
+// ⚠️ The subject and vault are argv words, never shell words, and the child gets
+// an allowlisted environment: the script resolves its own manager state and
+// WezTerm access, and this service's tokens have no business in it.
+func (w *sweepGateCommandWaker) Wake(
+	ctx context.Context,
+	subject string,
+	vault string,
+) (string, error) {
+	commandCtx, cancel := context.WithTimeout(ctx, sweepGateWakeTimeout)
+	defer cancel()
+	// #nosec G204 -- the interpreter and the script are compile-time constants;
+	// the subject and vault are passed as argv words, never through a shell.
+	cmd := exec.CommandContext(
+		commandCtx,
+		w.python,
+		w.script,
+		"--vault", vault,
+		"--subject", subject,
+	)
+	cmd.Env = childEnv()
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	if err := cmd.Run(); err != nil {
+		return output.String(), errors.Wrapf(ctx, err, "run manager-wake '%s' failed", w.script)
+	}
+	return output.String(), nil
+}
+
 // NewDefaultSweepGateNotifyJob builds the job against the paths the launchd job
 // used: the three scripts, the write script, the poster, and the state directory.
 //
@@ -1472,6 +1572,18 @@ func NewDefaultSweepGateNotifyJob(ctx context.Context) (run.Func, error) {
 				"claude-supervisor",
 				"scripts",
 				"attention-ask.py",
+			),
+		),
+		NewSweepGateCommandWaker(
+			sweepGatePythonBinary,
+			filepath.Join(
+				home,
+				".claude",
+				"plugins",
+				"marketplaces",
+				"claude-supervisor",
+				"scripts",
+				"manager-wake.py",
 			),
 		),
 		filepath.Join(home, ".claude", "state", "sweep-gate-loop"),
