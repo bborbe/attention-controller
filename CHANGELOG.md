@@ -8,6 +8,12 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- Add the pane text writer (send-text, composer gate, tty re-proof), the session transcript reader (delivered-line proof and turn-end), the claude-wrapper client (loopback probe and answer) and the routine-gate policy the attention-watcher port needs
+- Add the attention-watcher delivery arm as an in-process job that carries an answered card into its session's pane and records the delivery attempt
+- Add the routine-gate settle arm as an in-process job that answers a wrapper child's path-scoped Read gate through the wrapper and records the rule that admitted or held it
+
 ## v0.82.0
 
 - feat: add a `check-task-link` gate that fails a PR whose body carries no `Task: <task_identifier>` line
