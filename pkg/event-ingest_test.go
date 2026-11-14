@@ -71,7 +71,7 @@ var _ = Describe("EventIngestJob", func() {
 	}
 
 	job := func() pkg.EventIngestJob {
-		return pkg.NewEventIngestJob(stateDir, sink, stdtime.Hour)
+		return pkg.NewEventIngestJob(stateDir, sink, nil, stdtime.Hour)
 	}
 
 	BeforeEach(func() {

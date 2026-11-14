@@ -111,11 +111,13 @@ type EventIngestJob interface {
 func NewEventIngestJob(
 	stateDir string,
 	sink EventIngestSink,
+	filter EventIngestFilter,
 	interval time.Duration,
 ) EventIngestJob {
 	return &eventIngestJob{
 		stateDir: stateDir,
 		sink:     sink,
+		filter:   filter,
 		interval: interval,
 	}
 }
@@ -123,6 +125,7 @@ func NewEventIngestJob(
 type eventIngestJob struct {
 	stateDir string
 	sink     EventIngestSink
+	filter   EventIngestFilter
 	interval time.Duration
 }
 
@@ -277,6 +280,16 @@ func (j *eventIngestJob) forward(
 	if !eventIngestKinds[record.Kind] {
 		// Consumed but deliberately not forwarded: `idle` is the session
 		// moving, not a gate.
+		return false, nil
+	}
+	if j.filter != nil && j.filter.Skip(ctx, record) {
+		// Class 3: the record names a task that was already finished when it
+		// was written. Consumed, never forwarded.
+		glog.V(2).Infof(
+			"job=attention-watcher action=skip item=%s kind=%s (named task already finished)",
+			record.ItemID,
+			record.Kind,
+		)
 		return false, nil
 	}
 	return true, j.sink.Open(ctx, record)
