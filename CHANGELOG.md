@@ -12,6 +12,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 
 - feat: add the event-log prune job: drop lines older than the retention horizon by each line's own `ts`, keeping a line whose age is unknown (no `ts`, torn or unknown shape) rather than guessing, and writing nothing when no line is aged
 - feat: add the attention event-ingest job: tail each session's event log from a persisted per-file cursor, forward `open` records to the sink and close records back, and consume non-gate kinds without forwarding them. The cursor advances only after a record's effect lands, a torn final line is left for the next pass, and a truncated log re-reads under a settled-`ts` mark
+- feat: add the store sink behind the ingest: map a hook event onto the attention schema (producer id and kind, `hook` provenance, session liveness ref, the log's item id as dedup key, kind-derived interrupt class and answer mechanism, the hook's own `asked_at`, and its carried context/options/questions), and resolve a close by matching the board's dedup key rather than keeping a second book
 
 ## v0.83.0
 
