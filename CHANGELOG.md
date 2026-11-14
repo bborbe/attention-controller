@@ -8,6 +8,11 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- feat: add the event-log prune job: drop lines older than the retention horizon by each line's own `ts`, keeping a line whose age is unknown (no `ts`, torn or unknown shape) rather than guessing, and writing nothing when no line is aged
+- feat: add the attention event-ingest job: tail each session's event log from a persisted per-file cursor, forward `open` records to the sink and close records back, and consume non-gate kinds without forwarding them. The cursor advances only after a record's effect lands, a torn final line is left for the next pass, and a truncated log re-reads under a settled-`ts` mark
+
 ## v0.83.0
 
 - Add the pane text writer (send-text, composer gate, tty re-proof), the session transcript reader (delivered-line proof and turn-end), the claude-wrapper client (loopback probe and answer) and the routine-gate policy the attention-watcher port needs
