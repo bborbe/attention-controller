@@ -14,6 +14,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 - feat: add the attention event-ingest job: tail each session's event log from a persisted per-file cursor, forward `open` records to the sink and close records back, and consume non-gate kinds without forwarding them. The cursor advances only after a record's effect lands, a torn final line is left for the next pass, and a truncated log re-reads under a settled-`ts` mark
 - feat: add the store sink behind the ingest: map a hook event onto the attention schema (producer id and kind, `hook` provenance, session liveness ref, the log's item id as dedup key, kind-derived interrupt class and answer mechanism, the hook's own `asked_at`, and its carried context/options/questions), and resolve a close by matching the board's dedup key rather than keeping a second book
 - feat: add the manager-hold book and the release arm: a manager-tier gate is held off the board for a window (a delay, never a filter), then posted when the window expires if its session is still live and dropped if the session exited; a repeated hold keeps the first clock, and a failed post leaves the hold in the book so the next pass retries it
+- feat: add the context-crossing arm: cue a **live** session over the absolute token threshold under the `compact:<sid>` dedup key, treating a zero reading as "no measurement yet" rather than as a drop, and skip a session whose card is already open
 
 ## v0.83.0
 
