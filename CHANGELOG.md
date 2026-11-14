@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- fix: **the CI `test` job installs Trivy without `apt-key`.** `ubuntu-latest` moved to Ubuntu 24.04, which removed `apt-key`, so the `Install Trivy` step died at `sudo: 'apt-key': command not found` and every PR's `test` check failed at setup — before any code was built or tested. The key now lands in `/usr/share/keyrings/trivy.gpg` via `gpg --dearmor`, and the repo is pinned with `signed-by=`. `.github/workflows/ci.yml`.
+
 ## v0.80.0
 
 - feat: run the `attention-unforwarded-closers` check inside the controller on a 900 s interval instead of as a launchd Python tick. It re-reads the attention event logs and the watcher log and reports both detectors — an `idle` row whose turn's final assistant message carries a waiting-verb closer (with its four exemptions: `suppressed.jsonl`, `PARKED`, `NO_REPLY` and a posted card), and a `question`/`permission` row with no forward line after the grace window — writing one `job=attention-unforwarded-closers action=scan|error` line per cycle. The launchd job's three-outcome exit contract is preserved as a distinct `read-error` outcome plus the `action=error` line, so a read failure can never read as "nothing lost".
