@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.80.1
 
 - fix: **the CI `test` job installs Trivy without `apt-key`.** `ubuntu-latest` moved to Ubuntu 24.04, which removed `apt-key`, so the `Install Trivy` step died at `sudo: 'apt-key': command not found` and every PR's `test` check failed at setup — before any code was built or tested. The key now lands in `/usr/share/keyrings/trivy.gpg` via `gpg --dearmor`, and the repo is pinned with `signed-by=`. `.github/workflows/ci.yml`.
 
