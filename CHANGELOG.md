@@ -14,6 +14,18 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 - Add the attention-watcher delivery arm as an in-process job that carries an answered card into its session's pane and records the delivery attempt
 - Add the routine-gate settle arm as an in-process job that answers a wrapper child's path-scoped Read gate through the wrapper and records the rule that admitted or held it
 
+## v0.82.0
+
+- feat: add a `check-task-link` gate that fails a PR whose body carries no `Task: <task_identifier>` line
+
+## v0.81.0
+
+- feat: **the in-process sweep-gate job wakes the subject's manager pane on an actionable tick.** The launchd-to-in-process port (v0.79/v0.80) carried the gate's detect / classify / card / ledger steps but dropped the `manager-wake.py` call the shell tick script made, so the gate kept detecting and carding while no manager pane was ever woken — the `wake <Subject>: … WOKEN` line stopped at the moment the shell job stopped. `SweepGateWaker` (a new seam, `NewSweepGateCommandWaker`) invokes `manager-wake.py --vault <vault> --subject <subject>` after an actionable publish; a quiet / progress-only tick still returns before it, so unchanged ticks wake nobody. `pkg/sweep-gate-notify-job.go`, `pkg/sweep-gate-notify-job_internal_test.go`.
+
+## v0.80.1
+
+- fix: **the CI `test` job installs Trivy without `apt-key`.** `ubuntu-latest` moved to Ubuntu 24.04, which removed `apt-key`, so the `Install Trivy` step died at `sudo: 'apt-key': command not found` and every PR's `test` check failed at setup — before any code was built or tested. The key now lands in `/usr/share/keyrings/trivy.gpg` via `gpg --dearmor`, and the repo is pinned with `signed-by=`. `.github/workflows/ci.yml`.
+
 ## v0.80.0
 
 - feat: run the `attention-unforwarded-closers` check inside the controller on a 900 s interval instead of as a launchd Python tick. It re-reads the attention event logs and the watcher log and reports both detectors — an `idle` row whose turn's final assistant message carries a waiting-verb closer (with its four exemptions: `suppressed.jsonl`, `PARKED`, `NO_REPLY` and a posted card), and a `question`/`permission` row with no forward line after the grace window — writing one `job=attention-unforwarded-closers action=scan|error` line per cycle. The launchd job's three-outcome exit contract is preserved as a distinct `read-error` outcome plus the `action=error` line, so a read failure can never read as "nothing lost".

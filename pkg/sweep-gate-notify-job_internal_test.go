@@ -154,6 +154,25 @@ func (p *stubSweepGatePoster) Post(_ context.Context, card SweepGateCard) (strin
 	return "posted " + card.DedupKey, nil
 }
 
+// stubSweepGateWaker records every subject it is asked to wake.
+type stubSweepGateWaker struct {
+	subjects []string
+	failures []error
+}
+
+func (w *stubSweepGateWaker) Wake(
+	_ context.Context,
+	subject string,
+	_ string,
+) (string, error) {
+	index := len(w.subjects)
+	w.subjects = append(w.subjects, subject)
+	if index < len(w.failures) {
+		return "", w.failures[index]
+	}
+	return "WOKEN pane=1", nil
+}
+
 // sweepGateReadLastPass reads the pass record the cycle just wrote, so a spec
 // asserts both halves were recorded without repeating the unmarshal.
 func sweepGateReadLastPass(baseDir string) sweepGateLastPass {
@@ -174,6 +193,7 @@ var _ = Describe("sweep gate notify job", func() {
 	var adhoc *stubSweepGateAdhoc
 	var notifier *stubSweepGateNotifier
 	var poster *stubSweepGatePoster
+	var waker *stubSweepGateWaker
 	var capture *logCapture
 	var job *sweepGateNotifyJob
 
@@ -198,6 +218,7 @@ var _ = Describe("sweep gate notify job", func() {
 		adhoc = &stubSweepGateAdhoc{}
 		notifier = &stubSweepGateNotifier{}
 		poster = &stubSweepGatePoster{}
+		waker = &stubSweepGateWaker{}
 		capture = &logCapture{}
 
 		originalInfo, originalError := sweepGateNotifyInfof, sweepGateNotifyErrorf
@@ -215,6 +236,7 @@ var _ = Describe("sweep gate notify job", func() {
 			adhoc:      adhoc,
 			notifier:   notifier,
 			poster:     poster,
+			waker:      waker,
 			stateDir:   baseDir,
 			interval:   time.Second,
 			now: libtime.CurrentDateTimeGetterFunc(func() libtime.DateTime {
@@ -279,6 +301,7 @@ var _ = Describe("sweep gate notify job", func() {
 
 		Expect(notifier.messages).To(BeEmpty())
 		Expect(poster.cards).To(BeEmpty())
+		Expect(waker.subjects).To(BeEmpty())
 		Expect(classifier.verdicts).To(Equal([]string{"digest moved"}))
 		Expect(exists(pathIn(sweepGateSlugOfSubject + sweepGateStreakSuffix))).To(BeFalse())
 		Expect(ledgerColumns(readLedger()[0])[3]).To(Equal(sweepGateNotifiedProgress))
@@ -300,6 +323,7 @@ var _ = Describe("sweep gate notify job", func() {
 		))
 		_, published := capture.find("job=sweep-gate-notify action=publish")
 		Expect(published).To(BeTrue())
+		Expect(waker.subjects).To(Equal([]string{"My Topic"}))
 		Expect(ledgerColumns(readLedger()[0])[3]).To(Equal("sent: 3 tasks blocked"))
 	})
 
@@ -579,6 +603,7 @@ var _ = Describe("sweep gate notify job", func() {
 				adhoc,
 				notifier,
 				poster,
+				waker,
 				baseDir,
 				job.interval,
 				job.now,
