@@ -79,7 +79,7 @@ type StoreEventSink struct {
 func NewStoreEventSink(
 	store eventIngestStore,
 	resolveKind EventIngestProducerKindResolver,
-) *StoreEventSink {
+) EventIngestSink {
 	if resolveKind == nil {
 		resolveKind = func(context.Context, string) ProducerKind {
 			return SessionProducerKind
@@ -116,6 +116,9 @@ func (s *StoreEventSink) Close(ctx context.Context, record EventIngestRecord) er
 		return errors.Wrap(ctx, err, "read board failed")
 	}
 	for _, item := range items {
+		if err := ctx.Err(); err != nil {
+			return nil
+		}
 		if item.DedupKey.String() != record.ItemID {
 			continue
 		}
