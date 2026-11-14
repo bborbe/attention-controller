@@ -10,7 +10,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 
 ## Unreleased
 
-- Add the event-log prune job: drop lines older than the retention horizon by each line's own `ts`, keeping a line whose age is unknown (no `ts`, torn or unknown shape) rather than guessing, and writing nothing when no line is aged
+- feat: add the event-log prune job: drop lines older than the retention horizon by each line's own `ts`, keeping a line whose age is unknown (no `ts`, torn or unknown shape) rather than guessing, and writing nothing when no line is aged
 
 ## v0.83.0
 

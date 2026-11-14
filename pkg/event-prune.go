@@ -114,7 +114,7 @@ func (j *eventPruneJob) PruneOnce(ctx context.Context) error {
 	if j.retain <= 0 {
 		return errors.Errorf(ctx, "event prune retention must be positive")
 	}
-	paths, err := eventLogNames(j.stateDir)
+	paths, err := eventLogNames(ctx, j.stateDir)
 	if err != nil {
 		return errors.Wrap(ctx, err, "list event logs failed")
 	}
@@ -189,19 +189,11 @@ func (j *eventPruneJob) pruneFile(
 	if len(lines) > 0 && lines[len(lines)-1] == "" {
 		lines = lines[:len(lines)-1]
 	}
-	keep := make([]string, 0, len(lines))
-	dropped := 0
-	for _, line := range lines {
-		stripped := strings.TrimSpace(line)
-		if stripped == "" {
-			// Blank lines carry nothing; the Python pass dropped them too.
-			continue
-		}
-		if eventLineAged(stripped, cutoff) {
-			dropped++
-			continue
-		}
-		keep = append(keep, line)
+	keep, dropped, err := j.agedLines(ctx, lines, cutoff)
+	if err != nil {
+		// Cancelled mid-file: nothing has been written, so the next pass
+		// simply re-reads it.
+		return 0, nil
 	}
 	if dropped == 0 {
 		return 0, nil
@@ -238,6 +230,38 @@ func (j *eventPruneJob) pruneFile(
 	return dropped, nil
 }
 
+// agedLines splits one file's lines into the ones to keep and how many to drop.
+//
+// Cancellation is checked inside the loop as well as between files: an event
+// log can hold a great many lines, and nothing has been written when this
+// returns, so abandoning the file costs only the work already done.
+func (j *eventPruneJob) agedLines(
+	ctx context.Context,
+	lines []string,
+	cutoff time.Time,
+) ([]string, int, error) {
+	keep := make([]string, 0, len(lines))
+	dropped := 0
+	for index, line := range lines {
+		if index%4096 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, 0, err
+			}
+		}
+		stripped := strings.TrimSpace(line)
+		if stripped == "" {
+			// Blank lines carry nothing; the Python pass dropped them too.
+			continue
+		}
+		if eventLineAged(stripped, cutoff) {
+			dropped++
+			continue
+		}
+		keep = append(keep, line)
+	}
+	return keep, dropped, nil
+}
+
 // eventLineAged reports whether one line's own `ts` is older than cutoff.
 //
 // A line with no usable timestamp is KEPT, never guessed at: a torn final line,
@@ -258,7 +282,7 @@ func eventLineAged(line string, cutoff time.Time) bool {
 }
 
 // eventLogNames lists the attention event logs directly beneath stateDir.
-func eventLogNames(stateDir string) ([]string, error) {
+func eventLogNames(ctx context.Context, stateDir string) ([]string, error) {
 	entries, err := os.ReadDir(stateDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -268,6 +292,9 @@ func eventLogNames(stateDir string) ([]string, error) {
 	}
 	names := make([]string, 0, len(entries))
 	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".events.jsonl") {
 			continue
 		}
