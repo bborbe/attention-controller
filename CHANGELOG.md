@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- fix: **the unforwarded-closers arm carries the closer's own ask instead of a placeholder, and stops re-posting a finding whose card was already answered.** Two truncations are removed (`truncate(ask, 100)` in `idleFinding`, `truncate(payload, 400)` in `UnforwardedPushRequest`), so a card's payload is the ask byte-for-byte; a row with no captured ask is logged as `action=skip_no_ask` and never carded, where it previously fell back to `lost <kind> gate — no forward line` and asked the operator to decide about a question nobody could read. `closeRedundantReraises` no longer closes a **cron** producer's re-raise: closing it was the loop, because the dedup suppression is open-scoped and a closed row stops collapsing the next push, so the producer's own scan re-posted it — measured 2026-11-15 at 119 of 140 findings re-posting, several 7–8 times in one evening. The row stays `open` (the board already withholds it via `suppressAnsweredTwins`), so one finding stays one card. Adds `close_reason` to the item, set by the answered-twin sweep, so a close that was not caused by an answer says which path moved the row.
+
 ## v0.86.0
 
 - feat: the sweep-gate per-subject ledger carries the manager wake's outcome as a new tab-separated column before the writer column — `wake=<result> session=<sid8> live=<yes|no|unknown>`, parsed from `manager-wake.py`'s result line (`WOKEN`, `NO-PANE`, `NO-MANAGER`, `HEADLESS`, `UNVERIFIED`, `SKIP:<reason>`, …; `ERROR` when the wake could not run). Rows that ran no wake — empty, failed, progress-only and `INVARIANT` rows — read `wake=none`, so every row keeps the same six columns. Previously the wake result reached only the job log, so a missed wake was invisible in the ledger.

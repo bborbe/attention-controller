@@ -1794,6 +1794,20 @@ func (a *attentionStore) closeRedundantReraises(
 				return nil
 			}
 			if _, ok := answered[askIdentity(item)]; ok {
+				// ⚠️ A CRON producer re-scans and re-pushes on its own
+				// interval, so closing its re-raise is precisely what makes the
+				// next scan post it again: suppression is open-scoped (:441), so
+				// a closed row no longer collapses the push. Leaving the row
+				// open keeps one finding at one card, and the board already
+				// withholds it through suppressAnsweredTwins (:439).
+				//
+				// Measured 2026-11-15 on attention-unforwarded-closers: 119 of
+				// 140 distinct findings produced more than one card id in one
+				// evening, several 7-8 each, every one closed here unanswered
+				// and re-posted by the next 15-minute scan.
+				if item.ProducerKind == CronProducerKind {
+					return nil
+				}
 				due = append(due, key)
 			}
 			return nil
@@ -1841,6 +1855,11 @@ func (a *attentionStore) closeOpenItem(
 	}
 	// answeredBy is deliberately NOT written: the row was resolved without an
 	// answer, and naming a sweeper as the answerer would be a false record.
+	//
+	// ⚠️ The reason IS written, and it names this path. `closed_at` alone says
+	// the row left; it does not say which closer moved it, and for a card the
+	// operator never answered that is the only question worth recording.
+	item.CloseReason = RedundantReraiseCloseReason
 	if err := a.closeItem(ctx, tx, item); err != nil {
 		return false, errors.Wrapf(ctx, err, "close open item %s failed", key)
 	}

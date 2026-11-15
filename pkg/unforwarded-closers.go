@@ -20,6 +20,7 @@ import (
 
 	"github.com/bborbe/errors"
 	libtime "github.com/bborbe/time"
+	"github.com/golang/glog"
 )
 
 // UnforwardedClosersJobName is the job's identity in every log line it writes.
@@ -415,11 +416,28 @@ func (s *UnforwardedClosersScanner) questionFinding(
 	if _, ok := window.forwarded[item]; ok {
 		return nil
 	}
+	// ⚠️ The ask is the row's own `detail`, carried whole. It used to be
+	// omitted, so the push fell back to the literal `lost <kind> gate — no
+	// forward line` and the operator was handed a decision about a question
+	// nobody could read. A row with no captured ask is recorded here and
+	// never posted: a card whose payload is a placeholder is worse than no
+	// card, because it costs a wake and cannot be answered.
+	ask := strings.TrimSpace(asString(record["detail"]))
+	if ask == "" {
+		glog.V(2).Infof(
+			"job=%s action=skip_no_ask item=%s kind=%s — recorded, not carded",
+			UnforwardedClosersJobName,
+			item,
+			kind,
+		)
+		return nil
+	}
 	return &UnforwardedFinding{
 		Item:    item,
 		Session: asString(record["session_id"]),
 		Kind:    kind,
 		Why:     "no forward line",
+		Ask:     ask,
 	}
 }
 
@@ -450,7 +468,7 @@ func (s *UnforwardedClosersScanner) idleFinding(
 		Session: session,
 		Kind:    "idle",
 		Why:     "waiting closer recorded idle",
-		Ask:     truncate(ask, 100),
+		Ask:     ask,
 	}
 }
 
@@ -799,13 +817,4 @@ func firstEight(value string) string {
 		runes = runes[:8]
 	}
 	return string(runes)
-}
-
-// truncate shortens a string to at most `limit` characters.
-func truncate(value string, limit int) string {
-	runes := []rune(value)
-	if len(runes) <= limit {
-		return value
-	}
-	return string(runes[:limit])
 }
