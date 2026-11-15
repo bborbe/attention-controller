@@ -58,8 +58,23 @@ const (
 // and a free-text answer types a second copy. The Python never hit this because
 // it recorded the answer `ok` and stopped; the Go arm retries instead, so it
 // must remember that the keys already went in and only re-check the close.
+//
+// ⚠️ It is IN-MEMORY only. After a process restart the map is empty, so a card
+// whose menu is still open is typed once more (the non-idempotent hazard
+// returns) and a card that settled `failed` gets another allowance. Both are
+// bounded per process and low-frequency (a deploy), and persisting a marker
+// would need a second book beside the store's — deliberately not done here.
+//
+// ⚠️ The map is not evicted. One entry per menu card ever seen, for the process
+// lifetime; bounded by the number of distinct answered menu cards, which the
+// board's sweep already closes.
 type menuProgress struct {
-	// typed reports that at least one key has been sent for this card.
+	// keys is the sequence last sent for this card. A DIFFERENT sequence means
+	// the operator re-answered the card, which resets the marker — the same rule
+	// the prose carrier's retypeGuard applies ("a different answer for the same
+	// card wins over the stale marker").
+	keys []string
+	// typed reports that at least one key has been sent for this sequence.
 	typed bool
 	// cycles counts how many times the arm has retried this card.
 	cycles int
@@ -516,13 +531,6 @@ func (j *menuAnswerJob) menuDeliverable(
 	if !ok {
 		return nil, false
 	}
-	// A card that already reached a terminal outcome is not retried, even when
-	// that outcome was `failed` — unlike the prose arm, whose failures are often
-	// transient, a menu that never appeared or never closed will not start doing
-	// so on the next cycle.
-	if j.progressOf(item.ItemID).done {
-		return nil, false
-	}
 	return questions, true
 }
 
@@ -534,6 +542,9 @@ func (j *menuAnswerJob) deliver(
 ) {
 	progress := j.progressOf(item.ItemID)
 	if menuHandledElsewhere(item) {
+		if progress.done {
+			return
+		}
 		// The board's corner X: the operator handled the card elsewhere and only
 		// wanted it off the board. Nothing is typed, and `held` records that a rule
 		// declined on purpose — `failed` would put an undeliverable card in front of
@@ -543,7 +554,22 @@ func (j *menuAnswerJob) deliver(
 	}
 	keys, err := MenuDigits(ctx, questions, item.Answers, item.Answer)
 	if err != nil {
+		if progress.done {
+			return
+		}
 		j.settle(ctx, item, progress, FailedOutcome, err.Error())
+		return
+	}
+	// A different key sequence means the operator re-answered the card. The stale
+	// at-most-once marker must not suppress the new answer, exactly as the prose
+	// carrier lets a different answer win over its pending marker.
+	if !sameKeys(progress.keys, keys) {
+		progress.keys = keys
+		progress.typed = false
+		progress.cycles = 0
+		progress.done = false
+	}
+	if progress.done {
 		return
 	}
 	sessionID, ok := itemSessionID(ctx, item)
@@ -555,11 +581,19 @@ func (j *menuAnswerJob) deliver(
 	delivery := &PaneDelivery{SessionID: sessionID, StoreItemID: string(item.ItemID)}
 	verdict, pane, reason := j.locator.Locate(ctx, delivery)
 	if verdict != DeliveryOK {
-		if verdict == DeliveryRefuse {
+		switch verdict {
+		case DeliveryRefuse:
 			j.settle(ctx, item, progress, FailedOutcome, reason)
-			return
+		case DeliveryNoPane, DeliveryResolved:
+			// ⚠️ Nothing was attempted and nothing failed. A pane-less session is
+			// pane-less by construction — the normal shape for every headless
+			// `sdk-cli` worker — and a resolved gate has nothing left to deliver.
+			// Recording `failed` would render an undeliverable card for a failure
+			// the arm never experienced.
+			j.settleQuietly(item, progress, verdict, reason)
+		default:
+			j.retry(ctx, item, progress, reason)
 		}
-		j.retry(ctx, item, progress, reason)
 		return
 	}
 	verdict, reason = j.answerOnce(ctx, pane, keys, progress)
@@ -662,6 +696,41 @@ func (j *menuAnswerJob) settle(
 		reason,
 	)
 	j.recordAttempt(ctx, item, outcome)
+}
+
+// settleQuietly marks the card terminal WITHOUT recording an attempt.
+//
+// It is for the verdicts that mean "nothing was attempted and nothing failed": a
+// pane-less session, or a gate that is already resolved. The store has no
+// outcome for "not ours to deliver", and recording `failed` would render an
+// undeliverable card for a failure that did not happen — the normal shape for
+// every headless `sdk-cli` session's cards.
+func (j *menuAnswerJob) settleQuietly(
+	item Item,
+	progress *menuProgress,
+	verdict DeliveryVerdict,
+	reason string,
+) {
+	progress.done = true
+	glog.V(2).Infof(
+		"job=attention-watcher action=menu item=%s verdict=%s reason=%q",
+		item.ItemID,
+		verdict,
+		reason,
+	)
+}
+
+// sameKeys reports whether two key sequences are identical.
+func sameKeys(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // menuHandledElsewhere reports whether the operator closed the card with the

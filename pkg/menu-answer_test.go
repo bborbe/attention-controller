@@ -302,4 +302,37 @@ var _ = Describe("menu answer job", func() {
 		_, _, _, outcome := store.RecordAttemptArgsForCall(0)
 		Expect(outcome).To(Equal(pkg.FailedOutcome))
 	})
+
+	It("records nothing when the session is pane-less by construction", func() {
+		// The normal shape for every headless `sdk-cli` worker: nothing was
+		// attempted and nothing failed, so a `failed` record would render an
+		// undeliverable card for a failure the arm never experienced.
+		locator.verdict = pkg.DeliveryNoPane
+		locator.pane = 0
+		item := answeredMenuItem("item-1", nil)
+		item.Options = pkg.AnswerOptions{{Label: "Yes"}}
+		item.Answer = &pkg.Answer{Kind: pkg.OptionAnswerKind, Value: "Yes"}
+		store.ReadBoardReturns(pkg.Items{item}, nil)
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+		Expect(writer.sent).To(BeEmpty())
+		Expect(store.RecordAttemptCallCount()).To(Equal(0))
+	})
+
+	It("types again when the operator re-answers the card", func() {
+		// A changed answer must win over the stale at-most-once marker, exactly as
+		// the prose carrier lets a different answer win over its pending marker.
+		item := answeredMenuItem("item-1", nil)
+		item.Options = pkg.AnswerOptions{{Label: "Yes"}, {Label: "No"}}
+		item.Answer = &pkg.Answer{Kind: pkg.OptionAnswerKind, Value: "Yes"}
+		store.ReadBoardReturns(pkg.Items{item}, nil)
+		writer.texts = []string{"menu\nEnter to select"}
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+		Expect(writer.sent).To(Equal([]string{"1"}))
+
+		item.Answer = &pkg.Answer{Kind: pkg.OptionAnswerKind, Value: "No"}
+		store.ReadBoardReturns(pkg.Items{item}, nil)
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+		Expect(writer.sent).To(Equal([]string{"1", "2"}))
+	})
 })
