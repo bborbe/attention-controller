@@ -308,6 +308,10 @@ type Item struct {
 	Answers Answers `json:"answers,omitempty"`
 	// ClosedAt is when the item left the queue. Absent while open or answered.
 	ClosedAt *libtime.DateTime `json:"closed_at,omitempty"`
+	// CloseReason is why the item left the queue without an answer — the path
+	// that closed it, never a constant. Absent when the close was caused by an
+	// answer, which AnsweredAt and AnsweredBy already record.
+	CloseReason CloseReason `json:"close_reason,omitempty"`
 	// ExpiresAt is the producer's own deadline, if it has one. Absent means the
 	// item does not expire on a timer.
 	ExpiresAt *libtime.DateTime `json:"expires_at,omitempty"`
@@ -338,6 +342,7 @@ func (i Item) Validate(ctx context.Context) error {
 		validation.Name("State", i.State),
 		validation.Name("CreatedAt", i.CreatedAt),
 		validation.Name("ExpiresAt", validation.HasValidationFunc(i.validateExpiresAt)),
+		validation.Name("CloseReason", i.CloseReason),
 	}.Validate(ctx)
 }
 

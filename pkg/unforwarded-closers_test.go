@@ -80,6 +80,10 @@ func (f *unforwardedFixture) openRow(
 		"event":      event,
 		"ts":         fmt.Sprintf("%d", at),
 		"transcript": transcript,
+		// The ask the row carried. Every real `open` line has one — it is what
+		// the hook's `open_item` writes — so a fixture without it models a row
+		// the producer could never have emitted.
+		"detail": "ask for " + item,
 	}
 	f.writeEvent(session, record)
 }
@@ -183,7 +187,7 @@ var _ = Describe("UnforwardedClosers", func() {
 		},
 	)
 
-	It("UnforwardedClosers reports a question row with no forward line", func() {
+	It("UnforwardedClosers reports a question row with no forward line, carrying the ask", func() {
 		fixture.openRow("s2", "bbbbbbbb", "question", "", unforwardedNow-600, "Stop")
 
 		result := fixture.scanner().Scan(context.Background())
@@ -192,6 +196,37 @@ var _ = Describe("UnforwardedClosers", func() {
 		Expect(result.Findings).To(HaveLen(1))
 		Expect(result.Findings[0].Kind).To(Equal("question"))
 		Expect(result.Findings[0].Why).To(Equal("no forward line"))
+		// The row's own ask, whole. It used to be dropped here, and the push then
+		// fell back to `lost <kind> gate — no forward line`, which the operator
+		// could read but not answer.
+		Expect(result.Findings[0].Ask).To(Equal("ask for bbbbbbbb"))
+	})
+
+	// The negative half of the same rule: a row with no captured ask is recorded
+	// and never carded. A card whose payload is a placeholder costs a wake and
+	// cannot be answered, which is worse than no card at all.
+	It("records, and does not card, a question row carrying no ask", func() {
+		fixture := newUnforwardedFixture()
+		fixture.writeEvent("s2b", map[string]any{
+			"type":       "open",
+			"item_id":    "bbbbbbbc",
+			"session_id": "s2b",
+			"kind":       "question",
+			"event":      "Stop",
+			"ts":         fmt.Sprintf("%d", unforwardedNow-600),
+			"transcript": "",
+		})
+
+		result := fixture.scanner().Scan(context.Background())
+
+		Expect(result.Findings).To(BeEmpty())
+
+		store := &mocks.AttentionStore{}
+		recorder := &unforwardedLogRecorder{}
+		job := pkg.NewUnforwardedClosersJob(fixture.scanner(), store, time.Hour, recorder.Logf)
+		job.RunOnce(context.Background())
+
+		Expect(store.PushCallCount()).To(Equal(0))
 	})
 
 	It(
@@ -372,7 +407,7 @@ var _ = Describe("UnforwardedPosting", func() {
 				pkg.LivenessRef("owner:attention-unforwarded-closers"),
 			))
 			Expect(request.DedupKey).To(Equal(pkg.DedupKey("unforwarded:jjjjjjjj")))
-			Expect(request.Payload).To(Equal(pkg.Payload("lost question gate — no forward line")))
+			Expect(request.Payload).To(Equal(pkg.Payload("ask for jjjjjjjj")))
 			Expect(request.AnswerMechanism).To(Equal(pkg.MessageAnswerMechanism))
 			Expect(request.Options).To(HaveLen(2))
 			Expect(request.Options[0].Recommended).To(BeTrue())
