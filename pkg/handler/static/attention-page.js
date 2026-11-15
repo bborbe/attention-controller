@@ -1673,8 +1673,8 @@ function replayFailure(row) {
       }
       upsertRow(change.item_id, change.html);
     } catch (error) {
-      /* ⚠️ No 'attention board: ' prefix: that is reserved for the nine ACTION
-         lines, and a spec pins its count at nine. This is stream handling, so
+      /* ⚠️ No 'attention board: ' prefix: that is reserved for the eleven ACTION
+         lines, and a spec pins its count at eleven. This is stream handling, so
          it logs unprefixed exactly as the parse guard above it does.
          ⚠️ The id is read through a guard, not off 'change' directly. The parse
          above succeeds for any JSON document, and the literal 'null' is one:

@@ -9,6 +9,7 @@ package e2e
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -103,11 +104,49 @@ var _ = Describe("the held answer", func() {
 		// 0 px again once it hides.
 		Expect(firstRowOffsetTop(page)).To(Equal(before))
 
+		// The card came back PENDING, not merely present: its Allow control is
+		// rendered and enabled, so a restored card that had been disabled or
+		// dimmed would fail here rather than pass on a bare row count.
+		Expect(page.Locator(rowSelector(clicked) + " button[data-decision=allow]").IsEnabled()).
+			To(BeTrue())
+
 		// Undo cancels the request, so no answer ever reaches the store — and the
 		// item stays open, not merely unrecorded.
 		Consistently(func() int32 { return atomic.LoadInt32(&answers) }, "6s", "500ms").
 			Should(Equal(int32(0)))
 		Expect(getItem(clicked).State).To(Equal(pkg.OpenState))
+	})
+
+	// SC4: the `U` shortcut is the keyboard half of Undo. The case above clicks
+	// the button; this one proves the keydown handler restores the card and
+	// delivers nothing, so a build that wired only the button fails here.
+	It("restores the card when U is pressed, not only the Undo button", func() {
+		itemID := pushPermission("e2e: undo key case", "e2e-undo-key")
+		push("e2e: undo key anchor", "e2e-undo-key-anchor")
+
+		page := newPage("")
+		defer func() { _ = page.Close() }()
+
+		Eventually(func() int { return rowCount(page, itemID) }).Should(Equal(1))
+
+		var answers int32
+		page.OnRequest(func(request playwright.Request) {
+			if request.Method() == http.MethodPost && strings.HasSuffix(request.URL(), "/answer") {
+				atomic.AddInt32(&answers, 1)
+			}
+		})
+
+		Expect(page.Locator(rowSelector(itemID) + " button[data-decision=deny]").Click()).To(Succeed())
+		Eventually(func() int { return rowCount(page, itemID) }).Should(Equal(0))
+		Eventually(func() bool { return undoBarActive(page) }).Should(BeTrue())
+
+		Expect(page.Keyboard().Press("u")).To(Succeed())
+		Eventually(func() int { return rowCount(page, itemID) }).Should(Equal(1))
+		Eventually(func() bool { return undoBarActive(page) }).Should(BeFalse())
+
+		Expect(getItem(itemID).State).To(Equal(pkg.OpenState))
+		Consistently(func() int32 { return atomic.LoadInt32(&answers) }, "1s", "200ms").
+			Should(Equal(int32(0)))
 	})
 
 	// SC3 and the expiry half of SC5: the answer is delivered exactly once, and
@@ -232,10 +271,24 @@ func undoBarActive(page playwright.Page) bool {
 }
 
 // evalFloat runs a no-argument expression that returns a number.
+//
+// ⚠️ playwright-go decodes an INTEGRAL JS number to Go int, not float64: its
+// value decoder returns `int` whenever math.Ceil(v) == v. Both readings here
+// are integral (offsetTop, and the click-to-fetch delta), so a bare
+// `value.(float64)` assertion would fail on every call and abort the spec at
+// its first measurement — the shape this helper shipped with until the review
+// caught it.
 func evalFloat(page playwright.Page, expression string) float64 {
 	value, err := page.Evaluate(expression)
 	Expect(err).NotTo(HaveOccurred())
-	number, ok := value.(float64)
-	Expect(ok).To(BeTrue(), "the expression did not return a number: %v", value)
-	return number
+	switch number := value.(type) {
+	case float64:
+		return number
+	case int:
+		return float64(number)
+	case int64:
+		return float64(number)
+	}
+	Fail(fmt.Sprintf("the expression did not return a number: %v", value))
+	return 0
 }

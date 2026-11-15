@@ -1809,7 +1809,7 @@ var _ = Describe("AttentionPageHandler", func() {
 	})
 
 	// The reserved prefix is asserted here as well as in the spec above, so a
-	// later change that introduces an eleventh occurrence fails loudly instead
+	// later change that introduces a twelfth occurrence fails loudly instead
 	// of silently widening a name another spec depends on.
 	It("keeps the reserved console prefix at exactly eleven lines", func() {
 		Expect(strings.Count(get("GET").Body.String(), "attention board: ")).To(Equal(11))
