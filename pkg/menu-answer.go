@@ -93,6 +93,15 @@ type MenuQuestion struct {
 // menu open in any pane — typing its digit would submit it into whatever prompt
 // the session happens to be showing. And an item with neither questions nor
 // options was never a menu, so it takes the prose path.
+//
+// ⚠️ It cannot also check the hook's own `tool_name == "AskUserQuestion"`, because
+// the stored Item carries no tool or event field — the Python watcher read that
+// off the hook record directly. The narrowing is therefore "hook + message +
+// (questions|options)", which relies on the ingest's kind mapping (a hook
+// `question` record is an AskUserQuestion). A hook `message` item that is not an
+// AskUserQuestion and still carries options would be diverted here and never
+// typed; `retry`'s bounded allowance turns that into a terminal failure after
+// ~30 s rather than a silent retry loop, so it is surfaced instead of starving.
 func MenuQuestionsOf(ctx context.Context, item Item) ([]MenuQuestion, bool) {
 	if item.AnswerMechanism != MessageAnswerMechanism {
 		return nil, false
