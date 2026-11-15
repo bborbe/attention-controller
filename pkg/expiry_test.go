@@ -32,7 +32,7 @@ import (
 //
 // ⚠️ THE ASSERTION THAT MATTERS IS ON THE STORE, NOT ON THE BOARD. The first
 // version of these specs asserted only that `ReadBoard` no longer returned the
-// item, and it passed while the row was still there: `pruneDead` re-checks
+// item, and it passed while the row was still there: the prune then re-checked
 // liveness before deleting, and an `owner:` ref reads as live forever, so the
 // key was skipped and the item was merely HIDDEN. A dedup re-push would then
 // have resurrected it. Every removal spec below therefore asserts `store.Get`
@@ -41,6 +41,8 @@ import (
 // Every removal spec uses an `owner:` ref on purpose. That model's liveness
 // probe is a constant `true`, so a removal cannot be read as a liveness prune
 // wearing the expiry's name — which is exactly the confusion the defect hid in.
+// (Since 2026-11-15 no model's liveness removes anything; `expires_at`,
+// defaulting to created_at + 24h, is the one clock.)
 
 var _ = Describe("expires_at bound", func() {
 	var ctx context.Context
@@ -137,11 +139,10 @@ var _ = Describe("expires_at bound", func() {
 		Expect(db.Close()).To(BeNil())
 	})
 
-	It("keeps an item that declares no expires_at", func() {
-		// The schema's default, and the reason the field is optional: an item
-		// does not expire on a timer unless its producer says it does. A lost
-		// ask costs work stalled silently, so persistence is the default and
-		// the timer is opt-in.
+	It("keeps an item that declares no expires_at, inside its default window", func() {
+		// The schema's default since 2026-11-15: a push without `expires_at` is
+		// stored with created_at + 24h, so the item is kept until then rather
+		// than forever.
 		store, db := newStore()
 
 		item := push(store, pkg.LivenessRef("owner:operator-1"), nil, "no-deadline")
@@ -159,7 +160,7 @@ var _ = Describe("expires_at bound", func() {
 	It("keeps an answered item whose expires_at has passed", func() {
 		// History is never rewritten. The answered branch returns before the
 		// state check, so a deadline cannot reach a resolution the operator has
-		// already recorded — the same rule that keeps `pruneDead` from
+		// already recorded — the same rule that keeps `pruneExpired` from
 		// destroying an answer it raced.
 		store, db := newStore()
 
@@ -187,12 +188,9 @@ var _ = Describe("expires_at bound", func() {
 	})
 
 	It("removes a session item whose expires_at has passed", func() {
-		// Coverage of the other models the field now reaches. ⚠️ This spec does
-		// NOT discriminate on its own: with an empty registry a `session:` ref
-		// reads as not-live, so the item would be pruned by liveness with or
-		// without the deadline. The `owner:` specs above are the ones that pin
-		// expiry as the cause; this one pins only that a `session:` item
-		// carrying a past deadline does not survive.
+		// Coverage of the other models the field now reaches. With an empty
+		// registry a `session:` ref reads as not-live, which no longer removes
+		// anything on its own — so the past deadline is the sole cause here.
 		store, db := newStore()
 
 		item := push(

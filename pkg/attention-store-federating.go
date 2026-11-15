@@ -153,6 +153,12 @@ func (f *federatingAttentionStore) SweepAnswered(
 	return f.local.SweepAnswered(ctx, maxAge)
 }
 
+// RenewLive delegates to the local store. The peer renews its own — this pass
+// writes a deadline, and a federated item's deadline is the peer's field.
+func (f *federatingAttentionStore) RenewLive(ctx context.Context) (int, error) {
+	return f.local.RenewLive(ctx)
+}
+
 // Answer proxies to the peer when the peer owns the item, and applies locally
 // otherwise.
 //
@@ -356,18 +362,15 @@ func (f *federatingAttentionStore) withRemote(ctx context.Context, local Items) 
 // caller is exactly the one that should retry.
 //
 // ⚠️ THIS CALL IS NOT READ-ONLY — it mutates the peer. The peer's read prunes
-// its dead-asker items as a side effect ("Dead askers are removed from the store
-// as a side effect of the read"), so rendering a peer's card can DELETE that
-// card upstream. Observed 2026-10-08 on the live dev pair: the operator's board
+// its expired items as a side effect ("Expired open items are removed from the
+// store as a side effect of the read"), so rendering a peer's card can DELETE
+// that card upstream. Observed 2026-10-08 on the live dev pair: the operator's board
 // showed the pod's card, and minutes later the same card was gone from both the
 // peer and the board. See withRemote for why that is accepted.
 //
 // ⚠️ What the prune costs is FREQUENCY, and only frequency. An OPEN item is
-// pruned for one of two INDEPENDENT reasons, and naming only the first is the
-// mistake this sentence exists to prevent: it has EXPIRED (checked before
-// liveness, and load-bearing there — an expired item is moot whoever is still
-// alive), or its producer is dead and it was asked. An item pruned either way is
-// also omitted from the peer's read, so a peer consumer polling a moment later
+// pruned for one reason only: it has EXPIRED. A dead producer no longer prunes
+// anything (2026-11-15). An expired item is also omitted from the peer's read, so a peer consumer polling a moment later
 // sees exactly the same state whether or not this store read first. No
 // observation is lost. What changes is that the peer now prunes on THIS store's
 // cadence rather than a human's, which is extra write traffic against the peer

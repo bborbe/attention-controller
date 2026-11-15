@@ -41,11 +41,13 @@ const remoteAttentionTimeout = 3 * time.Second
 type RemoteAttentionStore interface {
 	// Read returns the peer's open items.
 	//
-	// ⚠️ It is NOT read-only: the peer prunes its dead-asker items as a side
-	// effect of this call, so reading the peer can delete from the peer. That is
-	// the peer's own designed semantics — every reader of that store triggers it,
-	// so this one is simply another reader — and it is accepted rather than
-	// worked around.
+	// ⚠️ It is NOT read-only: the peer prunes its EXPIRED items as a side effect
+	// of this call, so reading the peer can delete from the peer. That is the
+	// peer's own designed semantics — every reader of that store triggers it, so
+	// this one is simply another reader — and it is accepted rather than worked
+	// around. ⚠️ It is not a dead-asker sweep: a dead liveness subject removes
+	// nothing, so the only thing this can delete is an item whose `expires_at`
+	// has passed.
 	Read(ctx context.Context) (Items, error)
 
 	// Get returns one of the peer's items whatever state it is in.

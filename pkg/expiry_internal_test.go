@@ -51,12 +51,22 @@ var _ = Describe("isExpired", func() {
 		Expect(isExpired(&item, now)).To(BeTrue())
 	})
 
-	It("does not expire an item that declares no deadline", func() {
-		// The schema's default, stated as a unit rule rather than inferred from a
-		// store round-trip: absent `expires_at` is persistence, never an
-		// immediate expiry.
-		item := Item{}
+	It("does not expire a row without a deadline inside created_at + 24h", func() {
+		// A row written before the default existed carries no `expires_at`; it
+		// is judged against created_at + DefaultItemExpiry, never "never".
+		createdAt := libtime.DateTimeFromUnixMicro(
+			now.Time().Add(-24*stdtime.Hour + stdtime.Microsecond).UnixMicro(),
+		)
+		item := Item{CreatedAt: createdAt}
 
 		Expect(isExpired(&item, now)).To(BeFalse())
+	})
+
+	It("expires a row without a deadline at created_at + 24h", func() {
+		createdAt := libtime.DateTimeFromUnixMicro(now.Time().Add(-24 * stdtime.Hour).UnixMicro())
+		item := Item{CreatedAt: createdAt}
+
+		Expect(isExpired(&item, now)).To(BeTrue(),
+			"an absent expires_at must not keep a row forever now that liveness removes nothing")
 	})
 })

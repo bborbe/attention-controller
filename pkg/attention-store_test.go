@@ -92,8 +92,8 @@ var _ = Describe("AttentionStore", func() {
 	})
 
 	// pushRequest builds a declaration. It is a question the producer asked
-	// (`message`), which is what makes removal-on-death the correct expectation
-	// in the liveness specs below.
+	// (`message`) — which no longer makes removal-on-death the expectation: a
+	// dead liveness subject alone removes nothing, only `expires_at` does.
 	pushRequest := func(producerID pkg.ProducerID, dedupKey pkg.DedupKey) pkg.PushRequest {
 		return pkg.PushRequest{
 			ProducerID:      producerID,
@@ -296,18 +296,26 @@ var _ = Describe("AttentionStore", func() {
 		})
 
 		It(
-			"creates a new row when the same dedup key comes from a producer whose liveness failed",
+			"collapses onto the open row when the same dedup key comes from a producer whose liveness failed",
 			func() {
 				first, err := store.Push(ctx, pushRequest("session-dead", "gate-1"))
 				Expect(err).To(BeNil())
 
-				// The producer is gone. Suppression is scoped to a *live*
-				// producer_id, so this push must not revive the dead row.
+				// The producer is gone. Suppression is NOT scoped to a live producer:
+				// a dead row is no longer pruned, so declining to collapse here wrote a
+				// SECOND open row for the same ask and the operator was shown one
+				// question twice for up to 24 h. One open row per (producer, dedup key),
+				// whatever its subject reads.
 				sessionLivenessChecker.IsLiveReturns(false)
 				second, err := store.Push(ctx, pushRequest("session-dead", "gate-1"))
 				Expect(err).To(BeNil())
 
-				Expect(second.ItemID).NotTo(Equal(first.ItemID))
+				Expect(second.ItemID).To(Equal(first.ItemID),
+					"a re-push from a dead producer updates the open row rather than adding one")
+
+				items, err := store.Read(ctx)
+				Expect(err).To(BeNil())
+				Expect(items).To(HaveLen(1), "exactly one open row must remain for the ask")
 			},
 		)
 	})
@@ -1280,7 +1288,7 @@ var _ = Describe("AttentionStore", func() {
 	})
 
 	Describe("Read and liveness", func() {
-		It("omits an item whose session producer asked and has exited", func() {
+		It("keeps an item whose session producer asked and has exited, inside its window", func() {
 			dead, err := store.Push(ctx, pushRequest("session-dead", "gate-dead"))
 			Expect(err).To(BeNil())
 			live, err := store.Push(ctx, pushRequest("session-live", "gate-live"))
@@ -1297,15 +1305,15 @@ var _ = Describe("AttentionStore", func() {
 			for _, item := range items {
 				ids = append(ids, item.ItemID)
 			}
-			// The positive control is required: a read path that returned
-			// nothing at all would otherwise pass this.
+			// A dead liveness subject alone removes nothing: the idle-reaper ends
+			// headless workers that are later resumed, and their asks must still be
+			// there. Only `expires_at` clears an item.
 			Expect(ids).To(ContainElement(live.ItemID))
-			Expect(ids).NotTo(ContainElement(dead.ItemID))
+			Expect(ids).To(ContainElement(dead.ItemID))
 
-			// And the dead item is gone from the store, not merely filtered at
-			// read time.
-			_, err = store.Get(ctx, dead.ItemID)
-			Expect(errors.Is(err, pkg.ErrItemNotFound)).To(BeTrue())
+			got, err := store.Get(ctx, dead.ItemID)
+			Expect(err).To(BeNil())
+			Expect(got.State).To(Equal(pkg.OpenState))
 		})
 
 		It("keeps an item from a short-lived producer whose heartbeat went stale", func() {
@@ -1338,11 +1346,10 @@ var _ = Describe("AttentionStore", func() {
 		})
 
 		It(
-			"removes a dead asker while keeping a stale-heartbeat reporter in the same read",
+			"keeps both a dead asker and a stale-heartbeat reporter in the same read",
 			func() {
-				// The discriminating assertion: one sweep, two producers, opposite
-				// outcomes. A store that never consulted liveness would keep both; a
-				// store that read "not running" uniformly would drop both.
+				// Both subjects are gone, and neither item has reached its
+				// `expires_at`, so both stay: liveness no longer removes either.
 				dir := GinkgoT().TempDir()
 				heartbeatPath := filepath.Join(dir, "heartbeat")
 				Expect(os.WriteFile(heartbeatPath, []byte("x"), 0600)).To(BeNil())
@@ -1368,9 +1375,11 @@ var _ = Describe("AttentionStore", func() {
 
 				items, err := store.Read(ctx)
 				Expect(err).To(BeNil())
-				Expect(items).To(HaveLen(1))
-				Expect(items[0].ItemID).To(Equal(reported.ItemID))
-				Expect(items[0].ItemID).NotTo(Equal(asked.ItemID))
+				ids := make([]pkg.ItemID, 0, len(items))
+				for _, item := range items {
+					ids = append(ids, item.ItemID)
+				}
+				Expect(ids).To(ConsistOf(reported.ItemID, asked.ItemID))
 			},
 		)
 
@@ -1406,7 +1415,7 @@ var _ = Describe("AttentionStore", func() {
 	// ReadBoard is Read plus the answered items the board renders as dimmed
 	// records. The two readers share one private body, so the pair below asserts
 	// both halves of that sharing: an answered item is returned and survives, and
-	// a dead open asker is still removed in the same pass. The first half alone
+	// an expired open asker is still removed in the same pass. The first half alone
 	// is satisfied by a store that returns every stored row; the second alone by
 	// the old Read. Together they pin the widened filter to the answered item and
 	// prove the prune was not disabled with it.
@@ -1496,35 +1505,44 @@ var _ = Describe("AttentionStore", func() {
 
 		// The other half of the pair: widening the filter must not have widened
 		// the prune. One sweep, two dead producers, opposite outcomes — an
-		// answered item survives and an open question is removed. The removal is
-		// asserted against the store, not merely against the returned slice.
-		It("still removes a dead open asker in the same read that keeps the answered item", func() {
-			answered, err := store.Push(ctx, pushRequest("session-dead-a", "gate-answered"))
-			Expect(err).To(BeNil())
-			_, err = store.Answer(ctx, answered.ItemID, "telegram", "", "", nil, nil, nil)
-			Expect(err).To(BeNil())
+		// answered item survives and an expired open question is removed. The
+		// removal is asserted against the store, not merely against the returned
+		// slice.
+		It(
+			"still removes an expired open asker in the same read that keeps the answered item",
+			func() {
+				answered, err := store.Push(ctx, pushRequest("session-dead-a", "gate-answered"))
+				Expect(err).To(BeNil())
+				_, err = store.Answer(ctx, answered.ItemID, "telegram", "", "", nil, nil, nil)
+				Expect(err).To(BeNil())
 
-			asked, err := store.Push(ctx, pushRequest("session-dead-b", "gate-asked"))
-			Expect(err).To(BeNil())
+				past := libtime.DateTimeFromUnixMicro(
+					libtime.NewCurrentDateTime().Now().Time().Add(-1 * 60 * 60 * 1e9).UnixMicro(),
+				)
+				askedRequest := pushRequest("session-dead-b", "gate-asked")
+				askedRequest.ExpiresAt = &past
+				asked, err := store.Push(ctx, askedRequest)
+				Expect(err).To(BeNil())
 
-			// Both producers are gone by the time the board reads.
-			sessionLivenessChecker.IsLiveReturns(false)
+				// Both producers are gone by the time the board reads.
+				sessionLivenessChecker.IsLiveReturns(false)
 
-			board, err := store.ReadBoard(ctx)
-			Expect(err).To(BeNil())
-			Expect(itemIDs(board)).To(ContainElement(answered.ItemID))
-			Expect(itemIDs(board)).NotTo(ContainElement(asked.ItemID))
+				board, err := store.ReadBoard(ctx)
+				Expect(err).To(BeNil())
+				Expect(itemIDs(board)).To(ContainElement(answered.ItemID))
+				Expect(itemIDs(board)).NotTo(ContainElement(asked.ItemID))
 
-			// The removal actually happened: the row is gone, not filtered at read
-			// time. A read that only omitted it would leave it retrievable.
-			_, err = store.Get(ctx, asked.ItemID)
-			Expect(errors.Is(err, pkg.ErrItemNotFound)).To(BeTrue())
+				// The removal actually happened: the row is gone, not filtered at read
+				// time. A read that only omitted it would leave it retrievable.
+				_, err = store.Get(ctx, asked.ItemID)
+				Expect(errors.Is(err, pkg.ErrItemNotFound)).To(BeTrue())
 
-			// And the sweep did not take the answered item with it.
-			got, err := store.Get(ctx, answered.ItemID)
-			Expect(err).To(BeNil())
-			Expect(got.State).To(Equal(pkg.AnsweredState))
-		})
+				// And the sweep did not take the answered item with it.
+				got, err := store.Get(ctx, answered.ItemID)
+				Expect(err).To(BeNil())
+				Expect(got.State).To(Equal(pkg.AnsweredState))
+			},
+		)
 
 		// ⚠️ The operator's report, reproduced as a spec. Answer one card and the
 		// producer's next push of the SAME dedup_key writes a new row, which
@@ -1768,23 +1786,31 @@ var _ = Describe("AttentionStore", func() {
 			first, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
 			Expect(err).To(BeNil())
 
-			// The dead-producer path writes a SECOND open row under the same
-			// (producer_id, dedup_key); the index now holds that one as the pair's
-			// representative.
-			sessionLivenessChecker.IsLiveReturns(false)
-			second, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
+			// ⚠️ The sibling is SEEDED, not produced by the store. It used to come
+			// from the dead-producer path — a re-push whose producer read dead wrote a
+			// second open row under the same (producer_id, dedup_key) — and since
+			// 2026-11-15 that path collapses onto the open row instead, so the store
+			// can no longer write this state. A store written BEFORE that change still
+			// holds it, and this is the guard that keeps its survivor indexed, so the
+			// state is written straight into the items bucket as such a store carries
+			// it: a row the dedup index does not name as the pair's representative.
+			sibling := *first
+			sibling.ItemID = pkg.ItemID("legacy-sibling")
+			sibling.Payload = "which way? (legacy sibling)"
+			err = db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
+				items := libkv.NewStoreTx[string, pkg.Item](pkg.AttentionStoreBucketName)
+				return items.Add(ctx, tx, sibling.ItemID.String(), sibling)
+			})
 			Expect(err).To(BeNil())
-			Expect(second.ItemID).NotTo(Equal(first.ItemID))
 
-			_, err = store.Close(ctx, first.ItemID, "", nil)
+			_, err = store.Close(ctx, sibling.ItemID, "", nil)
 			Expect(err).To(BeNil())
 
 			// If closing the non-representative row had removed the entry, this push
-			// would find nothing to collapse onto and write a THIRD row.
-			sessionLivenessChecker.IsLiveReturns(true)
+			// would find nothing to collapse onto and write a third row.
 			repushed, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
 			Expect(err).To(BeNil())
-			Expect(repushed.ItemID).To(Equal(second.ItemID))
+			Expect(repushed.ItemID).To(Equal(first.ItemID))
 
 			items, err := store.Read(ctx)
 			Expect(err).To(BeNil())
@@ -1854,11 +1880,42 @@ var _ = Describe("AttentionStore", func() {
 			Expect(counting.updates).To(Equal(0))
 		})
 
-		It("opens exactly one write transaction when it prunes a dead asker", func() {
-			_, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
-			Expect(err).To(BeNil())
+		// expiredRequest is an ask whose deadline has already passed, so the read
+		// classifies it for removal on its first scan.
+		expiredRequest := func() pkg.PushRequest {
+			past := libtime.DateTimeFromUnixMicro(
+				libtime.NewCurrentDateTime().Now().Time().Add(-1 * 60 * 60 * 1e9).UnixMicro(),
+			)
+			request := pushRequest("session-a", "gate-1")
+			request.ExpiresAt = &past
+			return request
+		}
 
-			sessionLivenessChecker.IsLiveReturns(false)
+		// storeHookedOnPrune builds a store over the counting DB whose clock runs
+		// hook on its SECOND reading. The read takes the first before it scans;
+		// the prune takes the second before it opens its transaction — so the
+		// hook lands exactly in the window between the snapshot and the prune.
+		storeHookedOnPrune := func(hook func()) pkg.AttentionStore {
+			calls := 0
+			getter := libtime.CurrentDateTimeGetterFunc(func() libtime.DateTime {
+				calls++
+				if calls == 2 {
+					hook()
+				}
+				return libtime.NewCurrentDateTime().Now()
+			})
+			return pkg.NewAttentionStore(
+				counting,
+				pkg.NewItemIDGenerator(),
+				sessionLivenessChecker,
+				getter,
+				libtime.Duration(15*60*1e9),
+			)
+		}
+
+		It("opens exactly one write transaction when it prunes an expired asker", func() {
+			_, err := store.Push(ctx, expiredRequest())
+			Expect(err).To(BeNil())
 
 			counting.updates = 0
 			items, err := countingStore.Read(ctx)
@@ -1868,42 +1925,42 @@ var _ = Describe("AttentionStore", func() {
 			Expect(counting.updates).To(Equal(1))
 		})
 
+		It("opens no write transaction for a dead asker inside its window", func() {
+			_, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
+			Expect(err).To(BeNil())
+
+			sessionLivenessChecker.IsLiveReturns(false)
+
+			counting.updates = 0
+			items, err := countingStore.Read(ctx)
+			Expect(err).To(BeNil())
+			Expect(items).To(HaveLen(1))
+			Expect(counting.updates).To(Equal(0))
+		})
+
 		// ⚠️ The two specs below pin the window the split introduced. A
 		// `remove` disposition is computed from the snapshot `readItems` takes,
 		// so anything that changes between that snapshot and the prune is
 		// invisible to it unless the prune re-reads. The old single-transaction
 		// read could not reach this: `Answer` needed the same write lock and
-		// serialized behind it. Both were reproduced against the first version
-		// of this change, which deleted the item in each case.
+		// serialized behind it.
 		It("does not prune an item answered between the scan and the prune", func() {
-			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
+			item, err := store.Push(ctx, expiredRequest())
 			Expect(err).To(BeNil())
 
-			// Classification runs the liveness check between the scan and the
-			// prune, so it is exactly the window the race lives in. Answer the
-			// item from inside it, then report the producer gone.
-			answered := false
-			sessionLivenessChecker.IsLiveCalls(func(_ context.Context, _ string) bool {
-				if !answered {
-					answered = true
-					_, answerErr := store.Answer(
-						ctx,
-						item.ItemID,
-						"telegram",
-						"",
-						"",
-						nil,
-						nil,
-						nil,
-					)
-					Expect(answerErr).To(BeNil())
-				}
-				return false
+			hooked := storeHookedOnPrune(func() {
+				_, answerErr := store.Answer(ctx, item.ItemID, "telegram", "", "", nil, nil, nil)
+				Expect(answerErr).To(BeNil())
 			})
 
-			items, err := countingStore.Read(ctx)
+			counting.updates = 0
+			items, err := hooked.Read(ctx)
 			Expect(err).To(BeNil())
 			Expect(items).To(BeEmpty())
+			// The prune's transaction opened (the answer wrote through `store`, which
+			// the counter does not see): the item was classified for removal
+			// BEFORE it was answered, so the re-check is what saved it.
+			Expect(counting.updates).To(Equal(1))
 
 			// The answer must survive. Pruning it would rewrite the history the
 			// schema says is never rewritten — the one thing the prune exists
@@ -1914,32 +1971,24 @@ var _ = Describe("AttentionStore", func() {
 			Expect(history[0].State).To(Equal(pkg.AnsweredState))
 		})
 
-		It(
-			"does not prune an item whose producer came back between the scan and the prune",
-			func() {
-				item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
-				Expect(err).To(BeNil())
+		It("does not prune an item re-armed between the scan and the prune", func() {
+			item, err := store.Push(ctx, expiredRequest())
+			Expect(err).To(BeNil())
 
-				// Dead when classified, live again by the time the prune re-checks
-				// — what a resumed session, a refreshed heartbeat, or a registry
-				// that briefly read as unreadable all look like. Liveness is not
-				// monotonic, so the prune cannot inherit it from the snapshot.
-				calls := 0
-				sessionLivenessChecker.IsLiveCalls(func(_ context.Context, _ string) bool {
-					calls++
-					return calls > 1
-				})
+			// A dedup re-push rewrites `expires_at` in place, so the deadline the
+			// scan saw is not the one standing when the prune runs.
+			hooked := storeHookedOnPrune(func() {
+				_, pushErr := store.Push(ctx, pushRequest("session-a", "gate-1"))
+				Expect(pushErr).To(BeNil())
+			})
 
-				items, err := countingStore.Read(ctx)
-				Expect(err).To(BeNil())
-				Expect(items).To(BeEmpty())
+			items, err := hooked.Read(ctx)
+			Expect(err).To(BeNil())
+			Expect(items).To(BeEmpty())
 
-				history, err := store.History(ctx, 0, 0)
-				Expect(err).To(BeNil())
-				Expect(history).To(HaveLen(1))
-				Expect(history[0].ItemID).To(Equal(item.ItemID))
-				Expect(history[0].State).To(Equal(pkg.OpenState))
-			},
-		)
+			got, err := store.Get(ctx, item.ItemID)
+			Expect(err).To(BeNil(), "the re-armed deadline is the one that decides")
+			Expect(got.State).To(Equal(pkg.OpenState))
+		})
 	})
 })

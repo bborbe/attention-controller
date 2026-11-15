@@ -45,11 +45,11 @@ type application struct {
 	// reporting rather than failing startup. This repo has no deployed stage
 	// yet, so nothing here depends on the flag; a future deploy supplies
 	// SENTRY_DSN from its own secret.
-	SentryDSN       string `required:"false" arg:"sentry-dsn"                  env:"SENTRY_DSN"                  usage:"SentryDSN (empty disables error reporting)"                                                                                                            display:"length"`
+	SentryDSN       string `required:"false" arg:"sentry-dsn"                  env:"SENTRY_DSN"                  usage:"SentryDSN (empty disables error reporting)"                                                                                     display:"length"`
 	SentryProxy     string `required:"false" arg:"sentry-proxy"                env:"SENTRY_PROXY"                usage:"Sentry Proxy"`
 	Listen          string `required:"true"  arg:"listen"                      env:"LISTEN"                      usage:"address to listen to"`
 	DataDir         string `required:"true"  arg:"datadir"                     env:"DATADIR"                     usage:"data directory"`
-	HeartbeatWindow string `required:"false" arg:"heartbeat-window"            env:"HEARTBEAT_WINDOW"            usage:"how stale a heartbeat:<path> mtime may be before the producer counts as finished"                                                                                       default:"15m"`
+	HeartbeatWindow string `required:"false" arg:"heartbeat-window"            env:"HEARTBEAT_WINDOW"            usage:"how stale a heartbeat:<path> mtime may be before the producer counts as finished"                                                                default:"15m"`
 	// SessionHeartbeatWindow is how stale a SESSION heartbeat may be before the
 	// session counts as gone. ⚠️ It is deliberately NOT HeartbeatWindow, and
 	// the two must not be collapsed onto one number: this one bounds how long a
@@ -58,7 +58,7 @@ type application struct {
 	// minutes from being declared dead. One number cannot serve both.
 	//
 	// 60s against the 30s post interval is one whole missed tick of slack.
-	SessionHeartbeatWindow string `required:"false" arg:"session-heartbeat-window"    env:"SESSION_HEARTBEAT_WINDOW"    usage:"how stale a session heartbeat may be before the session counts as gone"                                                                                                 default:"60s"`
+	SessionHeartbeatWindow string `required:"false" arg:"session-heartbeat-window"    env:"SESSION_HEARTBEAT_WINDOW"    usage:"how stale a session heartbeat may be before the session counts as gone"                                                                          default:"60s"`
 	// SessionHeartbeatRetention is how long a heartbeat row is kept before the
 	// store prunes it from the snapshot and the directory.
 	//
@@ -70,27 +70,26 @@ type application struct {
 	// endpoint exists to keep. Seven days keeps every row a resume could
 	// plausibly reach while stopping the unbounded accumulation that made the
 	// list 1,600 rows and 318 KB.
-	SessionHeartbeatRetention string `required:"false" arg:"session-heartbeat-retention" env:"SESSION_HEARTBEAT_RETENTION" usage:"how long a posted session heartbeat row is kept before the store prunes it"                                                                                             default:"168h"`
+	SessionHeartbeatRetention string `required:"false" arg:"session-heartbeat-retention" env:"SESSION_HEARTBEAT_RETENTION" usage:"how long a posted session heartbeat row is kept before the store prunes it"                                                                      default:"168h"`
 	// SessionHeartbeatDir is the heartbeat store directory. ⚠️ Empty resolves
 	// to the EXISTING supervisor store (`~/.local/state/claude-supervisor/live`)
 	// rather than to a new one — this endpoint extends that store, and the
 	// supervisor scripts keep reading the same files.
 	SessionHeartbeatDir string `required:"false" arg:"session-heartbeat-dir"       env:"SESSION_HEARTBEAT_DIR"       usage:"directory holding the session heartbeat store (empty resolves to the supervisor's existing store)"`
-	AnsweredMaxAge      string `required:"false" arg:"answered-max-age"            env:"ANSWERED_MAX_AGE"            usage:"how old an answered item may be before the store closes it; must stay well above the slowest consumer's poll interval"                                                  default:"1h"`
+	AnsweredMaxAge      string `required:"false" arg:"answered-max-age"            env:"ANSWERED_MAX_AGE"            usage:"how old an answered item may be before the store closes it; must stay well above the slowest consumer's poll interval"                           default:"1h"`
 	SessionsDir         string `required:"false" arg:"sessions-dir"                env:"SESSIONS_DIR"                usage:"directory holding the session registry used to resolve session:<id> liveness"`
-	// SessionLiveness selects how producer liveness is resolved, and therefore
-	// whether the store prunes an item whose producer it cannot find.
+	// SessionLiveness selects how producer liveness is resolved.
 	//
 	// ⚠️ `registry` (the default) is the host-local behaviour: the registry
-	// directory is read and an item whose producer is gone is pruned. `off` wires
-	// a checker that reports every session live, so nothing is ever pruned — the
-	// cluster backend's mode, where the registry names sessions on one host and
-	// every producer elsewhere reads as gone.
+	// directory is read. `off` wires a checker that reports every session live —
+	// the cluster backend's mode, where the registry names sessions on one host
+	// and every producer elsewhere reads as gone. Since 2026-11-15 a gone
+	// producer prunes no stored item in either mode (`expires_at` is the one
+	// clock); the verdict still decides duplicate suppression on push.
 	//
-	// ⚠️ An unrecognised value is a startup error, never a silent fallback. The
-	// two modes differ in whether stored data is deleted, so guessing is the one
-	// answer that is wrong whichever way it guesses.
-	SessionLiveness   string `required:"false" arg:"session-liveness"            env:"SESSION_LIVENESS"            usage:"how producer liveness is resolved: 'registry' prunes an item whose producer is gone from the session registry; 'off' never prunes (a cluster backend)"                  default:"registry"`
+	// ⚠️ An unrecognised value is a startup error, never a silent fallback:
+	// guessing is the one answer that is wrong whichever way it guesses.
+	SessionLiveness   string `required:"false" arg:"session-liveness"            env:"SESSION_LIVENESS"            usage:"how producer liveness is resolved: 'registry' reads the session registry; 'off' reports every session live (a cluster backend)"                  default:"registry"`
 	AttentionStateDir string `required:"false" arg:"attention-state-dir"         env:"ATTENTION_STATE_DIR"         usage:"directory holding the producers' event logs the page resolves item provenance from"`
 
 	// AttentionWrapperURL is the claude-wrapper the routine-gate settle arm
@@ -962,6 +961,11 @@ func (a *application) addAnsweredSweep(
 		return errors.Wrap(ctx, err, "parse answered max age failed")
 	}
 	runner.Add(ctx, runAnsweredSweep(store, answeredMaxAge, answeredSweepInterval))
+	// ⚠️ Registered beside the sweep rather than inside it: both are periodic
+	// maintenance over the same live index, but they answer different questions
+	// (what may leave, what must stay) and one must not be skippable by the other
+	// returning early. Separate tickers also keep each pass's deadline its own.
+	runner.Add(ctx, runExpiryRenewal(store, answeredSweepInterval))
 	return nil
 }
 
@@ -1317,6 +1321,51 @@ func runAnsweredSweep(
 						closed,
 						time.Duration(maxAge),
 					)
+				}
+			}
+		}
+	}
+}
+
+// runExpiryRenewal pushes the defaulted `expires_at` of every live producer's
+// open items forward on a ticker.
+//
+// ⚠️ It exists so a session that is reaped and resumed hours later still finds
+// its question — and the answer that landed on it — instead of losing both when
+// the first push's 24 h ran out. `expires_at` stays the one clock that clears an
+// item; this pass only moves it, and only for items whose deadline came from the
+// store's own default. See pkg/attention-store-impl.go § RenewLive.
+//
+// ⚠️ It runs in its own goroutine and calls the store's own Update — never a step
+// inside a read, because the read path stays read-only. The interval is a
+// parameter rather than the constant read directly, so a spec can drive the tick
+// without waiting a minute for it.
+func runExpiryRenewal(store pkg.AttentionStore, interval time.Duration) run.Func {
+	return func(ctx context.Context) error {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-ticker.C:
+				// Same per-tick deadline as the answered sweep, and for the same
+				// reason: a store call that never returns would block this loop for
+				// good, ctx.Done() would be unreachable while it is in flight, and the
+				// renewal guarantee would be silently gone rather than degraded.
+				renewCtx, cancel := context.WithTimeout(ctx, answeredSweepTimeout)
+				renewed, err := store.RenewLive(renewCtx)
+				cancel()
+				if err != nil {
+					// Logged, not fatal: a failed pass costs one interval of renewal,
+					// it loses nothing — the deadlines it would have moved are still
+					// ahead of now — and taking the process down would drop the board
+					// over something the board survives.
+					glog.Errorf("renew live expiries failed: %v", err)
+					continue
+				}
+				if renewed > 0 {
+					glog.V(2).Infof("renewed %d defaulted expiries", renewed)
 				}
 			}
 		}

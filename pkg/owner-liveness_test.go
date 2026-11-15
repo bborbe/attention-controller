@@ -26,8 +26,10 @@ import (
 // gate — so the question left the board before the operator could answer it,
 // and it failed in the silent direction: a clean board and no gate.
 //
-// `owner:<id>` is the model that fixes it, and its one rule is the thing these
-// specs pin: an `owner:` item is NEVER pruned by a liveness probe.
+// `owner:<id>` was the model that fixed it, and its one rule is the thing these
+// specs pin: an `owner:` item is NEVER pruned by a liveness probe. Since
+// 2026-11-15 that holds for every model — a dead subject removes nothing, and
+// `expires_at` (default created_at + 24h) is the one clock that clears an item.
 //
 // ⚠️ The bound on this model is `expires_at`, and it is enforced — see
 // expiry_test.go, which pins that a past deadline removes an `owner:` item and
@@ -95,22 +97,22 @@ var _ = Describe("Owner liveness model", func() {
 		Expect(db.Close()).To(BeNil())
 	})
 
-	It("still prunes a session item whose session is gone", func() {
-		// The discriminator, in the same shape as the spec above: same absent
-		// producer, same ask, only the model differs. Pruning is re-pointed for
-		// the declared operator gate, not turned off.
+	It("keeps a session item whose session is gone, inside its window", func() {
+		// Same absent producer, same ask, only the model differs — and since
+		// 2026-11-15 the outcome no longer does: a dead liveness subject alone
+		// removes nothing, whatever the model. Only `expires_at` clears an item.
 		store, db := newStore(pkg.NewSessionLivenessChecker(GinkgoT().TempDir()))
 
 		push(store, pkg.LivenessRef("session:worker-1"), "gate-session")
 
 		items, err := store.ReadBoard(ctx)
 		Expect(err).To(BeNil())
-		Expect(items).To(BeEmpty(), "a dead session's ask must still be pruned")
+		Expect(items).To(HaveLen(1), "a dead session's ask stays until its expires_at")
 
 		Expect(db.Close()).To(BeNil())
 	})
 
-	It("still prunes a report from a producer with a stale heartbeat", func() {
+	It("keeps an ask from a producer with a stale heartbeat, inside its window", func() {
 		store, db := newStore(pkg.NewSessionLivenessChecker(GinkgoT().TempDir()))
 
 		push(
@@ -121,14 +123,14 @@ var _ = Describe("Owner liveness model", func() {
 
 		items, err := store.ReadBoard(ctx)
 		Expect(err).To(BeNil())
-		Expect(items).To(BeEmpty(), "a stale heartbeat means the producer is gone")
+		Expect(items).To(HaveLen(1), "a stale heartbeat alone removes nothing")
 
 		Expect(db.Close()).To(BeNil())
 	})
 
 	// ⚠️ A table over the whole enum, so a fourth model added later cannot be
 	// accepted by `AvailableLivenessModels` and then fall through
-	// `isProducerLiveWith` to the unknown-model error. The set is asserted
+	// `isProducerLive` to the unknown-model error. The set is asserted
 	// explicitly rather than counted, because a count passes for any three.
 	It("accepts exactly the three declared models and rejects a fourth", func() {
 		Expect(pkg.AvailableLivenessModels).To(ConsistOf(

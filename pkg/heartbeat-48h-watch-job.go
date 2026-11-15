@@ -244,11 +244,12 @@ func (j *heartbeat48hWatchJob) cycle(ctx context.Context) {
 	now := j.now.Now().Time().UTC()
 
 	// ⚠️ The heartbeat is written BEFORE any post. The store's `heartbeat:<path>`
-	// liveness model reads a stale or missing file as a dead producer and would
-	// prune the card on its next read, so a push that precedes its own heartbeat
-	// leaves a window in which the card is already prunable. A failure to write it
-	// is logged and the cycle CONTINUES — unlike the class-D watch, no offset
-	// advances here, so there is nothing a later write would move past.
+	// liveness model reads a stale or missing file as a dead producer: that no
+	// longer removes the card, but it does stop the renewal of its defaulted
+	// `expires_at`, so the card would be cleared 24 h after the last touch. A
+	// failure to write it is logged and the cycle CONTINUES — unlike the class-D
+	// watch, no offset advances here, so there is nothing a later write would move
+	// past.
 	if err := j.touchHeartbeat(ctx, now); err != nil {
 		heartbeat48hWatchErrorf(
 			"job=%s action=heartbeat_error error=%v",
