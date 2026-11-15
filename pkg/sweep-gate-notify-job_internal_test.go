@@ -170,7 +170,7 @@ func (w *stubSweepGateWaker) Wake(
 	if index < len(w.failures) {
 		return "", w.failures[index]
 	}
-	return "WOKEN pane=1", nil
+	return "WOKEN pane=1 prompt='/supervisor:goal-drive --interval 15m' session=11111111 live=yes\n", nil
 }
 
 // stubSweepGateChecker answers from the spec's queue of verdict-only results.
@@ -292,8 +292,8 @@ var _ = Describe("sweep gate notify job", func() {
 		return strings.Split(strings.TrimSuffix(string(content), "\n"), "\n")
 	}
 
-	// ledgerColumns splits one row, so a spec asserts the four documented columns
-	// without pinning the fifth to this test binary's pid.
+	// ledgerColumns splits one row, so a spec asserts the five documented columns
+	// without pinning the sixth to this test binary's pid.
 	ledgerColumns := func(line string) []string {
 		return strings.Split(line, "\t")
 	}
@@ -314,7 +314,8 @@ var _ = Describe("sweep gate notify job", func() {
 		Expect(columns[1]).To(Equal("0"))
 		Expect(columns[2]).To(Equal("tick ok"))
 		Expect(columns[3]).To(Equal(sweepGateNotifiedNotSent))
-		Expect(columns[4]).To(HavePrefix("pid="))
+		Expect(columns[4]).To(Equal(sweepGateWakeNone))
+		Expect(columns[5]).To(HavePrefix("pid="))
 		_, passLine := capture.find(
 			"job=sweep-gate-notify action=pass subjects=1 adhoc_rc=0",
 		)
@@ -403,6 +404,7 @@ var _ = Describe("sweep gate notify job", func() {
 		Expect(classifier.verdicts).To(Equal([]string{"digest moved"}))
 		Expect(exists(pathIn(sweepGateSlugOfSubject + sweepGateStreakSuffix))).To(BeFalse())
 		Expect(ledgerColumns(readLedger()[0])[3]).To(Equal(sweepGateNotifiedProgress))
+		Expect(ledgerColumns(readLedger()[0])[4]).To(Equal(sweepGateWakeNone))
 	})
 
 	It("publishes once on a CHANGE-WAKE the classifier calls actionable", func() {
@@ -423,6 +425,22 @@ var _ = Describe("sweep gate notify job", func() {
 		Expect(published).To(BeTrue())
 		Expect(waker.subjects).To(Equal([]string{"My Topic"}))
 		Expect(ledgerColumns(readLedger()[0])[3]).To(Equal("sent: 3 tasks blocked"))
+		Expect(ledgerColumns(readLedger()[0])[4]).To(
+			Equal("wake=WOKEN session=11111111 live=yes"),
+		)
+	})
+
+	It("records a wake that could not run as ERROR beside the alert it did not cost", func() {
+		gate.results = []SweepGateTickResult{{ExitCode: 10, Output: "digest moved\n"}}
+		classifier.results = []SweepGateClassifyResult{{ExitCode: 10, Output: "needs you\n"}}
+		waker.failures = []error{stderrors.New("wake timed out")}
+
+		job.cycle(ctx)
+
+		Expect(notifier.messages).To(HaveLen(1))
+		columns := ledgerColumns(readLedger()[0])
+		Expect(columns[3]).To(Equal("sent: needs you"))
+		Expect(columns[4]).To(Equal("wake=ERROR session=- live=unknown"))
 	})
 
 	It("publishes once for a failure streak and suppresses the next tick", func() {
@@ -499,6 +517,7 @@ var _ = Describe("sweep gate notify job", func() {
 		Expect(created).To(BeTrue())
 		Expect(readLedger()).To(HaveLen(2))
 		Expect(ledgerColumns(readLedger()[0])[2]).To(Equal("INVARIANT"))
+		Expect(ledgerColumns(readLedger()[0])[4]).To(Equal(sweepGateWakeNone))
 		Expect(ledgerColumns(readLedger()[0])[3]).To(
 			Equal("sent: invariant posted open-card-invariant:my-topic"),
 		)
@@ -714,3 +733,41 @@ var _ = Describe("sweep gate notify job", func() {
 		Expect(awaitJobDone(done)).To(BeNil())
 	})
 })
+
+var _ = DescribeTable("sweepGateWakeField",
+	func(output string, expected string) {
+		Expect(sweepGateWakeField(output)).To(Equal(expected))
+	},
+	Entry("a confirmed wake",
+		"WOKEN pane=12 prompt='/supervisor:goal-drive --interval 15m' session=0dbb4336 live=yes\n",
+		"wake=WOKEN session=0dbb4336 live=yes"),
+	Entry("a guard refusal folds its reason into the result",
+		"SKIP skip:spinner pane=12 session=0dbb4336 live=yes\n",
+		"wake=SKIP:spinner session=0dbb4336 live=yes"),
+	Entry("a live manager whose pane was missed",
+		"NO-PANE reason=tty-not-a-pane:ttys009 subject='X' session=0dbb4336 live=yes\n",
+		"wake=NO-PANE session=0dbb4336 live=yes"),
+	Entry("a subject whose registrations are all dead",
+		"NO-MANAGER subject='X' tier=auto session=339d0e33 live=no\n",
+		"wake=NO-MANAGER session=339d0e33 live=no"),
+	Entry("a subject nothing has registered",
+		"NO-MANAGER subject='X' tier=auto session=- live=no\n",
+		"wake=NO-MANAGER session=- live=no"),
+	Entry("a live manager running headless",
+		"HEADLESS subject='X' session=6f14c290 live=yes\n",
+		"wake=HEADLESS session=6f14c290 live=yes"),
+	Entry(
+		"an unconfirmed submit",
+		"UNVERIFIED pane=7 prompt='/x' — the submit could not be confirmed session=5bedea87 live=yes\n",
+		"wake=UNVERIFIED session=5bedea87 live=yes",
+	),
+	Entry("a line from a script that predates the session fields",
+		"NO-PANE session=0dbb4336 subject='X'\n",
+		"wake=NO-PANE session=0dbb4336 live=unknown"),
+	Entry("leading blank lines are skipped",
+		"\n  \nWOKEN pane=1 session=11111111 live=yes\n",
+		"wake=WOKEN session=11111111 live=yes"),
+	Entry("empty output is unknown, never a guess",
+		"",
+		"wake=UNKNOWN session=- live=unknown"),
+)
