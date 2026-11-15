@@ -653,8 +653,14 @@ func (j *sweepGateNotifyJob) wake(ctx context.Context, subject SweepGateSubject)
 //
 // ⚠️ Opt-in, matching the shell's `.miss-guard-enabled`: the check costs a second
 // full resolution (~9 s measured), so it runs only where a reader asked for it. The
-// probe is `grep -c 'action=miss'` against the changed-tick count; the threshold is
-// 0 misses in >=20 changed ticks.
+// probe is `grep -c 'action=miss'` against the changed-tick count; a check that did
+// not run is `action=guard_error` and deliberately carries no `action=miss`
+// substring, so a failed check cannot inflate the rate. The threshold is 0 misses in
+// >=20 changed ticks.
+//
+// ⚠️ No `//counterfeiter:generate` directive: the six sibling sweep-gate interfaces
+// in this file use the same hand-written stub in the spec, so this one follows that
+// file's convention rather than the repo-wide default.
 func (j *sweepGateNotifyJob) checkMiss(
 	ctx context.Context,
 	subject SweepGateSubject,
@@ -669,7 +675,7 @@ func (j *sweepGateNotifyJob) checkMiss(
 	checked, err := j.checker.Check(ctx, subject.Name, subject.Vault, state)
 	if err != nil {
 		sweepGateNotifyErrorf(
-			"job=%s action=miss_check_error subject=%s error=%v",
+			"job=%s action=guard_error subject=%s error=%v",
 			sweepGateNotifyJobName,
 			subject.Name,
 			err,
@@ -677,6 +683,20 @@ func (j *sweepGateNotifyJob) checkMiss(
 		return
 	}
 	if checked.ExitCode == sweepGateTickEmptyCode {
+		return
+	}
+	// ⚠️ ONLY rc 10 is a MISS. `SweepGateCheckResult`'s contract says anything else
+	// is a check that did not run — and a check that did not run is not a
+	// CHANGE-WAKE. Counting it as one would corrupt the very rate this guard exists
+	// to measure and could trip the threshold with no change actually missed.
+	if checked.ExitCode != sweepGateTickChangeWakeCode {
+		sweepGateNotifyErrorf(
+			"job=%s action=guard_error subject=%s rc=%d verdict=%s",
+			sweepGateNotifyJobName,
+			subject.Name,
+			checked.ExitCode,
+			sweepGateCollapse(checked.Output, ";", sweepGateNotifyOutputLimit),
+		)
 		return
 	}
 	sweepGateNotifyErrorf(
@@ -1372,6 +1392,17 @@ func sweepGateRunScript(
 	}
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
+		// ⚠️ A process killed by the deadline is NOT a verdict: its exit code says
+		// nothing about the digest, so it must never reach a caller as one (a killed
+		// `--check` would otherwise read as a MISS).
+		if commandCtx.Err() != nil {
+			return 0, output.String(), errors.Wrapf(
+				ctx,
+				commandCtx.Err(),
+				"'%s' did not complete",
+				script,
+			)
+		}
 		return exitErr.ExitCode(), output.String(), nil
 	}
 	return 0, output.String(), errors.Wrapf(ctx, err, "run '%s' failed", script)

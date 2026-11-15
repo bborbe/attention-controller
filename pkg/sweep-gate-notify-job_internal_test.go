@@ -344,6 +344,52 @@ var _ = Describe("sweep gate notify job", func() {
 		Expect(missed).To(BeFalse())
 	})
 
+	It("reports a guard error, not a MISS, when the check did not run", func() {
+		writeFile(pathIn(sweepGateMissGuardFileName), "")
+		gate.results = []SweepGateTickResult{{ExitCode: 0, Output: "unchanged\n"}}
+		checker.results = []SweepGateCheckResult{{ExitCode: 1, Output: "gate exploded\n"}}
+
+		job.cycle(ctx)
+
+		_, missed := capture.find("job=sweep-gate-notify action=miss")
+		Expect(missed).To(BeFalse())
+		_, failed := capture.find("job=sweep-gate-notify action=guard_error")
+		Expect(failed).To(BeTrue())
+	})
+
+	It("reports a guard error when the check itself errored", func() {
+		writeFile(pathIn(sweepGateMissGuardFileName), "")
+		gate.results = []SweepGateTickResult{{ExitCode: 0, Output: "unchanged\n"}}
+		checker.errs = []error{stderrors.New("check exploded")}
+
+		job.cycle(ctx)
+
+		_, failed := capture.find("job=sweep-gate-notify action=guard_error")
+		Expect(failed).To(BeTrue())
+	})
+
+	It("does not report a MISS when the re-read still says unchanged", func() {
+		writeFile(pathIn(sweepGateMissGuardFileName), "")
+		gate.results = []SweepGateTickResult{{ExitCode: 0, Output: "unchanged\n"}}
+		checker.results = []SweepGateCheckResult{{ExitCode: 0, Output: "unchanged\n"}}
+
+		job.cycle(ctx)
+
+		_, missed := capture.find("job=sweep-gate-notify action=miss")
+		Expect(missed).To(BeFalse())
+		Expect(checker.calls.Load()).To(BeNumerically("==", 1))
+	})
+
+	It("does not run the miss check when no checker is wired", func() {
+		writeFile(pathIn(sweepGateMissGuardFileName), "")
+		job.checker = nil
+		gate.results = []SweepGateTickResult{{ExitCode: 0, Output: "unchanged\n"}}
+
+		job.cycle(ctx)
+
+		Expect(checker.calls.Load()).To(BeNumerically("==", 0))
+	})
+
 	It("records progress-only on a CHANGE-WAKE the classifier calls quiet", func() {
 		writeFile(pathIn(sweepGateSlugOfSubject+sweepGateStreakSuffix), "")
 		gate.results = []SweepGateTickResult{{ExitCode: 10, Output: "digest moved\n"}}
