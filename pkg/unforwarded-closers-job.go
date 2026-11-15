@@ -146,7 +146,7 @@ func UnforwardedPushRequest(finding UnforwardedFinding, expiresAt libtime.DateTi
 		LivenessRef:    LivenessRef("owner:" + UnforwardedClosersProducerID.String()),
 		DedupKey:       DedupKey("unforwarded:" + finding.Item),
 		InterruptClass: unforwardedClosersInterruptClass,
-		Payload:        Payload(truncate(payload, 400)),
+		Payload:        Payload(payload),
 		Context: ItemContext(fmt.Sprintf(
 			"A %s gate from session %s never reached the store (%s). "+
 				"Re-presented by the unforwarded-closer scanner.",
