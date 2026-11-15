@@ -8,10 +8,13 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- feat: the sweep-gate per-subject ledger carries the manager wake's outcome as a new tab-separated column before the writer column — `wake=<result> session=<sid8> live=<yes|no|unknown>`, parsed from `manager-wake.py`'s result line (`WOKEN`, `NO-PANE`, `NO-MANAGER`, `HEADLESS`, `UNVERIFIED`, `SKIP:<reason>`, …; `ERROR` when the wake could not run). Rows that ran no wake — empty, failed, progress-only and `INVARIANT` rows — read `wake=none`, so every row keeps the same six columns. Previously the wake result reached only the job log, so a missed wake was invisible in the ledger.
+
 ## v0.85.0
 
 - feat: **the sweep-gate job carries a miss-rate guard again.** The shell tick wrapper had an opt-in `.miss-guard-enabled` check that re-read the gate's verdict after an EMPTY tick; the launchd-to-in-process port dropped it, so a change the digest missed could leave a manager silently stalled with nothing recording it. `SweepGateChecker` (`NewSweepGateCommandChecker`) runs the gate's own `--check` verdict-only mode and reports `action=miss subject=<name> rc=<n>` when an EMPTY tick's re-read says CHANGE-WAKE, and `action=guard_error` when the check did not run (an error, a non-10 exit, or a deadline kill) — a distinct action carrying no `action=miss` substring, so a failed check cannot inflate the rate. It is opt-in on `<stateDir>/.miss-guard-enabled` because the check costs a second full resolution (~9 s measured), and the named probe is `grep -c 'action=miss'` against the changed-tick count — the threshold is 0 misses in ≥20 changed ticks. The three subprocess methods (`Tick`, `Check`, `Classify`) now share one `sweepGateRunScript` helper instead of three copies of the same launch/exit-code handling. `pkg/sweep-gate-notify-job.go`, `pkg/sweep-gate-notify-job_internal_test.go`.
-- feat: the sweep-gate per-subject ledger carries the manager wake's outcome as a new tab-separated column before the writer column — `wake=<result> session=<sid8> live=<yes|no|unknown>`, parsed from `manager-wake.py`'s result line (`WOKEN`, `NO-PANE`, `NO-MANAGER`, `HEADLESS`, `UNVERIFIED`, `SKIP:<reason>`, …; `ERROR` when the wake could not run). Rows that ran no wake — empty, failed, progress-only and `INVARIANT` rows — read `wake=none`, so every row keeps the same six columns. Previously the wake result reached only the job log, so a missed wake was invisible in the ledger.
 
 ## v0.84.0
 
