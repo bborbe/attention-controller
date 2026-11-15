@@ -1603,12 +1603,19 @@ func (a *attentionStore) dueDefaultedKeys(
 		item := candidate.item
 		live, err := a.isProducerLive(ctx, &item)
 		if err != nil {
-			return nil, errors.Wrapf(
-				ctx,
-				err,
-				"check producer liveness for item %s failed",
+			// ⚠️ Skip the ITEM, never the pass. An unparseable `liveness_ref` is a
+			// property of one stored row, and returning here killed renewal for every
+			// item on every tick — a dead pass whose only trace was a log line, while
+			// live sessions' items ran out their deadlines. The skipped row keeps the
+			// bound a dead subject gets: cleared at most DefaultItemExpiry after its
+			// last renewal. Only the index scan's own failure stays an error.
+			glog.V(1).Infof(
+				"item=%s liveness_ref=%q action=skip_liveness_ref: %v",
 				candidate.key,
+				item.LivenessRef,
+				err,
 			)
+			continue
 		}
 		if !live {
 			continue

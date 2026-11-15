@@ -20,7 +20,12 @@ import (
 // after 15–30 minutes, and removing their asks on exit deleted questions, and
 // the answers about to land on them, from sessions that were then resumed. With
 // that prune gone, an item without a deadline would never leave, so the default
-// is what keeps the store bounded.
+// is what keeps the store bounded — for `session:` and `heartbeat:` items.
+//
+// ⚠️ It does NOT bound an `owner:` item, and that exception is the one hole in
+// the sentence above: `isProducerLive` returns a constant true for the owner
+// model, so a defaulted owner deadline is renewed on every pass and an
+// unanswered owner gate lives until something else closes it.
 const DefaultItemExpiry = libtime.Duration(24 * time.Hour)
 
 // expiresAtOrDefault returns the producer's deadline and whether it had one, or

@@ -915,7 +915,11 @@ func (a *application) createHTTPServer(
 		// The unforwarded-closers check shares it too: a failed scan costs one
 		// interval of loss counting and loses nothing, so it logs action=error and
 		// keeps ticking.
-		runner := run.NewConcurrentRunner(19)
+		// ⚠️ The capacity must EXCEED the number of registrations below (nineteen),
+		// not equal it. The runner buffers `make(chan Func, maxConcurrent)` and
+		// `Add` blocks before `Run` drains, so a full buffer hangs startup with no
+		// log line — one spare slot is the margin, as 6→7, 10→11 and 12→19 before it.
+		runner := run.NewConcurrentRunner(20)
 		defer runner.Close()
 
 		glog.V(2).Infof("starting http server listen on %s", a.Listen)
