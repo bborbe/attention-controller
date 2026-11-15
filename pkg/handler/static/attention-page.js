@@ -392,18 +392,21 @@ document.addEventListener('change', function (event) {
    write. The card disappears on the click so the next card moves up — the
    operator asked for the top-card flow, not a scrolling queue — and the header
    bar names what is held with an Undo control and a countdown.
-   ⚠️ The hold is 4900 ms rather than 5000 so the click-to-delivery delta the
+   ⚠️ The hold is 4700 ms rather than 5000 so the click-to-delivery delta the
    acceptance criterion measures stays at or under five seconds even with a
-   timer tick of jitter; the countdown still opens at 5. Only ONE answer is held
-   at a time: answering the next card flushes the previous one immediately, so
-   no stack builds. */
-var UNDO_HOLD_MS = 4900;
+   timer tick and event-loop jitter (measured overhead ~100 ms under load); the
+   countdown still opens at 5. Only ONE answer is held at a time: answering the
+   next card flushes the previous one immediately, so no stack builds. */
+var UNDO_HOLD_MS = 4700;
 var heldAnswer = null;
-/* pendingReload is the id of a scheduled post-failure reload, held so a new
-   answer can cancel it. ⚠️ Load bearing: without this, a failed delivery
-   schedules a reload that fires 2.5 s later even if the operator has already
-   answered the next card — the reload would drop that held answer, which was
-   never sent. One reload is ever pending. */
+/* pendingReload is the id of a scheduled STALE-answer reload, held so a new
+   answer can cancel it. ⚠️ Load bearing: without this, a reload fires 2.5 s
+   after a stale answer even if the operator has already answered the next card
+   — the reload would drop that held answer, which was never sent. A stale
+   answer means the item is no longer open, so cancelling its reload leaves no
+   open card off the board. A delivery that merely FAILED restores its card
+   instead (restoreHeld) and schedules no reload at all. One reload is ever
+   pending. */
 var pendingReload = null;
 /* removedAnchors remembers where a held card sat, keyed by item id, so the
    answered record the stream sends back is re-inserted where the card was
@@ -413,6 +416,28 @@ var removedAnchors = {};
 
 function undoBarElement() {
   return document.querySelector('[data-undo-bar]');
+}
+/* boardList returns the board's row list, rebuilding it from the empty-state
+   paragraph when the board had emptied. It is the one place a card is inserted
+   back into a list that may no longer exist. */
+function boardList() {
+  var list = document.querySelector('ul.items');
+  if (list) { return list; }
+  var empty = document.querySelector('p.empty');
+  if (!empty) { return null; }
+  list = document.createElement('ul');
+  list.className = 'items';
+  empty.parentNode.replaceChild(list, empty);
+  return list;
+}
+/* findRowByID is the top-level row lookup, used before the live channel's own
+   findRow is in scope. */
+function findRowByID(itemID) {
+  var rows = document.querySelectorAll('li.item');
+  for (var i = 0; i < rows.length; i++) {
+    if (rows[i].getAttribute('data-item-id') === itemID) { return rows[i]; }
+  }
+  return null;
 }
 /* heldTitle reads the card's ask off the row before the row is removed, so the
    bar can name what is held. The payload is where a permission card's ask
@@ -453,11 +478,15 @@ function clearHold() {
   renderUndoBar();
 }
 /* deliverHeld posts a captured answer. It runs on expiry and on flush, and it
-   is the only place a held answer reaches the store. A failure reloads the
-   board rather than drawing a note: the card is already off the page, so there
-   is nowhere on it to render the line, and the reload shows the store's own
-   truth — an item still open when the delivery failed, or a dimmed record when
-   another arm won the race. */
+   is the only place a held answer reaches the store.
+   ⚠️ A failure has two shapes and they must not share an outcome:
+     - the item is STALE (already answered, or gone) — an open card would be a
+       lie, so the board reloads to show the record;
+     - the delivery merely FAILED while the item is still open — the card is put
+       back where it sat so the operator can answer it again. A reload here
+       would race the next answer and, if it fired mid-hold, drop that answer;
+       and leaving the card off the board would strand an open permission
+       request with no control to answer it. */
 function deliverHeld(held) {
   fetch('/api/1.0/attention/' + encodeURIComponent(held.itemID) + '/answer', {
     method: 'POST',
@@ -467,12 +496,35 @@ function deliverHeld(held) {
     if (response.ok) { return; }
     return response.text().then(function (body) {
       console.error('attention board: answer failed - HTTP ' + response.status, body);
-      scheduleReload();
+      var failure = answerFailure(body);
+      if (failure.staleCard) {
+        delete removedAnchors[held.itemID];
+        scheduleReload();
+        return;
+      }
+      restoreHeld(held, 'Answer failed - HTTP ' + response.status + ' - ' + body);
     });
   }).catch(function (error) {
     console.error('attention board: answer failed - ' + String(error));
-    scheduleReload();
+    restoreHeld(held, 'Could not reach the store: ' + String(error));
   });
+}
+/* restoreHeld puts a held card back on the board after a delivery that failed
+   while the item is still open, and renders the failure on it. The card is
+   re-inserted at its remembered anchor, or at the top when that anchor has
+   itself left, so it returns where the operator answered it. */
+function restoreHeld(held, message) {
+  delete removedAnchors[held.itemID];
+  var list = boardList();
+  if (!list) { return; }
+  var anchor = held.anchor ? findRowByID(held.anchor) : null;
+  if (anchor) {
+    anchor.insertAdjacentHTML('beforebegin', held.html);
+  } else {
+    list.insertAdjacentHTML('afterbegin', held.html);
+  }
+  var row = findRowByID(held.itemID);
+  if (row) { showCloseNote(row, message, true); }
 }
 /* scheduleReload reloads the board after a failed delivery, once, and keeps the
    id so beginHold can cancel it. A reload already pending is left alone rather
@@ -498,14 +550,8 @@ function undoHeld() {
   var held = heldAnswer;
   clearHold();
   delete removedAnchors[held.itemID];
-  var list = document.querySelector('ul.items');
-  if (!list) {
-    var empty = document.querySelector('p.empty');
-    if (!empty) { window.location.reload(); return; }
-    list = document.createElement('ul');
-    list.className = 'items';
-    empty.parentNode.replaceChild(list, empty);
-  }
+  var list = boardList();
+  if (!list) { return; }
   list.insertAdjacentHTML('afterbegin', held.html);
 }
 /* nextItemID returns the id of the row that follows row on the board, or null.
@@ -539,6 +585,7 @@ function beginHold(row, request, verb) {
     request: request,
     verb: verb,
     title: title,
+    anchor: anchor,
     deadline: Date.now() + UNDO_HOLD_MS,
     timer: null,
     ticker: null

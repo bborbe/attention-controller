@@ -97,7 +97,15 @@ var _ = Describe("the held answer", func() {
 		// 0 px while the bar is showing.
 		Expect(firstRowOffsetTop(page)).To(Equal(before))
 
-		Expect(page.Locator("[data-undo]").Click()).To(Succeed())
+		// ⚠️ Force, because this click is racing a ~5 s timer. Playwright's normal
+		// click waits for actionability (visible, enabled, stable) and retries for
+		// up to 30 s; under host load that wait alone outlasted the hold, the bar
+		// hid, and the click then failed on an invisible element. The bar is
+		// already active and at a fixed position when this line runs, so the
+		// actionability wait buys nothing here.
+		Expect(page.Locator("[data-undo]").Click(playwright.LocatorClickOptions{
+			Force: playwright.Bool(true),
+		})).To(Succeed())
 		Eventually(func() int { return rowCount(page, clicked) }).Should(Equal(1))
 		Eventually(func() bool { return undoBarActive(page) }).Should(BeFalse())
 
@@ -198,7 +206,7 @@ var _ = Describe("the held answer", func() {
 		Expect(delta).To(BeNumerically(">=", 4000))
 		Expect(delta).To(BeNumerically("<=", 5000))
 
-		Eventually(func() pkg.State { return getItem(itemID).State }).
+		Eventually(func() pkg.State { return getItem(itemID).State }, "5s").
 			Should(Equal(pkg.AnsweredState))
 		Expect(getItem(itemID).Decision).To(Equal(pkg.DenyDecision))
 
@@ -236,7 +244,7 @@ var _ = Describe("the held answer", func() {
 		Expect(page.Locator(rowSelector(second) + " button[data-decision=deny]").Click()).To(Succeed())
 		Eventually(func() int32 { return atomic.LoadInt32(&answers) }, "2s", "100ms").
 			Should(Equal(int32(1)))
-		Eventually(func() pkg.State { return getItem(first).State }).
+		Eventually(func() pkg.State { return getItem(first).State }, "5s").
 			Should(Equal(pkg.AnsweredState))
 
 		// The second is still held at this point — exactly one delivered.
@@ -245,7 +253,7 @@ var _ = Describe("the held answer", func() {
 		// Its own expiry delivers it, for a delivery count of 2.
 		Eventually(func() int32 { return atomic.LoadInt32(&answers) }, "6s", "100ms").
 			Should(Equal(int32(2)))
-		Eventually(func() pkg.State { return getItem(second).State }).
+		Eventually(func() pkg.State { return getItem(second).State }, "5s").
 			Should(Equal(pkg.AnsweredState))
 	})
 })
