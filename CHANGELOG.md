@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.87.0
 
 - feat: register the ported attention-watcher jobs in `main.go` — prune, ingest, answer delivery, menu answers, the routine-gate settle arm and the context crossing scan run in-process with the Python watcher's own intervals, behind `attention-wrapper-url` and `attention-context-dir`. The release-expired-holds arm stays unregistered: nothing fills its hold book yet, so registering it would drain an always-empty book. A `V(2)` registration line names the wired arm set, which is a different question from whether any arm ran
 
