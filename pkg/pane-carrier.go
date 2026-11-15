@@ -126,8 +126,20 @@ func (c *paneCarrier) Locate(
 	return c.resolveDeliveryPane(ctx, delivery)
 }
 
+// PaneCarrierAndLocator is what NewPaneCarrier returns: the prose carrier plus
+// the pane resolution the menu arm needs.
+//
+// ⚠️ The combined type exists so a caller wiring both arms can pass the same
+// value to NewPaneCarrier's consumer and to NewMenuAnswerJob's locator. Without
+// it the locator would only be reachable by a type assertion on the unexported
+// concrete type.
+type PaneCarrierAndLocator interface {
+	PaneCarrier
+	PaneLocator
+}
+
 // NewPaneCarrier creates the carrier the delivery arm uses.
-func NewPaneCarrier(writer PaneTextWriter, transcripts TranscriptReader) PaneCarrier {
+func NewPaneCarrier(writer PaneTextWriter, transcripts TranscriptReader) PaneCarrierAndLocator {
 	return &paneCarrier{
 		writer:             writer,
 		transcripts:        transcripts,
@@ -459,5 +471,10 @@ func (d *PaneDelivery) clearPending() {
 	d.HasPendingAt = false
 }
 
-// Compile-time guard: the carrier must satisfy its own interface.
-var _ PaneCarrier = (*paneCarrier)(nil)
+// Compile-time guard: the carrier must satisfy its own interface, and the
+// combined one its constructor advertises.
+var (
+	_ PaneCarrier           = (*paneCarrier)(nil)
+	_ PaneLocator           = (*paneCarrier)(nil)
+	_ PaneCarrierAndLocator = (*paneCarrier)(nil)
+)

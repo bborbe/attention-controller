@@ -43,7 +43,29 @@ const MenuAnswerInterval = 2 * time.Second
 const (
 	defaultMenuKeySettle   = 250 * time.Millisecond
 	defaultMenuSubmitPolls = 12
+	// defaultMenuMaxCycles bounds how many delivery cycles one card may consume
+	// before the arm gives up and records a terminal outcome. At the 2 s
+	// interval this is 30 s: long enough for a menu still being drawn, short
+	// enough that a card whose menu never appears is surfaced instead of being
+	// retried silently until the sweep closes it.
+	defaultMenuMaxCycles = 15
 )
+
+// menuProgress is what the arm remembers about one card across delivery cycles.
+//
+// ⚠️ `typed` is the at-most-once guard. Re-sending a key sequence is NOT
+// idempotent: a multi-select answer re-toggles its boxes (so {1,3} becomes {3}),
+// and a free-text answer types a second copy. The Python never hit this because
+// it recorded the answer `ok` and stopped; the Go arm retries instead, so it
+// must remember that the keys already went in and only re-check the close.
+type menuProgress struct {
+	// typed reports that at least one key has been sent for this card.
+	typed bool
+	// cycles counts how many times the arm has retried this card.
+	cycles int
+	// done marks a card that reached a terminal outcome, so it is not retried.
+	done bool
+}
 
 // MenuQuestion is one question unit of an open AskUserQuestion menu: the tab the
 // board renders, its option labels in render order, and whether it takes several
@@ -358,6 +380,14 @@ func WithMenuAnswerTimings(keySettle time.Duration, submitPolls int) MenuAnswerO
 	}
 }
 
+// WithMenuAnswerMaxCycles overrides how many retries one card may consume
+// before the arm records a terminal outcome.
+func WithMenuAnswerMaxCycles(cycles int) MenuAnswerOption {
+	return func(job *menuAnswerJob) {
+		job.maxCycles = cycles
+	}
+}
+
 // NewMenuAnswerJob creates the menu arm.
 //
 // The locator and the writer are separate because the pane is resolved by the
@@ -378,6 +408,8 @@ func NewMenuAnswerJob(
 		interval:    interval,
 		keySettle:   defaultMenuKeySettle,
 		submitPolls: defaultMenuSubmitPolls,
+		maxCycles:   defaultMenuMaxCycles,
+		progress:    make(map[ItemID]*menuProgress),
 	}
 	for _, option := range options {
 		option(job)
@@ -392,6 +424,20 @@ type menuAnswerJob struct {
 	interval    time.Duration
 	keySettle   time.Duration
 	submitPolls int
+	maxCycles   int
+	// progress is per-card state. Run drives DeliverOnce serially, so it needs
+	// no lock; a spec that calls DeliverOnce directly is single-goroutine too.
+	progress map[ItemID]*menuProgress
+}
+
+// progressOf returns the card's progress record, creating it on first sighting.
+func (j *menuAnswerJob) progressOf(id ItemID) *menuProgress {
+	if progress, ok := j.progress[id]; ok {
+		return progress
+	}
+	progress := &menuProgress{}
+	j.progress[id] = progress
+	return progress
 }
 
 // Run answers menu cards until the context is cancelled.
@@ -457,7 +503,18 @@ func (j *menuAnswerJob) menuDeliverable(
 	if _, ok := itemSessionID(ctx, item); !ok {
 		return nil, false
 	}
-	return MenuQuestionsOf(ctx, item)
+	questions, ok := MenuQuestionsOf(ctx, item)
+	if !ok {
+		return nil, false
+	}
+	// A card that already reached a terminal outcome is not retried, even when
+	// that outcome was `failed` — unlike the prose arm, whose failures are often
+	// transient, a menu that never appeared or never closed will not start doing
+	// so on the next cycle.
+	if j.progressOf(item.ItemID).done {
+		return nil, false
+	}
+	return questions, true
 }
 
 // deliver answers one menu card and records what it observed.
@@ -466,15 +523,18 @@ func (j *menuAnswerJob) deliver(
 	item Item,
 	questions []MenuQuestion,
 ) {
+	progress := j.progressOf(item.ItemID)
+	if menuHandledElsewhere(item) {
+		// The board's corner X: the operator handled the card elsewhere and only
+		// wanted it off the board. Nothing is typed, and `held` records that a rule
+		// declined on purpose — `failed` would put an undeliverable card in front of
+		// the operator for a gate nothing failed on.
+		j.settle(ctx, item, progress, HeldOutcome, "answer hidden — handled elsewhere")
+		return
+	}
 	keys, err := MenuDigits(ctx, questions, item.Answers, item.Answer)
 	if err != nil {
-		glog.V(2).Infof(
-			"job=attention-watcher action=menu item=%s verdict=%s reason=%q",
-			item.ItemID,
-			DeliveryRefuse,
-			err.Error(),
-		)
-		j.recordAttempt(ctx, item, FailedOutcome)
+		j.settle(ctx, item, progress, FailedOutcome, err.Error())
 		return
 	}
 	sessionID, ok := itemSessionID(ctx, item)
@@ -486,47 +546,54 @@ func (j *menuAnswerJob) deliver(
 	delivery := &PaneDelivery{SessionID: sessionID, StoreItemID: string(item.ItemID)}
 	verdict, pane, reason := j.locator.Locate(ctx, delivery)
 	if verdict != DeliveryOK {
-		glog.V(2).Infof(
-			"job=attention-watcher action=menu item=%s verdict=%s reason=%q",
-			item.ItemID,
-			verdict,
-			reason,
-		)
 		if verdict == DeliveryRefuse {
-			j.recordAttempt(ctx, item, FailedOutcome)
+			j.settle(ctx, item, progress, FailedOutcome, reason)
+			return
 		}
+		j.retry(ctx, item, progress, reason)
 		return
 	}
-	verdict, reason = j.answer(ctx, pane, keys)
-	glog.V(2).Infof(
-		"job=attention-watcher action=menu item=%s verdict=%s reason=%q",
-		item.ItemID,
-		verdict,
-		reason,
-	)
+	verdict, reason = j.answerOnce(ctx, pane, keys, progress)
 	switch verdict {
 	case DeliveryOK:
-		j.recordAttempt(ctx, item, DeliveredOutcome)
+		j.settle(ctx, item, progress, DeliveredOutcome, reason)
 	case DeliveryRefuse:
-		j.recordAttempt(ctx, item, FailedOutcome)
+		j.settle(ctx, item, progress, FailedOutcome, reason)
 	default:
-		// `retry` records nothing: the answer has not been delivered and will be
-		// attempted again, so a record now would date a fact still pending.
+		j.retry(ctx, item, progress, reason)
 	}
 }
 
-// answer types the keys into the pane and confirms the menu closed.
-func (j *menuAnswerJob) answer(
+// answerOnce sends the keys on the first cycle and only re-checks the close on
+// every later one.
+//
+// ⚠️ The `progress.typed` guard is load-bearing. Re-sending the sequence is not
+// idempotent: a multi-select re-toggles (so {1,3} becomes {3}) and a free-text
+// answer types a second copy. It is also set BEFORE the first key goes in, so a
+// mid-sequence send failure leaves the card marked typed rather than half-typed
+// and re-sent from the start.
+func (j *menuAnswerJob) answerOnce(
 	ctx context.Context,
 	pane int,
 	keys []string,
+	progress *menuProgress,
 ) (DeliveryVerdict, string) {
+	if progress.typed {
+		return j.finishMenu(ctx, pane, keys)
+	}
 	text, ok := j.writer.Text(ctx, pane)
-	if !ok || !strings.Contains(text, menuMark) {
+	if !ok {
+		// An unreadable pane proves nothing — it is not evidence that the menu is
+		// gone, and treating it as closed would record a delivery that never
+		// happened.
+		return DeliveryRetry, "pane " + strconv.Itoa(pane) + " unreadable"
+	}
+	if !strings.Contains(text, menuMark) {
 		// Nothing typed: the menu is not showing (yet). Retry rather than refuse —
 		// the pane may still be drawing it, and a refusal would drop the answer.
 		return DeliveryRetry, "pane " + strconv.Itoa(pane) + " shows no open menu"
 	}
+	progress.typed = true
 	for _, key := range keys {
 		if err := j.writer.SendText(ctx, pane, key); err != nil {
 			return DeliveryRetry, "send-text into pane " + strconv.Itoa(pane) + " failed"
@@ -540,6 +607,70 @@ func (j *menuAnswerJob) answer(
 		time.Sleep(settle)
 	}
 	return j.finishMenu(ctx, pane, keys)
+}
+
+// retry logs a cycle that delivered nothing and gives up once the card has had
+// its allowance, so a card whose menu never appears is surfaced rather than
+// retried silently until the sweep closes it.
+func (j *menuAnswerJob) retry(
+	ctx context.Context,
+	item Item,
+	progress *menuProgress,
+	reason string,
+) {
+	progress.cycles++
+	glog.V(2).Infof(
+		"job=attention-watcher action=menu item=%s verdict=%s reason=%q",
+		item.ItemID,
+		DeliveryRetry,
+		reason,
+	)
+	if progress.cycles < j.maxCycles {
+		return
+	}
+	j.settle(
+		ctx,
+		item,
+		progress,
+		FailedOutcome,
+		"gave up after "+strconv.Itoa(progress.cycles)+" cycles: "+reason,
+	)
+}
+
+// settle records the card's terminal outcome and stops any further cycles.
+func (j *menuAnswerJob) settle(
+	ctx context.Context,
+	item Item,
+	progress *menuProgress,
+	outcome DeliveryOutcome,
+	reason string,
+) {
+	progress.done = true
+	glog.V(2).Infof(
+		"job=attention-watcher action=menu item=%s verdict=%s reason=%q",
+		item.ItemID,
+		outcome,
+		reason,
+	)
+	j.recordAttempt(ctx, item, outcome)
+}
+
+// menuHandledElsewhere reports whether the operator closed the card with the
+// board's corner X, which writes a `hidden` answer meaning "handled elsewhere,
+// deliver nothing".
+func menuHandledElsewhere(item Item) bool {
+	if item.Answer != nil && item.Answer.Kind == HiddenAnswerKind {
+		return true
+	}
+	if len(item.Answers) == 0 {
+		return false
+	}
+	for _, answer := range item.Answers {
+		if answer.Kind != HiddenAnswerKind {
+			return false
+		}
+	}
+	return true
 }
 
 // finishMenu submits a multi-question menu's review screen, then confirms the
@@ -561,9 +692,16 @@ func (j *menuAnswerJob) finishMenu(
 	cancelled := len(keys) == 1 && keys[0] == menuCancel
 	picked := describeKeys(keys)
 	for i := 0; i < j.submitPolls; i++ {
+		if err := ctx.Err(); err != nil {
+			return DeliveryRetry, "context cancelled while confirming the menu closed"
+		}
 		text, ok := j.writer.Text(ctx, pane)
 		if !ok {
-			text = ""
+			// ⚠️ An unreadable pane is NOT a closed menu. Substituting "" would
+			// contain neither the submit row nor the mark, so the very first poll
+			// would report the menu closed and record a delivery that never
+			// happened — the false-`ok` failure this arm exists to avoid.
+			return DeliveryRetry, "pane " + strconv.Itoa(pane) + " unreadable"
 		}
 		if submit := submitRowPattern.FindAllStringSubmatch(text, -1); len(submit) > 0 {
 			// The row's own digit, read off the screen — the last match wins, as

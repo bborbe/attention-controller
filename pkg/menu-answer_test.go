@@ -22,6 +22,9 @@ type fakeMenuWriter struct {
 	texts []string
 	index int
 	sent  []string
+	// unreadableAfter is the Text-call index from which the pane reports
+	// unreadable; -1 means never.
+	unreadableAfter int
 }
 
 func (w *fakeMenuWriter) Activate(_ context.Context, _ string) error { return nil }
@@ -36,6 +39,9 @@ func (w *fakeMenuWriter) ComposerState(_ context.Context, _ int) pkg.ComposerSta
 }
 
 func (w *fakeMenuWriter) Text(_ context.Context, _ int) (string, bool) {
+	if w.unreadableAfter >= 0 && w.index >= w.unreadableAfter {
+		return "", false
+	}
 	if len(w.texts) == 0 {
 		return "", true
 	}
@@ -100,11 +106,13 @@ var _ = Describe("menu answer job", func() {
 		store.DeliveryAttemptsReturns(map[pkg.ItemID]pkg.DeliveryAttempt{}, nil)
 		store.RecordAttemptReturns(&pkg.DeliveryAttempt{}, nil)
 		locator = &fakeLocator{verdict: pkg.DeliveryOK, pane: 42}
-		writer = &fakeMenuWriter{}
-		// Zero every sleep: the loop shape is what these specs pin, not its pace.
+		writer = &fakeMenuWriter{unreadableAfter: -1}
+		// Zero every sleep and shorten the retry allowance: the loop shape is
+		// what these specs pin, not its pace.
 		job = pkg.NewMenuAnswerJob(
 			store, locator, writer, time.Hour,
 			pkg.WithMenuAnswerTimings(0, 2),
+			pkg.WithMenuAnswerMaxCycles(2),
 		)
 	})
 
@@ -218,5 +226,80 @@ var _ = Describe("menu answer job", func() {
 		store.ReadBoardReturns(pkg.Items{item}, nil)
 		Expect(job.DeliverOnce(context.Background())).To(Succeed())
 		Expect(writer.sent).To(BeEmpty())
+	})
+
+	It("records held without typing when the board hid the answer", func() {
+		// The corner X writes `hidden`: handled elsewhere, deliver nothing. It is
+		// `held`, not `failed` — a failure record renders an undeliverable card for
+		// a gate nothing failed on.
+		item := answeredMenuItem("item-1", nil)
+		item.Options = pkg.AnswerOptions{{Label: "Yes"}}
+		item.Answer = &pkg.Answer{Kind: pkg.HiddenAnswerKind}
+		store.ReadBoardReturns(pkg.Items{item}, nil)
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+		Expect(writer.sent).To(BeEmpty())
+		_, _, _, outcome := store.RecordAttemptArgsForCall(0)
+		Expect(outcome).To(Equal(pkg.HeldOutcome))
+	})
+
+	It("releases the gate with a lone ESC when every question was skipped", func() {
+		item := answeredMenuItem("item-1", pkg.Questions{
+			{Tab: "A", Options: pkg.AnswerOptions{{Label: "x"}}},
+			{Tab: "B", Options: pkg.AnswerOptions{{Label: "y"}}},
+		})
+		item.Answers = pkg.Answers{
+			{Question: "A", Answer: pkg.Answer{Kind: pkg.SkipAnswerKind}},
+			{Question: "B", Answer: pkg.Answer{Kind: pkg.SkipAnswerKind}},
+		}
+		store.ReadBoardReturns(pkg.Items{item}, nil)
+		writer.texts = []string{"menu\nEnter to select", "done\n"}
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+		Expect(writer.sent).To(Equal([]string{"\x1b"}))
+		_, _, _, outcome := store.RecordAttemptArgsForCall(0)
+		Expect(outcome).To(Equal(pkg.DeliveredOutcome))
+	})
+
+	It("retries without recording when the pane becomes unreadable while confirming", func() {
+		// An unreadable pane is not a closed menu: treating it as one would record
+		// a delivery that never happened and drop the answer for good.
+		item := answeredMenuItem("item-1", nil)
+		item.Options = pkg.AnswerOptions{{Label: "Yes"}}
+		item.Answer = &pkg.Answer{Kind: pkg.OptionAnswerKind, Value: "Yes"}
+		store.ReadBoardReturns(pkg.Items{item}, nil)
+		writer.texts = []string{"menu\nEnter to select", "menu\nEnter to select"}
+		writer.unreadableAfter = 1
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+		Expect(writer.sent).To(Equal([]string{"1"}))
+		Expect(store.RecordAttemptCallCount()).To(Equal(0))
+	})
+
+	It("retries without typing when the pane is unreadable before the keys", func() {
+		item := answeredMenuItem("item-1", nil)
+		item.Options = pkg.AnswerOptions{{Label: "Yes"}}
+		item.Answer = &pkg.Answer{Kind: pkg.OptionAnswerKind, Value: "Yes"}
+		store.ReadBoardReturns(pkg.Items{item}, nil)
+		writer.texts = []string{"menu\nEnter to select"}
+		writer.unreadableAfter = 0
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+		Expect(writer.sent).To(BeEmpty())
+		Expect(store.RecordAttemptCallCount()).To(Equal(0))
+	})
+
+	It("sends the keys once and gives up after the retry allowance", func() {
+		// A re-sent sequence is not idempotent: a multi-select re-toggles and a
+		// typed answer duplicates. The second cycle must re-check the close only.
+		item := answeredMenuItem("item-1", nil)
+		item.Options = pkg.AnswerOptions{{Label: "Yes"}, {Label: "No"}}
+		item.Answer = &pkg.Answer{Kind: pkg.OptionAnswerKind, Value: "No"}
+		store.ReadBoardReturns(pkg.Items{item}, nil)
+		writer.texts = []string{"menu\nEnter to select"}
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+		Expect(writer.sent).To(Equal([]string{"2"}))
+		Expect(store.RecordAttemptCallCount()).To(Equal(0))
+
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+		Expect(writer.sent).To(Equal([]string{"2"}), "keys must not be re-sent")
+		_, _, _, outcome := store.RecordAttemptArgsForCall(0)
+		Expect(outcome).To(Equal(pkg.FailedOutcome))
 	})
 })

@@ -120,4 +120,18 @@ var _ = Describe("attention watcher delivery job", func() {
 		Expect(job.DeliverOnce(context.Background())).To(Succeed())
 		Expect(carrier.calls).To(BeEmpty())
 	})
+
+	It("leaves a hook menu card to the menu arm", func() {
+		// A hook menu is answered by KEYSTROKES into its open menu, not by a prose
+		// line. Typing text there would submit it into whatever prompt the session
+		// is showing, so this arm must not carry it — the menu arm owns it.
+		item := answeredItem("item-1", "operator", pkg.Decision(""))
+		item.ProvenanceClass = pkg.HookProvenanceClass
+		item.AnswerMechanism = pkg.MessageAnswerMechanism
+		item.Options = pkg.AnswerOptions{{Label: "Yes"}}
+		item.Answer = &pkg.Answer{Kind: pkg.OptionAnswerKind, Value: "Yes"}
+		store.ReadBoardReturns(pkg.Items{item}, nil)
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+		Expect(carrier.calls).To(BeEmpty())
+	})
 })
