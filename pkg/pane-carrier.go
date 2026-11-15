@@ -106,8 +106,40 @@ type PaneCarrier interface {
 	) (DeliveryVerdict, string)
 }
 
+// PaneLocator resolves the pane a delivery must go to.
+//
+// It is a separate interface because two arms need the resolution and only one
+// of them types prose: the menu arm sends keystrokes, so it cannot go through
+// TypeIntoPane, but it must still share the lease re-proof rather than guess at
+// which pane a recycled id now names.
+type PaneLocator interface {
+	// Locate returns the verdict, the resolved pane id, and a reason.
+	Locate(ctx context.Context, delivery *PaneDelivery) (DeliveryVerdict, int, string)
+}
+
+// Locate exposes the carrier's pane resolution to arms that type keys rather
+// than prose.
+func (c *paneCarrier) Locate(
+	ctx context.Context,
+	delivery *PaneDelivery,
+) (DeliveryVerdict, int, string) {
+	return c.resolveDeliveryPane(ctx, delivery)
+}
+
+// PaneCarrierAndLocator is what NewPaneCarrier returns: the prose carrier plus
+// the pane resolution the menu arm needs.
+//
+// ⚠️ The combined type exists so a caller wiring both arms can pass the same
+// value to NewPaneCarrier's consumer and to NewMenuAnswerJob's locator. Without
+// it the locator would only be reachable by a type assertion on the unexported
+// concrete type.
+type PaneCarrierAndLocator interface {
+	PaneCarrier
+	PaneLocator
+}
+
 // NewPaneCarrier creates the carrier the delivery arm uses.
-func NewPaneCarrier(writer PaneTextWriter, transcripts TranscriptReader) PaneCarrier {
+func NewPaneCarrier(writer PaneTextWriter, transcripts TranscriptReader) PaneCarrierAndLocator {
 	return &paneCarrier{
 		writer:             writer,
 		transcripts:        transcripts,
@@ -439,5 +471,10 @@ func (d *PaneDelivery) clearPending() {
 	d.HasPendingAt = false
 }
 
-// Compile-time guard: the carrier must satisfy its own interface.
-var _ PaneCarrier = (*paneCarrier)(nil)
+// Compile-time guard: the carrier must satisfy its own interface, and the
+// combined one its constructor advertises.
+var (
+	_ PaneCarrier           = (*paneCarrier)(nil)
+	_ PaneLocator           = (*paneCarrier)(nil)
+	_ PaneCarrierAndLocator = (*paneCarrier)(nil)
+)

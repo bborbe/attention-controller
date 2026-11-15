@@ -131,6 +131,12 @@ func (j *attentionWatcherJob) deliverable(
 	if _, ok := itemSessionID(ctx, item); !ok {
 		return false
 	}
+	// A hook menu card is answered by KEYSTROKES into its open menu, not by a
+	// prose line — typing text there would submit it into whatever prompt the
+	// session is showing. The menu arm owns those; this arm must not race it.
+	if _, ok := MenuQuestionsOf(ctx, item); ok {
+		return false
+	}
 	_, ok := answerText(item)
 	return ok
 }
