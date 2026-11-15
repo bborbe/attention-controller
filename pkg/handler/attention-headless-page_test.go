@@ -471,32 +471,38 @@ var _ = Describe("the Allow / Deny pair on the served page", func() {
 	// no unit harness, so this reads the served page rather than clicking it. The
 	// operator-visible half is the browser observation recorded on the task.
 	It(
-		"hands the decision path the failure's message, never the answerFailure object",
+		"holds the decision answer and logs its delivery failure, never handing showCloseNote the answerFailure object",
 		func() {
 			body := get(buildPage()).Body.String()
 
-			// ⚠️ Asserted as an ABSENCE, and that absence is the whole guard. The
-			// defect is a WRONG ARGUMENT, not a missing branch: answerFailure
+			// ⚠️ Asserted as an ABSENCE, and that absence is still the whole guard.
+			// The defect was a WRONG ARGUMENT, not a missing branch: answerFailure
 			// returns an object, showCloseNote's contract is a string, so
 			// textContent coerced it and the card rendered the literal
 			// [object Object] for every code — the store's own code and message
 			// dropped with it. A presence check for the corrected call proves
 			// nothing here, because the form path and replayFailure already emit
 			// `showCloseNote(row, failure.message, true)` elsewhere on this same
-			// page: a build that added the new branch BESIDE the object-passing
-			// line would satisfy it and still render [object Object] on every
-			// failed Allow / Deny.
+			// page: a build that added a new branch BESIDE the object-passing line
+			// would satisfy it and still render [object Object] on every failed
+			// Allow / Deny.
 			Expect(body).NotTo(
 				ContainSubstring("showCloseNote(row, answerFailure(body), true)"),
 				"the decision path must not hand showCloseNote the answerFailure object",
 			)
 
-			// The two arms it carries instead. The raw-body line is unique to this
-			// call site — the form path renders through showNote(form, …) — so it
-			// pins the decision path's fallback rather than a call string shared
-			// with the other note helpers.
+			// The decision path no longer draws a note at all: the card leaves the
+			// board the moment Allow / Deny is clicked and the answer is held, so
+			// there is nowhere on it to render a line. The delivery path is what
+			// must not swallow a failure — it logs the raw body (the code fault
+			// stays distinguishable from a connection problem) and reloads so the
+			// store's own truth replaces the stale board.
+			Expect(body).To(ContainSubstring("function deliverHeld(held)"))
 			Expect(body).To(ContainSubstring(
-				"showCloseNote(row, 'Answer failed - HTTP ' + response.status + ' - ' + body, true)",
+				"console.error('attention board: answer failed - HTTP ' + response.status, body);",
+			))
+			Expect(body).To(ContainSubstring(
+				"window.setTimeout(function () { window.location.reload(); }, 2500);",
 			))
 		},
 	)

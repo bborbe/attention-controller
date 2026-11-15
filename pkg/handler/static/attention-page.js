@@ -162,6 +162,11 @@ document.addEventListener('submit', function (event) {
   var form = event.target && event.target.closest ? event.target.closest('form.answer') : null;
   if (!form) { return; }
   event.preventDefault();
+  /* Answering the next card flushes a held permission answer immediately, so
+     only one answer is ever waiting on the board. A message answer is not held
+     itself — it has no Approve/Deny verdict to undo — but it must not sit
+     behind a held decision's timer. */
+  flushHeld();
   var button = event.submitter;
   var kind = button ? button.value : 'send';
   var multi = form.getAttribute('data-multi') === 'true';
@@ -378,71 +383,175 @@ document.addEventListener('change', function (event) {
     if (isEscape || box.hasAttribute('data-exclusive')) { box.checked = false; }
   });
 });
-/* A permission card's Allow / Deny. It writes the verdict as decision, the
-   field the schema gives a permission answer; the row updates over the stream
-   like every other answer, and a failure is shown on the card rather than
-   swallowed. Delegated on the document for the tab strip's reason: a row the
-   stream re-renders keeps working. */
+/* A permission card's Allow / Deny, held for a few seconds before delivery.
+   ⚠️ The hold is CLIENT-SIDE and that is load bearing rather than an
+   implementation detail: the schema carries no reopen endpoint, so an answer
+   that has reached the store cannot be undone. Holding the POST means Undo
+   cancels a request that was never sent, which is the only shape in which
+   "nothing was delivered" is true by construction rather than by a compensating
+   write. The card disappears on the click so the next card moves up — the
+   operator asked for the top-card flow, not a scrolling queue — and the header
+   bar names what is held with an Undo control and a countdown.
+   ⚠️ The hold is 4900 ms rather than 5000 so the click-to-delivery delta the
+   acceptance criterion measures stays at or under five seconds even with a
+   timer tick of jitter; the countdown still opens at 5. Only ONE answer is held
+   at a time: answering the next card flushes the previous one immediately, so
+   no stack builds. */
+var UNDO_HOLD_MS = 4900;
+var heldAnswer = null;
+
+function undoBarElement() {
+  return document.querySelector('[data-undo-bar]');
+}
+/* heldTitle reads the card's ask off the row before the row is removed, so the
+   bar can name what is held. The payload is where a permission card's ask
+   renders; the fallbacks cover a question card and the item id as a last
+   resort, so the bar always names something. */
+function heldTitle(row) {
+  var el = row.querySelector('.payload') || row.querySelector('.question') || row.querySelector('.card-title');
+  var text = el ? (el.textContent || '').replace(/\s+/g, ' ').trim() : '';
+  return text || row.getAttribute('data-item-id') || 'card';
+}
+function renderUndoBar() {
+  var bar = undoBarElement();
+  if (!bar) { return; }
+  var active = !!heldAnswer;
+  bar.classList.toggle('is-active', active);
+  if (!active) {
+    bar.removeAttribute('data-undo-active');
+    return;
+  }
+  bar.setAttribute('data-undo-active', '');
+  var verb = bar.querySelector('[data-undo-verb]');
+  var title = bar.querySelector('[data-undo-title]');
+  if (verb) { verb.textContent = heldAnswer.verb; }
+  if (title) { title.textContent = heldAnswer.title; }
+  updateUndoCountdown();
+}
+function updateUndoCountdown() {
+  if (!heldAnswer) { return; }
+  var bar = undoBarElement();
+  var el = bar ? bar.querySelector('[data-undo-countdown]') : null;
+  if (!el) { return; }
+  el.textContent = Math.ceil(Math.max(0, heldAnswer.deadline - Date.now()) / 1000) + 's';
+}
+/* clearHold cancels the timer and hides the bar WITHOUT delivering. It is the
+   first half of undo and of flush alike; the caller decides which second half
+   runs. */
+function clearHold() {
+  if (!heldAnswer) { return; }
+  window.clearTimeout(heldAnswer.timer);
+  window.clearInterval(heldAnswer.ticker);
+  heldAnswer = null;
+  renderUndoBar();
+}
+/* deliverHeld posts a captured answer. It runs on expiry and on flush, and it
+   is the only place a held answer reaches the store. A failure reloads the
+   board rather than drawing a note: the card is already off the page, so there
+   is nowhere on it to render the line, and the reload shows the store's own
+   truth — an item still open when the delivery failed, or a dimmed record when
+   another arm won the race. */
+function deliverHeld(held) {
+  fetch('/api/1.0/attention/' + encodeURIComponent(held.itemID) + '/answer', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(held.request)
+  }).then(function (response) {
+    if (response.ok) { return; }
+    return response.text().then(function (body) {
+      console.error('attention board: answer failed - HTTP ' + response.status, body);
+      window.setTimeout(function () { window.location.reload(); }, 2500);
+    });
+  }).catch(function (error) {
+    console.error('attention board: answer failed - ' + String(error));
+    window.setTimeout(function () { window.location.reload(); }, 2500);
+  });
+}
+/* flushHeld delivers the held answer NOW, used when the operator answers the
+   next card: only one answer is ever held, so the previous one must not wait
+   out its timer behind a newer click. */
+function flushHeld() {
+  if (!heldAnswer) { return; }
+  var held = heldAnswer;
+  clearHold();
+  deliverHeld(held);
+}
+/* undoHeld cancels the held answer and puts its card back on top, open and
+   pending. Nothing is delivered, so the store still holds the item as open and
+   the asking session hears nothing. */
+function undoHeld() {
+  if (!heldAnswer) { return; }
+  var held = heldAnswer;
+  clearHold();
+  var list = document.querySelector('ul.items');
+  if (!list) {
+    var empty = document.querySelector('p.empty');
+    if (!empty) { window.location.reload(); return; }
+    list = document.createElement('ul');
+    list.className = 'items';
+    empty.parentNode.replaceChild(list, empty);
+  }
+  list.insertAdjacentHTML('afterbegin', held.html);
+}
+/* beginHold captures the clicked card, takes it off the board, and starts the
+   timer. A held answer is delivered when its timer expires or when the next
+   answer flushes it — whichever comes first. */
+function beginHold(row, request, verb) {
+  flushHeld();
+  var itemID = row.getAttribute('data-item-id');
+  var title = heldTitle(row);
+  var html = row.outerHTML;
+  row.remove();
+  heldAnswer = {
+    itemID: itemID,
+    html: html,
+    request: request,
+    verb: verb,
+    title: title,
+    deadline: Date.now() + UNDO_HOLD_MS,
+    timer: null,
+    ticker: null
+  };
+  heldAnswer.timer = window.setTimeout(function () { flushHeld(); }, UNDO_HOLD_MS);
+  heldAnswer.ticker = window.setInterval(updateUndoCountdown, 100);
+  renderUndoBar();
+}
+/* The pair's click is delegated on the document for the tab strip's reason: a
+   stream re-render replaces the row's node and takes a per-button listener with
+   it. It carries the verdict as decision, the field the schema gives a
+   permission answer; the row leaves the board immediately and the answer is
+   held until its timer expires or the next answer flushes it. */
 document.addEventListener('click', function (event) {
   var button = event.target && event.target.closest ? event.target.closest('button[data-decision]') : null;
   if (!button) { return; }
   var row = button.closest('li.item');
   if (!row) { return; }
-  button.disabled = true;
-  fetch('/api/1.0/attention/' + encodeURIComponent(row.getAttribute('data-item-id')) + '/answer', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ answered_by: 'attention-board', automation: navigator.webdriver, decision: button.getAttribute('data-decision') })
-  }).then(function (response) {
-    if (response.ok) { return; }
-    return response.text().then(function (body) {
-      button.disabled = false;
-      /* ⚠️ The branch, not the envelope. answerFailure returns an OBJECT whose
-         message is present only on the stale classification, and showCloseNote's
-         contract is a STRING: passing the object straight through made
-         note.textContent coerce it, so the card rendered the literal
-         [object Object] for every code and dropped the store's own code and
-         message along with it. rememberFailure persists whatever it is handed
-         and replayFailure re-renders it, so the object survived the row swap as
-         well — the fix has to produce a string HERE, not guard the coercion
-         downstream. (Backticks are unavailable in this comment: the whole page
-         is one Go raw-string literal.) */
-      var failure = answerFailure(body);
-      if (failure.staleCard) {
-        /* The card went stale between this page being drawn and this answer
-           arriving — either the item left the queue, or another arm answered it
-           first. Neither is a malformed request, and in both the operator's
-           click carried an outcome the raw body buries, so the line the code
-           earns is shown AND the page returns to the queue, in that order and
-           with a beat between them — the form path's order, for the form path's
-           reason.
-
-           ⚠️ The reload is load bearing here, and the reason is an error path.
-           notifyingAttentionStore.Answer returns BEFORE its Notify when the
-           answer fails, so a REJECTED answer publishes no change and the stream
-           sends no delta: the row is never swapped, and a card left to the
-           stream alone keeps a dead Allow / Deny pair under a line promising a
-           return that never comes. That is exactly the ALREADY_ANSWERED case
-           this branch exists for, and the stream-blocked state as well — the
-           board names the latter "Not tracking the store", and it is the state
-           the e2e case constructs. Reloading first would swallow the outcome
-           into the reload, which the rule above forbids; staying put would leave
-           the promise unkept. Both halves are the point, so neither is dropped. */
-        showCloseNote(row, failure.message, true);
-        console.error('attention board: answer failed - HTTP ' + response.status, body);
-        window.setTimeout(function () { window.location.reload(); }, 2500);
-        return;
-      }
-      /* Every other failure keeps the raw body, matching the form path: the body
-         is what a reader needs to tell a code fault from a connection problem,
-         so a genuinely malformed request still reads as malformed rather than
-         being swallowed into a friendly line. */
-      showCloseNote(row, 'Answer failed - HTTP ' + response.status + ' - ' + body, true);
-    });
-  }).catch(function (error) {
-    button.disabled = false;
-    showCloseNote(row, 'Could not reach the store: ' + error, true);
-  });
+  var decision = button.getAttribute('data-decision');
+  beginHold(row, {
+    answered_by: 'attention-board',
+    automation: navigator.webdriver,
+    decision: decision
+  }, decision === 'allow' ? 'Approved' : 'Denied');
+});
+/* The Undo control in the header bar. */
+document.addEventListener('click', function (event) {
+  var button = event.target && event.target.closest ? event.target.closest('[data-undo]') : null;
+  if (!button) { return; }
+  event.preventDefault();
+  undoHeld();
+});
+/* The U shortcut, the keyboard half of Undo. It is ignored while the operator
+   is typing in a field — an answer form's Other input — and while a modifier is
+   held, so it never steals a keystroke from the card being answered. */
+document.addEventListener('keydown', function (event) {
+  if (event.isComposing || event.keyCode === 229) { return; }
+  if (event.metaKey || event.ctrlKey || event.altKey) { return; }
+  if (event.key !== 'u' && event.key !== 'U') { return; }
+  var target = event.target;
+  if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) { return; }
+  if (!heldAnswer) { return; }
+  event.preventDefault();
+  undoHeld();
 });
 /* kindAll records one answer of the given kind on every tab. Dismiss uses it
    with "skip" and the corner X with "hidden": both are whole-card acts, so a
@@ -1414,6 +1523,11 @@ function replayFailure(row) {
     return row ? row.querySelector('button[data-speak]') : null;
   }
   function upsertRow(itemID, html) {
+    /* A held card is off the board and waiting to be delivered or undone, so a
+       stream frame for it must not re-insert it under the bar — the bar says it
+       is held, and a second copy would let the operator click it again. The
+       held card's own answer is what changes the item next. */
+    if (heldAnswer && heldAnswer.itemID === itemID) { return; }
     /* Prepared first: a throw in here leaves the board untouched. */
     var prepared = preparedHTML(html, itemID);
     var hidden = -1;
@@ -1546,6 +1660,11 @@ function replayFailure(row) {
         /* Dropped from the parked set as well as from the board: a row the
            store removed must not come back when the filter is switched off. */
         forget(change.item_id);
+        /* A held card the store removed (closed by another arm, or withdrawn by
+           its producer) can no longer be answered, so the hold is moot: cancel
+           it rather than deliver an answer that would be refused with
+           ITEM_CLOSED. */
+        if (heldAnswer && heldAnswer.itemID === change.item_id) { clearHold(); }
         var row = findRow(change.item_id);
         if (row) { row.remove(); }
         collapseIfEmpty();

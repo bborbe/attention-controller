@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- feat: **permission answers are held five seconds before delivery, with a header Undo bar.** Clicking Allow or Deny takes the card off the board immediately and holds the answer client-side for 4.9 s; a fixed-height bar in the board header names the verdict and the card with an `Undo · U` control and a countdown. Undo (or the `U` key) restores the card to the top, open and pending, and sends nothing — the schema carries no reopen endpoint, so a hold that never posts is the only undo that is true by construction. Answering the next card flushes the held answer immediately; only one answer is ever held; expiry delivers it. The bar always occupies its height, so the top card's `offsetTop` does not move when it appears or hides. `pkg/handler/static/attention-page.html`, `pkg/handler/static/attention-page.js`, `pkg/handler/attention-page-helpers.go`, `e2e/undo_test.go`.
+
 ## v0.86.0
 
 - feat: the sweep-gate per-subject ledger carries the manager wake's outcome as a new tab-separated column before the writer column — `wake=<result> session=<sid8> live=<yes|no|unknown>`, parsed from `manager-wake.py`'s result line (`WOKEN`, `NO-PANE`, `NO-MANAGER`, `HEADLESS`, `UNVERIFIED`, `SKIP:<reason>`, …; `ERROR` when the wake could not run). Rows that ran no wake — empty, failed, progress-only and `INVARIANT` rows — read `wake=none`, so every row keeps the same six columns. Previously the wake result reached only the job log, so a missed wake was invisible in the ledger.
