@@ -93,6 +93,19 @@ type application struct {
 	SessionLiveness   string `required:"false" arg:"session-liveness"            env:"SESSION_LIVENESS"            usage:"how producer liveness is resolved: 'registry' prunes an item whose producer is gone from the session registry; 'off' never prunes (a cluster backend)"                  default:"registry"`
 	AttentionStateDir string `required:"false" arg:"attention-state-dir"         env:"ATTENTION_STATE_DIR"         usage:"directory holding the producers' event logs the page resolves item provenance from"`
 
+	// AttentionWrapperURL is the claude-wrapper the routine-gate settle arm
+	// answers through. ⚠️ Empty leaves that arm unregistered rather than guessing
+	// a host: a settle arm pointed at the wrong wrapper would answer gates in a
+	// process this one does not own.
+	AttentionWrapperURL string `required:"false" arg:"attention-wrapper-url" env:"ATTENTION_WRAPPER_URL" usage:"claude-wrapper base URL the routine-gate settle arm answers through (empty disables that arm)" default:"http://127.0.0.1:18090"`
+
+	// AttentionContextDir is the statusline context-state directory the crossing
+	// job reads. It is a separate setting from AttentionStateDir for the same
+	// reason UnforwardedStateDir is: the statusline owns those files and their
+	// lifetime, and a bad value must fail this one job rather than blind the
+	// page's provenance read.
+	AttentionContextDir string `required:"false" arg:"attention-context-dir" env:"ATTENTION_CONTEXT_DIR" usage:"directory holding the statusline context-state JSON the crossing job reads (empty resolves to ~/.claude/state/context)"`
+
 	// UnforwardedStateDir is the directory the unforwarded-closers job scans. It
 	// is a SEPARATE setting from AttentionStateDir on purpose: the job is the
 	// port of a launchd tick that carried its own `--state-dir`, and pointing
@@ -877,7 +890,10 @@ func (a *application) createHTTPServer(
 		// a fifth, the session-heartbeat watcher a sixth, the metrics push job a
 		// seventh, the class-D refusal watch an eighth, the fleet-digest notify
 		// job a ninth, the heartbeat 48 h watch a tenth, the sweep-gate notify
-		// job an eleventh, and the unforwarded-closers check a twelfth.
+		// job an eleventh, the unforwarded-closers check a twelfth, and the seven
+		// attention-watcher jobs (prune, ingest, answer delivery, menu answers, the
+		// routine-gate settle arm, expired manager holds and the context crossing
+		// scan) the remaining seven — nineteen in total.
 		//
 		// ⚠️ It does NOT share the listeners' failure semantics, and saying so here
 		// matters because the difference is deliberate: the sweep returns nil on
@@ -900,7 +916,7 @@ func (a *application) createHTTPServer(
 		// The unforwarded-closers check shares it too: a failed scan costs one
 		// interval of loss counting and loses nothing, so it logs action=error and
 		// keeps ticking.
-		runner := run.NewConcurrentRunner(12)
+		runner := run.NewConcurrentRunner(19)
 		defer runner.Close()
 
 		glog.V(2).Infof("starting http server listen on %s", a.Listen)
@@ -920,7 +936,7 @@ func (a *application) createHTTPServer(
 		if err := a.addAnsweredSweep(ctx, runner, store); err != nil {
 			return err
 		}
-		if err := a.addInProcessJobs(ctx, runner, store); err != nil {
+		if err := a.addInProcessJobs(ctx, runner, store, panes, livenessChecker); err != nil {
 			return err
 		}
 
@@ -972,6 +988,8 @@ func (a *application) addInProcessJobs(
 	ctx context.Context,
 	runner run.ConcurrentRunner,
 	store pkg.AttentionStore,
+	panes pkg.PaneLister,
+	liveness pkg.SessionLivenessChecker,
 ) error {
 	runner.Add(ctx, pkg.NewMetricsPushJob(
 		prometheus.DefaultGatherer,
@@ -1030,7 +1048,167 @@ func (a *application) addInProcessJobs(
 	// and writes its count as a log line, so there is no second lifecycle to
 	// deploy, version or observe.
 	a.addUnforwardedClosersJob(ctx, runner, store)
+	// ⚠️ The attention-watcher jobs register from here rather than from the caller
+	// for the same reason this method exists at all: createHTTPServer sits at the
+	// linter's length bound, and each job's rationale belongs beside the job.
+	return a.addAttentionWatcherJobs(ctx, runner, store, panes, liveness)
+}
+
+// addAttentionWatcherJobs registers the seven jobs ported from the Python
+// attention-watcher: event ingest, event prune, answer delivery, menu answers,
+// the routine-gate settle arm, expired manager holds and the context crossing
+// scan.
+//
+// ⚠️ They are registered TOGETHER, and that is the point of the port: each
+// replaced a phase of one long-running Python process, and wiring a subset
+// would leave two writers on the same books — the dual-delivery window the
+// plist unload exists to close. Their intervals are the Python's own, exported
+// beside each job rather than re-tuned here, so a divergence is visible at the
+// constant instead of buried in this call site.
+func (a *application) addAttentionWatcherJobs(
+	ctx context.Context,
+	runner run.ConcurrentRunner,
+	store pkg.AttentionStore,
+	panes pkg.PaneLister,
+	liveness pkg.SessionLivenessChecker,
+) error {
+	stateDir, contextDir, transcriptRoot, err := a.attentionWatcherDirs(ctx)
+	if err != nil {
+		return err
+	}
+
+	// One pane text writer, three consumers: the carrier types into a pane, the
+	// menu arm sends its key sequence, and the settle arm reads a session's tty.
+	// Two writers would be two subprocess paths whose failure semantics could
+	// drift — the same reason the pane lister is built once above.
+	writer := pkg.NewWeztermPaneTextWriter(panes)
+	carrier := pkg.NewPaneCarrier(writer, pkg.NewTranscriptReader(transcriptRoot))
+	// One store sink, two consumers: the ingest job forwards hook events and the
+	// hold-release arm posts an expired gate. A second sink would be a second
+	// mapping from the same event onto the same schema.
+	sink := pkg.NewStoreEventSink(store, nil)
+	book := pkg.NewManagerHoldBook()
+
+	runner.Add(ctx, pkg.NewEventPruneJob(
+		stateDir,
+		pkg.EventPruneRetain,
+		pkg.EventPruneInterval,
+		libtime.NewCurrentDateTime(),
+	).Run)
+	runner.Add(ctx, pkg.NewEventIngestJob(
+		stateDir,
+		sink,
+		// ⚠️ No class-3 filter yet: the finished-task source it needs is not
+		// implemented, so the filter would be inert. Ingest without it forwards a
+		// closer for a finished task — a low-value card, never a stranded session.
+		nil,
+		pkg.EventIngestInterval,
+	).Run)
+	runner.Add(ctx, pkg.NewAttentionWatcherJob(
+		store,
+		carrier,
+		pkg.AttentionWatcherDeliveryInterval,
+	).Run)
+	runner.Add(ctx, pkg.NewMenuAnswerJob(
+		store,
+		carrier,
+		writer,
+		pkg.MenuAnswerInterval,
+	).Run)
+	// ⚠️ An empty wrapper URL leaves the arm unregistered rather than failing
+	// startup: a host with no claude-wrapper has no routine gates to settle, and
+	// refusing to boot over it would take the board down for a job with nothing
+	// to do.
+	if a.AttentionWrapperURL != "" {
+		runner.Add(ctx, pkg.NewRoutineGateSettleJob(
+			store,
+			pkg.NewClaudeWrapperClient(a.AttentionWrapperURL),
+			pkg.NewRoutinePolicy(nil),
+			writer,
+			pkg.RoutineGateSettleInterval,
+		).Run)
+	}
+	runner.Add(ctx, pkg.NewReleaseExpiredHoldsJob(
+		book,
+		sink,
+		liveness,
+		pkg.ManagerHoldWindow,
+		pkg.ManagerHoldReleaseInterval,
+		libtime.NewCurrentDateTime(),
+	).Run)
+	runner.Add(ctx, pkg.NewContextCrossingJob(
+		contextDir,
+		pkg.NewStoreContextCrossingSink(store, nil),
+		liveness,
+		pkg.ContextCrossingTokens,
+		pkg.ContextCrossingInterval,
+	).Run)
+
+	a.logAttentionWatcherRegistration()
 	return nil
+}
+
+// logAttentionWatcherRegistration records which arms this process registered.
+//
+// ⚠️ It answers ONLY "which arms are wired", never that one ran. A build proves
+// the constructors compile, not that the runner starts them; and SC1 forbids a
+// startup banner as evidence an arm did work, which is a different question on
+// a different instance (the live service, not an isolated proof).
+func (a *application) logAttentionWatcherRegistration() {
+	glog.V(2).Infof(
+		"job=attention-watcher action=registered arms=prune,ingest,deliver,menu,release,crossing settle=%t",
+		a.AttentionWrapperURL != "",
+	)
+}
+
+// attentionWatcherDirs resolves the three directories the ported jobs read.
+//
+// ⚠️ Each falls back to its own default rather than sharing one: the event logs,
+// the statusline context files and the transcripts have different owners and
+// different lifetimes, so a bad setting must fail the job that reads it and not
+// the other two.
+func (a *application) attentionWatcherDirs(ctx context.Context) (string, string, string, error) {
+	stateDir := a.AttentionStateDir
+	if stateDir == "" {
+		resolved, err := defaultAttentionStateDir(ctx)
+		if err != nil {
+			return "", "", "", errors.Wrap(ctx, err, "resolve attention state dir failed")
+		}
+		stateDir = resolved
+	}
+	contextDir := a.AttentionContextDir
+	if contextDir == "" {
+		resolved, err := defaultAttentionContextDir(ctx)
+		if err != nil {
+			return "", "", "", errors.Wrap(ctx, err, "resolve attention context dir failed")
+		}
+		contextDir = resolved
+	}
+	transcriptRoot, err := defaultTranscriptRoot(ctx)
+	if err != nil {
+		return "", "", "", errors.Wrap(ctx, err, "resolve transcript root failed")
+	}
+	return stateDir, contextDir, transcriptRoot, nil
+}
+
+// defaultAttentionContextDir resolves ~/.claude/state/context, the directory the
+// statusline publishes one context-state file per session into.
+func defaultAttentionContextDir(ctx context.Context) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", errors.Wrap(ctx, err, "resolve home dir failed")
+	}
+	return filepath.Join(home, ".claude", "state", "context"), nil
+}
+
+// defaultTranscriptRoot resolves ~/.claude/projects, the directory Claude Code
+// writes session transcripts into.
+func defaultTranscriptRoot(ctx context.Context) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", errors.Wrap(ctx, err, "resolve home dir failed")
+	}
+	return filepath.Join(home, ".claude", "projects"), nil
 }
 
 // answeredMaxAgeCeiling is the largest max age the store accepts.
