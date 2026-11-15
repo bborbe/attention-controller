@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.87.1
 
 - fix: **the unforwarded-closers arm carries the closer's own ask instead of a placeholder, and stops re-posting a finding whose card was already answered.** Two truncations are removed (`truncate(ask, 100)` in `idleFinding`, `truncate(payload, 400)` in `UnforwardedPushRequest`), so a card's payload is the ask byte-for-byte; a row with no captured ask is logged as `action=skip_no_ask` and never carded, where it previously fell back to `lost <kind> gate — no forward line` and asked the operator to decide about a question nobody could read. `closeRedundantReraises` no longer closes a **cron** producer's re-raise: closing it was the loop, because the dedup suppression is open-scoped and a closed row stops collapsing the next push, so the producer's own scan re-posted it — measured 2026-11-15 at 119 of 140 findings re-posting, several 7–8 times in one evening. The row stays `open` (the board already withholds it via `suppressAnsweredTwins`), so one finding stays one card. Adds `close_reason` to the item, set by the answered-twin sweep, so a close that was not caused by an answer says which path moved the row.
 
