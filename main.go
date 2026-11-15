@@ -1087,7 +1087,6 @@ func (a *application) addAttentionWatcherJobs(
 	// hold-release arm posts an expired gate. A second sink would be a second
 	// mapping from the same event onto the same schema.
 	sink := pkg.NewStoreEventSink(store, nil)
-	book := pkg.NewManagerHoldBook()
 
 	runner.Add(ctx, pkg.NewEventPruneJob(
 		stateDir,
@@ -1128,14 +1127,13 @@ func (a *application) addAttentionWatcherJobs(
 			pkg.RoutineGateSettleInterval,
 		).Run)
 	}
-	runner.Add(ctx, pkg.NewReleaseExpiredHoldsJob(
-		book,
-		sink,
-		liveness,
-		pkg.ManagerHoldWindow,
-		pkg.ManagerHoldReleaseInterval,
-		libtime.NewCurrentDateTime(),
-	).Run)
+	// ⚠️ The release-expired-holds arm is deliberately NOT registered: its book
+	// has no producer yet. `NewEventIngestJob` takes no hold book, so nothing
+	// calls `ManagerHoldBook.Hold`, and both sinks resolve a nil kind resolver so
+	// no manager-tier gate is ever identified to hold. Registering it would drain
+	// an always-empty book — a job that can never post, which reads in a log
+	// exactly like a quiet fleet. It lands with the ingest change that fills the
+	// book; until then manager gates post immediately, as they did before.
 	runner.Add(ctx, pkg.NewContextCrossingJob(
 		contextDir,
 		pkg.NewStoreContextCrossingSink(store, nil),
@@ -1151,12 +1149,13 @@ func (a *application) addAttentionWatcherJobs(
 // logAttentionWatcherRegistration records which arms this process registered.
 //
 // ⚠️ It answers ONLY "which arms are wired", never that one ran. A build proves
-// the constructors compile, not that the runner starts them; and SC1 forbids a
-// startup banner as evidence an arm did work, which is a different question on
-// a different instance (the live service, not an isolated proof).
+// the constructors compile, not that the runner starts them — and a registered
+// arm still does nothing until something gives it work. The evidence that an
+// arm ran is its own effect line, produced on the live service where there are
+// items and panes.
 func (a *application) logAttentionWatcherRegistration() {
 	glog.V(2).Infof(
-		"job=attention-watcher action=registered arms=prune,ingest,deliver,menu,release,crossing settle=%t",
+		"job=attention-watcher action=registered arms=prune,ingest,deliver,menu,crossing settle=%t",
 		a.AttentionWrapperURL != "",
 	)
 }
