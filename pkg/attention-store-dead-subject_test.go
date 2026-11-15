@@ -54,8 +54,19 @@ var _ = Describe("AttentionStore with a dead liveness subject", func() {
 		Expect(db.Close()).To(BeNil())
 	})
 
+	// advance moves the fake clock by offset, at the clock's own precision.
+	//
+	// ⚠️ The instant is NOT rounded to a microsecond. It used to be rebuilt with
+	// libtime.DateTimeFromUnixMicro, and that made the deadline boundary
+	// platform-dependent rather than merely untidy: `time.Now()` is
+	// microsecond-aligned on darwin, so the rounding was a no-op here, while on
+	// Linux it carries nanoseconds. The stored deadline is created_at + 24h at
+	// RFC3339Nano precision and keeps them, so a rounded `now` landed a fraction
+	// of a microsecond BEFORE the deadline — `!now.Before(deadline)` read false
+	// and the item was never cleared. Measured: created ...348077789, now
+	// ...348077, delta 789ns.
 	advance := func(offset stdtime.Duration) {
-		now = libtime.DateTimeFromUnixMicro(now.Time().Add(offset).UnixMicro())
+		now = libtime.DateTime(now.Time().Add(offset))
 	}
 
 	push := func(dedupKey string, expiresAt *libtime.DateTime) *pkg.Item {
@@ -73,8 +84,10 @@ var _ = Describe("AttentionStore with a dead liveness subject", func() {
 		return item
 	}
 
+	// at is advance's read-only twin: same precision rule, so a producer TTL and
+	// a deadline the store defaulted are built from the same kind of instant.
 	at := func(offset stdtime.Duration) *libtime.DateTime {
-		d := libtime.DateTimeFromUnixMicro(now.Time().Add(offset).UnixMicro())
+		d := libtime.DateTime(now.Time().Add(offset))
 		return &d
 	}
 
