@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- feat: the sweep-gate per-subject ledger carries the manager wake's outcome as a new tab-separated column before the writer column — `wake=<result> session=<sid8> live=<yes|no|unknown>`, parsed from `manager-wake.py`'s result line (`WOKEN`, `NO-PANE`, `NO-MANAGER`, `HEADLESS`, `UNVERIFIED`, `SKIP:<reason>`, …; `ERROR` when the wake could not run). Rows that ran no wake — empty, failed, progress-only and `INVARIANT` rows — read `wake=none`, so every row keeps the same six columns. Previously the wake result reached only the job log, so a missed wake was invisible in the ledger.
+
 ## v0.84.0
 
 - feat: add the event-log prune job: drop lines older than the retention horizon by each line's own `ts`, keeping a line whose age is unknown (no `ts`, torn or unknown shape) rather than guessing, and writing nothing when no line is aged

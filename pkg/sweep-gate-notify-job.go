@@ -91,11 +91,14 @@ const (
 	// The ledger's `notified` values, carried over byte-for-byte from the shell:
 	// an operator reading ledger.txt across the port must not have to learn a
 	// second vocabulary for the same four outcomes.
-	sweepGateNotifiedNotSent     = "-"
-	sweepGateNotifiedSent        = "sent"
-	sweepGateNotifiedProgress    = "progress-only"
-	sweepGateNotifiedSuppressed  = "suppressed: FAILED streak continues (alerted once)"
-	sweepGateNotifiedInvariant   = "sent: invariant "
+	sweepGateNotifiedNotSent    = "-"
+	sweepGateNotifiedSent       = "sent"
+	sweepGateNotifiedProgress   = "progress-only"
+	sweepGateNotifiedSuppressed = "suppressed: FAILED streak continues (alerted once)"
+	sweepGateNotifiedInvariant  = "sent: invariant "
+	// sweepGateWakeNone is the wake column of a tick that ran no wake: an empty,
+	// failed or progress-only tick, where the manager is deliberately left alone.
+	sweepGateWakeNone            = "wake=none"
 	sweepGateInvariantFailedPref = "FAILED invariant: "
 
 	// The payload bounds mirror the shell's `cut -c` calls. ⚠️ They are applied
@@ -521,31 +524,33 @@ func (j *sweepGateNotifyJob) tickSubject(ctx context.Context, subject SweepGateS
 
 	verdict := sweepGateLastLine(result.Output)
 	notified := sweepGateNotifiedNotSent
+	wake := sweepGateWakeNone
 	switch result.ExitCode {
 	case sweepGateTickEmptyCode:
 		j.clearStreak(ctx, state, slug)
 	case sweepGateTickChangeWakeCode:
 		j.clearStreak(ctx, state, slug)
-		notified = j.reportChangeWake(ctx, subject, state, slug, verdict)
+		notified, wake = j.reportChangeWake(ctx, subject, state, slug, verdict)
 	default:
 		verdict = "FAILED(rc=" + strconv.Itoa(result.ExitCode) + "): " + verdict
 		notified = j.reportFailureStreak(ctx, subject, state, slug, result)
 	}
 
 	invariant := j.postCard(ctx, subject, cardPath, result.ExitCode)
-	j.appendLedger(ctx, state, slug, timestamp, result.ExitCode, verdict, notified, invariant)
+	j.appendLedger(ctx, state, slug, timestamp, result.ExitCode, verdict, notified, wake, invariant)
 	j.touchHeartbeat(ctx, state, slug, timestamp, result.ExitCode)
 }
 
 // reportChangeWake asks the classifier whether a changed digest needs the
-// operator, and publishes one alert when it does.
+// operator, and publishes one alert when it does. It returns the notification
+// column and the wake column of the ledger row.
 func (j *sweepGateNotifyJob) reportChangeWake(
 	ctx context.Context,
 	subject SweepGateSubject,
 	state string,
 	slug string,
 	verdict string,
-) string {
+) (string, string) {
 	classified, err := j.classifier.Classify(
 		ctx,
 		subject.Name,
@@ -569,7 +574,7 @@ func (j *sweepGateNotifyJob) reportChangeWake(
 		}
 	}
 	if classified.ExitCode == sweepGateClassifyQuietCode {
-		return sweepGateNotifiedProgress
+		return sweepGateNotifiedProgress, sweepGateWakeNone
 	}
 	notified := j.publish(
 		ctx,
@@ -582,20 +587,20 @@ func (j *sweepGateNotifyJob) reportChangeWake(
 	// pane. It runs AFTER the publish so a notification failure cannot also
 	// swallow the wake, and it never runs on a progress-only tick (the quiet
 	// branch returns above) — the suppression half of SC2.
-	j.wake(ctx, subject)
-	return notified
+	return notified, j.wake(ctx, subject)
 }
 
-// wake runs the manager-wake emitter for one actionable subject.
+// wake runs the manager-wake emitter for one actionable subject and returns the
+// ledger's wake column (see sweepGateWakeField).
 //
 // ⚠️ A failed wake is logged and the pass continues: the notification is the
 // operator-facing signal and the wake is the mechanism lever, so a wake that
 // could not run must not cost the alert. The output is logged on success so a
 // `WOKEN` / `SKIP` / `NO-PANE` verdict is visible in the job log, which is the
 // log the soak probe reads.
-func (j *sweepGateNotifyJob) wake(ctx context.Context, subject SweepGateSubject) {
+func (j *sweepGateNotifyJob) wake(ctx context.Context, subject SweepGateSubject) string {
 	if j.waker == nil {
-		return
+		return sweepGateWakeNone
 	}
 	output, err := j.waker.Wake(ctx, subject.Name, subject.Vault)
 	if err != nil {
@@ -605,7 +610,7 @@ func (j *sweepGateNotifyJob) wake(ctx context.Context, subject SweepGateSubject)
 			subject.Name,
 			err,
 		)
-		return
+		return sweepGateWakeField("ERROR " + output)
 	}
 	sweepGateNotifyInfof(
 		"job=%s action=wake subject=%s result=%s",
@@ -613,6 +618,49 @@ func (j *sweepGateNotifyJob) wake(ctx context.Context, subject SweepGateSubject)
 		subject.Name,
 		sweepGateCollapse(output, ";", sweepGateNotifyOutputLimit),
 	)
+	return sweepGateWakeField(output)
+}
+
+// sweepGateWakeField renders manager-wake.py's result line as the ledger's wake
+// column: `wake=<result> session=<sid8> live=<yes|no|unknown>`.
+//
+// The result is the line's first word — `WOKEN`, `NO-PANE`, `NO-MANAGER`,
+// `HEADLESS`, `UNVERIFIED`, `FAILED`, `WAKE-FAILED` — and a guard refusal
+// `SKIP skip:<reason>` folds to `SKIP:<reason>`, so the column stays one
+// space-separated field per key. `session=` and `live=` are copied from the line
+// (the script ends every result with them); a line without them — an older script,
+// or a wake that could not run — reads `session=-` and `live=unknown`, never a
+// guess, because `live=yes` is what separates a missed live manager from a dead
+// registration.
+func sweepGateWakeField(output string) string {
+	fields := strings.Fields(sweepGateFirstLine(output))
+	if len(fields) == 0 {
+		return "wake=UNKNOWN session=- live=unknown"
+	}
+	result := fields[0]
+	if result == "SKIP" && len(fields) > 1 {
+		result = "SKIP:" + strings.TrimPrefix(fields[1], "skip:")
+	}
+	session, live := "-", "unknown"
+	for _, field := range fields[1:] {
+		switch {
+		case strings.HasPrefix(field, "session="):
+			session = strings.TrimPrefix(field, "session=")
+		case strings.HasPrefix(field, "live="):
+			live = strings.TrimPrefix(field, "live=")
+		}
+	}
+	return "wake=" + result + " session=" + session + " live=" + live
+}
+
+// sweepGateFirstLine is the first non-blank line of output, trimmed.
+func sweepGateFirstLine(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 // reportFailureStreak publishes one alert per failure streak, never one per tick.
@@ -874,9 +922,13 @@ func (j *sweepGateNotifyJob) postCard(
 
 // appendLedger appends the per-subject ledger lines.
 //
-// ⚠️ Every row carries the same five columns — timestamp, gate rc, verdict,
-// notified, and the writing process — because a reader's grep across the file
-// must not have to know which line is which. The shell's fifth column named the
+// ⚠️ Every row carries the same six columns — timestamp, gate rc, verdict,
+// notified, wake, and the writing process — because a reader's grep across the
+// file must not have to know which line is which. The wake column
+// (`wake=<result> session=<sid8> live=<yes|no|unknown>`, see sweepGateWakeField)
+// is `wake=none` on every row that ran no wake, the INVARIANT row included: a
+// missed wake is otherwise invisible, since the notification column records only
+// the alert and the wake's outcome lived in the job log alone. The shell's fifth column named the
 // spawning parent, which is what distinguished overlapping passes; overlap is
 // structurally impossible here, so the column names this process instead.
 //
@@ -891,16 +943,17 @@ func (j *sweepGateNotifyJob) appendLedger(
 	exitCode int,
 	verdict string,
 	notified string,
+	wake string,
 	invariant string,
 ) {
 	parent := sweepGateLedgerParent()
 	lines := make([]string, 0, 2)
 	if invariant != "" {
 		lines = append(lines, timestamp+"\t"+strconv.Itoa(exitCode)+"\tINVARIANT\t"+
-			invariant+"\t"+parent+"\n")
+			invariant+"\t"+sweepGateWakeNone+"\t"+parent+"\n")
 	}
 	lines = append(lines, timestamp+"\t"+strconv.Itoa(exitCode)+"\t"+verdict+"\t"+
-		notified+"\t"+parent+"\n")
+		notified+"\t"+wake+"\t"+parent+"\n")
 	j.appendLines(ctx, filepath.Join(state, slug+sweepGateLedgerSuffix), lines)
 }
 
