@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- feat: **the sweep-gate job carries a miss-rate guard again.** The shell tick wrapper had an opt-in `.miss-guard-enabled` check that re-read the gate's verdict after an EMPTY tick; the launchd-to-in-process port dropped it, so a change the digest missed could leave a manager silently stalled with nothing recording it. `SweepGateChecker` (`NewSweepGateCommandChecker`) runs the gate's own `--check` verdict-only mode and reports `action=miss subject=<name> rc=<n>` when an EMPTY tick's re-read says CHANGE-WAKE, and `action=guard_error` when the check did not run (an error, a non-10 exit, or a deadline kill) — a distinct action carrying no `action=miss` substring, so a failed check cannot inflate the rate. It is opt-in on `<stateDir>/.miss-guard-enabled` because the check costs a second full resolution (~9 s measured), and the named probe is `grep -c 'action=miss'` against the changed-tick count — the threshold is 0 misses in ≥20 changed ticks. The three subprocess methods (`Tick`, `Check`, `Classify`) now share one `sweepGateRunScript` helper instead of three copies of the same launch/exit-code handling. `pkg/sweep-gate-notify-job.go`, `pkg/sweep-gate-notify-job_internal_test.go`.
+
 ## v0.84.0
 
 - feat: add the event-log prune job: drop lines older than the retention horizon by each line's own `ts`, keeping a line whose age is unknown (no `ts`, torn or unknown shape) rather than guessing, and writing nothing when no line is aged

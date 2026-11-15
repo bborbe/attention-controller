@@ -173,6 +173,32 @@ func (w *stubSweepGateWaker) Wake(
 	return "WOKEN pane=1", nil
 }
 
+// stubSweepGateChecker answers from the spec's queue of verdict-only results.
+type stubSweepGateChecker struct {
+	results []SweepGateCheckResult
+	errs    []error
+	calls   atomic.Int32
+}
+
+func (c *stubSweepGateChecker) Check(
+	_ context.Context,
+	_ string,
+	_ string,
+	_ string,
+) (SweepGateCheckResult, error) {
+	index := int(c.calls.Add(1) - 1)
+	if index < len(c.errs) && c.errs[index] != nil {
+		return SweepGateCheckResult{}, c.errs[index]
+	}
+	if len(c.results) == 0 {
+		return SweepGateCheckResult{ExitCode: 0}, nil
+	}
+	if index >= len(c.results) {
+		return c.results[len(c.results)-1], nil
+	}
+	return c.results[index], nil
+}
+
 // sweepGateReadLastPass reads the pass record the cycle just wrote, so a spec
 // asserts both halves were recorded without repeating the unmarshal.
 func sweepGateReadLastPass(baseDir string) sweepGateLastPass {
@@ -189,6 +215,7 @@ var _ = Describe("sweep gate notify job", func() {
 	var subjectDir string
 	var subjects *stubSweepGateSubjects
 	var gate *stubSweepGateGate
+	var checker *stubSweepGateChecker
 	var classifier *stubSweepGateClassifier
 	var adhoc *stubSweepGateAdhoc
 	var notifier *stubSweepGateNotifier
@@ -214,6 +241,7 @@ var _ = Describe("sweep gate notify job", func() {
 			Branch: "topic",
 		}}}
 		gate = &stubSweepGateGate{}
+		checker = &stubSweepGateChecker{}
 		classifier = &stubSweepGateClassifier{}
 		adhoc = &stubSweepGateAdhoc{}
 		notifier = &stubSweepGateNotifier{}
@@ -232,6 +260,7 @@ var _ = Describe("sweep gate notify job", func() {
 		job = &sweepGateNotifyJob{
 			subjects:   subjects,
 			gate:       gate,
+			checker:    checker,
 			classifier: classifier,
 			adhoc:      adhoc,
 			notifier:   notifier,
@@ -290,6 +319,75 @@ var _ = Describe("sweep gate notify job", func() {
 			"job=sweep-gate-notify action=pass subjects=1 adhoc_rc=0",
 		)
 		Expect(passLine).To(BeTrue())
+	})
+
+	It("reports a MISS when an EMPTY tick's re-read says the digest moved", func() {
+		writeFile(pathIn(sweepGateMissGuardFileName), "")
+		gate.results = []SweepGateTickResult{{ExitCode: 0, Output: "unchanged\n"}}
+		checker.results = []SweepGateCheckResult{{ExitCode: 10, Output: "change: digest differs\n"}}
+
+		job.cycle(ctx)
+
+		_, missed := capture.find("job=sweep-gate-notify action=miss")
+		Expect(missed).To(BeTrue())
+		Expect(checker.calls.Load()).To(BeNumerically("==", 1))
+	})
+
+	It("does not run the miss check without the opt-in marker", func() {
+		gate.results = []SweepGateTickResult{{ExitCode: 0, Output: "unchanged\n"}}
+		checker.results = []SweepGateCheckResult{{ExitCode: 10}}
+
+		job.cycle(ctx)
+
+		Expect(checker.calls.Load()).To(BeNumerically("==", 0))
+		_, missed := capture.find("job=sweep-gate-notify action=miss")
+		Expect(missed).To(BeFalse())
+	})
+
+	It("reports a guard error, not a MISS, when the check did not run", func() {
+		writeFile(pathIn(sweepGateMissGuardFileName), "")
+		gate.results = []SweepGateTickResult{{ExitCode: 0, Output: "unchanged\n"}}
+		checker.results = []SweepGateCheckResult{{ExitCode: 1, Output: "gate exploded\n"}}
+
+		job.cycle(ctx)
+
+		_, missed := capture.find("job=sweep-gate-notify action=miss")
+		Expect(missed).To(BeFalse())
+		_, failed := capture.find("job=sweep-gate-notify action=guard_error")
+		Expect(failed).To(BeTrue())
+	})
+
+	It("reports a guard error when the check itself errored", func() {
+		writeFile(pathIn(sweepGateMissGuardFileName), "")
+		gate.results = []SweepGateTickResult{{ExitCode: 0, Output: "unchanged\n"}}
+		checker.errs = []error{stderrors.New("check exploded")}
+
+		job.cycle(ctx)
+
+		_, failed := capture.find("job=sweep-gate-notify action=guard_error")
+		Expect(failed).To(BeTrue())
+	})
+
+	It("does not report a MISS when the re-read still says unchanged", func() {
+		writeFile(pathIn(sweepGateMissGuardFileName), "")
+		gate.results = []SweepGateTickResult{{ExitCode: 0, Output: "unchanged\n"}}
+		checker.results = []SweepGateCheckResult{{ExitCode: 0, Output: "unchanged\n"}}
+
+		job.cycle(ctx)
+
+		_, missed := capture.find("job=sweep-gate-notify action=miss")
+		Expect(missed).To(BeFalse())
+		Expect(checker.calls.Load()).To(BeNumerically("==", 1))
+	})
+
+	It("does not run the miss check when no checker is wired", func() {
+		writeFile(pathIn(sweepGateMissGuardFileName), "")
+		job.checker = nil
+		gate.results = []SweepGateTickResult{{ExitCode: 0, Output: "unchanged\n"}}
+
+		job.cycle(ctx)
+
+		Expect(checker.calls.Load()).To(BeNumerically("==", 0))
 	})
 
 	It("records progress-only on a CHANGE-WAKE the classifier calls quiet", func() {
@@ -599,6 +697,7 @@ var _ = Describe("sweep gate notify job", func() {
 			done <- NewSweepGateNotifyJob(
 				subjects,
 				gate,
+				checker,
 				classifier,
 				adhoc,
 				notifier,

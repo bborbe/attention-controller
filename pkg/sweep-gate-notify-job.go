@@ -149,6 +149,11 @@ const (
 	// of ~8.7k vault files, so it is given more room than a classifier call while
 	// still bounding a hung interpreter.
 	sweepGateAdhocTimeout = 2 * time.Minute
+
+	// sweepGateMissGuardFileName is the opt-in marker for the miss-rate guard,
+	// matching the shell's `.miss-guard-enabled`. The check costs a second full
+	// resolution (~9 s measured), so it runs only where a reader asked for it.
+	sweepGateMissGuardFileName = ".miss-guard-enabled"
 )
 
 // sweepGateNotifyInfof and sweepGateNotifyErrorf are package variables so a spec
@@ -260,6 +265,30 @@ type SweepGateGate interface {
 		vault string,
 		stateDir string,
 	) (SweepGateTickResult, error)
+}
+
+// SweepGateChecker re-reads the gate's verdict WITHOUT consuming it.
+//
+// ⚠️ It exists only for the miss-rate guard: a tick that answered EMPTY and a
+// `--check` that answers CHANGE-WAKE over the same state is a MISS — a change the
+// digest missed, which would leave the manager silently stalled. `--check` is the
+// gate's own verdict-only mode, so the comparison is the gate's digest against
+// itself, never a second implementation of the digest here.
+type SweepGateChecker interface {
+	Check(
+		ctx context.Context,
+		subject string,
+		vault string,
+		stateDir string,
+	) (SweepGateCheckResult, error)
+}
+
+// SweepGateCheckResult is one verdict-only run of the gate.
+type SweepGateCheckResult struct {
+	// ExitCode is 0 unchanged, 10 changed, anything else a check that did not run.
+	ExitCode int
+	// Output is the gate's verdict line.
+	Output string
 }
 
 // SweepGateClassifier decides whether a CHANGE-WAKE needs the operator.
@@ -380,6 +409,7 @@ type SweepGateWaker interface {
 func NewSweepGateNotifyJob(
 	subjects SweepGateSubjectLister,
 	gate SweepGateGate,
+	checker SweepGateChecker,
 	classifier SweepGateClassifier,
 	adhoc SweepGateAdhocPass,
 	notifier SweepGateNotifier,
@@ -392,6 +422,7 @@ func NewSweepGateNotifyJob(
 	job := &sweepGateNotifyJob{
 		subjects:   subjects,
 		gate:       gate,
+		checker:    checker,
 		classifier: classifier,
 		adhoc:      adhoc,
 		notifier:   notifier,
@@ -407,6 +438,7 @@ func NewSweepGateNotifyJob(
 type sweepGateNotifyJob struct {
 	subjects   SweepGateSubjectLister
 	gate       SweepGateGate
+	checker    SweepGateChecker
 	classifier SweepGateClassifier
 	adhoc      SweepGateAdhocPass
 	notifier   SweepGateNotifier
@@ -524,6 +556,7 @@ func (j *sweepGateNotifyJob) tickSubject(ctx context.Context, subject SweepGateS
 	switch result.ExitCode {
 	case sweepGateTickEmptyCode:
 		j.clearStreak(ctx, state, slug)
+		j.checkMiss(ctx, subject, state)
 	case sweepGateTickChangeWakeCode:
 		j.clearStreak(ctx, state, slug)
 		notified = j.reportChangeWake(ctx, subject, state, slug, verdict)
@@ -612,6 +645,66 @@ func (j *sweepGateNotifyJob) wake(ctx context.Context, subject SweepGateSubject)
 		sweepGateNotifyJobName,
 		subject.Name,
 		sweepGateCollapse(output, ";", sweepGateNotifyOutputLimit),
+	)
+}
+
+// checkMiss re-reads the gate's verdict after an EMPTY tick and reports a MISS when
+// the re-read says CHANGE-WAKE — a change the digest missed.
+//
+// ⚠️ Opt-in, matching the shell's `.miss-guard-enabled`: the check costs a second
+// full resolution (~9 s measured), so it runs only where a reader asked for it. The
+// probe is `grep -c 'action=miss'` against the changed-tick count; a check that did
+// not run is `action=guard_error` and deliberately carries no `action=miss`
+// substring, so a failed check cannot inflate the rate. The threshold is 0 misses in
+// >=20 changed ticks.
+//
+// ⚠️ No `//counterfeiter:generate` directive: the six sibling sweep-gate interfaces
+// in this file use the same hand-written stub in the spec, so this one follows that
+// file's convention rather than the repo-wide default.
+func (j *sweepGateNotifyJob) checkMiss(
+	ctx context.Context,
+	subject SweepGateSubject,
+	state string,
+) {
+	if j.checker == nil {
+		return
+	}
+	if !j.stateFileExists(ctx, filepath.Join(state, sweepGateMissGuardFileName)) {
+		return
+	}
+	checked, err := j.checker.Check(ctx, subject.Name, subject.Vault, state)
+	if err != nil {
+		sweepGateNotifyErrorf(
+			"job=%s action=guard_error subject=%s error=%v",
+			sweepGateNotifyJobName,
+			subject.Name,
+			err,
+		)
+		return
+	}
+	if checked.ExitCode == sweepGateTickEmptyCode {
+		return
+	}
+	// ⚠️ ONLY rc 10 is a MISS. `SweepGateCheckResult`'s contract says anything else
+	// is a check that did not run — and a check that did not run is not a
+	// CHANGE-WAKE. Counting it as one would corrupt the very rate this guard exists
+	// to measure and could trip the threshold with no change actually missed.
+	if checked.ExitCode != sweepGateTickChangeWakeCode {
+		sweepGateNotifyErrorf(
+			"job=%s action=guard_error subject=%s rc=%d verdict=%s",
+			sweepGateNotifyJobName,
+			subject.Name,
+			checked.ExitCode,
+			sweepGateCollapse(checked.Output, ";", sweepGateNotifyOutputLimit),
+		)
+		return
+	}
+	sweepGateNotifyErrorf(
+		"job=%s action=miss subject=%s rc=%d verdict=%s",
+		sweepGateNotifyJobName,
+		subject.Name,
+		checked.ExitCode,
+		sweepGateCollapse(checked.Output, ";", sweepGateNotifyOutputLimit),
 	)
 }
 
@@ -1269,6 +1362,52 @@ func parseSweepGateSubjects(output string) []SweepGateSubject {
 	return subjects
 }
 
+// sweepGateRunScript runs one sweep-gate subprocess with the gate's state dir in its
+// environment, returning its exit code and combined output.
+//
+// ⚠️ A non-zero exit is a RESULT, never an error: `--tick` answers 10 for a changed
+// digest, `--check` answers 10 for the same reason, and the classifier answers
+// non-zero for anything the operator should see. Only a launch failure — no
+// interpreter, no script — is an error.
+func sweepGateRunScript(
+	ctx context.Context,
+	python string,
+	script string,
+	args []string,
+	stateDir string,
+	timeout time.Duration,
+) (int, string, error) {
+	commandCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	// #nosec G204 -- the interpreter and the script are compile-time constants;
+	// every variable argument is an argv word, never a shell word.
+	cmd := exec.CommandContext(commandCtx, python, append([]string{script}, args...)...)
+	cmd.Env = childEnv(sweepGateStateDirEnv + "=" + stateDir)
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	err := cmd.Run()
+	if err == nil {
+		return sweepGateTickEmptyCode, output.String(), nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		// ⚠️ A process killed by the deadline is NOT a verdict: its exit code says
+		// nothing about the digest, so it must never reach a caller as one (a killed
+		// `--check` would otherwise read as a MISS).
+		if commandCtx.Err() != nil {
+			return 0, output.String(), errors.Wrapf(
+				ctx,
+				commandCtx.Err(),
+				"'%s' did not complete",
+				script,
+			)
+		}
+		return exitErr.ExitCode(), output.String(), nil
+	}
+	return 0, output.String(), errors.Wrapf(ctx, err, "run '%s' failed", script)
+}
+
 // NewSweepGateCommandGate builds the gate over its script.
 func NewSweepGateCommandGate(python, script string) SweepGateGate {
 	return &sweepGateCommandGate{python: python, script: script}
@@ -1291,32 +1430,52 @@ func (g *sweepGateCommandGate) Tick(
 	vault string,
 	stateDir string,
 ) (SweepGateTickResult, error) {
-	commandCtx, cancel := context.WithTimeout(ctx, sweepGateTickTimeout)
-	defer cancel()
-	// #nosec G204 -- the interpreter, the script and the two flags are
-	// compile-time values; the subject and vault come from the enumerator's own
-	// TSV and are passed as argv words, never through a shell.
-	cmd := exec.CommandContext(
-		commandCtx,
+	code, output, err := sweepGateRunScript(
+		ctx,
 		g.python,
 		g.script,
-		"--topic", subject,
-		"--vault", vault,
-		"--tick",
+		[]string{"--topic", subject, "--vault", vault, "--tick"},
+		stateDir,
+		sweepGateTickTimeout,
 	)
-	cmd.Env = childEnv(sweepGateStateDirEnv + "=" + stateDir)
-	var output bytes.Buffer
-	cmd.Stdout = &output
-	cmd.Stderr = &output
-	err := cmd.Run()
-	if err == nil {
-		return SweepGateTickResult{ExitCode: sweepGateTickEmptyCode, Output: output.String()}, nil
+	if err != nil {
+		return SweepGateTickResult{}, err
 	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		return SweepGateTickResult{ExitCode: exitErr.ExitCode(), Output: output.String()}, nil
+	return SweepGateTickResult{ExitCode: code, Output: output}, nil
+}
+
+// NewSweepGateCommandChecker builds the verdict-only gate over its script.
+func NewSweepGateCommandChecker(python, script string) SweepGateChecker {
+	return &sweepGateCommandChecker{python: python, script: script}
+}
+
+type sweepGateCommandChecker struct {
+	python string
+	script string
+}
+
+// Check runs `--check` for one subject and returns its verdict.
+//
+// ⚠️ A non-zero exit is a RESULT, not an error, exactly as `Tick` treats it: 10 is
+// the verdict the miss guard is looking for. Only a launch failure is an error.
+func (c *sweepGateCommandChecker) Check(
+	ctx context.Context,
+	subject string,
+	vault string,
+	stateDir string,
+) (SweepGateCheckResult, error) {
+	code, output, err := sweepGateRunScript(
+		ctx,
+		c.python,
+		c.script,
+		[]string{"--topic", subject, "--vault", vault, "--check"},
+		stateDir,
+		sweepGateClassifyTimeout,
+	)
+	if err != nil {
+		return SweepGateCheckResult{}, err
 	}
-	return SweepGateTickResult{}, errors.Wrapf(ctx, err, "run sweep gate '%s' failed", g.script)
+	return SweepGateCheckResult{ExitCode: code, Output: output}, nil
 }
 
 // NewSweepGateCommandClassifier builds the change classifier over its script.
@@ -1341,39 +1500,18 @@ func (c *sweepGateCommandClassifier) Classify(
 	gateVerdict string,
 	stateDir string,
 ) (SweepGateClassifyResult, error) {
-	commandCtx, cancel := context.WithTimeout(ctx, sweepGateClassifyTimeout)
-	defer cancel()
-	// #nosec G204 -- see the gate's note: the script is a compile-time constant and
-	// the variable arguments are argv words.
-	cmd := exec.CommandContext(
-		commandCtx,
+	code, output, err := sweepGateRunScript(
+		ctx,
 		c.python,
 		c.script,
-		"--topic", subject,
-		"--vault", vault,
-		"--gate-verdict", gateVerdict,
+		[]string{"--topic", subject, "--vault", vault, "--gate-verdict", gateVerdict},
+		stateDir,
+		sweepGateClassifyTimeout,
 	)
-	cmd.Env = childEnv(sweepGateStateDirEnv + "=" + stateDir)
-	var output bytes.Buffer
-	cmd.Stdout = &output
-	cmd.Stderr = &output
-	err := cmd.Run()
-	if err == nil {
-		return SweepGateClassifyResult{
-			ExitCode: sweepGateClassifyQuietCode,
-			Output:   output.String(),
-		}, nil
+	if err != nil {
+		return SweepGateClassifyResult{}, err
 	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		return SweepGateClassifyResult{ExitCode: exitErr.ExitCode(), Output: output.String()}, nil
-	}
-	return SweepGateClassifyResult{}, errors.Wrapf(
-		ctx,
-		err,
-		"run sweep gate classifier '%s' failed",
-		c.script,
-	)
+	return SweepGateClassifyResult{ExitCode: code, Output: output}, nil
 }
 
 // NewSweepGateCommandAdhocPass builds the ad-hoc park pass over its script.
@@ -1544,6 +1682,10 @@ func NewDefaultSweepGateNotifyJob(ctx context.Context) (run.Func, error) {
 			filepath.Join(home, ".claude", "state", "worker-manager"),
 		),
 		NewSweepGateCommandGate(
+			sweepGatePythonBinary,
+			filepath.Join(personal, ".claude", "scripts", "sweep-gate.py"),
+		),
+		NewSweepGateCommandChecker(
 			sweepGatePythonBinary,
 			filepath.Join(personal, ".claude", "scripts", "sweep-gate.py"),
 		),
