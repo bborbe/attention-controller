@@ -1519,9 +1519,11 @@ func (a *attentionStore) Close(
 // cost.
 //
 // ⚠️ Three things are deliberately not renewed:
-//   - a PRODUCER-SET deadline (`ExpiresAtDefaulted` false). The producer named a
-//     deadline and the store does not overrule it — `approve-run.py` and
-//     `attention-ask.py` set one, and so does every unforwarded closer.
+//   - a PRODUCER-SET deadline (`ExpiresAtDefaulted` false with an `ExpiresAt`
+//     set). The producer named a deadline and the store does not overrule it —
+//     `approve-run.py` and `attention-ask.py` set one, and so does every
+//     unforwarded closer. A row carrying NO deadline is the legacy case and IS
+//     renewed: see defaultedDeadline.
 //   - an item whose subject reads dead. That is the bound: an item is cleared at
 //     most DefaultItemExpiry after its last renewal.
 //   - an item with more than renewalThreshold left. See that constant.
@@ -1585,7 +1587,7 @@ func (a *attentionStore) dueDefaultedKeys(
 			if key == liveIndexMarkerKey {
 				return nil
 			}
-			if item.State != OpenState || !item.ExpiresAtDefaulted {
+			if item.State != OpenState || !defaultedDeadline(&item) {
 				return nil
 			}
 			if now.Add(renewalThreshold).Before(effectiveExpiresAt(&item)) {
@@ -1633,6 +1635,10 @@ func (a *attentionStore) dueDefaultedKeys(
 // rewrites BOTH the deadline and its provenance — so a producer that switched to
 // declaring its own TTL must not have that TTL overwritten by this pass, and one
 // that re-armed the default must not be renewed twice for the same instant.
+//
+// ⚠️ A legacy row (no `ExpiresAt`, flag false) passes the re-check as defaulted,
+// and the renewal records the flag — otherwise the row would renew once and be
+// skipped forever after. See defaultedDeadline.
 func (a *attentionStore) renewDefaultedItem(
 	ctx context.Context,
 	tx libkv.Tx,
@@ -1647,7 +1653,7 @@ func (a *attentionStore) renewDefaultedItem(
 		}
 		return false, errors.Wrapf(ctx, err, "get item %s for renewal failed", key)
 	}
-	if item.State != OpenState || !item.ExpiresAtDefaulted {
+	if item.State != OpenState || !defaultedDeadline(item) {
 		return false, nil
 	}
 	if now.Add(renewalThreshold).Before(effectiveExpiresAt(item)) {
@@ -1655,6 +1661,11 @@ func (a *attentionStore) renewDefaultedItem(
 	}
 	deadline := now.Add(DefaultItemExpiry)
 	item.ExpiresAt = &deadline
+	// ⚠️ The provenance is RECORDED here, and that is what makes a legacy row's
+	// renewal repeatable. A legacy row carries no deadline and no flag, so
+	// renewing it without this line would move the deadline once and then skip it
+	// on every later pass — the row would die one window later instead of never.
+	item.ExpiresAtDefaulted = true
 	if err := a.putItem(ctx, tx, *item); err != nil {
 		return false, errors.Wrapf(ctx, err, "renew item %s failed", key)
 	}

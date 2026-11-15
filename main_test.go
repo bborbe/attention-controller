@@ -128,6 +128,89 @@ var _ = Describe("runAnsweredSweep", func() {
 	})
 })
 
+// runExpiryRenewal's spec mirrors runAnsweredSweep's, because the two loops are
+// registered as a pair and share a failure mode: each must keep ticking through a
+// store error, hand its tick its own deadline, and return nil on cancellation
+// rather than taking the process down through the shared runner.
+var _ = Describe("runExpiryRenewal", func() {
+	var ctx context.Context
+	var store *mocks.AttentionStore
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		store = &mocks.AttentionStore{}
+		store.RenewLiveReturns(0, nil)
+	})
+
+	It("returns on cancellation without renewing", func() {
+		cancelled, cancel := context.WithCancel(ctx)
+		cancel()
+
+		// ⚠️ A long interval, not a short one, and for the reason the sibling spec
+		// gives: this asserts cancellation returns nil WITHOUT a pass, and a 1 ms
+		// ticker races it — ticker.C becomes ready a millisecond after NewTicker, so
+		// a goroutine descheduled past that boundary leaves Go choosing between two
+		// ready cases at random and the zero-call assertion fails on a loaded runner.
+		renewal := runExpiryRenewal(store, time.Second)
+		Expect(renewal(cancelled)).To(Succeed())
+		Expect(store.RenewLiveCallCount()).To(Equal(0))
+	})
+
+	It("keeps ticking after a failed renewal instead of returning the error", func() {
+		// A failed pass costs one interval of renewal; it loses nothing, because the
+		// deadlines it would have moved are still ahead of now. Returning the error
+		// would drop the board over something the board survives.
+		store.RenewLiveReturnsOnCall(0, 0, errors.New(ctx, "renewal exploded"))
+
+		runCtx, cancel := context.WithCancel(ctx)
+		done := make(chan error, 1)
+		go func() {
+			done <- runExpiryRenewal(store, time.Millisecond)(runCtx)
+		}()
+
+		// Two calls is the assertion that matters: the first failed and the loop came
+		// back for a second, rather than unwinding with the error.
+		Eventually(store.RenewLiveCallCount, "2s").Should(BeNumerically(">=", 2))
+		cancel()
+		Eventually(done, "2s").Should(Receive(BeNil()))
+	})
+
+	It("hands each renewal its own deadline", func() {
+		// The deadline IS the per-tick bound, and nothing else here can notice its
+		// absence: the mock ignores the context, so a regression back to a bare `ctx`
+		// would leave every spec green while silently re-disabling the bound.
+		runCtx, cancel := context.WithCancel(ctx)
+		done := make(chan error, 1)
+		go func() {
+			done <- runExpiryRenewal(store, time.Millisecond)(runCtx)
+		}()
+
+		Eventually(store.RenewLiveCallCount, "2s").Should(BeNumerically(">=", 1))
+		callCtx := store.RenewLiveArgsForCall(0)
+		_, hasDeadline := callCtx.Deadline()
+		Expect(hasDeadline).To(BeTrue(), "every tick must carry its own deadline")
+		cancel()
+		Eventually(done, "2s").Should(Receive(BeNil()))
+	})
+
+	It("keeps ticking after a renewal that moved items", func() {
+		// The renewed > 0 branch is the one path the other specs never reach — both
+		// keep the count at zero — so the line that reports what a pass did is
+		// otherwise uncovered.
+		store.RenewLiveReturnsOnCall(0, 3, nil)
+
+		runCtx, cancel := context.WithCancel(ctx)
+		done := make(chan error, 1)
+		go func() {
+			done <- runExpiryRenewal(store, time.Millisecond)(runCtx)
+		}()
+
+		Eventually(store.RenewLiveCallCount, "2s").Should(BeNumerically(">=", 2))
+		cancel()
+		Eventually(done, "2s").Should(Receive(BeNil()))
+	})
+})
+
 var _ = Describe("parseAnsweredMaxAge", func() {
 	var ctx context.Context
 

@@ -91,6 +91,36 @@ var _ = Describe("AttentionStore with a dead liveness subject", func() {
 		return &d
 	}
 
+	// seedLegacy writes a row as a store running BEFORE this change carries it:
+	// open, with NO `expires_at` and no `expires_at_defaulted`, created `age` ago.
+	//
+	// ⚠️ It is written straight into the items bucket and nothing else, which is
+	// exactly the state a migrated store is in: no index markers, so the first
+	// read rebuilds the open index and the first renewal pass rebuilds the live
+	// index from this bucket. `Push` cannot produce the row any more — it always
+	// stores the default — and fabricating the index entries too would hide
+	// whether the migration path still finds the row at all.
+	seedLegacy := func(dedupKey string, age stdtime.Duration) *pkg.Item {
+		item := pkg.Item{
+			ItemID:          pkg.ItemID("legacy-" + dedupKey),
+			ProducerID:      pkg.ProducerID("worker-1"),
+			ProducerKind:    pkg.SessionProducerKind,
+			LivenessRef:     pkg.LivenessRef("session:worker-1"),
+			DedupKey:        pkg.DedupKey(dedupKey),
+			InterruptClass:  "pick",
+			Payload:         "which way?",
+			AnswerMechanism: pkg.MessageAnswerMechanism,
+			State:           pkg.OpenState,
+			CreatedAt:       libtime.DateTime(now.Time().Add(-age)),
+		}
+		err := db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
+			items := libkv.NewStoreTx[string, pkg.Item](pkg.AttentionStoreBucketName)
+			return items.Add(ctx, tx, item.ItemID.String(), item)
+		})
+		Expect(err).To(BeNil())
+		return &item
+	}
+
 	It("keeps an open ask whose subject is gone, inside its window, still open", func() {
 		item := push("dead-open", nil)
 
@@ -322,6 +352,85 @@ var _ = Describe("AttentionStore with a dead liveness subject", func() {
 			renewed, err := store.RenewLive(ctx)
 			Expect(err).To(BeNil())
 			Expect(renewed).To(Equal(0), "renewal is not a per-tick rewrite of every row")
+		})
+
+		// A row written before `expires_at_defaulted` existed carries no deadline
+		// AND no flag, so a gate on the flag alone skipped the whole pre-existing
+		// population: with effectiveExpiresAt's fallback it was never renewed and
+		// died at created_at + 24 h, where before this change a live producer kept
+		// it indefinitely. These three specs pin the two halves of that fix — a
+		// legacy row is renewable, and renewing it RECORDS the provenance so the
+		// renewal is repeatable rather than a one-off.
+		It("renews a legacy row that carries no expires_at, and records the provenance", func() {
+			item := seedLegacy("legacy-live", 13*stdtime.Hour)
+
+			renewed, err := store.RenewLive(ctx)
+			Expect(err).To(BeNil())
+			Expect(renewed).To(Equal(1),
+				"a row with no deadline is the store's default, not a producer's TTL")
+
+			got, err := store.Get(ctx, item.ItemID)
+			Expect(err).To(BeNil())
+			Expect(got.ExpiresAt).NotTo(BeNil(), "the renewal stores a deadline on the row")
+			Expect(
+				got.ExpiresAt.Time().UnixMicro(),
+			).To(Equal(now.Time().Add(24 * stdtime.Hour).UnixMicro()))
+			Expect(got.ExpiresAtDefaulted).To(BeTrue(),
+				"the renewal records what it established, or the row is skipped forever after")
+
+			// ⚠️ The second pass is the assertion the flag exists for. Without it the
+			// row renews once and is then skipped, which only postpones the death by
+			// one window instead of preventing it.
+			advance(13 * stdtime.Hour)
+			renewed, err = store.RenewLive(ctx)
+			Expect(err).To(BeNil())
+			Expect(renewed).To(Equal(1), "a renewed legacy row must stay renewable")
+
+			items, err := store.ReadBoard(ctx)
+			Expect(err).To(BeNil())
+			Expect(items).To(HaveLen(1), "renewing must never cost the row")
+		})
+
+		It("still clears a dead producer's legacy row at created_at + 24h", func() {
+			item := seedLegacy("legacy-dead", 0)
+
+			checker.IsLiveReturns(false)
+
+			advance(23 * stdtime.Hour)
+			renewed, err := store.RenewLive(ctx)
+			Expect(err).To(BeNil())
+			Expect(renewed).To(Equal(0), "a dead producer is never renewed, legacy row or not")
+			items, err := store.ReadBoard(ctx)
+			Expect(err).To(BeNil())
+			Expect(items).To(HaveLen(1), "inside the window a dead producer removes nothing")
+
+			advance(stdtime.Hour)
+			items, err = store.ReadBoard(ctx)
+			Expect(err).To(BeNil())
+			Expect(items).To(BeEmpty(), "the legacy fallback still bounds a dead producer's row")
+
+			_, err = store.Get(ctx, item.ItemID)
+			Expect(err).To(MatchError(ContainSubstring("not found")))
+		})
+
+		It("keeps a legacy row already past its 24 h window while its producer is alive", func() {
+			item := seedLegacy("legacy-old-live", 25*stdtime.Hour)
+
+			// ⚠️ The renewal pass is what saves this row, and naming the ordering is
+			// the point: a read judges a row with no deadline against
+			// created_at + 24h — an instant an hour in the past here — so a read that
+			// arrives BEFORE the first pass still sweeps it. That window is one
+			// maintenance interval after a restart, and it closes for good once the
+			// pass has run: every live legacy row then carries a deadline and the
+			// flag, so the fallback is reached only by a dead producer's row.
+			renewed, err := store.RenewLive(ctx)
+			Expect(err).To(BeNil())
+			Expect(renewed).To(Equal(1), "a legacy row past its window is still renewable")
+
+			items, err := store.ReadBoard(ctx)
+			Expect(err).To(BeNil())
+			Expect(items).To(HaveLen(1), "the row the read would have swept is kept")
+			Expect(items[0].ItemID).To(Equal(item.ItemID))
 		})
 	})
 })

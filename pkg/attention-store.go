@@ -112,8 +112,11 @@ type AttentionStore interface {
 	// first push's 24 h.
 	//
 	// ⚠️ A producer-set deadline is never renewed. Only an item whose deadline
-	// came from the store's 24 h default (`ExpiresAtDefaulted`) is renewable, so
-	// a producer that named its own TTL keeps it.
+	// came from the store's 24 h default is renewable, so a producer that named
+	// its own TTL keeps it. A row carrying NO deadline — one written before the
+	// default existed — counts as defaulted and is renewed like any other, and
+	// the first renewal records `expires_at_defaulted` so it stays renewable.
+	// See pkg/attention-item-expiry.go § defaultedDeadline.
 	//
 	// It is a separate call rather than a step inside Read because the read path
 	// stays read-only: a read that writes is the writer-lock-across-a-scan shape

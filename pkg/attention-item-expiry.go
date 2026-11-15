@@ -54,6 +54,27 @@ func effectiveExpiresAt(item *Item) libtime.DateTime {
 	return *deadline
 }
 
+// defaultedDeadline reports whether the item's deadline came from the store's
+// own default and is therefore renewable.
+//
+// ⚠️ A nil `ExpiresAt` counts as defaulted, and that is the LEGACY case rather
+// than a defensive one. Rows written before `ExpiresAtDefaulted` existed carry
+// neither the flag nor a deadline, so the flag reads false for every one of them
+// — and a gate on the flag alone skipped them all. Combined with
+// effectiveExpiresAt's fallback that meant a legacy row with a LIVE producer was
+// never renewed and died at created_at + DefaultItemExpiry: the exact loss the
+// renewal pass exists to prevent, applied to the whole pre-existing population.
+// A row with no deadline is one expiresAtOrDefault gives the same default a
+// fresh push would have stored, so it is renewable by the same rule.
+//
+// ⚠️ A producer-set deadline is still never renewed: it has a non-nil
+// `ExpiresAt` and the flag false. Both halves are needed — the flag alone misses
+// every legacy row, and the nil test alone would treat a producer that cleared
+// its own deadline as defaulted.
+func defaultedDeadline(item *Item) bool {
+	return item.ExpiresAtDefaulted || item.ExpiresAt == nil
+}
+
 // renewalThreshold is how little lifetime a defaulted deadline must have left
 // before the renewal pass writes it forward to now + DefaultItemExpiry.
 //

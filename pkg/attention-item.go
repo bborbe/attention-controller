@@ -329,8 +329,12 @@ type Item struct {
 	// producer's own TTL, and only the former is renewed. Comparing ExpiresAt
 	// against CreatedAt + DefaultItemExpiry cannot carry that: a renewal moves
 	// the value, and a producer may legitimately set exactly that instant.
-	// Absent means false, which is what a producer-declared deadline — and every
-	// row written before this field existed — reads as.
+	// Absent means false, which is what a producer-declared deadline reads as.
+	//
+	// ⚠️ Absent is also what every row written before this field reads as, and
+	// those carry no ExpiresAt either — so the renewal pass treats a MISSING
+	// deadline as defaulted too (see defaultedDeadline), and a legacy row with a
+	// live producer is renewed rather than dying at created_at + 24 h.
 	ExpiresAtDefaulted bool `json:"expires_at_defaulted,omitempty"`
 }
 
