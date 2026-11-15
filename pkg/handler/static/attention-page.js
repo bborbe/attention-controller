@@ -413,6 +413,12 @@ var pendingReload = null;
    rather than at the foot of the board. Only the delivery path uses it; undo
    restores the card to the TOP, which is the behaviour the operator asked for. */
 var removedAnchors = {};
+/* decisionSuppressUntil debounces a second Allow / Deny click that lands right
+   after the first. ⚠️ Load bearing: answering removes the card synchronously, so
+   the NEXT card's pair slides under the cursor — a double-click would answer a
+   card the operator never read, which is the misclick class this feature exists
+   to prevent. The window is the browser's own double-click interval. */
+var decisionSuppressUntil = 0;
 
 function undoBarElement() {
   return document.querySelector('[data-undo-bar]');
@@ -515,6 +521,9 @@ function deliverHeld(held) {
    itself left, so it returns where the operator answered it. */
 function restoreHeld(held, message) {
   delete removedAnchors[held.itemID];
+  /* A stream frame may already have put the row back; a second copy would be a
+     duplicate card. */
+  if (findRowByID(held.itemID)) { return; }
   var list = boardList();
   if (!list) { return; }
   var anchor = held.anchor ? findRowByID(held.anchor) : null;
@@ -593,6 +602,8 @@ function beginHold(row, request, verb) {
   heldAnswer.timer = window.setTimeout(function () { flushHeld(); }, UNDO_HOLD_MS);
   heldAnswer.ticker = window.setInterval(updateUndoCountdown, 100);
   renderUndoBar();
+  /* Swallow the second click of a double-click — see decisionSuppressUntil. */
+  decisionSuppressUntil = Date.now() + 400;
 }
 /* The pair's click is delegated on the document for the tab strip's reason: a
    stream re-render replaces the row's node and takes a per-button listener with
@@ -602,6 +613,7 @@ function beginHold(row, request, verb) {
 document.addEventListener('click', function (event) {
   var button = event.target && event.target.closest ? event.target.closest('button[data-decision]') : null;
   if (!button) { return; }
+  if (Date.now() < decisionSuppressUntil) { return; }
   var row = button.closest('li.item');
   if (!row) { return; }
   var decision = button.getAttribute('data-decision');

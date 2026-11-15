@@ -153,7 +153,9 @@ var _ = Describe("the held answer", func() {
 		Eventually(func() bool { return undoBarActive(page) }).Should(BeFalse())
 
 		Expect(getItem(itemID).State).To(Equal(pkg.OpenState))
-		Consistently(func() int32 { return atomic.LoadInt32(&answers) }, "1s", "200ms").
+		// Observed across the whole hold window, not a slice of it: a delivery
+		// that slipped through after the first second would fail here.
+		Consistently(func() int32 { return atomic.LoadInt32(&answers) }, "5s", "500ms").
 			Should(Equal(int32(0)))
 	})
 
