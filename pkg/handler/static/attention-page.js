@@ -399,6 +399,17 @@ document.addEventListener('change', function (event) {
    no stack builds. */
 var UNDO_HOLD_MS = 4900;
 var heldAnswer = null;
+/* pendingReload is the id of a scheduled post-failure reload, held so a new
+   answer can cancel it. ⚠️ Load bearing: without this, a failed delivery
+   schedules a reload that fires 2.5 s later even if the operator has already
+   answered the next card — the reload would drop that held answer, which was
+   never sent. One reload is ever pending. */
+var pendingReload = null;
+/* removedAnchors remembers where a held card sat, keyed by item id, so the
+   answered record the stream sends back is re-inserted where the card was
+   rather than at the foot of the board. Only the delivery path uses it; undo
+   restores the card to the TOP, which is the behaviour the operator asked for. */
+var removedAnchors = {};
 
 function undoBarElement() {
   return document.querySelector('[data-undo-bar]');
@@ -417,11 +428,7 @@ function renderUndoBar() {
   if (!bar) { return; }
   var active = !!heldAnswer;
   bar.classList.toggle('is-active', active);
-  if (!active) {
-    bar.removeAttribute('data-undo-active');
-    return;
-  }
-  bar.setAttribute('data-undo-active', '');
+  if (!active) { return; }
   var verb = bar.querySelector('[data-undo-verb]');
   var title = bar.querySelector('[data-undo-title]');
   if (verb) { verb.textContent = heldAnswer.verb; }
@@ -460,12 +467,19 @@ function deliverHeld(held) {
     if (response.ok) { return; }
     return response.text().then(function (body) {
       console.error('attention board: answer failed - HTTP ' + response.status, body);
-      window.setTimeout(function () { window.location.reload(); }, 2500);
+      scheduleReload();
     });
   }).catch(function (error) {
     console.error('attention board: answer failed - ' + String(error));
-    window.setTimeout(function () { window.location.reload(); }, 2500);
+    scheduleReload();
   });
+}
+/* scheduleReload reloads the board after a failed delivery, once, and keeps the
+   id so beginHold can cancel it. A reload already pending is left alone rather
+   than stacked. */
+function scheduleReload() {
+  if (pendingReload !== null) { return; }
+  pendingReload = window.setTimeout(function () { window.location.reload(); }, 2500);
 }
 /* flushHeld delivers the held answer NOW, used when the operator answers the
    next card: only one answer is ever held, so the previous one must not wait
@@ -483,6 +497,7 @@ function undoHeld() {
   if (!heldAnswer) { return; }
   var held = heldAnswer;
   clearHold();
+  delete removedAnchors[held.itemID];
   var list = document.querySelector('ul.items');
   if (!list) {
     var empty = document.querySelector('p.empty');
@@ -493,15 +508,31 @@ function undoHeld() {
   }
   list.insertAdjacentHTML('afterbegin', held.html);
 }
+/* nextItemID returns the id of the row that follows row on the board, or null.
+   It is read before the row leaves the document so the answered record the
+   stream later sends back can be re-inserted in the same place. */
+function nextItemID(row) {
+  var next = row.nextElementSibling;
+  while (next && !next.classList.contains('item')) { next = next.nextElementSibling; }
+  return next ? next.getAttribute('data-item-id') : null;
+}
 /* beginHold captures the clicked card, takes it off the board, and starts the
    timer. A held answer is delivered when its timer expires or when the next
    answer flushes it — whichever comes first. */
 function beginHold(row, request, verb) {
+  /* A pending post-failure reload must not fire over the answer this click is
+     about to hold — see pendingReload. */
+  if (pendingReload !== null) {
+    window.clearTimeout(pendingReload);
+    pendingReload = null;
+  }
   flushHeld();
   var itemID = row.getAttribute('data-item-id');
   var title = heldTitle(row);
   var html = row.outerHTML;
+  var anchor = nextItemID(row);
   row.remove();
+  removedAnchors[itemID] = anchor;
   heldAnswer = {
     itemID: itemID,
     html: html,
@@ -1571,7 +1602,21 @@ function replayFailure(row) {
     } else {
       var list = ensureList();
       if (!list) { return; }
-      list.insertAdjacentHTML('beforeend', prepared);
+      /* A card this page removed to hold its answer is re-inserted where it
+         sat, not at the foot of the board: with the answered records showing
+         (?hide=none) the delivered answer arrives as a dimmed row, and
+         appending it would move the record away from the position the operator
+         answered it in. The anchor is dropped once used; a missing anchor (its
+         neighbour left too) falls back to the end, as every streamed row did
+         before. */
+      var anchorID = removedAnchors[itemID];
+      var anchor = anchorID ? findRow(anchorID) : null;
+      delete removedAnchors[itemID];
+      if (anchor) {
+        anchor.insertAdjacentHTML('beforebegin', prepared);
+      } else {
+        list.insertAdjacentHTML('beforeend', prepared);
+      }
       /* The inserted card is a first paint, so it is stamped here — the two
          branches above are re-renders of a card that was already painted. */
       var added = findRow(itemID);
@@ -1665,6 +1710,7 @@ function replayFailure(row) {
            it rather than deliver an answer that would be refused with
            ITEM_CLOSED. */
         if (heldAnswer && heldAnswer.itemID === change.item_id) { clearHold(); }
+        delete removedAnchors[change.item_id];
         var row = findRow(change.item_id);
         if (row) { row.remove(); }
         collapseIfEmpty();

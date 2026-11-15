@@ -39,8 +39,12 @@
      cursor, and the next-card flow is the property this feature must not
      disturb. The contents are filled by the script: a held answer names the
      verb, the card and the seconds left, and Undo (or the U key) restores the
-     card and delivers nothing. */}}
-<div class="undo-bar" data-undo-bar aria-live="polite" aria-atomic="true"><span class="undo-verb" data-undo-verb></span><span class="undo-title" data-undo-title></span><button type="button" class="undo-button" data-undo>Undo · U</button><span class="undo-countdown" data-undo-countdown></span></div>
+     card and delivers nothing.
+     ⚠️ No aria-live on the bar, and the countdown is aria-hidden: the countdown
+     updates every 100 ms, and a live region over it would make a screen reader
+     announce the bar continuously. The verb, the card name and the Undo button
+     stay in the reading order. */}}
+<div class="undo-bar" data-undo-bar><span class="undo-verb" data-undo-verb></span><span class="undo-title" data-undo-title></span><button type="button" class="undo-button" data-undo>Undo · U</button><span class="undo-countdown" data-undo-countdown aria-hidden="true"></span></div>
 {{if .Items}}<ul class="items">
 {{range .Items}}{{template "attention-row" .}}{{end}}</ul>
 {{else}}<p class="empty">{{if .HiddenCount}}No cards of this kind need attention. The others are hidden by the kind filter above.{{else}}Nothing needs attention.{{end}}</p>

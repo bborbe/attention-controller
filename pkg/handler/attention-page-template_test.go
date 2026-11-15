@@ -94,9 +94,9 @@ var _ = Describe("buildAttentionPage", func() {
 		// digest only when the served page is meant to change.
 		sum := sha256.Sum256([]byte(attentionPageTemplate))
 
-		Expect(len(attentionPageTemplate)).To(Equal(138540))
+		Expect(len(attentionPageTemplate)).To(Equal(141205))
 		Expect(hex.EncodeToString(sum[:])).To(Equal(
-			"25eb50f876fc1dc74b178cdcfc664cd5428b52083016de13a79b29cbe9414fa9",
+			"cf83cfa782b0916dc7b9893db3a99e10aa28f00a08e904cc7b6d1a01f49a587b",
 		))
 	})
 })
