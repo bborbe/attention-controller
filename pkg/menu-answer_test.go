@@ -303,10 +303,11 @@ var _ = Describe("menu answer job", func() {
 		Expect(outcome).To(Equal(pkg.FailedOutcome))
 	})
 
-	It("records nothing when the session is pane-less by construction", func() {
-		// The normal shape for every headless `sdk-cli` worker: nothing was
-		// attempted and nothing failed, so a `failed` record would render an
-		// undeliverable card for a failure the arm never experienced.
+	It("records nothing when the session is pane-less and no headless arm is wired", func() {
+		// With no delivery arm configured nothing can carry the answer, and
+		// nothing was attempted — so a `failed` record would render an
+		// undeliverable card for a failure the arm never experienced. `main.go`
+		// always wires the headless arm; this is the degenerate configuration.
 		locator.verdict = pkg.DeliveryNoPane
 		locator.pane = 0
 		item := answeredMenuItem("item-1", nil)

@@ -51,14 +51,20 @@ type AttentionWatcherJob interface {
 }
 
 // NewAttentionWatcherJob creates the delivery arm.
+//
+// The headless arm is a constructor parameter rather than an option because a
+// card whose session has no pane has NO other carrier: omitting it is not a
+// smaller configuration, it is the silent drop this arm now removes.
 func NewAttentionWatcherJob(
 	store AttentionStore,
 	carrier PaneCarrier,
+	headless HeadlessAnswerDeliverer,
 	interval time.Duration,
 ) AttentionWatcherJob {
 	return &attentionWatcherJob{
 		store:    store,
 		carrier:  carrier,
+		headless: headless,
 		interval: interval,
 	}
 }
@@ -66,6 +72,7 @@ func NewAttentionWatcherJob(
 type attentionWatcherJob struct {
 	store    AttentionStore
 	carrier  PaneCarrier
+	headless HeadlessAnswerDeliverer
 	interval time.Duration
 }
 
@@ -166,10 +173,17 @@ func (j *attentionWatcherJob) deliver(ctx context.Context, item Item) {
 		j.recordAttempt(ctx, item, DeliveredOutcome)
 	case DeliveryRefuse:
 		j.recordAttempt(ctx, item, FailedOutcome)
+	case DeliveryNoPane:
+		// ⚠️ A pane-less session is not a failing carrier — it is the normal
+		// shape for every headless `sdk-cli` worker, which has no pane by
+		// construction. Recording nothing here is what dropped the operator's
+		// answer; the wrapper owns that child's stdin, so the turn goes there.
+		if j.headless != nil {
+			j.headless.DeliverHeadless(ctx, item)
+		}
 	default:
-		// `retry`, `no-pane` and `resolved` record nothing: retry has not failed
-		// yet, a pane-less session attempted nothing, and a resolved gate has
-		// nothing left to deliver.
+		// `retry` and `resolved` record nothing: retry has not failed yet, and a
+		// resolved gate has nothing left to deliver.
 	}
 }
 
