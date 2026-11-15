@@ -100,7 +100,7 @@ var _ = Describe("AttentionStore with a dead liveness subject", func() {
 	// index from this bucket. `Push` cannot produce the row any more — it always
 	// stores the default — and fabricating the index entries too would hide
 	// whether the migration path still finds the row at all.
-	seedLegacy := func(dedupKey string, age stdtime.Duration) *pkg.Item {
+	seedLegacyInto := func(targetDB libkv.DB, dedupKey string, age stdtime.Duration) *pkg.Item {
 		item := pkg.Item{
 			ItemID:          pkg.ItemID("legacy-" + dedupKey),
 			ProducerID:      pkg.ProducerID("worker-1"),
@@ -113,12 +113,20 @@ var _ = Describe("AttentionStore with a dead liveness subject", func() {
 			State:           pkg.OpenState,
 			CreatedAt:       libtime.DateTime(now.Time().Add(-age)),
 		}
-		err := db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
+		err := targetDB.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
 			items := libkv.NewStoreTx[string, pkg.Item](pkg.AttentionStoreBucketName)
 			return items.Add(ctx, tx, item.ItemID.String(), item)
 		})
 		Expect(err).To(BeNil())
 		return &item
+	}
+
+	// seedLegacy seeds into this spec's own db. seedLegacyInto takes the db so a
+	// spec can seed a second, independent store — an index already built in this
+	// one is a marker, so a row written straight into the items bucket after the
+	// first read is invisible until the next rebuild.
+	seedLegacy := func(dedupKey string, age stdtime.Duration) *pkg.Item {
+		return seedLegacyInto(db, dedupKey, age)
 	}
 
 	It("keeps an open ask whose subject is gone, inside its window, still open", func() {
@@ -419,8 +427,8 @@ var _ = Describe("AttentionStore with a dead liveness subject", func() {
 			// ⚠️ The renewal pass is what saves this row, and naming the ordering is
 			// the point: a read judges a row with no deadline against
 			// created_at + 24h — an instant an hour in the past here — so a read that
-			// arrives BEFORE the first pass still sweeps it. That window is one
-			// maintenance interval after a restart, and it closes for good once the
+			// arrived BEFORE the pass would sweep it. Since the pass now runs at
+			// startup that window is closed, and it stays closed for good once the
 			// pass has run: every live legacy row then carries a deadline and the
 			// flag, so the fallback is reached only by a dead producer's row.
 			renewed, err := store.RenewLive(ctx)
@@ -432,6 +440,52 @@ var _ = Describe("AttentionStore with a dead liveness subject", func() {
 			Expect(items).To(HaveLen(1), "the row the read would have swept is kept")
 			Expect(items[0].ItemID).To(Equal(item.ItemID))
 		})
+
+		It(
+			"keeps a 25 h legacy row across a read issued immediately after the startup pass",
+			func() {
+				// ⚠️ This is the other half of the fix, proved end to end. The renewal pass
+				// used to run only on its ticker, so for the first maintenance interval
+				// after a restart nothing had renewed a legacy row and a read arriving in
+				// that window swept it — a live producer's row, lost. The controller now
+				// runs ONE pass at startup, before it enters the ticker, so the sequence
+				// below — pass, then read, same instant, no clock movement, no delay — is
+				// what a read after a restart actually sees.
+				//
+				// The first half is the same row WITHOUT that pass, and it is what makes
+				// the second half meaningful: the renewal is not incidental to the row
+				// surviving, it is the reason it survives.
+				beforeDB, err := libboltkv.OpenTemp(ctx)
+				Expect(err).To(BeNil())
+				defer func() { Expect(beforeDB.Close()).To(BeNil()) }()
+				seedLegacyInto(beforeDB, "legacy-no-startup-pass", 25*stdtime.Hour)
+				beforeStore := newStoreWith(
+					beforeDB,
+					checker,
+					func() libtime.DateTime { return now },
+				)
+				items, err := beforeStore.ReadBoard(ctx)
+				Expect(err).To(BeNil())
+				Expect(
+					items,
+				).To(BeEmpty(), "a read before any pass sweeps the row — the loss the startup pass prevents")
+
+				// The state the startup pass leaves behind, read at the same instant.
+				item := seedLegacy("legacy-startup-pass", 25*stdtime.Hour)
+				renewed, err := store.RenewLive(ctx)
+				Expect(err).To(BeNil())
+				Expect(
+					renewed,
+				).To(Equal(1), "the startup pass renews the row it would otherwise lose")
+
+				items, err = store.ReadBoard(ctx)
+				Expect(err).To(BeNil())
+				Expect(
+					items,
+				).To(HaveLen(1), "renewed at startup, the row survives the read that follows")
+				Expect(items[0].ItemID).To(Equal(item.ItemID))
+			},
+		)
 	})
 })
 

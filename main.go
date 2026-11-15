@@ -1344,8 +1344,47 @@ func runAnsweredSweep(
 // inside a read, because the read path stays read-only. The interval is a
 // parameter rather than the constant read directly, so a spec can drive the tick
 // without waiting a minute for it.
+//
+// ⚠️ It runs one pass at STARTUP, before entering the ticker, and the ordering is
+// load-bearing. A read judges a legacy row that carries no `expires_at` against
+// created_at + 24 h (see pkg § effectiveExpiresAt), so with the pass on the
+// ticker alone a row older than that whose producer is alive would be swept by
+// any read landing between process start and the first tick — the exact loss this
+// loop exists to prevent. That window was one interval wide and is now zero.
 func runExpiryRenewal(store pkg.AttentionStore, interval time.Duration) run.Func {
 	return func(ctx context.Context) error {
+		// A deadline per pass, startup included, and for the same reason as the
+		// answered sweep: a store call that never returns would block this loop for
+		// good, ctx.Done() would be unreachable while it is in flight, and the
+		// renewal guarantee would be silently gone rather than degraded.
+		renewOnce := func() {
+			renewCtx, cancel := context.WithTimeout(ctx, answeredSweepTimeout)
+			renewed, err := store.RenewLive(renewCtx)
+			cancel()
+			if err != nil {
+				// Logged, not fatal, and never fatal at startup either: a failed pass
+				// costs one interval of renewal, it loses nothing — the deadlines it
+				// would have moved are still ahead of now — and taking the process down
+				// would drop the board over something the board survives.
+				glog.Errorf("renew live expiries failed: %v", err)
+				return
+			}
+			if renewed > 0 {
+				glog.V(2).Infof("renewed %d defaulted expiries", renewed)
+			}
+		}
+
+		// The startup pass honours cancellation like a tick does: a cancelled context
+		// means shutdown, so the pass is skipped rather than run against a dead
+		// context. The ticker below must still be the thing that owns the interval —
+		// nothing may depend on this pass having run for the loop to start.
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+		}
+		renewOnce()
+
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -1353,24 +1392,7 @@ func runExpiryRenewal(store pkg.AttentionStore, interval time.Duration) run.Func
 			case <-ctx.Done():
 				return nil
 			case <-ticker.C:
-				// Same per-tick deadline as the answered sweep, and for the same
-				// reason: a store call that never returns would block this loop for
-				// good, ctx.Done() would be unreachable while it is in flight, and the
-				// renewal guarantee would be silently gone rather than degraded.
-				renewCtx, cancel := context.WithTimeout(ctx, answeredSweepTimeout)
-				renewed, err := store.RenewLive(renewCtx)
-				cancel()
-				if err != nil {
-					// Logged, not fatal: a failed pass costs one interval of renewal,
-					// it loses nothing — the deadlines it would have moved are still
-					// ahead of now — and taking the process down would drop the board
-					// over something the board survives.
-					glog.Errorf("renew live expiries failed: %v", err)
-					continue
-				}
-				if renewed > 0 {
-					glog.V(2).Infof("renewed %d defaulted expiries", renewed)
-				}
+				renewOnce()
 			}
 		}
 	}
