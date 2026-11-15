@@ -584,13 +584,17 @@ func (j *menuAnswerJob) deliver(
 		switch verdict {
 		case DeliveryRefuse:
 			j.settle(ctx, item, progress, FailedOutcome, reason)
-		case DeliveryNoPane, DeliveryResolved:
+		case DeliveryNoPane:
 			// ⚠️ Nothing was attempted and nothing failed. A pane-less session is
 			// pane-less by construction — the normal shape for every headless
-			// `sdk-cli` worker — and a resolved gate has nothing left to deliver.
-			// Recording `failed` would render an undeliverable card for a failure
-			// the arm never experienced.
+			// `sdk-cli` worker — so recording `failed` would render an undeliverable
+			// card for a failure the arm never experienced.
 			j.settleQuietly(item, progress, verdict, reason)
+		case DeliveryResolved:
+			// The gate was already gone when the arm looked. It DID pick the answer
+			// up, so an absent record would derive as "no arm ever attempted it",
+			// which is untrue — `held` is the honest outcome.
+			j.settle(ctx, item, progress, HeldOutcome, reason)
 		default:
 			j.retry(ctx, item, progress, reason)
 		}
