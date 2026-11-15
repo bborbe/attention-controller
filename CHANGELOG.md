@@ -16,6 +16,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 - feat: add the manager-hold book and the release arm: a manager-tier gate is held off the board for a window (a delay, never a filter), then posted when the window expires if its session is still live and dropped if the session exited; a repeated hold keeps the first clock, and a failed post leaves the hold in the book so the next pass retries it
 - feat: add the context-crossing arm: cue a **live** session over the absolute token threshold under the `compact:<sid>` dedup key, treating a zero reading as "no measurement yet" rather than as a drop, and skip a session whose card is already open
 - feat: add the class-3 filter to the ingest: a `Stop` closer naming a task the vault had already finished when the closer was written is consumed without being forwarded. `Stop`-sourced only — an `AskUserQuestion` is the one signal that a session is blocked on the operator, so suppressing it would trade a low-value card for a stranded session
+- feat: add the menu-answer arm: pick the board's options in an open AskUserQuestion menu by their digits (single, multiple, free-text, skip, and a lone-ESC decline that releases the gate), submit the review screen by the row number read off the screen, and record the attempt only once the menu has actually closed
 
 ## v0.83.0
 
