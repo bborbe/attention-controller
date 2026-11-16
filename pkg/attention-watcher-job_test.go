@@ -55,7 +55,7 @@ var _ = Describe("attention watcher delivery job", func() {
 
 	BeforeEach(func() {
 		store = &mocks.AttentionStore{}
-		store.DeliveryAttemptsReturns(map[pkg.ItemID]pkg.DeliveryAttempt{}, nil)
+		store.DeliveryReportsReturns(map[pkg.ItemID]*pkg.DeliveryReport{}, nil)
 		store.RecordAttemptReturns(&pkg.DeliveryAttempt{}, nil)
 		carrier = &recordingCarrier{verdict: pkg.DeliveryOK}
 		job = pkg.NewAttentionWatcherJob(
@@ -87,8 +87,8 @@ var _ = Describe("attention watcher delivery job", func() {
 		store.ReadBoardReturns(pkg.Items{
 			answeredItem("item-1", "operator", pkg.Decision("allow")),
 		}, nil)
-		store.DeliveryAttemptsReturns(map[pkg.ItemID]pkg.DeliveryAttempt{
-			"item-1": {Outcome: pkg.DeliveredOutcome},
+		store.DeliveryReportsReturns(map[pkg.ItemID]*pkg.DeliveryReport{
+			"item-1": {ItemID: "item-1", Status: pkg.DeliveredStatus},
 		}, nil)
 		Expect(job.DeliverOnce(context.Background())).To(Succeed())
 		Expect(carrier.calls).To(BeEmpty())
@@ -193,12 +193,13 @@ var _ = Describe("attention watcher delivery job", func() {
 			store, carrier, &fakeHeadlessDeliverer{}, time.Hour, clock,
 		)
 		item := answeredAtNow(clock)
-		store.DeliveryAttemptsReturns(map[pkg.ItemID]pkg.DeliveryAttempt{
+		failedAt := clock.Now()
+		store.DeliveryReportsReturns(map[pkg.ItemID]*pkg.DeliveryReport{
 			"item-1": {
 				ItemID:      pkg.ItemID("item-1"),
+				Status:      pkg.FailedStatus,
 				Carrier:     "watcher:attention-watcher",
-				Outcome:     pkg.FailedOutcome,
-				AttemptedAt: clock.Now(),
+				AttemptedAt: &failedAt,
 			},
 		}, nil)
 		store.ReadBoardReturns(pkg.Items{item}, nil)
@@ -213,12 +214,13 @@ var _ = Describe("attention watcher delivery job", func() {
 			store, carrier, &fakeHeadlessDeliverer{}, time.Hour, clock,
 		)
 		item := answeredAtNow(clock)
-		store.DeliveryAttemptsReturns(map[pkg.ItemID]pkg.DeliveryAttempt{
+		failedAt := clock.Now()
+		store.DeliveryReportsReturns(map[pkg.ItemID]*pkg.DeliveryReport{
 			"item-1": {
 				ItemID:      pkg.ItemID("item-1"),
+				Status:      pkg.FailedStatus,
 				Carrier:     "watcher:attention-watcher",
-				Outcome:     pkg.FailedOutcome,
-				AttemptedAt: clock.Now(),
+				AttemptedAt: &failedAt,
 			},
 		}, nil)
 		store.ReadBoardReturns(pkg.Items{item}, nil)
@@ -242,12 +244,13 @@ var _ = Describe("attention watcher delivery job", func() {
 			store, carrier, &fakeHeadlessDeliverer{}, time.Hour, clock,
 		)
 		item := answeredAtNow(clock)
-		store.DeliveryAttemptsReturns(map[pkg.ItemID]pkg.DeliveryAttempt{
+		failedAt := libtime.DateTime(clock.Now().Time().Add(-10 * time.Second))
+		store.DeliveryReportsReturns(map[pkg.ItemID]*pkg.DeliveryReport{
 			"item-1": {
 				ItemID:      pkg.ItemID("item-1"),
+				Status:      pkg.FailedStatus,
 				Carrier:     "watcher:attention-watcher",
-				Outcome:     pkg.FailedOutcome,
-				AttemptedAt: libtime.DateTime(clock.Now().Time().Add(-10 * time.Second)),
+				AttemptedAt: &failedAt,
 			},
 		}, nil)
 		store.ReadBoardReturns(pkg.Items{item}, nil)
