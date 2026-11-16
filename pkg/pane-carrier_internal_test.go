@@ -222,6 +222,37 @@ var _ = Describe("pane carrier", func() {
 		Expect(writer.sent).To(BeEmpty())
 	})
 
+	// ⚠️ The reaped case. `processAlive` used to gate the whole no-pane route, so a
+	// headless worker whose process had exited fell through to DeliveryRefuse and
+	// its answered card settled `failed` — the headless arm that knows how to
+	// resume an exited session was never reached. Measured on a real reap
+	// 2026-11-16: session 46e673cf, item 76901296…, `verdict=failed reason="… has
+	// no live process with a tty"` with no `action=headless` line.
+	It("reports no-pane for a REAPED sdk-cli session, so the headless arm resumes it", func() {
+		delete(writer.sessionTTY, sessionID)
+		writer.entries[sessionID] = SessionEntry{
+			// Beyond the platform's pid range, so processAlive is reliably false.
+			SessionID: sessionID, PID: 999999, Entrypoint: "sdk-cli",
+		}
+		verdict, reason := carrier.TypeIntoPane(ctx, delivery, "allow", false)
+		Expect(verdict).To(Equal(DeliveryNoPane),
+			"a reaped headless worker is still a headless worker")
+		Expect(reason).To(ContainSubstring("resumable"))
+		Expect(writer.sent).To(BeEmpty())
+	})
+
+	// The boundary the fix must NOT widen: a dead non-headless session stays a
+	// refusal, because there is no resume path that would carry it.
+	It("still refuses a reaped session that is not headless", func() {
+		delete(writer.sessionTTY, sessionID)
+		writer.entries[sessionID] = SessionEntry{
+			SessionID: sessionID, PID: 999999, Entrypoint: "cli",
+		}
+		verdict, _ := carrier.TypeIntoPane(ctx, delivery, "allow", false)
+		Expect(verdict).To(Equal(DeliveryRefuse))
+		Expect(writer.sent).To(BeEmpty())
+	})
+
 	It("retries when the pane list could not be read", func() {
 		writer.panes = map[int]Pane{}
 		writer.listErr = errors.New("wezterm down")

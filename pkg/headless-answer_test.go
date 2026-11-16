@@ -22,13 +22,20 @@ const headlessSessionID = "11111111-2222-3333-4444-555555555555"
 
 // fakeHeadlessDeliverer is a scripted HeadlessAnswerDeliverer.
 type fakeHeadlessDeliverer struct {
-	calls    []pkg.ItemID
-	terminal bool
+	calls     []pkg.ItemID
+	terminal  bool
+	canResume bool
 }
 
 func (f *fakeHeadlessDeliverer) DeliverHeadless(_ context.Context, item pkg.Item) bool {
 	f.calls = append(f.calls, item.ItemID)
 	return f.terminal
+}
+
+// CanResume reports the scripted answer, so a spec can drive the menu arm's
+// reaped-session branch without a wrapper.
+func (f *fakeHeadlessDeliverer) CanResume(_ context.Context, _ string) bool {
+	return f.canResume
 }
 
 // fakeMessageWrapper is a scripted WrapperMessageDeliverer: it replays a queue
@@ -39,6 +46,12 @@ type fakeMessageWrapper struct {
 	index    int
 	// delivered records "session|cwd|text" per call.
 	delivered []string
+	// mode is what SessionMode reports; "" means the wrapper holds no record.
+	mode string
+}
+
+func (f *fakeMessageWrapper) SessionMode(_ context.Context, _ string) (string, bool) {
+	return f.mode, f.mode != ""
 }
 
 func (f *fakeMessageWrapper) DeliverMessage(
