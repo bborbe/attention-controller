@@ -53,7 +53,7 @@ var _ = Describe("FinishedTaskFilter", func() {
 
 		Expect(f.Skip(ctx, record(
 			"Stop",
-			"done with Port attention-watcher Into attention-controller",
+			"done with [[Port attention-watcher Into attention-controller]]",
 			tsOf(askedAt),
 		))).To(BeTrue())
 	})
@@ -66,7 +66,7 @@ var _ = Describe("FinishedTaskFilter", func() {
 
 		Expect(f.Skip(ctx, record(
 			"Stop",
-			"Port attention-watcher Into attention-controller",
+			"[[Port attention-watcher Into attention-controller]]",
 			tsOf(askedAt),
 		))).To(BeFalse())
 	})
@@ -107,5 +107,35 @@ var _ = Describe("FinishedTaskFilter", func() {
 		})
 
 		Expect(f.Skip(ctx, record("Stop", "something else entirely", tsOf(askedAt)))).To(BeFalse())
+	})
+
+	It("does not suppress a closer whose detail names two different tasks", func() {
+		f := filter(pkg.CompletedTask{
+			Name:        "Finished Task",
+			CompletedAt: askedAt.Add(-stdtime.Hour),
+		})
+
+		// One finished and one live. Dropping this would hide the open one, so the
+		// card is DELIVERED — the failure this guards is a filter that hides a live
+		// card, and the assertion is on the delivery decision, not on the parse.
+		Expect(f.Skip(ctx, record(
+			"Stop",
+			"Blocked by [[Open Task]], continuing [[Finished Task]]",
+			tsOf(askedAt),
+		))).To(BeFalse())
+	})
+
+	It("does not suppress a closer whose wikilink is unterminated", func() {
+		f := filter(pkg.CompletedTask{
+			Name:        "Finished Task",
+			CompletedAt: askedAt.Add(-stdtime.Hour),
+		})
+
+		// `[[Finished Task` is not a link, so nothing names a task. Delivered.
+		Expect(f.Skip(ctx, record(
+			"Stop",
+			"still working on [[Finished Task",
+			tsOf(askedAt),
+		))).To(BeFalse())
 	})
 })

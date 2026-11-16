@@ -521,7 +521,7 @@ func (j *menuAnswerJob) menuDeliverable(
 	if item.AnsweredBy == attentionWatcherAnsweredBy {
 		return nil, false
 	}
-	if attempt, ok := attempts[item.ItemID]; ok && attempt.Outcome == DeliveredOutcome {
+	if attempt, ok := attempts[item.ItemID]; ok && attempt.EffectiveOutcome() == DeliveredOutcome {
 		return nil, false
 	}
 	if _, ok := itemSessionID(ctx, item); !ok {
