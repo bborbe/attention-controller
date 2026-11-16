@@ -17,7 +17,7 @@ import (
 )
 
 // closeRedundantReraises closes every open item that repeats an ask already
-// answered — the same producer, dedup key AND payload.
+// answered — the same dedup key AND payload.
 //
 // ⚠️ This is the other half of the fix, and the read-side half alone is not
 // enough. suppressAnsweredTwins withholds such a row from the BOARD, but the
@@ -29,6 +29,13 @@ import (
 // answeredMaxAge: twins answered 09:27:03Z/09:27:07Z, closed 10:27:48Z.
 // Closing the re-raise itself gives the producer its outcome immediately
 // instead of parking it on the twin's remaining lifetime.
+//
+// ⚠️ Producer is NOT part of the identity, for the same reason it is not part
+// of suppressAnsweredTwins': a manager restart changes the producer of a
+// crash-loop card while the ask stays the same, and matching on it let the
+// restart defeat the dedup (measured 2026-11-16 on one dedup key across two
+// producer sessions). The record consulted is the durable answered index, so a
+// twin the sweep has already retired still matches.
 //
 // ⚠️ `open -> closed` is the schema's own row for this — "the item is resolved
 // without an answer" — and it is the honest one. Answering the re-raise with
@@ -43,31 +50,25 @@ import (
 // session carries the same key — and such a row is left open and rendered. Only
 // a byte-identical repeat of an already-answered ask is closed.
 //
-// ⚠️ It must run AFTER the max-age pass in SweepAnswered. Closing an answered
-// twin removes it from this scan's set, so its re-raise is then no longer a
-// repeat of an ANSWERED ask and is correctly left alone: § Answer routing makes
-// re-raising a merely-cleared ask legitimate, and this scan must not quietly
-// close one.
+// ⚠️ It no longer depends on running after the max-age pass. The old ordering
+// rule existed because the answered set was built from the live index, so a
+// twin closed by the pass above left the set and its re-raise was left alone.
+// The record now survives the close, so ordering changes nothing here; the
+// sweep still runs the pass second because closing the twin is the cheaper
+// change to observe first. § Answer routing makes re-raising a merely-cleared
+// ask legitimate, and the durable record is written only on a real answer, so
+// this scan still never closes one.
 func (a *attentionStore) closeRedundantReraises(
 	ctx context.Context,
 	tx libkv.Tx,
 ) (int, error) {
-	answered := make(map[string]struct{})
-	if err := a.liveIndex.Map(
-		ctx,
-		tx,
-		func(ctx context.Context, key string, item Item) error {
-			if key == liveIndexMarkerKey || item.State != AnsweredState {
-				return nil
-			}
-			answered[askIdentity(item)] = struct{}{}
-			return nil
-		},
-	); err != nil {
-		return 0, errors.Wrap(ctx, err, "scan live index for answered twins failed")
-	}
-	if len(answered) == 0 {
-		return 0, nil
+	// ⚠️ The answered set comes from the DURABLE record, not from the live index.
+	// A twin the answered sweep has already closed has left the live index, so
+	// building the set from it was exactly why a re-raise reappeared once its
+	// twin was retired — the same miss suppressAnsweredTwins had. See
+	// attention-store-answered-twins.go.
+	if err := a.ensureAnsweredIndexTx(ctx, tx); err != nil {
+		return 0, err
 	}
 	due := make([]string, 0)
 	if err := a.liveIndex.Map(
@@ -77,7 +78,11 @@ func (a *attentionStore) closeRedundantReraises(
 			if key == liveIndexMarkerKey || item.State != OpenState {
 				return nil
 			}
-			if _, ok := answered[askIdentity(item)]; ok {
+			answered, err := a.answeredIndex.Exists(ctx, tx, askIdentity(item))
+			if err != nil {
+				return errors.Wrap(ctx, err, "check answered twin failed")
+			}
+			if answered {
 				// ⚠️ A CRON producer re-scans and re-pushes on its own
 				// interval, so closing its re-raise is precisely what makes the
 				// next scan post it again: suppression is open-scoped (:441), so
