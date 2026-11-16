@@ -1097,10 +1097,10 @@ func (a *application) addAttentionWatcherJobs(
 	runner.Add(ctx, pkg.NewEventIngestJob(
 		stateDir,
 		sink,
-		// ⚠️ No class-3 filter yet: the finished-task source it needs is not
-		// implemented, so the filter would be inert. Ingest without it forwards a
-		// closer for a finished task — a low-value card, never a stranded session.
-		nil,
+		// The class-3 filter: a closer naming a task the vault already finished is
+		// consumed instead of raising a card. It reads the same single vault root the
+		// task index reads, and fails open — an unreadable vault suppresses nothing.
+		pkg.NewFinishedTaskFilter(pkg.NewCompletedTaskSource(a.VaultDir)),
 		pkg.EventIngestInterval,
 	).Run)
 	runner.Add(ctx, pkg.NewAttentionWatcherJob(
