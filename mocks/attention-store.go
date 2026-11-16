@@ -219,6 +219,19 @@ type AttentionStore struct {
 		result1 *pkg.DeliveryAttempt
 		result2 error
 	}
+	RenewLiveStub        func(context.Context) (int, error)
+	renewLiveMutex       sync.RWMutex
+	renewLiveArgsForCall []struct {
+		arg1 context.Context
+	}
+	renewLiveReturns struct {
+		result1 int
+		result2 error
+	}
+	renewLiveReturnsOnCall map[int]struct {
+		result1 int
+		result2 error
+	}
 	SweepAnsweredStub        func(context.Context, time.Duration) (int, error)
 	sweepAnsweredMutex       sync.RWMutex
 	sweepAnsweredArgsForCall []struct {
@@ -1170,6 +1183,70 @@ func (fake *AttentionStore) RecordAttemptReturnsOnCall(i int, result1 *pkg.Deliv
 	}
 	fake.recordAttemptReturnsOnCall[i] = struct {
 		result1 *pkg.DeliveryAttempt
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *AttentionStore) RenewLive(arg1 context.Context) (int, error) {
+	fake.renewLiveMutex.Lock()
+	ret, specificReturn := fake.renewLiveReturnsOnCall[len(fake.renewLiveArgsForCall)]
+	fake.renewLiveArgsForCall = append(fake.renewLiveArgsForCall, struct {
+		arg1 context.Context
+	}{arg1})
+	stub := fake.RenewLiveStub
+	fakeReturns := fake.renewLiveReturns
+	fake.recordInvocation("RenewLive", []interface{}{arg1})
+	fake.renewLiveMutex.Unlock()
+	if stub != nil {
+		return stub(arg1)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *AttentionStore) RenewLiveCallCount() int {
+	fake.renewLiveMutex.RLock()
+	defer fake.renewLiveMutex.RUnlock()
+	return len(fake.renewLiveArgsForCall)
+}
+
+func (fake *AttentionStore) RenewLiveCalls(stub func(context.Context) (int, error)) {
+	fake.renewLiveMutex.Lock()
+	defer fake.renewLiveMutex.Unlock()
+	fake.RenewLiveStub = stub
+}
+
+func (fake *AttentionStore) RenewLiveArgsForCall(i int) context.Context {
+	fake.renewLiveMutex.RLock()
+	defer fake.renewLiveMutex.RUnlock()
+	argsForCall := fake.renewLiveArgsForCall[i]
+	return argsForCall.arg1
+}
+
+func (fake *AttentionStore) RenewLiveReturns(result1 int, result2 error) {
+	fake.renewLiveMutex.Lock()
+	defer fake.renewLiveMutex.Unlock()
+	fake.RenewLiveStub = nil
+	fake.renewLiveReturns = struct {
+		result1 int
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *AttentionStore) RenewLiveReturnsOnCall(i int, result1 int, result2 error) {
+	fake.renewLiveMutex.Lock()
+	defer fake.renewLiveMutex.Unlock()
+	fake.RenewLiveStub = nil
+	if fake.renewLiveReturnsOnCall == nil {
+		fake.renewLiveReturnsOnCall = make(map[int]struct {
+			result1 int
+			result2 error
+		})
+	}
+	fake.renewLiveReturnsOnCall[i] = struct {
+		result1 int
 		result2 error
 	}{result1, result2}
 }

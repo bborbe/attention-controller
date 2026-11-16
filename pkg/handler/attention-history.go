@@ -73,7 +73,7 @@ func clampHistoryLimit(limit int) int {
 // regardless of state, newest-first and paginated.
 //
 // It exists for counting, not rendering: the read path returns only open items
-// and prunes dead askers, so it cannot say how many items a manager resolved
+// and prunes expired items, so it cannot say how many items a manager resolved
 // or the operator was asked about. This handler never prunes, and narrows on
 // exactly one thing — an expired OPEN item, which is neither what resolved nor
 // what escalated — which is what makes a resolved-versus-escalated split

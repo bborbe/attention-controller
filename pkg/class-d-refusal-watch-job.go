@@ -216,18 +216,20 @@ func classDRefusalVersionLess(left, right [3]int) bool {
 // refusal — a manager refusing a bare affirmative against a handover — and
 // reports each occurrence as one card, until ctx is cancelled.
 //
-// ⚠️ The heartbeat file is KEPT, and it is no longer the survival mechanism. The
+// ⚠️ The heartbeat file is KEPT, and it is no longer a survival mechanism. The
 // Python job this replaces was a short-lived launchd tick: it wrote a heartbeat
 // and exited by design, so the file's mtime was the only thing that could tell
 // the store its producer was still there. In-process the producer is the service
 // itself — long-lived and supervised, so the card's survival now rests on the
 // service's own liveness rather than on a separate tick re-touching a file. The
-// touch is kept anyway, because the store's `heartbeat:<path>` model reads a
-// stale or missing file as a dead producer and would prune the card on its next
-// read: the file is the witness that model requires, not a second liveness
-// mechanism. It is still written BEFORE any post, for the same ordering reason
-// the Python job wrote it first — a push that precedes its own heartbeat leaves
-// a window in which the card is already prunable.
+// touch is kept anyway, because the store's `heartbeat:<path>` model is what
+// decides whether the card's defaulted `expires_at` is RENEWED: a stale or
+// missing file reads as a dead producer, which removes nothing but stops the
+// renewal, so the card would be cleared 24 h after the last touch. The file is
+// the witness that model requires, not a second liveness mechanism. It is still
+// written BEFORE any post, for the same ordering reason the Python job wrote it
+// first — a push that precedes its own heartbeat starts its window with no
+// renewal behind it.
 //
 // ⚠️ Every failure is fail-soft: a missed cycle costs one interval of watching
 // and loses nothing, so the loop logs it and continues. Taking the process down

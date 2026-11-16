@@ -25,25 +25,19 @@ import (
 // `classifyForRead` and every `stillDead` re-check called the checker directly,
 // and each call opened the registry, listed it and decoded its entries. A board
 // read therefore cost one directory listing per open item, paid again by every
-// connected stream on every store change.
+// connected stream on every store change. Since a dead liveness subject no
+// longer removes an item, the read consults the registry not at all.
 //
 // The probe counts the thing the defect is about — how many times a read
 // consults the session registry — by wrapping the real checker in a fake that
-// counts EVERY consult. ⚠️ It counts `IsLive` as well as `LiveSessions`, and
-// that is deliberate rather than incidental: a counter that watched only
-// `LiveSessions` would read 1 whether or not `stillDead` was left on the direct
-// checker, because a `stillDead` left behind calls the fake's `IsLive` and never
-// its `LiveSessions` — so the pruning spec below would pass over the very
-// regression it exists to catch.
+// counts EVERY consult. ⚠️ It counts `IsLive` as well as `LiveSessions`, so a
+// liveness probe re-introduced on the read path through either method is seen.
 
-// countingSessionLiveness is a session-liveness checker that also satisfies the
-// snapshot capability, counting every consult it receives.
+// countingSessionLiveness is a session-liveness checker that also lists the
+// registry, counting every consult it receives.
 //
-// ⚠️ It lives in `package pkg_test` and so cannot name the unexported
-// `sessionSnapshotter` interface. It satisfies it structurally by implementing
-// `LiveSessions(ctx) (pkg.SessionIDs, bool)` — the method is exported, so
-// satisfaction is by method set and needs no name. The real checker is reached
-// through that same anonymous interface.
+// The real checker's `LiveSessions(ctx) (pkg.SessionIDs, bool)` is exported, so
+// it is reached through an anonymous interface rather than a named one.
 type countingSessionLiveness struct {
 	consults    int
 	checker     pkg.SessionLivenessChecker
@@ -188,60 +182,34 @@ var _ = Describe("Read session-registry cost", func() {
 		Expect(err).To(BeNil())
 	}
 
-	// A board read lists the registry exactly once, whatever the open-item count.
-	// ⚠️ Run at N=1 and N=50: at a single item a per-item listing returns the
-	// same figure as a shared one, so only the larger case can tell them apart.
-	It("lists the session registry once per board read, whatever the open count", func() {
-		for _, count := range []int{1, 50} {
+	// A board read does not consult the session registry at all: a dead
+	// liveness subject removes nothing, so the read has no use for a listing.
+	// ⚠️ Run with a populated registry and with an empty one (every producer
+	// gone): neither may list, and the empty case must keep every ask.
+	It("never consults the session registry on a board read", func() {
+		for _, populated := range []bool{true, false} {
 			dir := GinkgoT().TempDir()
-			for i := 0; i < count; i++ {
-				writeRegistryEntry(dir, fmt.Sprintf("session-%d", i))
+			const count = 50
+			if populated {
+				for i := 0; i < count; i++ {
+					writeRegistryEntry(dir, fmt.Sprintf("session-%d", i))
+				}
 			}
 			checker := newCountingSessionLiveness(dir)
 			store, db := newStore(checker)
 			for i := 0; i < count; i++ {
 				pushSessionItem(store, i)
 			}
+			checker.consults = 0
 
 			items, err := store.ReadBoard(ctx)
 			Expect(err).To(BeNil())
-			Expect(items).To(HaveLen(count))
-			Expect(checker.consults).To(Equal(1),
-				"the read listed the registry once per open item instead of once per read")
+			Expect(items).To(HaveLen(count), "a dead subject alone must not remove an ask")
+			Expect(checker.consults).To(Equal(0),
+				"the read path must not list the registry — liveness no longer decides removal")
 
 			Expect(db.Close()).To(BeNil())
 		}
-	})
-
-	// ⚠️ The pruning case, and the one that catches `stillDead` being left on the
-	// direct checker. Every producer is gone and every item is an ask (message,
-	// not ack), so `classifyForRead` marks them for removal and `pruneDead`
-	// re-checks each one through `stillDead`. The classification lists the
-	// registry once, and the prune takes its OWN snapshot — so the re-check
-	// answers against the value that is live NOW rather than the snapshot the
-	// verdict came from, which is what lets a session resumed in between be seen
-	// as live. That second listing is shared by every re-checked item, so the
-	// count is exactly 2: a prune that re-listed per dead item would count
-	// 1 + count here, and one that reused the read's snapshot would count 1.
-	It("re-lists the registry once for the items a read prunes", func() {
-		dir := GinkgoT().TempDir()
-		checker := newCountingSessionLiveness(dir)
-		store, db := newStore(checker)
-
-		const count = 5
-		for i := 0; i < count; i++ {
-			pushSessionItem(store, i)
-		}
-
-		items, err := store.ReadBoard(ctx)
-		Expect(err).To(BeNil())
-		Expect(
-			items,
-		).To(BeEmpty(), "every producer is gone and every item was asked, so all are pruned")
-		Expect(checker.consults).To(Equal(2),
-			"the prune must take its own snapshot — one listing shared by all re-checked items — not one per dead item, and not the read's stale one")
-
-		Expect(db.Close()).To(BeNil())
 	})
 
 	// A read that tests no session-model item must not list the registry at all:
@@ -277,10 +245,18 @@ var _ = Describe("Read session-registry cost", func() {
 		Expect(db.Close()).To(BeNil())
 	})
 
-	// An unreadable registry proves nothing, so it reads as live and every open
-	// item is kept rather than swept. The rule is load-bearing and must survive
-	// the snapshot: a read that could not see the registry keeps everything.
-	It("keeps every open item when the registry cannot be read", func() {
+	// Regression guard for the removed per-read snapshot: a read must not consult
+	// the session registry AT ALL, and the unreadable registry is the case that
+	// used to be load-bearing.
+	//
+	// ⚠️ The old assertion here — "keeps every open item when the registry cannot
+	// be read" — can no longer fail: nothing is pruned on liveness, so every read
+	// keeps every open item whatever the registry says, and the check would pass
+	// against a store that listed the registry a hundred times per read. What is
+	// still falsifiable is the consult count, so that is what this pins. The
+	// fail-safe itself (an unreadable registry renews rather than lapses) is
+	// pinned where it now matters, in attention-store-dead-subject_test.go.
+	It("consults the registry zero times on a read, even when it cannot be read", func() {
 		dir := filepath.Join(GinkgoT().TempDir(), "missing")
 		checker := newCountingSessionLiveness(dir)
 		store, db := newStore(checker)
@@ -289,10 +265,13 @@ var _ = Describe("Read session-registry cost", func() {
 		for i := 0; i < count; i++ {
 			pushSessionItem(store, i)
 		}
+		checker.consults = 0
 
 		items, err := store.ReadBoard(ctx)
 		Expect(err).To(BeNil())
-		Expect(items).To(HaveLen(count), "an unreadable registry must not prune anything")
+		Expect(items).To(HaveLen(count))
+		Expect(checker.consults).To(Equal(0),
+			"an unreadable registry must not be consulted by the read path either")
 
 		Expect(db.Close()).To(BeNil())
 	})

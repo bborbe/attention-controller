@@ -220,11 +220,10 @@ var _ = Describe("Session registry cache", func() {
 			"a cached unreadable listing must still read as live")
 	})
 
-	// ⚠️ The guard fires at most once per read-session-liveness, and a read that
-	// prunes holds two of them — the classification's and the prune's — so the
-	// count is 2 however many items the read holds. A guard that fired per item
-	// would count one per item here.
-	It("consults the fresh listing at most once per read, not once per item", func() {
+	// ⚠️ A read no longer consults liveness at all — a dead subject removes
+	// nothing — so the fresh listing is never taken, however many absent
+	// producers the read holds, and every ask is kept.
+	It("never consults the fresh listing on a read, whatever the item count", func() {
 		for _, count := range []int{1, 5} {
 			checker := &countingFreshChecker{}
 			store, db := newCacheTestStore(ctx, checker)
@@ -234,48 +233,38 @@ var _ = Describe("Session registry cache", func() {
 
 			items, err := store.ReadBoard(ctx)
 			Expect(err).To(BeNil())
-			Expect(items).To(BeEmpty(), "every producer is absent, so all are pruned")
-			Expect(checker.freshConsults).To(Equal(2),
-				"the guard must fire at most once per read, not once per item")
+			Expect(items).To(HaveLen(count), "an absent producer alone removes nothing")
+			Expect(checker.freshConsults).To(Equal(0))
 
 			Expect(db.Close()).To(BeNil())
 		}
 	})
 
 	// ⚠️ The discriminator for the miss guard's ANSWER, not merely that it fired.
-	// The consult-count spec above proves the guard RAN; this one proves the
-	// listing it fetched is the one that DECIDES. The registry entry is written
-	// WITHOUT moving the clock, so the cached listing predates it and the read's
-	// first lookup must miss. Only the guard's fresh listing holds the id: an
-	// implementation that called LiveSessionsFresh and threw the result away
-	// would answer from the stale cached listing, classify the item as dead and
-	// prune it — this spec fails against exactly that implementation.
+	// The registry entry is written WITHOUT moving the clock, so the cached
+	// listing predates it and the first lookup must miss. Only the guard's fresh
+	// listing holds the id: an implementation that called LiveSessionsFresh and
+	// threw the result away would answer from the stale cached listing and read
+	// a live session as gone — this spec fails against exactly that
+	// implementation.
 	It(
-		"uses the miss guard's fresh listing, so a session registered inside the window is kept",
+		"uses the miss guard's fresh listing, so a session registered inside the window reads live",
 		func() {
 			dir := GinkgoT().TempDir() // empty: no session is registered yet
 			clock := newMutableClock()
 			checker := pkg.NewSessionLivenessCheckerWithClock(dir, clock)
-			store, _ := newCacheTestStore(ctx, checker)
 
-			// An ask (message, not ack), so a producer read as gone is prunable.
-			pushAbsentSessionItem(ctx, store, 0)
-
-			// Prime the cache with the empty listing. LiveSessions directly, not
-			// ReadBoard: a read here would classify the item against the empty
-			// registry and prune it before the spec's setup was complete.
+			// Prime the cache with the empty listing.
 			ids, readable := snapshotOf(checker).LiveSessions(ctx)
 			Expect(readable).To(BeTrue())
 			Expect(ids).To(BeEmpty(), "the listing is now cached and holds nothing")
 
 			// Register the session WITHOUT advancing the clock: the cached listing
-			// predates this entry, so the read's first lookup must miss it.
+			// predates this entry, so the first lookup must miss it.
 			writeSessionEntry(dir, "session-0")
 
-			items, err := store.ReadBoard(ctx)
-			Expect(err).To(BeNil())
-			Expect(items).To(HaveLen(1),
-				"only the miss guard's fresh listing holds the id; an answer taken from the cached listing would prune a live item")
+			Expect(checker.IsLive(ctx, "session-0")).To(BeTrue(),
+				"only the miss guard's fresh listing holds the id; an answer taken from the cached listing would read a live session as gone")
 		},
 	)
 

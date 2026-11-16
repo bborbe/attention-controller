@@ -329,8 +329,8 @@ func (a *attentionStore) reconcileDedupIndex(
 // file is built to avoid.
 //
 // ⚠️ That branch is DEFENSIVE rather than reachable, and saying so is better
-// than testing it. `removeItem`'s only caller is `pruneDead`, which asks
-// `stillDead` first — and `stillDead` returns false for a key that is not found
+// than testing it. `removeItem`'s only caller is `pruneExpired`, which asks
+// `stillRemovable` first — and that returns false for a key that is not found
 // ("another read pruned it first"), so a missing item never reaches here through
 // any public path. Reaching it in a spec would mean fabricating index drift by
 // writing a bucket entry directly, which would pin a contrived state rather than
@@ -395,11 +395,12 @@ func (a *attentionStore) removeIndexKey(
 // removeDedupIndexEntry removes the entry under key ONLY when that entry is
 // this item's, and treats "no entry" as success so callers stay idempotent.
 //
-// ⚠️ The ItemID compare is load-bearing, not defensive. Two open rows can
-// share one key, so the entry under it may belong to the other row; removing
-// it would leave that row unindexed and let the next re-push of the same key
-// write a duplicate — the operator-visible defect this store already carries.
-// A mismatch is therefore LEFT for the rebuild rather than guessed at.
+// ⚠️ The ItemID compare is load-bearing, not defensive. Two open rows can share
+// one key — legacy state only since 2026-11-15, see Reachability below — so the
+// entry under it may belong to the other row; removing it would leave that row
+// unindexed and let the next re-push of the same key write a duplicate — the
+// operator-visible defect this store already carries. A mismatch is therefore
+// LEFT for the rebuild rather than guessed at.
 //
 // ⚠️ The mirror case is NOT covered, and it is the spec's Failure Modes row 2:
 // when the REPRESENTATIVE itself closes while a sibling open row survives, this
@@ -412,10 +413,15 @@ func (a *attentionStore) removeIndexKey(
 // as a guarantee that every open row is indexed.
 //
 // ⚠️ Reachability, so the above is not read as routine: it needs two open rows on
-// one key (the dead-producer path), then the representative to close while the
-// older row survives — which in turn needs that row's producer to have come back
-// LIVE before the next read, because `pruneDead` otherwise removes it. Narrow, but
-// real; see the follow-up task rather than assuming it cannot happen.
+// one key, then the representative to close while the older row survives.
+// ⚠️ Since 2026-11-15 the store can no longer WRITE that state: duplicate
+// suppression stopped consulting liveness, so a re-push collapses onto the open
+// row whatever its subject reads, and the dead-producer path that used to leave
+// a second open row is gone. What remains is a store migrated from before that
+// change, whose two open rows survive until their `expires_at` (24h by default,
+// renewed while the subject is alive) — so the guard is a legacy-compatibility
+// one rather than a path a live push can reach. See the follow-up task rather
+// than assuming it cannot happen.
 //
 // The Get is also what makes an absent bucket safe: `StoreTx.Get` on a bucket
 // that was never created fails with an error `isNotFound` recognises.
