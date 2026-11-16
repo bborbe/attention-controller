@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"html/template"
 	"net/http"
+	"reflect"
 	"sync"
 	"time"
 
@@ -114,6 +115,44 @@ type boardSnapshot struct {
 	// after publication, which is what makes it safe for every stream to read
 	// concurrently — the same property `provenance`'s hostState relies on.
 	rendered map[string]string
+	// inputs is what each rendered row was derived from, so the next render can
+	// tell an unchanged row from a changed one and carry the HTML over.
+	// ⚠️ Never written after publication, for the same reason as `rendered`.
+	inputs map[string]rowInput
+}
+
+// rowInput is everything a row's HTML is derived from. The template output is a
+// pure function of these three values plus the handler's own speakEnabled and
+// vaultName constants — which cannot change under a running handler — so two
+// renders with an equal rowInput must produce identical HTML. That is what makes
+// carrying an unchanged row over exact rather than approximate.
+type rowInput struct {
+	item       pkg.Item
+	provenance pkg.Provenance
+	report     *pkg.DeliveryReport
+}
+
+// equal reports whether two inputs would render identically.
+//
+// ⚠️ DeepEqual on the item, not `==`: Item carries `Options`, a slice, so the
+// struct is not comparable. The comparison is still far cheaper than the work it
+// replaces — microseconds against the ~1 ms a row costs to execute.
+func (r rowInput) equal(other rowInput) bool {
+	return r.provenance == other.provenance &&
+		reflect.DeepEqual(r.report, other.report) &&
+		reflect.DeepEqual(r.item, other.item)
+}
+
+// renderedBoard is one render's output: every row's HTML, the inputs it derived
+// them from, and how many rows were actually re-executed.
+type renderedBoard struct {
+	html   map[string]string
+	inputs map[string]rowInput
+	// rows counts the rows RE-RENDERED, not the rows on the board. It feeds
+	// attention_board_rows_rendered_total, whose whole purpose is to show what a
+	// render cost — a carried-over row cost nothing, so counting it would make
+	// the metric describe the board's size instead of the render's work.
+	rows int
 }
 
 // boardRefresh is one render in flight. The stream that starts it fills it in
@@ -159,7 +198,9 @@ func (r *boardRefresh) wait(ctx context.Context) error {
 // attention_board_rows_rendered_total, while a render that returned an error
 // reports nothing at all.
 type boardRenderer struct {
-	render func(ctx context.Context) (map[string]string, error)
+	// render produces one board, given the previous one so it can carry
+	// unchanged rows over instead of re-executing their templates.
+	render func(ctx context.Context, previous *boardSnapshot) (renderedBoard, error)
 	// metrics is the counters the shared render path reports through; held by
 	// the renderer and not the handler, so the increment cannot be reached from
 	// a per-client path.
@@ -231,16 +272,26 @@ func (b *boardRenderer) run(ctx context.Context, refresh *boardRefresh, generati
 	// their own — `ReadBoard` is a local BoltDB read and the one subprocess
 	// `Resolve` reaches for is bounded by `paneListingTimeout` — so removing
 	// the caller's deadline does not make an unbounded call unbounded.
-	rendered, err := b.render(context.WithoutCancel(ctx))
+	// The previous snapshot is read under the lock and handed to the render, so
+	// a concurrent publish cannot swap it mid-read. `current` is only ever
+	// replaced wholesale, never mutated, so the reference stays valid after the
+	// lock is released.
+	b.mu.Lock()
+	previous := b.current
+	b.mu.Unlock()
+
+	rendered, err := b.render(context.WithoutCancel(ctx), previous)
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	refresh.err = err
 	if err == nil {
 		b.metrics.BoardRendersTotalCounterInc()
-		b.metrics.BoardRowsRenderedTotalCounterAdd(len(rendered))
+		// ⚠️ The rows RE-RENDERED, not the rows on the board: a carried-over row
+		// cost nothing, and the counter exists to show what a render cost.
+		b.metrics.BoardRowsRenderedTotalCounterAdd(rendered.rows)
 		b.seq++
-		b.current = &boardSnapshot{seq: b.seq, rendered: rendered}
+		b.current = &boardSnapshot{seq: b.seq, rendered: rendered.html, inputs: rendered.inputs}
 		// ⚠️ Stamped with the generation this render was FOR, never with the
 		// notifier's current one. A read taken for generation 5 may not cover
 		// generation 7, and stamping 7 would mark that change as rendered and
@@ -412,30 +463,61 @@ func (a *attentionStreamHandler) push(
 // two readers have to agree, because the stream's whole claim is that a row it
 // sends is identical to the same row on a fresh load — with Read here and
 // ReadBoard on the page, that claim was false for every answered item.
-func (a *attentionStreamHandler) render(ctx context.Context) (map[string]string, error) {
+func (a *attentionStreamHandler) render(
+	ctx context.Context,
+	previous *boardSnapshot,
+) (renderedBoard, error) {
 	items, err := a.store.ReadBoard(ctx)
 	if err != nil {
-		return nil, errors.Wrap(ctx, err, "read failed")
+		return renderedBoard{}, errors.Wrap(ctx, err, "read failed")
 	}
 	provenances := a.provenance.Resolve(ctx, items)
+	// Derived for the whole board in one read, not one read per row: this
+	// render runs several times a second over every item the board holds.
+	reports := deliveryReportsOf(ctx, a.store, items)
 	// ⚠️ No token is read here either: the stream's rows must render exactly as
 	// the page's do, and the page's Jump button is now gated on the pane alone.
-	rendered := make(map[string]string, len(items))
+	//
+	// ⚠️ Only the rows whose INPUTS changed are re-executed. Every other row is
+	// carried over verbatim from the previous snapshot. Measured 2026-11-16: the
+	// board held 536 rows and one full render cost ~0.5 s of CPU, so a batch of
+	// writes — the unforwarded-closers scan posts hundreds — re-templated the
+	// whole board hundreds of times to change one row each. The template output
+	// is a pure function of the three inputs kept in `inputs`, which is what
+	// makes carrying a row over exact rather than approximate.
+	board := renderedBoard{
+		html:   make(map[string]string, len(items)),
+		inputs: make(map[string]rowInput, len(items)),
+	}
 	for _, item := range items {
+		key := item.ItemID.String()
+		input := rowInput{
+			item:       item,
+			provenance: provenances[item.ItemID],
+			report:     reports[item.ItemID],
+		}
+		board.inputs[key] = input
+		if previous != nil {
+			if prior, ok := previous.inputs[key]; ok && prior.equal(input) {
+				board.html[key] = previous.rendered[key]
+				continue
+			}
+		}
 		row := newAttentionPageRow(
 			item,
-			provenances[item.ItemID],
-			deliveryReportOf(ctx, a.store, item.ItemID),
+			input.provenance,
+			input.report,
 			a.speakEnabled,
 			a.vaultName,
 		)
 		var body bytes.Buffer
 		if err := a.rows.ExecuteTemplate(&body, "attention-row", row); err != nil {
-			return nil, errors.Wrap(ctx, err, "render row failed")
+			return renderedBoard{}, errors.Wrap(ctx, err, "render row failed")
 		}
-		rendered[item.ItemID.String()] = body.String()
+		board.html[key] = body.String()
+		board.rows++
 	}
-	return rendered, nil
+	return board, nil
 }
 
 // writeEvent frames one change as a server-sent event and flushes it, so the

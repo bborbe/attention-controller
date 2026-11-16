@@ -81,6 +81,14 @@ func (n *notifyingAttentionStore) History(
 	return n.store.History(ctx, limit, offset, filters...)
 }
 
+// HistoryCreatedSince delegates and never signals: it is a counting read.
+func (n *notifyingAttentionStore) HistoryCreatedSince(
+	ctx context.Context,
+	since libtime.DateTime,
+) (Items, error) {
+	return n.store.HistoryCreatedSince(ctx, since)
+}
+
 // Answer delegates and signals on success.
 func (n *notifyingAttentionStore) Answer(
 	ctx context.Context,
@@ -272,6 +280,14 @@ func (n *notifyingAttentionStore) DeliveryAttempts(
 	ctx context.Context,
 ) (map[ItemID]DeliveryAttempt, error) {
 	return n.store.DeliveryAttempts(ctx)
+}
+
+// DeliveryReports delegates unchanged. It is a read and signals nothing.
+func (n *notifyingAttentionStore) DeliveryReports(
+	ctx context.Context,
+	items Items,
+) (map[ItemID]*DeliveryReport, error) {
+	return n.store.DeliveryReports(ctx, items)
 }
 
 // SweepAnswered delegates and signals ONLY when it closed something.

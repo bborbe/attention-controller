@@ -556,7 +556,7 @@ func (a *application) addUnforwardedClosersJob(
 	}
 	scanner := pkg.NewUnforwardedClosersScanner(pkg.UnforwardedClosersConfig{
 		StateDir:       stateDir,
-		WatcherLog:     filepath.Join(home, "Library", "Logs", "attention-watcher.log"),
+		Store:          store,
 		TranscriptRoot: filepath.Join(home, ".claude", "projects"),
 		Now:            libtime.NewCurrentDateTime(),
 	})
@@ -1096,6 +1096,7 @@ func (a *application) addAttentionWatcherJobs(
 			pkg.NewRoutinePolicy(nil),
 			writer,
 			pkg.RoutineGateSettleInterval,
+			libtime.NewCurrentDateTime(),
 		).Run)
 	}
 	// ⚠️ The release-expired-holds arm is deliberately NOT registered: its book

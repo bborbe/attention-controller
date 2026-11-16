@@ -112,6 +112,20 @@ type AttentionStore struct {
 		result1 map[pkg.ItemID]pkg.DeliveryPark
 		result2 error
 	}
+	DeliveryReportsStub        func(context.Context, pkg.Items) (map[pkg.ItemID]*pkg.DeliveryReport, error)
+	deliveryReportsMutex       sync.RWMutex
+	deliveryReportsArgsForCall []struct {
+		arg1 context.Context
+		arg2 pkg.Items
+	}
+	deliveryReportsReturns struct {
+		result1 map[pkg.ItemID]*pkg.DeliveryReport
+		result2 error
+	}
+	deliveryReportsReturnsOnCall map[int]struct {
+		result1 map[pkg.ItemID]*pkg.DeliveryReport
+		result2 error
+	}
 	EscalateStub        func(context.Context, pkg.ItemID, string) (*pkg.Item, error)
 	escalateMutex       sync.RWMutex
 	escalateArgsForCall []struct {
@@ -169,6 +183,20 @@ type AttentionStore struct {
 		result2 error
 	}
 	historyReturnsOnCall map[int]struct {
+		result1 pkg.Items
+		result2 error
+	}
+	HistoryCreatedSinceStub        func(context.Context, time.DateTime) (pkg.Items, error)
+	historyCreatedSinceMutex       sync.RWMutex
+	historyCreatedSinceArgsForCall []struct {
+		arg1 context.Context
+		arg2 time.DateTime
+	}
+	historyCreatedSinceReturns struct {
+		result1 pkg.Items
+		result2 error
+	}
+	historyCreatedSinceReturnsOnCall map[int]struct {
 		result1 pkg.Items
 		result2 error
 	}
@@ -800,6 +828,71 @@ func (fake *AttentionStore) DeliveryParksReturnsOnCall(i int, result1 map[pkg.It
 	}{result1, result2}
 }
 
+func (fake *AttentionStore) DeliveryReports(arg1 context.Context, arg2 pkg.Items) (map[pkg.ItemID]*pkg.DeliveryReport, error) {
+	fake.deliveryReportsMutex.Lock()
+	ret, specificReturn := fake.deliveryReportsReturnsOnCall[len(fake.deliveryReportsArgsForCall)]
+	fake.deliveryReportsArgsForCall = append(fake.deliveryReportsArgsForCall, struct {
+		arg1 context.Context
+		arg2 pkg.Items
+	}{arg1, arg2})
+	stub := fake.DeliveryReportsStub
+	fakeReturns := fake.deliveryReportsReturns
+	fake.recordInvocation("DeliveryReports", []interface{}{arg1, arg2})
+	fake.deliveryReportsMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *AttentionStore) DeliveryReportsCallCount() int {
+	fake.deliveryReportsMutex.RLock()
+	defer fake.deliveryReportsMutex.RUnlock()
+	return len(fake.deliveryReportsArgsForCall)
+}
+
+func (fake *AttentionStore) DeliveryReportsCalls(stub func(context.Context, pkg.Items) (map[pkg.ItemID]*pkg.DeliveryReport, error)) {
+	fake.deliveryReportsMutex.Lock()
+	defer fake.deliveryReportsMutex.Unlock()
+	fake.DeliveryReportsStub = stub
+}
+
+func (fake *AttentionStore) DeliveryReportsArgsForCall(i int) (context.Context, pkg.Items) {
+	fake.deliveryReportsMutex.RLock()
+	defer fake.deliveryReportsMutex.RUnlock()
+	argsForCall := fake.deliveryReportsArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2
+}
+
+func (fake *AttentionStore) DeliveryReportsReturns(result1 map[pkg.ItemID]*pkg.DeliveryReport, result2 error) {
+	fake.deliveryReportsMutex.Lock()
+	defer fake.deliveryReportsMutex.Unlock()
+	fake.DeliveryReportsStub = nil
+	fake.deliveryReportsReturns = struct {
+		result1 map[pkg.ItemID]*pkg.DeliveryReport
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *AttentionStore) DeliveryReportsReturnsOnCall(i int, result1 map[pkg.ItemID]*pkg.DeliveryReport, result2 error) {
+	fake.deliveryReportsMutex.Lock()
+	defer fake.deliveryReportsMutex.Unlock()
+	fake.DeliveryReportsStub = nil
+	if fake.deliveryReportsReturnsOnCall == nil {
+		fake.deliveryReportsReturnsOnCall = make(map[int]struct {
+			result1 map[pkg.ItemID]*pkg.DeliveryReport
+			result2 error
+		})
+	}
+	fake.deliveryReportsReturnsOnCall[i] = struct {
+		result1 map[pkg.ItemID]*pkg.DeliveryReport
+		result2 error
+	}{result1, result2}
+}
+
 func (fake *AttentionStore) Escalate(arg1 context.Context, arg2 pkg.ItemID, arg3 string) (*pkg.Item, error) {
 	fake.escalateMutex.Lock()
 	ret, specificReturn := fake.escalateReturnsOnCall[len(fake.escalateArgsForCall)]
@@ -1059,6 +1152,71 @@ func (fake *AttentionStore) HistoryReturnsOnCall(i int, result1 pkg.Items, resul
 		})
 	}
 	fake.historyReturnsOnCall[i] = struct {
+		result1 pkg.Items
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *AttentionStore) HistoryCreatedSince(arg1 context.Context, arg2 time.DateTime) (pkg.Items, error) {
+	fake.historyCreatedSinceMutex.Lock()
+	ret, specificReturn := fake.historyCreatedSinceReturnsOnCall[len(fake.historyCreatedSinceArgsForCall)]
+	fake.historyCreatedSinceArgsForCall = append(fake.historyCreatedSinceArgsForCall, struct {
+		arg1 context.Context
+		arg2 time.DateTime
+	}{arg1, arg2})
+	stub := fake.HistoryCreatedSinceStub
+	fakeReturns := fake.historyCreatedSinceReturns
+	fake.recordInvocation("HistoryCreatedSince", []interface{}{arg1, arg2})
+	fake.historyCreatedSinceMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *AttentionStore) HistoryCreatedSinceCallCount() int {
+	fake.historyCreatedSinceMutex.RLock()
+	defer fake.historyCreatedSinceMutex.RUnlock()
+	return len(fake.historyCreatedSinceArgsForCall)
+}
+
+func (fake *AttentionStore) HistoryCreatedSinceCalls(stub func(context.Context, time.DateTime) (pkg.Items, error)) {
+	fake.historyCreatedSinceMutex.Lock()
+	defer fake.historyCreatedSinceMutex.Unlock()
+	fake.HistoryCreatedSinceStub = stub
+}
+
+func (fake *AttentionStore) HistoryCreatedSinceArgsForCall(i int) (context.Context, time.DateTime) {
+	fake.historyCreatedSinceMutex.RLock()
+	defer fake.historyCreatedSinceMutex.RUnlock()
+	argsForCall := fake.historyCreatedSinceArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2
+}
+
+func (fake *AttentionStore) HistoryCreatedSinceReturns(result1 pkg.Items, result2 error) {
+	fake.historyCreatedSinceMutex.Lock()
+	defer fake.historyCreatedSinceMutex.Unlock()
+	fake.HistoryCreatedSinceStub = nil
+	fake.historyCreatedSinceReturns = struct {
+		result1 pkg.Items
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *AttentionStore) HistoryCreatedSinceReturnsOnCall(i int, result1 pkg.Items, result2 error) {
+	fake.historyCreatedSinceMutex.Lock()
+	defer fake.historyCreatedSinceMutex.Unlock()
+	fake.HistoryCreatedSinceStub = nil
+	if fake.historyCreatedSinceReturnsOnCall == nil {
+		fake.historyCreatedSinceReturnsOnCall = make(map[int]struct {
+			result1 pkg.Items
+			result2 error
+		})
+	}
+	fake.historyCreatedSinceReturnsOnCall[i] = struct {
 		result1 pkg.Items
 		result2 error
 	}{result1, result2}

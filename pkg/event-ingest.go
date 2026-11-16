@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/bborbe/errors"
+	"github.com/bborbe/validation"
 	"github.com/golang/glog"
 )
 
@@ -180,11 +181,19 @@ func (j *eventIngestJob) IngestOnce(ctx context.Context) error {
 
 	cursors := j.loadCursors(ctx, root)
 	opened, closed, skipped := 0, 0, 0
+	advanced := false
 	for _, name := range names {
 		if err := ctx.Err(); err != nil {
 			return nil
 		}
 		counts, err := j.ingestFile(ctx, root, name, cursors)
+		// ⚠️ Accumulated BEFORE the error check, not after it. A file whose pass
+		// failed on one record has still advanced its cursor past the records
+		// before it — those effects landed — and dropping that advance would
+		// re-read and re-forward them on the next pass. The old unconditional
+		// save persisted it; this keeps that property while still skipping the
+		// write when nothing moved.
+		advanced = advanced || counts.advanced
 		if err != nil {
 			// The cursor for this file was not advanced past the failed
 			// record, so the next pass retries it rather than skipping it.
@@ -199,7 +208,14 @@ func (j *eventIngestJob) IngestOnce(ctx context.Context) error {
 		closed += counts.closed
 		skipped += counts.skipped
 	}
-	j.saveCursors(ctx, root, cursors)
+	// ⚠️ Written only when a cursor actually moved. The cursor file is the whole
+	// population — 6676 entries on 2026-11-16 — so rewriting it on every pass
+	// rewrote ~400 KB every two seconds to record that nothing had changed. A
+	// skipped write is safe because an unchanged cursor and an unwritten one are
+	// the same claim; the next pass that does advance writes the full set.
+	if advanced {
+		j.saveCursors(ctx, root, cursors)
+	}
 	glog.V(2).Infof(
 		"job=attention-watcher action=ingest files=%d opened=%d closed=%d skipped=%d",
 		len(names),
@@ -212,9 +228,10 @@ func (j *eventIngestJob) IngestOnce(ctx context.Context) error {
 
 // ingestCounts is what one file's pass did, for the cycle's log line.
 type ingestCounts struct {
-	opened  int
-	closed  int
-	skipped int
+	opened   int
+	closed   int
+	skipped  int
+	advanced bool
 }
 
 // eventRecordAt is one decoded record together with the byte offset AFTER it,
@@ -234,11 +251,15 @@ func (j *eventIngestJob) ingestFile(
 	cursors *eventIngestCursors,
 ) (ingestCounts, error) {
 	var counts ingestCounts
-	content, err := readRootFile(root, name)
+	content, start, err := readRootFileFrom(root, name, cursors.Offsets[name])
 	if err != nil {
 		return counts, err
 	}
-	records, rewound := readEventRecords(content, cursors.Offsets[name])
+	// A file SHORTER than its cursor has been truncated or replaced, and
+	// readRootFileFrom has already re-read it from the start. The settled-ts
+	// mark below is what tells a line already consumed from a genuine re-ask.
+	rewound := start < cursors.Offsets[name]
+	records := readEventRecords(content, start)
 	for _, entry := range records {
 		if err := ctx.Err(); err != nil {
 			return counts, nil
@@ -246,10 +267,33 @@ func (j *eventIngestJob) ingestFile(
 		if rewound && entry.record.TS != nil && *entry.record.TS <= cursors.Marks[name] {
 			// Settled already — a re-read, not a new event.
 			cursors.Offsets[name] = entry.after
+			counts.advanced = true
 			continue
 		}
 		forwarded, err := j.forward(ctx, entry.record)
 		if err != nil {
+			// ⚠️ A PERMANENT failure must not pin the cursor. A record the sink
+			// can never accept — a push request the schema refuses — would
+			// otherwise be re-read and re-pushed every two seconds for the life
+			// of the file. Measured 2026-11-16 on a8719677: one record whose
+			// options carried three `recommended` flags made the ingest the
+			// process's largest CPU consumer while forwarding nothing.
+			//
+			// A transient failure still retries, and that asymmetry is the
+			// point: a store outage must not advance a cursor past work that has
+			// not landed, so only an error the sink itself declares permanent is
+			// skipped past.
+			if isPermanentIngestError(err) {
+				cursors.Offsets[name] = entry.after
+				counts.advanced = true
+				counts.skipped++
+				glog.Warningf(
+					"job=attention-watcher action=ingest_skip_invalid file=%s error=%v",
+					name,
+					err,
+				)
+				continue
+			}
 			// The cursor stays where it was, so the next pass re-reads this
 			// record instead of skipping it.
 			return counts, err
@@ -262,6 +306,7 @@ func (j *eventIngestJob) ingestFile(
 			counts.closed++
 		}
 		cursors.Offsets[name] = entry.after
+		counts.advanced = true
 		if entry.record.TS != nil {
 			cursors.Marks[name] = maxFloat(cursors.Marks[name], *entry.record.TS)
 		}
@@ -302,16 +347,19 @@ func (j *eventIngestJob) forward(
 // case where the settled-`ts` guard applies. A torn final line is left: the hook
 // appends while this reads, so a partial line is expected rather than
 // exceptional.
-func readEventRecords(content []byte, offset int64) ([]eventRecordAt, bool) {
-	rewound := false
-	if int64(len(content)) < offset {
-		offset = 0
-		rewound = true
+// readEventRecords decodes the records in content, which begins at offset in the
+// file.
+//
+// ⚠️ offset is the base the returned `after` positions are measured from, not a
+// slice point: the caller has already read only the tail it needs (see
+// readRootFileFrom), so content starts at offset. The rewind decision lives in
+// the reader, which is the only place the file's size is known — this function
+// is handed a tail and has no way to tell a rewind from ordinary appending.
+func readEventRecords(content []byte, offset int64) []eventRecordAt {
+	if len(content) == 0 {
+		return nil
 	}
-	if int64(len(content)) == offset {
-		return nil, rewound
-	}
-	reader := bufio.NewReader(bytes.NewReader(content[offset:]))
+	reader := bufio.NewReader(bytes.NewReader(content))
 	records := make([]eventRecordAt, 0)
 	consumed := offset
 	for {
@@ -327,7 +375,7 @@ func readEventRecords(content []byte, offset int64) ([]eventRecordAt, bool) {
 		}
 		records = append(records, eventRecordAt{record: record, after: consumed})
 	}
-	return records, rewound
+	return records
 }
 
 // decodeEventRecord decodes one line, reporting false for a line that carries
@@ -456,6 +504,74 @@ func readRootFile(root *os.Root, name string) ([]byte, error) {
 		return nil, closeErr
 	}
 	return content, nil
+}
+
+// readRootFileFrom reads name from offset to the end of the file, and reports
+// where the returned content begins.
+//
+// ⚠️ This is what keeps a pass over an unchanged log cheap, and it is the whole
+// reason the ingest is affordable. The job tails EVERY event log every two
+// seconds; on 2026-11-16 that was 6676 files and 162 MB, and reading each one in
+// full to discover that nothing had been appended cost 55% of the process's
+// allocation and 17% of its CPU. A file already at its cursor now costs one
+// open, one stat and one close.
+//
+// The returned start is not always the offset asked for: a file SHORTER than
+// offset has been truncated or replaced, and is re-read from 0 with start 0. The
+// caller detects that rewind by comparing start against its own cursor, and
+// applies the settled-`ts` mark to the lines it re-reads. Empty content with
+// start == offset means nothing was appended.
+func readRootFileFrom(root *os.Root, name string, offset int64) ([]byte, int64, error) {
+	// ⚠️ Stat BEFORE opening. The common case is a log that has not grown since
+	// the last pass, and it must cost one syscall rather than three: the job
+	// stats every log in the directory every two seconds (6681 of them on
+	// 2026-11-16), so an open+stat+close per file stayed the largest single CPU
+	// consumer even after the read itself was made incremental.
+	info, err := root.Stat(name)
+	if err != nil {
+		return nil, offset, err
+	}
+	size := info.Size()
+	if size < offset {
+		offset = 0
+	}
+	if size == offset {
+		return nil, offset, nil
+	}
+	handle, err := root.Open(name)
+	if err != nil {
+		return nil, offset, err
+	}
+	if offset > 0 {
+		if _, seekErr := handle.Seek(offset, io.SeekStart); seekErr != nil {
+			_ = handle.Close()
+			return nil, offset, seekErr
+		}
+	}
+	// Sized from the stat so the common case — a handful of appended lines —
+	// allocates once instead of growing a buffer by doubling. A file that grows
+	// between the stat and the read simply appends past the capacity, which
+	// bytes.Buffer grows into.
+	buffer := bytes.NewBuffer(make([]byte, 0, size-offset))
+	if _, readErr := buffer.ReadFrom(handle); readErr != nil {
+		_ = handle.Close()
+		return nil, offset, readErr
+	}
+	if closeErr := handle.Close(); closeErr != nil {
+		return nil, offset, closeErr
+	}
+	return buffer.Bytes(), offset, nil
+}
+
+// isPermanentIngestError reports whether a forward failure can never succeed on
+// a retry.
+//
+// ⚠️ Only the sink's own validation is treated as permanent. Everything else —
+// an unreadable store, a full disk, a cancelled context — is assumed transient,
+// because moving the cursor past a record that could still land is the loss the
+// tailing contract forbids.
+func isPermanentIngestError(err error) bool {
+	return errors.Is(err, validation.Error)
 }
 
 // maxFloat returns the larger of two values, used to keep a file's settled mark

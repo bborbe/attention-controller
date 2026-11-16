@@ -55,15 +55,11 @@ var _ = Describe("attention watcher delivery job", func() {
 
 	BeforeEach(func() {
 		store = &mocks.AttentionStore{}
-		store.DeliveryAttemptsReturns(map[pkg.ItemID]pkg.DeliveryAttempt{}, nil)
+		store.DeliveryReportsReturns(map[pkg.ItemID]*pkg.DeliveryReport{}, nil)
 		store.RecordAttemptReturns(&pkg.DeliveryAttempt{}, nil)
 		carrier = &recordingCarrier{verdict: pkg.DeliveryOK}
 		job = pkg.NewAttentionWatcherJob(
-			store,
-			carrier,
-			&fakeHeadlessDeliverer{},
-			time.Hour,
-			libtime.NewCurrentDateTime(),
+			store, carrier, &fakeHeadlessDeliverer{}, time.Hour, libtime.NewCurrentDateTime(),
 		)
 	})
 
@@ -91,8 +87,8 @@ var _ = Describe("attention watcher delivery job", func() {
 		store.ReadBoardReturns(pkg.Items{
 			answeredItem("item-1", "operator", pkg.Decision("allow")),
 		}, nil)
-		store.DeliveryAttemptsReturns(map[pkg.ItemID]pkg.DeliveryAttempt{
-			"item-1": {Outcome: pkg.DeliveredOutcome},
+		store.DeliveryReportsReturns(map[pkg.ItemID]*pkg.DeliveryReport{
+			"item-1": {ItemID: "item-1", Status: pkg.DeliveredStatus},
 		}, nil)
 		Expect(job.DeliverOnce(context.Background())).To(Succeed())
 		Expect(carrier.calls).To(BeEmpty())
@@ -147,11 +143,7 @@ var _ = Describe("attention watcher delivery job", func() {
 		// dropped with no record at all.
 		headless := &fakeHeadlessDeliverer{terminal: true}
 		job = pkg.NewAttentionWatcherJob(
-			store,
-			carrier,
-			headless,
-			time.Hour,
-			libtime.NewCurrentDateTime(),
+			store, carrier, headless, time.Hour, libtime.NewCurrentDateTime(),
 		)
 		carrier.verdict = pkg.DeliveryNoPane
 		store.ReadBoardReturns(pkg.Items{
@@ -170,11 +162,7 @@ var _ = Describe("attention watcher delivery job", func() {
 		// must not take a card that has a pane.
 		headless := &fakeHeadlessDeliverer{terminal: true}
 		job = pkg.NewAttentionWatcherJob(
-			store,
-			carrier,
-			headless,
-			time.Hour,
-			libtime.NewCurrentDateTime(),
+			store, carrier, headless, time.Hour, libtime.NewCurrentDateTime(),
 		)
 		store.ReadBoardReturns(pkg.Items{
 			answeredItem("item-1", "operator", pkg.Decision("allow")),
@@ -182,5 +170,92 @@ var _ = Describe("attention watcher delivery job", func() {
 		Expect(job.DeliverOnce(context.Background())).To(Succeed())
 		Expect(carrier.calls).To(ConsistOf("item-1=allow"))
 		Expect(headless.calls).To(BeEmpty())
+	})
+
+	// The backoff triple. A card that could not be carried used to be re-attempted
+	// on every tick for the life of the process: `failed` is not terminal, so
+	// `deliverable` stayed true. On 2026-11-16 that was ~20 refusals a second
+	// across ~40 stuck cards, each one a durable write that also woke the board.
+	//
+	// ⚠️ Every case below sets AnsweredAt from the SAME clock the job reads, so
+	// "the record predates the answer" is a fact of the spec rather than a race
+	// against the wall clock.
+	answeredAtNow := func(clock libtime.CurrentDateTimeGetter) pkg.Item {
+		answeredAt := clock.Now()
+		item := answeredItem("item-1", "operator", pkg.Decision("allow"))
+		item.AnsweredAt = &answeredAt
+		return item
+	}
+
+	It("does not re-attempt a card that failed inside the retry backoff", func() {
+		clock := libtime.NewCurrentDateTime()
+		job = pkg.NewAttentionWatcherJob(
+			store, carrier, &fakeHeadlessDeliverer{}, time.Hour, clock,
+		)
+		item := answeredAtNow(clock)
+		failedAt := clock.Now()
+		store.DeliveryReportsReturns(map[pkg.ItemID]*pkg.DeliveryReport{
+			"item-1": {
+				ItemID:      pkg.ItemID("item-1"),
+				Status:      pkg.FailedStatus,
+				Carrier:     "watcher:attention-watcher",
+				AttemptedAt: &failedAt,
+			},
+		}, nil)
+		store.ReadBoardReturns(pkg.Items{item}, nil)
+
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+		Expect(carrier.calls).To(BeEmpty())
+	})
+
+	It("re-attempts a failed card once the retry backoff has passed", func() {
+		clock := libtime.NewCurrentDateTime()
+		job = pkg.NewAttentionWatcherJob(
+			store, carrier, &fakeHeadlessDeliverer{}, time.Hour, clock,
+		)
+		item := answeredAtNow(clock)
+		failedAt := clock.Now()
+		store.DeliveryReportsReturns(map[pkg.ItemID]*pkg.DeliveryReport{
+			"item-1": {
+				ItemID:      pkg.ItemID("item-1"),
+				Status:      pkg.FailedStatus,
+				Carrier:     "watcher:attention-watcher",
+				AttemptedAt: &failedAt,
+			},
+		}, nil)
+		store.ReadBoardReturns(pkg.Items{item}, nil)
+		clock.SetNow(
+			clock.Now().Add(libtime.Duration(pkg.AttentionDeliveryRetryBackoff + time.Second)),
+		)
+
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+		Expect(carrier.calls).To(ConsistOf("item-1=allow"))
+	})
+
+	// ⚠️ The backoff must not withhold an answer because of a record written
+	// BEFORE it. The routine-gate settle arm writes while the gate is still OPEN —
+	// a HeldOutcome on refusal, and a FailedOutcome under this very carrier when
+	// its wrapper answer fails — so a carrier- or recency-based gate found a
+	// recent non-delivered record and sat on the operator's answer for up to five
+	// minutes. Only a failure of THIS answer may delay it.
+	It("delivers an answered card whose only failure predates the answer", func() {
+		clock := libtime.NewCurrentDateTime()
+		job = pkg.NewAttentionWatcherJob(
+			store, carrier, &fakeHeadlessDeliverer{}, time.Hour, clock,
+		)
+		item := answeredAtNow(clock)
+		failedAt := libtime.DateTime(clock.Now().Time().Add(-10 * time.Second))
+		store.DeliveryReportsReturns(map[pkg.ItemID]*pkg.DeliveryReport{
+			"item-1": {
+				ItemID:      pkg.ItemID("item-1"),
+				Status:      pkg.FailedStatus,
+				Carrier:     "watcher:attention-watcher",
+				AttemptedAt: &failedAt,
+			},
+		}, nil)
+		store.ReadBoardReturns(pkg.Items{item}, nil)
+
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+		Expect(carrier.calls).To(ConsistOf("item-1=allow"))
 	})
 })
