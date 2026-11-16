@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bborbe/errors"
+	libtime "github.com/bborbe/time"
 	"github.com/golang/glog"
 )
 
@@ -60,20 +61,23 @@ func NewAttentionWatcherJob(
 	carrier PaneCarrier,
 	headless HeadlessAnswerDeliverer,
 	interval time.Duration,
+	currentDateTimeGetter libtime.CurrentDateTimeGetter,
 ) AttentionWatcherJob {
 	return &attentionWatcherJob{
-		store:    store,
-		carrier:  carrier,
-		headless: headless,
-		interval: interval,
+		store:                 store,
+		carrier:               carrier,
+		headless:              headless,
+		interval:              interval,
+		currentDateTimeGetter: currentDateTimeGetter,
 	}
 }
 
 type attentionWatcherJob struct {
-	store    AttentionStore
-	carrier  PaneCarrier
-	headless HeadlessAnswerDeliverer
-	interval time.Duration
+	store                 AttentionStore
+	carrier               PaneCarrier
+	headless              HeadlessAnswerDeliverer
+	interval              time.Duration
+	currentDateTimeGetter libtime.CurrentDateTimeGetter
 }
 
 // Run delivers answered cards until the context is cancelled.
@@ -103,6 +107,14 @@ func (j *attentionWatcherJob) DeliverOnce(ctx context.Context) error {
 	if err != nil {
 		return errors.Wrap(ctx, err, "read delivery attempts failed")
 	}
+	counts, err := j.store.DeliveryAttemptCounts(ctx)
+	if err != nil {
+		return errors.Wrap(ctx, err, "read delivery attempt counts failed")
+	}
+	parks, err := j.store.DeliveryParks(ctx)
+	if err != nil {
+		return errors.Wrap(ctx, err, "read delivery parks failed")
+	}
 	items, err := j.store.ReadBoard(ctx)
 	if err != nil {
 		return errors.Wrap(ctx, err, "read board failed")
@@ -114,9 +126,69 @@ func (j *attentionWatcherJob) DeliverOnce(ctx context.Context) error {
 		if !j.deliverable(ctx, item, attempts) {
 			continue
 		}
+		if !j.eligible(ctx, item, counts, parks) {
+			continue
+		}
 		j.deliver(ctx, item)
 	}
 	return nil
+}
+
+// eligible reports whether an item may be attempted NOW, applying the backoff
+// and the park.
+//
+// ⚠️ The park is a LIVENESS gate, never a verdict class. `refuse` and `no-pane`
+// both describe a session whose process may come back — a reaped headless worker
+// is `no-pane` and resumable, and an exited tab session is `refuse` — so the
+// re-open turns on SessionLivenessChecker, not on which verdict parked the item.
+// Gating on the verdict instead would abandon exactly the population the
+// headless arm exists to serve.
+func (j *attentionWatcherJob) eligible(
+	ctx context.Context,
+	item Item,
+	counts map[ItemID]DeliveryAttemptCount,
+	parks map[ItemID]DeliveryPark,
+) bool {
+	park, parked := parks[item.ItemID]
+	if parked {
+		sessionID, ok := itemSessionID(ctx, item)
+		if !ok || !j.store.IsSessionLive(ctx, sessionID) {
+			return false
+		}
+		// Live again: the park is over. Clearing it also forgets the attempts
+		// that earned it, so the item starts a fresh backoff cycle instead of
+		// re-parking on the old count the next time round.
+		if err := j.store.ClearDeliveryPark(ctx, item.ItemID); err != nil {
+			glog.Warningf(
+				"job=attention-watcher action=reopen_error item=%s error=%v",
+				item.ItemID,
+				err,
+			)
+			return false
+		}
+		glog.V(2).Infof(
+			"job=attention-watcher action=reopen item=%s attempts=%d verdict=%s reason=%q",
+			item.ItemID,
+			park.Attempts,
+			park.Verdict,
+			park.Reason,
+		)
+		return true
+	}
+	count, ok := counts[item.ItemID]
+	if !ok || count.Count == 0 {
+		return true
+	}
+	if count.Count >= DeliveryAttemptParkThreshold {
+		// The threshold was reached but no park record exists — the process died
+		// between the attempt and the park write. Park now rather than attempt a
+		// ninth time.
+		j.park(ctx, item, count)
+		return false
+	}
+	return !j.currentDateTimeGetter.Now().Time().Before(
+		count.LastAttemptedAt.Time().Add(DeliveryAttemptBackoff),
+	)
 }
 
 // deliverable reports whether the item is an answered card this arm should carry.
@@ -168,11 +240,20 @@ func (j *attentionWatcherJob) deliver(ctx context.Context, item Item) {
 		verdict,
 		reason,
 	)
+	// ⚠️ Counted BEFORE the verdict switch, and for EVERY verdict. The
+	// `no-pane` and `retry` arms write no attempt record — they are the
+	// population that loops forever, because no carrier can reach them — so a
+	// counter that incremented only on an observed outcome would read ~1 per
+	// window while the loop it exists to bound ran untouched.
+	count := j.recordAttemptCount(ctx, item, verdict, reason)
 	switch verdict {
 	case DeliveryOK:
 		j.recordAttempt(ctx, item, DeliveredOutcome)
+		// Delivered: any park is over, and the count it took is moot.
+		j.clearPark(ctx, item)
 	case DeliveryRefuse:
 		j.recordAttempt(ctx, item, FailedOutcome)
+		j.maybePark(ctx, item, count, verdict, reason)
 	case DeliveryNoPane:
 		// ⚠️ A pane-less session is not a failing carrier — it is the normal
 		// shape for every headless `sdk-cli` worker, which has no pane by
@@ -181,9 +262,111 @@ func (j *attentionWatcherJob) deliver(ctx context.Context, item Item) {
 		if j.headless != nil {
 			j.headless.DeliverHeadless(ctx, item)
 		}
+		j.maybePark(ctx, item, count, verdict, reason)
 	default:
 		// `retry` and `resolved` record nothing: retry has not failed yet, and a
-		// resolved gate has nothing left to deliver.
+		// resolved gate has nothing left to deliver. They are still counted and
+		// still parked at the threshold, because a retry that never resolves is
+		// the same hot loop under another name.
+		j.maybePark(ctx, item, count, verdict, reason)
+	}
+}
+
+// recordAttemptCount bumps how many times this item's answer has been tried and
+// returns the new total.
+//
+// ⚠️ Logged rather than returned, for the same reason recordAttempt is: the
+// attempt has already happened, and a missing counter must not be reported as a
+// failed delivery. A failed write returns 0, which never reaches the park
+// threshold — the item is retried rather than parked on an unrecorded attempt.
+func (j *attentionWatcherJob) recordAttemptCount(
+	ctx context.Context,
+	item Item,
+	verdict DeliveryVerdict,
+	reason string,
+) int {
+	count, err := j.store.RecordAttemptCount(ctx, item.ItemID, verdict, reason)
+	if err != nil {
+		glog.Warningf(
+			"job=attention-watcher action=attempt_count_error item=%s error=%v",
+			item.ItemID,
+			err,
+		)
+		return 0
+	}
+	return count
+}
+
+// maybePark parks an item that has exhausted its attempts.
+func (j *attentionWatcherJob) maybePark(
+	ctx context.Context,
+	item Item,
+	count int,
+	verdict DeliveryVerdict,
+	reason string,
+) {
+	if count < DeliveryAttemptParkThreshold {
+		return
+	}
+	j.park(ctx, item, DeliveryAttemptCount{
+		ItemID:      item.ItemID,
+		Count:       count,
+		LastVerdict: verdict,
+		LastReason:  reason,
+	})
+}
+
+// park writes the park record, logging rather than failing: the attempt has
+// already happened, and a missing park only costs one more cycle.
+func (j *attentionWatcherJob) park(
+	ctx context.Context,
+	item Item,
+	count DeliveryAttemptCount,
+) {
+	verdict := count.LastVerdict
+	if verdict == "" {
+		verdict = DeliveryRetry
+	}
+	reason := count.LastReason
+	if reason == "" {
+		// Only reachable from the crash-recovery branch on a count record whose
+		// reason was never written. A park must still name why it stopped, and an
+		// empty reason would fail Validate and leave the item attempted-never,
+		// parked-never.
+		reason = "attempt threshold reached without a recorded verdict"
+	}
+	park := DeliveryPark{
+		ItemID:   item.ItemID,
+		Verdict:  verdict,
+		Reason:   reason,
+		Attempts: count.Count,
+		ParkedAt: j.currentDateTimeGetter.Now(),
+	}
+	if err := j.store.ParkDelivery(ctx, park); err != nil {
+		glog.Warningf(
+			"job=attention-watcher action=park_error item=%s error=%v",
+			item.ItemID,
+			err,
+		)
+		return
+	}
+	glog.V(2).Infof(
+		"job=attention-watcher action=park item=%s verdict=%s attempts=%d reason=%q",
+		item.ItemID,
+		park.Verdict,
+		park.Attempts,
+		park.Reason,
+	)
+}
+
+// clearPark ends a park on a delivered item, logging rather than failing.
+func (j *attentionWatcherJob) clearPark(ctx context.Context, item Item) {
+	if err := j.store.ClearDeliveryPark(ctx, item.ItemID); err != nil {
+		glog.Warningf(
+			"job=attention-watcher action=clear_park_error item=%s error=%v",
+			item.ItemID,
+			err,
+		)
 	}
 }
 

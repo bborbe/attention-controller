@@ -306,6 +306,54 @@ type AttentionStore interface {
 		outcome DeliveryOutcome,
 	) (*DeliveryAttempt, error)
 
+	// RecordAttemptCount increments how many times this item's answer has been
+	// attempted, and returns the new total.
+	//
+	// ⚠️ It is a separate write because it records a different fact. An attempt
+	// HAPPENED — true for `ok`, `refuse`, `no-pane` and `retry` alike — while an
+	// outcome was OBSERVED — true only for `delivered` and `failed`, which is
+	// exactly why RecordAttempt is called only for those. § Delivery attempts
+	// derives `never_attempted` from the attempt record's ABSENCE, so a count
+	// carried on that record would make the derivation unreachable; this sibling
+	// record leaves both facts true.
+	//
+	// ⚠️ Call it BEFORE the verdict is known. A counter that increments only on
+	// an observed outcome reads ~1 per window while the loop it exists to bound
+	// runs untouched — the items that loop forever are the ones no carrier can
+	// reach, and those write no attempt record at all.
+	RecordAttemptCount(
+		ctx context.Context,
+		itemID ItemID,
+		verdict DeliveryVerdict,
+		reason string,
+	) (int, error)
+
+	// DeliveryAttemptCounts returns every attempt count, keyed by item id, in
+	// one read transaction — the deliver arm consults it for every item on every
+	// cycle.
+	DeliveryAttemptCounts(ctx context.Context) (map[ItemID]DeliveryAttemptCount, error)
+
+	// ParkDelivery records that an item's answer stopped being attempted, naming
+	// the verdict and reason that ended it.
+	ParkDelivery(ctx context.Context, park DeliveryPark) error
+
+	// DeliveryParks returns every parked item, keyed by item id.
+	DeliveryParks(ctx context.Context) (map[ItemID]DeliveryPark, error)
+
+	// ClearDeliveryPark ends a park and forgets the attempt count that earned
+	// it, so the item starts a fresh backoff cycle.
+	ClearDeliveryPark(ctx context.Context, itemID ItemID) error
+
+	// IsSessionLive reports whether the session a parked item is addressed to
+	// currently has a live process.
+	//
+	// ⚠️ It exists so the deliver arm can decide whether to RE-OPEN a park
+	// without attempting a delivery first. Probing by attempting would defeat
+	// the park: every probe increments the count, so a session that never comes
+	// back would still be retried forever — the loop the park exists to stop.
+	// The registry is the only thing that can answer this without an attempt.
+	IsSessionLive(ctx context.Context, sessionID string) bool
+
 	// Delivery returns the derived delivery status for one item — the one query
 	// that answers "did my answer reach the session?".
 	//

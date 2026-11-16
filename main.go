@@ -1076,6 +1076,7 @@ func (a *application) addAttentionWatcherJobs(
 		carrier,
 		headless,
 		pkg.AttentionWatcherDeliveryInterval,
+		libtime.NewCurrentDateTime(),
 	).Run)
 	runner.Add(ctx, pkg.NewMenuAnswerJob(
 		store,

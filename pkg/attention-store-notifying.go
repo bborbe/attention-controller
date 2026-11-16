@@ -202,6 +202,62 @@ func (n *notifyingAttentionStore) RecordAttempt(
 	return attempt, nil
 }
 
+// RecordAttemptCount delegates and signals on success, for the same reason
+// RecordAttempt does: it is a write, and a board showing how often an item has
+// been tried should not wait for the next unrelated change to see it.
+func (n *notifyingAttentionStore) RecordAttemptCount(
+	ctx context.Context,
+	itemID ItemID,
+	verdict DeliveryVerdict,
+	reason string,
+) (int, error) {
+	count, err := n.store.RecordAttemptCount(ctx, itemID, verdict, reason)
+	if err != nil {
+		return 0, err
+	}
+	n.notifier.Notify()
+	return count, nil
+}
+
+// DeliveryAttemptCounts delegates and never signals: it is a read.
+func (n *notifyingAttentionStore) DeliveryAttemptCounts(
+	ctx context.Context,
+) (map[ItemID]DeliveryAttemptCount, error) {
+	return n.store.DeliveryAttemptCounts(ctx)
+}
+
+// ParkDelivery delegates and signals: a park is a board-visible state change.
+func (n *notifyingAttentionStore) ParkDelivery(ctx context.Context, park DeliveryPark) error {
+	if err := n.store.ParkDelivery(ctx, park); err != nil {
+		return err
+	}
+	n.notifier.Notify()
+	return nil
+}
+
+// DeliveryParks delegates and never signals: it is a read.
+func (n *notifyingAttentionStore) DeliveryParks(
+	ctx context.Context,
+) (map[ItemID]DeliveryPark, error) {
+	return n.store.DeliveryParks(ctx)
+}
+
+// ClearDeliveryPark delegates and signals: ending a park is a board-visible
+// state change.
+func (n *notifyingAttentionStore) ClearDeliveryPark(ctx context.Context, itemID ItemID) error {
+	if err := n.store.ClearDeliveryPark(ctx, itemID); err != nil {
+		return err
+	}
+	n.notifier.Notify()
+	return nil
+}
+
+// IsSessionLive delegates and never signals: it is a read of the session
+// registry, and it changes nothing a subscriber renders.
+func (n *notifyingAttentionStore) IsSessionLive(ctx context.Context, sessionID string) bool {
+	return n.store.IsSessionLive(ctx, sessionID)
+}
+
 // Delivery delegates and never signals: it is a read, and the record it reads
 // was written by an arm outside this store's write path.
 func (n *notifyingAttentionStore) Delivery(

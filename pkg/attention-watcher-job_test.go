@@ -58,7 +58,13 @@ var _ = Describe("attention watcher delivery job", func() {
 		store.DeliveryAttemptsReturns(map[pkg.ItemID]pkg.DeliveryAttempt{}, nil)
 		store.RecordAttemptReturns(&pkg.DeliveryAttempt{}, nil)
 		carrier = &recordingCarrier{verdict: pkg.DeliveryOK}
-		job = pkg.NewAttentionWatcherJob(store, carrier, &fakeHeadlessDeliverer{}, time.Hour)
+		job = pkg.NewAttentionWatcherJob(
+			store,
+			carrier,
+			&fakeHeadlessDeliverer{},
+			time.Hour,
+			libtime.NewCurrentDateTime(),
+		)
 	})
 
 	It("carries an answered permission card and records delivered", func() {
@@ -140,7 +146,13 @@ var _ = Describe("attention watcher delivery job", func() {
 		// reports `no-pane`, and before the headless arm existed that answer was
 		// dropped with no record at all.
 		headless := &fakeHeadlessDeliverer{terminal: true}
-		job = pkg.NewAttentionWatcherJob(store, carrier, headless, time.Hour)
+		job = pkg.NewAttentionWatcherJob(
+			store,
+			carrier,
+			headless,
+			time.Hour,
+			libtime.NewCurrentDateTime(),
+		)
 		carrier.verdict = pkg.DeliveryNoPane
 		store.ReadBoardReturns(pkg.Items{
 			answeredItem("item-1", "operator", pkg.Decision("allow")),
@@ -157,7 +169,13 @@ var _ = Describe("attention watcher delivery job", func() {
 		// A tab session's answer still goes through the carrier: the headless arm
 		// must not take a card that has a pane.
 		headless := &fakeHeadlessDeliverer{terminal: true}
-		job = pkg.NewAttentionWatcherJob(store, carrier, headless, time.Hour)
+		job = pkg.NewAttentionWatcherJob(
+			store,
+			carrier,
+			headless,
+			time.Hour,
+			libtime.NewCurrentDateTime(),
+		)
 		store.ReadBoardReturns(pkg.Items{
 			answeredItem("item-1", "operator", pkg.Decision("allow")),
 		}, nil)

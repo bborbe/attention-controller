@@ -41,6 +41,12 @@ func NewAttentionStore(
 		attempts: libkv.NewStoreTx[string, DeliveryAttempt](
 			deliveryAttemptBucketName,
 		),
+		attemptCounts: libkv.NewStoreTx[string, DeliveryAttemptCount](
+			deliveryAttemptCountBucketName,
+		),
+		parks: libkv.NewStoreTx[string, DeliveryPark](
+			deliveryParkBucketName,
+		),
 		db:                     db,
 		itemIDGenerator:        itemIDGenerator,
 		sessionLivenessChecker: sessionLivenessChecker,
@@ -61,6 +67,8 @@ type attentionStore struct {
 	historyIndex           libkv.StoreTx[string, Item]
 	dedupIndex             libkv.StoreTx[string, Item]
 	attempts               libkv.StoreTx[string, DeliveryAttempt]
+	attemptCounts          libkv.StoreTx[string, DeliveryAttemptCount]
+	parks                  libkv.StoreTx[string, DeliveryPark]
 	db                     libkv.DB
 	itemIDGenerator        ItemIDGenerator
 	sessionLivenessChecker SessionLivenessChecker

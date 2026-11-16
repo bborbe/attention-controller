@@ -91,6 +91,156 @@ func (a *attentionStore) RecordAttempt(
 	return &attempt, nil
 }
 
+// RecordAttemptCount increments how many times one item's answer has been
+// attempted, and returns the new total.
+//
+// ⚠️ Every verdict counts, which is why this is a separate write from
+// RecordAttempt: `no-pane` and `retry` attempts are the population that loops
+// forever, and they write no attempt record at all — the record is derived from
+// what an arm OBSERVED, and they observed nothing they could report as an
+// outcome without inventing one. Counting here keeps `never_attempted`
+// derivable from the attempt record's absence while still bounding the loop.
+//
+// The item must exist, for the same reason RecordAttempt requires it: a count
+// with nothing to join to could never be read back.
+func (a *attentionStore) RecordAttemptCount(
+	ctx context.Context,
+	itemID ItemID,
+	verdict DeliveryVerdict,
+	reason string,
+) (int, error) {
+	var count int
+	err := a.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
+		if _, err := a.store.Get(ctx, tx, itemID.String()); err != nil {
+			if isNotFound(err) {
+				return errors.Wrapf(ctx, ErrItemNotFound, "item %s not found", itemID)
+			}
+			return errors.Wrap(ctx, err, "get item failed")
+		}
+		existing, getErr := a.attemptCounts.Get(ctx, tx, itemID.String())
+		switch {
+		case getErr == nil:
+			count = existing.Count + 1
+		case isNotFound(getErr):
+			count = 1
+		default:
+			return errors.Wrap(ctx, getErr, "get delivery attempt count failed")
+		}
+		if err := a.attemptCounts.Add(ctx, tx, itemID.String(), DeliveryAttemptCount{
+			ItemID:          itemID,
+			Count:           count,
+			LastAttemptedAt: a.currentDateTimeGetter.Now(),
+			LastVerdict:     verdict,
+			LastReason:      reason,
+		}); err != nil {
+			return errors.Wrap(ctx, err, "add delivery attempt count failed")
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, errors.Wrap(ctx, err, "record attempt count failed")
+	}
+	return count, nil
+}
+
+// DeliveryAttemptCounts returns every recorded attempt count, keyed by item id.
+//
+// It mirrors DeliveryAttempts: one read transaction for the whole population,
+// because the deliver arm consults it for every item on every cycle and a
+// transaction per item would cost more than the attempts it is bounding.
+func (a *attentionStore) DeliveryAttemptCounts(
+	ctx context.Context,
+) (map[ItemID]DeliveryAttemptCount, error) {
+	counts := make(map[ItemID]DeliveryAttemptCount)
+	err := a.db.View(ctx, func(ctx context.Context, tx libkv.Tx) error {
+		return a.attemptCounts.Map(
+			ctx,
+			tx,
+			func(ctx context.Context, key string, count DeliveryAttemptCount) error {
+				counts[ItemID(key)] = count
+				return nil
+			},
+		)
+	})
+	if err != nil {
+		return nil, errors.Wrap(ctx, err, "delivery attempt counts failed")
+	}
+	return counts, nil
+}
+
+// DeliveryParks returns every parked item, keyed by item id.
+func (a *attentionStore) DeliveryParks(
+	ctx context.Context,
+) (map[ItemID]DeliveryPark, error) {
+	parks := make(map[ItemID]DeliveryPark)
+	err := a.db.View(ctx, func(ctx context.Context, tx libkv.Tx) error {
+		return a.parks.Map(
+			ctx,
+			tx,
+			func(ctx context.Context, key string, park DeliveryPark) error {
+				parks[ItemID(key)] = park
+				return nil
+			},
+		)
+	})
+	if err != nil {
+		return nil, errors.Wrap(ctx, err, "delivery parks failed")
+	}
+	return parks, nil
+}
+
+// ParkDelivery records that an item's answer stopped being attempted, naming the
+// verdict and reason that ended it.
+func (a *attentionStore) ParkDelivery(ctx context.Context, park DeliveryPark) error {
+	if err := park.Validate(ctx); err != nil {
+		return errors.Wrap(ctx, err, "validate delivery park failed")
+	}
+	err := a.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
+		return a.parks.Add(ctx, tx, park.ItemID.String(), park)
+	})
+	if err != nil {
+		return errors.Wrap(ctx, err, "park delivery failed")
+	}
+	return nil
+}
+
+// ClearDeliveryPark ends a park: it removes the park record AND the attempt
+// count that earned it.
+//
+// ⚠️ The count is cleared with the park so the two facts stay consistent: the
+// count is attempts-since-last-reopen, and a park that has been re-opened must
+// not immediately re-park on the next cycle because the old count is still at
+// the threshold. The park record itself carried the count at park time, so the
+// history is not lost — it was read before this write.
+func (a *attentionStore) ClearDeliveryPark(ctx context.Context, itemID ItemID) error {
+	err := a.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
+		if err := a.parks.Remove(ctx, tx, itemID.String()); err != nil {
+			return errors.Wrap(ctx, err, "delete delivery park failed")
+		}
+		if err := a.attemptCounts.Remove(ctx, tx, itemID.String()); err != nil {
+			return errors.Wrap(ctx, err, "delete delivery attempt count failed")
+		}
+		return nil
+	})
+	if err != nil {
+		return errors.Wrap(ctx, err, "clear delivery park failed")
+	}
+	return nil
+}
+
+// IsSessionLive reports whether the session a parked item is addressed to
+// currently has a live process.
+//
+// ⚠️ It is a read of the registry, never an attempt: probing by attempting would
+// increment the count and defeat the park, so a session that never returns would
+// still be retried forever.
+func (a *attentionStore) IsSessionLive(ctx context.Context, sessionID string) bool {
+	if a.sessionLivenessChecker == nil || sessionID == "" {
+		return false
+	}
+	return a.sessionLivenessChecker.IsLive(ctx, sessionID)
+}
+
 // carrySettlement sets attempt.Settled to the delivery this write must keep.
 //
 // A settled delivery is first-write-wins. An existing settlement is carried
