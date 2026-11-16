@@ -118,6 +118,19 @@ type WrapperMessageDeliverer interface {
 		cwd string,
 		text string,
 	) (DeliveryVerdict, string)
+
+	// SessionMode reports the mode the wrapper recorded for a session at spawn —
+	// "headless" or "interactive".
+	//
+	// ⚠️ The wrapper KEEPS a record for a session that has exited (that is why a
+	// delivery can tell 404 `ErrSessionNotFound` from 410 `ErrSessionExited`), so
+	// this answers for a reaped session too. The session registry cannot: its
+	// record is deleted on exit, which is why the pane carrier cannot distinguish
+	// a reaped headless worker from a reaped tab session.
+	//
+	// The second return is false when the wrapper holds no record at all, so an
+	// unreadable or absent record is never mistaken for "not headless".
+	SessionMode(ctx context.Context, sessionID string) (string, bool)
 }
 
 // NewClaudeWrapperClient creates the client.
@@ -338,6 +351,34 @@ func (c *claudeWrapperClient) DeliverMessage(
 // The resumed spawn carries the session's cwd so the child restarts in the
 // workspace it was working in; an empty cwd is legal and lets the wrapper inherit
 // its own.
+// SessionMode reports the mode the wrapper recorded for a session at spawn.
+//
+// ⚠️ A record that cannot be read is reported as absent, never as "not
+// headless": the caller must be able to tell "the wrapper says interactive" from
+// "the wrapper did not answer", because only the first may refuse an answer.
+func (c *claudeWrapperClient) SessionMode(
+	ctx context.Context,
+	sessionID string,
+) (string, bool) {
+	status, body, ok := c.request(ctx, "/api/1.0/sessions", nil)
+	if !ok || status != http.StatusOK {
+		return "", false
+	}
+	var sessions []struct {
+		ID   string `json:"id"`
+		Mode string `json:"mode"`
+	}
+	if err := json.Unmarshal(body, &sessions); err != nil {
+		return "", false
+	}
+	for _, session := range sessions {
+		if session.ID == sessionID {
+			return session.Mode, true
+		}
+	}
+	return "", false
+}
+
 func (c *claudeWrapperClient) resumeSession(
 	ctx context.Context,
 	sessionID string,

@@ -381,6 +381,16 @@ func (c *paneCarrier) resolveDeliveryPane(
 //
 // ⚠️ `no-pane` is not `refuse`. A pane-less live session attempted nothing and
 // failed at nothing; minting a delivery-failure card for it is noise, not news.
+//
+// ⚠️ Nor is a REAPED headless worker a refusal. `processAlive` used to gate the
+// whole no-pane route, so a headless `sdk-cli` worker whose process had exited —
+// the idle-reaper's normal outcome, and the population this route exists to
+// serve — fell through to `DeliveryRefuse` and its answered card settled as
+// `failed`. The headless arm, which knows how to resume an exited session, was
+// never reached. Measured 2026-11-16 on a real reap: item
+// `769012965d59bf26d9f72f414b95368a`, session `46e673cf`, answered at 08:23:56Z
+// and logged `verdict=failed reason="session 46e673cf has no live process with
+// a tty"` with no `action=headless` line at all.
 func (c *paneCarrier) noPaneVerdict(
 	ctx context.Context,
 	sessionID string,
@@ -388,9 +398,15 @@ func (c *paneCarrier) noPaneVerdict(
 ) (DeliveryVerdict, int, string) {
 	entry, ok := c.writer.SessionEntry(ctx, sessionID)
 	if ok && strings.EqualFold(strings.TrimSpace(entry.Entrypoint), "sdk-cli") &&
-		processAlive(entry.PID) && c.writer.SessionTTY(ctx, sessionID) == "" {
+		c.writer.SessionTTY(ctx, sessionID) == "" {
+		if processAlive(entry.PID) {
+			return DeliveryNoPane, 0,
+				"session " + shortID(sessionID) + " is pane-less — no pane by construction"
+		}
+		// Exited but still resumable: the answer goes to the headless arm, which
+		// resumes the session before writing the turn.
 		return DeliveryNoPane, 0,
-			"session " + shortID(sessionID) + " is pane-less — no pane by construction"
+			"session " + shortID(sessionID) + " is pane-less and its process exited — resumable"
 	}
 	if ok && !processAlive(entry.PID) && c.transcripts.TurnEnded(sessionID) {
 		return DeliveryRefuse, 0,
