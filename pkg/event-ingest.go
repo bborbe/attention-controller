@@ -301,68 +301,84 @@ func (j *eventIngestJob) ingestFile(
 			counts.advanced = true
 			continue
 		}
-		forwarded, err := j.forward(ctx, entry.record)
-		if err != nil {
-			// ⚠️ A PERMANENT failure must not pin the cursor. A record the sink
-			// can never accept — a push request the schema refuses — would
-			// otherwise be re-read and re-pushed every two seconds for the life
-			// of the file. Measured 2026-11-16 on a8719677: one record whose
-			// options carried three `recommended` flags made the ingest the
-			// process's largest CPU consumer while forwarding nothing.
-			//
-			// A transient failure still retries, and that asymmetry is the
-			// point: a store outage must not advance a cursor past work that has
-			// not landed, so only an error the sink itself declares permanent is
-			// skipped past.
-			if isPermanentIngestError(err) {
-				// ⚠️ The quarantine write is LOAD-BEARING, not best-effort. If the
-				// record cannot be persisted, the cursor does not move and this
-				// record is retried next pass — advancing past a record with no
-				// durable record of why is exactly the silent loss the task
-				// forbids, and a log line is not a record (it rotates, and its
-				// volume is the symptom the skip relieves).
-				quarantineErr := j.recordQuarantine(ctx, root, eventIngestQuarantineEntry{
-					File:   name,
-					ItemID: entry.record.ItemID,
-					Start:  entry.start,
-					After:  entry.after,
-					// The reason is the sink's own error text, read HERE at
-					// runtime — never a literal the caller typed — so it names the
-					// actual rejection the store gave.
-					Reason: err.Error(),
-				})
-				if quarantineErr != nil {
-					return counts, quarantineErr
-				}
-				cursors.Offsets[name] = entry.after
-				counts.advanced = true
-				counts.skipped++
-				glog.Warningf(
-					"job=attention-watcher action=ingest_skip_invalid file=%s item=%s error=%v",
-					name,
-					entry.record.ItemID,
-					err,
-				)
-				continue
-			}
-			// The cursor stays where it was, so the next pass re-reads this
-			// record instead of skipping it.
+		if err := j.ingestRecord(ctx, root, name, entry, cursors, &counts); err != nil {
 			return counts, err
-		}
-		if !forwarded {
-			counts.skipped++
-		} else if entry.record.Open {
-			counts.opened++
-		} else {
-			counts.closed++
-		}
-		cursors.Offsets[name] = entry.after
-		counts.advanced = true
-		if entry.record.TS != nil {
-			cursors.Marks[name] = maxFloat(cursors.Marks[name], *entry.record.TS)
 		}
 	}
 	return counts, nil
+}
+
+// ingestRecord forwards one record and records what happened to it.
+//
+// It is split out of ingestFile so the permanent-skip decision and the
+// quarantine write do not nest four deep inside the file loop — the shape that
+// made ingestFile's cognitive complexity climb past the linter's limit.
+func (j *eventIngestJob) ingestRecord(
+	ctx context.Context,
+	root *os.Root,
+	name string,
+	entry eventRecordAt,
+	cursors *eventIngestCursors,
+	counts *ingestCounts,
+) error {
+	forwarded, err := j.forward(ctx, entry.record)
+	if err != nil {
+		// ⚠️ A PERMANENT failure must not pin the cursor. A record the sink can
+		// never accept — a push request the schema refuses — would otherwise be
+		// re-read and re-pushed every two seconds for the life of the file.
+		// Measured 2026-11-16 on a8719677: one record whose options carried three
+		// `recommended` flags made the ingest the process's largest CPU consumer
+		// while forwarding nothing.
+		//
+		// A transient failure still retries, and that asymmetry is the point: a
+		// store outage must not advance a cursor past work that has not landed, so
+		// only an error the sink itself declares permanent is skipped past.
+		if !isPermanentIngestError(err) {
+			// The cursor stays where it was, so the next pass re-reads this
+			// record instead of skipping it.
+			return err
+		}
+		// ⚠️ The quarantine write is LOAD-BEARING, not best-effort. If the record
+		// cannot be persisted, the cursor does not move and this record is retried
+		// next pass — advancing past a record with no durable record of why is
+		// exactly the silent loss the task forbids, and a log line is not a record
+		// (it rotates, and its volume is the symptom the skip relieves).
+		if qErr := j.recordQuarantine(ctx, root, eventIngestQuarantineEntry{
+			File:   name,
+			ItemID: entry.record.ItemID,
+			Start:  entry.start,
+			After:  entry.after,
+			// The reason is the sink's own error text, read HERE at runtime —
+			// never a literal the caller typed — so it names the actual rejection
+			// the store gave.
+			Reason: err.Error(),
+		}); qErr != nil {
+			return qErr
+		}
+		cursors.Offsets[name] = entry.after
+		counts.advanced = true
+		counts.skipped++
+		glog.Warningf(
+			"job=attention-watcher action=ingest_skip_invalid file=%s item=%s error=%v",
+			name,
+			entry.record.ItemID,
+			err,
+		)
+		return nil
+	}
+	if !forwarded {
+		counts.skipped++
+	} else if entry.record.Open {
+		counts.opened++
+	} else {
+		counts.closed++
+	}
+	cursors.Offsets[name] = entry.after
+	counts.advanced = true
+	if entry.record.TS != nil {
+		cursors.Marks[name] = maxFloat(cursors.Marks[name], *entry.record.TS)
+	}
+	return nil
 }
 
 // forward hands one record to the sink, reporting whether it was forwarded.
