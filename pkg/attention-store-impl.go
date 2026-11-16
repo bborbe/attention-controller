@@ -38,6 +38,9 @@ func NewAttentionStore(
 		openIndex:    libkv.NewStoreTx[string, Item](attentionOpenIndexBucketName),
 		historyIndex: libkv.NewStoreTx[string, Item](attentionHistoryIndexBucketName),
 		dedupIndex:   libkv.NewStoreTx[string, Item](attentionDedupIndexBucketName),
+		answeredIndex: libkv.NewStoreTx[string, Item](
+			attentionAnsweredIndexBucketName,
+		),
 		attempts: libkv.NewStoreTx[string, DeliveryAttempt](
 			deliveryAttemptBucketName,
 		),
@@ -66,6 +69,7 @@ type attentionStore struct {
 	openIndex              libkv.StoreTx[string, Item]
 	historyIndex           libkv.StoreTx[string, Item]
 	dedupIndex             libkv.StoreTx[string, Item]
+	answeredIndex          libkv.StoreTx[string, Item]
 	attempts               libkv.StoreTx[string, DeliveryAttempt]
 	attemptCounts          libkv.StoreTx[string, DeliveryAttemptCount]
 	parks                  libkv.StoreTx[string, DeliveryPark]
@@ -381,7 +385,19 @@ func (a *attentionStore) read(ctx context.Context, includeAnswered bool) (Items,
 		// because the rule is about what the BOARD renders: Read never keeps an
 		// answered item, so it has no sibling to match against and a consumer
 		// acting on the store must keep seeing exactly what it saw before.
-		kept = suppressAnsweredTwins(kept)
+		//
+		// ⚠️ It is a METHOD now, not a pure function over `kept`, because the
+		// record it consults is the durable answered index rather than the items
+		// this read happened to decode. A swept twin is closed and therefore
+		// absent from `kept` entirely, so the old in-memory set could never see
+		// it. See attention-store-answered-twins.go.
+		if err := a.ensureAnsweredIndex(ctx); err != nil {
+			return nil, err
+		}
+		kept, err = a.suppressAnsweredTwins(ctx, kept)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	if err := a.pruneExpired(ctx, expired); err != nil {
@@ -390,84 +406,8 @@ func (a *attentionStore) read(ctx context.Context, includeAnswered bool) (Items,
 	return kept, nil
 }
 
-// askIdentity is what two pushes must share to be the same ask: the producer,
-// the dedup key AND the payload.
-//
-// ⚠️ Payload is part of it, and that is the fix. The dedup key is the
-// producer's own claim that two pushes are one ask, and a producer can reuse a
-// key for a genuinely new question. The session-keyed form cannot produce a
-// distinct key at all — `compact-approval:<session-id>` is the same string for
-// every ask that session ever raises — so matching on the key alone withheld
-// questions the operator had never been shown, which is the defect this task
-// exists to remove (reported 2026-10-18: a card present in the store as `open`,
-// returned by `GET /api/1.0/attention`, and rendered nowhere on the board).
-//
-// ⚠️ The measured population says payload identity separates the two cases
-// cleanly rather than merely in principle. Re-derived against the live store on
-// 2026-10-18, the real re-raises are byte-identical to their answered twin in
-// payload, context, options, interrupt_class, answer_mechanism and
-// liveness_ref — only `expires_at` differs, because it is recomputed at push
-// time. So a redundant re-raise still matches, and a changed question does not.
-func askIdentity(item Item) string {
-	return item.ProducerID.String() + "\x00" + item.DedupKey.String() + "\x00" + item.Payload.String()
-}
-
-// suppressAnsweredTwins drops an open item whose ask has already been answered.
-//
-// ⚠️ The store's duplicate suppression is OPEN-SCOPED: updateExistingIfLive
-// collapses a dedup_key only while the matching item is still open, so once an
-// ask is answered the producer's next push of the SAME key finds nothing to
-// collapse against and writes a new row. That row then rendered as a fresh
-// prompt and the operator had to answer the same question again — reported
-// 2026-09-28 and measured the same day: 710 (producer_id, dedup_key) groups
-// held more than one row, 26 of them with two or more answered rows, and one
-// ask was answered three times (21:59→22:06, 23:10→05:13, 05:50→05:53).
-//
-// The board is the surface that charges that cost, so the board's own read is
-// where it is refused.
-//
-// ⚠️ The row is DROPPED, not dimmed. The answered sibling is kept by this same
-// read and already renders as the dimmed record of the answer, so a second
-// record of one ask would state it twice.
-//
-// ⚠️ This is deliberately NOT a change to the store's suppression rule. That
-// rule is the schema's, owned by [[Attention Item Schema]], and the store still
-// writes the second row — only ReadBoard's view is narrowed, and only for the
-// board. Read, and every consumer acting on the store, is untouched.
-//
-// ⚠️ Answered siblings only, never closed ones. § Answer routing rules that a
-// close is a clear and not an answer, so a cleared ask has NOT been answered
-// and re-raising it is legitimate. The distinction is load-bearing rather than
-// cosmetic: the measured population is dominated by closed pairs (665) over
-// answered ones (26), and suppressing on a close would silently drop re-raises
-// the operator never answered.
-//
-// ⚠️ The match is on askIdentity, not on the key alone. A row that reuses a key
-// for a DIFFERENT question is a new ask and is rendered: withholding it would
-// hide a gate the operator was never shown, which is the defect, not the cure.
-// The row it is withheld for is closed by closeRedundantReraises, so it stops
-// being `open` rather than lingering as an invisible one.
-func suppressAnsweredTwins(items Items) Items {
-	answered := make(map[string]struct{}, len(items))
-	for _, item := range items {
-		if item.State == AnsweredState {
-			answered[askIdentity(item)] = struct{}{}
-		}
-	}
-	if len(answered) == 0 {
-		return items
-	}
-	kept := make(Items, 0, len(items))
-	for _, item := range items {
-		if item.State == OpenState {
-			if _, ok := answered[askIdentity(item)]; ok {
-				continue
-			}
-		}
-		kept = append(kept, item)
-	}
-	return kept
-}
+// askIdentity, the durable answered record and the board's re-raise refusal
+// live in attention-store-answered-twins.go.
 
 // storedItem is an item together with the key it is stored under, so a prune
 // removes exactly the key the scan enumerated rather than one rebuilt from the
@@ -524,17 +464,8 @@ func (a *attentionStore) putItem(ctx context.Context, tx libkv.Tx, item Item) er
 		// one-time; the alternative, marking on any write, would mark an index
 		// built that had never seen the pre-existing items, and the read would
 		// silently under-return.
-		if err := a.liveIndex.Add(ctx, tx, liveIndexMarkerKey, Item{}); err != nil {
-			return errors.Wrap(ctx, err, "mark live index built failed")
-		}
-		// All three markers, for the reason above: a store with no items bucket
-		// held no items, so every index this same call maintains is complete by
-		// construction.
-		if err := a.openIndex.Add(ctx, tx, openIndexMarkerKey, Item{}); err != nil {
-			return errors.Wrap(ctx, err, "mark open index built failed")
-		}
-		if err := a.dedupIndex.Add(ctx, tx, dedupIndexMarkerKey, Item{}); err != nil {
-			return errors.Wrap(ctx, err, "mark dedup index built failed")
+		if err := a.markIndexesBuilt(ctx, tx); err != nil {
+			return err
 		}
 	}
 	return a.reconcileIndexes(ctx, tx, item, previous)
