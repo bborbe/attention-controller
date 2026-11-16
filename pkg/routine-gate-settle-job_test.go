@@ -161,12 +161,13 @@ var _ = Describe("routine gate settle job", func() {
 		policy = &fakePolicy{rule: "path-outside-workspace:Read", allowed: false}
 		job = pkg.NewRoutineGateSettleJob(store, wrapper, policy, sessions, time.Hour, clock)
 		store.ReadReturns(pkg.Items{permissionItem("item-1")}, nil)
-		store.DeliveryAttemptsReturns(map[pkg.ItemID]pkg.DeliveryAttempt{
+		heldAt := clock.Now()
+		store.DeliveryReportsReturns(map[pkg.ItemID]*pkg.DeliveryReport{
 			"item-1": {
 				ItemID:      pkg.ItemID("item-1"),
+				Status:      pkg.HeldStatus,
 				Carrier:     "path-outside-workspace:Read",
-				Outcome:     pkg.HeldOutcome,
-				AttemptedAt: clock.Now(),
+				AttemptedAt: &heldAt,
 			},
 		}, nil)
 
@@ -179,12 +180,13 @@ var _ = Describe("routine gate settle job", func() {
 		policy = &fakePolicy{rule: "path-outside-workspace:Read", allowed: false}
 		job = pkg.NewRoutineGateSettleJob(store, wrapper, policy, sessions, time.Hour, clock)
 		store.ReadReturns(pkg.Items{permissionItem("item-1")}, nil)
-		store.DeliveryAttemptsReturns(map[pkg.ItemID]pkg.DeliveryAttempt{
+		heldAt := clock.Now()
+		store.DeliveryReportsReturns(map[pkg.ItemID]*pkg.DeliveryReport{
 			"item-1": {
 				ItemID:      pkg.ItemID("item-1"),
+				Status:      pkg.HeldStatus,
 				Carrier:     "path-outside-workspace:Read",
-				Outcome:     pkg.HeldOutcome,
-				AttemptedAt: clock.Now(),
+				AttemptedAt: &heldAt,
 			},
 		}, nil)
 		clock.SetNow(

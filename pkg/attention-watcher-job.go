@@ -158,10 +158,13 @@ func (j *attentionWatcherJob) deliverable(
 		if attempt.EffectiveOutcome() == DeliveredOutcome {
 			return false
 		}
-		// ⚠️ A failed attempt is retried, but not on the next tick. See
-		// AttentionDeliveryRetryBackoff: without this gate a card that can never
-		// be carried is re-attempted every two seconds for the life of the
+		// ⚠️ A failure THIS ARM recorded is retried, but not on the next tick.
+		// See AttentionDeliveryRetryBackoff: without this gate a card that can
+		// never be carried is re-attempted every two seconds for the life of the
 		// process, and each attempt is a durable write that wakes the board.
+		// `retryDue` applies only to this arm's own carrier, so another arm's
+		// record — a settle arm's HeldOutcome on a still-open gate — never delays
+		// the operator's answer.
 		if !j.retryDue(attempt) {
 			return false
 		}
@@ -239,10 +242,21 @@ func (j *attentionWatcherJob) recordAttempt(
 // retryDue reports whether enough time has passed since this item's last attempt
 // for another one to be worth making.
 //
+// ⚠️ Only THIS arm's own failure backs off. An attempt recorded by another arm
+// says nothing about whether this one can carry the answer, and gating on it
+// withheld a real delivery: the routine-gate settle arm records a HeldOutcome
+// while the gate is still OPEN, so once the operator answered, this arm found a
+// recent non-delivered record and sat on the answer for up to the whole backoff.
+// A held or failed record from any other carrier therefore reads as "no attempt
+// by me yet" and delivers immediately.
+//
 // ⚠️ It reads the EFFECTIVE attempt time, not the raw one, for the same reason
 // the delivery report does: a settlement that landed after a later redundant
 // write is the fact that decides whether the answer is already carried.
 func (j *attentionWatcherJob) retryDue(attempt DeliveryAttempt) bool {
+	if attempt.EffectiveCarrier() != attentionWatcherCarrier {
+		return true
+	}
 	last := attempt.EffectiveAttemptedAt().Time()
 	return !j.currentDateTimeGetter.Now().Time().Before(last.Add(AttentionDeliveryRetryBackoff))
 }

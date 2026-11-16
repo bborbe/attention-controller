@@ -5,9 +5,12 @@
 package pkg
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 
+	"github.com/bborbe/errors"
+	"github.com/bborbe/validation"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -73,5 +76,26 @@ var _ = Describe("readRootFileFrom", func() {
 		Expect(err).To(BeNil())
 		Expect(start).To(Equal(int64(0)))
 		Expect(string(content)).To(Equal("one\ntwo\n"))
+	})
+})
+
+// isPermanentIngestError is the gate that decides whether the cursor may move
+// past a record. Getting it wrong in one direction re-reads and re-pushes a
+// record forever; in the other it silently drops work that could still land.
+var _ = Describe("isPermanentIngestError", func() {
+	It("treats the sink's own schema rejection as permanent", func() {
+		err := errors.Wrap(
+			context.Background(),
+			validation.Error,
+			"validate push request failed",
+		)
+		Expect(isPermanentIngestError(err)).To(BeTrue())
+	})
+
+	It("treats an unrecognised failure as retryable", func() {
+		// A store outage must never advance a cursor past work that has not
+		// landed, so anything that is not a declared validation failure retries.
+		err := errors.New(context.Background(), "store unavailable")
+		Expect(isPermanentIngestError(err)).To(BeFalse())
 	})
 })

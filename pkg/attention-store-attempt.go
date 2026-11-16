@@ -195,7 +195,10 @@ func (a *attentionStore) DeliveryReports(
 			// honours a caller that has gone away rather than holding the read
 			// transaction open for a render nobody is waiting for any more.
 			if err := ctx.Err(); err != nil {
-				return errors.Wrap(ctx, err, "delivery reports cancelled")
+				// ⚠️ Returned bare, not wrapped: this closure is wrapped once by
+				// the caller below, and wrapping here as well would stack two
+				// messages onto one failure.
+				return err
 			}
 			attempt, err := a.attempts.Get(ctx, tx, item.ItemID.String())
 			switch {
@@ -204,9 +207,7 @@ func (a *attentionStore) DeliveryReports(
 			case isNotFound(err):
 				reports[item.ItemID] = deriveDeliveryReport(&item, nil)
 			default:
-				return errors.Wrapf(
-					ctx, err, "get delivery attempt for %s failed", item.ItemID,
-				)
+				return err
 			}
 		}
 		return nil

@@ -220,4 +220,29 @@ var _ = Describe("attention watcher delivery job", func() {
 		Expect(job.DeliverOnce(context.Background())).To(Succeed())
 		Expect(carrier.calls).To(ConsistOf("item-1=allow"))
 	})
+
+	// ⚠️ The backoff is scoped to THIS arm's carrier, and this spec is why. The
+	// routine-gate settle arm records a HeldOutcome while the gate is still OPEN.
+	// When the operator then answers, a carrier-blind backoff found that recent
+	// non-delivered record and withheld the answer for up to five minutes.
+	It("delivers immediately when another arm holds a recent record for the card", func() {
+		clock := libtime.NewCurrentDateTime()
+		job = pkg.NewAttentionWatcherJob(
+			store, carrier, &fakeHeadlessDeliverer{}, time.Hour, clock,
+		)
+		store.DeliveryAttemptsReturns(map[pkg.ItemID]pkg.DeliveryAttempt{
+			"item-1": {
+				ItemID:      pkg.ItemID("item-1"),
+				Carrier:     "path-outside-workspace:Read",
+				Outcome:     pkg.HeldOutcome,
+				AttemptedAt: clock.Now(),
+			},
+		}, nil)
+		store.ReadBoardReturns(pkg.Items{
+			answeredItem("item-1", "operator", pkg.Decision("allow")),
+		}, nil)
+
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+		Expect(carrier.calls).To(ConsistOf("item-1=allow"))
+	})
 })

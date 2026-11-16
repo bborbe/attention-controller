@@ -124,18 +124,20 @@ func (j *routineGateSettleJob) SettleOnce(ctx context.Context) error {
 	if err != nil {
 		return errors.Wrap(ctx, err, "read open items failed")
 	}
-	// Read once for the whole cycle, not once per gate: the hold check below
-	// asks about every open item, and a per-item read would reintroduce the
-	// transaction-per-row cost this arm's own writes already pay for.
-	attempts, err := j.store.DeliveryAttempts(ctx)
+	// Read once for the whole cycle, and only for the items in hand. ⚠️ NOT
+	// DeliveryAttempts: that scans the whole attempts bucket, which has no delete
+	// path and so grows with every card the store has ever held — an unbounded
+	// read on a fixed two-second cadence. DeliveryReports does one transaction
+	// with one key lookup per open item instead.
+	reports, err := j.store.DeliveryReports(ctx, items)
 	if err != nil {
-		return errors.Wrap(ctx, err, "read delivery attempts failed")
+		return errors.Wrap(ctx, err, "read delivery reports failed")
 	}
 	for _, item := range items {
 		if err := ctx.Err(); err != nil {
 			return nil
 		}
-		j.settle(ctx, item, attempts)
+		j.settle(ctx, item, reports)
 	}
 	return nil
 }
@@ -144,7 +146,7 @@ func (j *routineGateSettleJob) SettleOnce(ctx context.Context) error {
 func (j *routineGateSettleJob) settle(
 	ctx context.Context,
 	item Item,
-	attempts map[ItemID]DeliveryAttempt,
+	reports map[ItemID]*DeliveryReport,
 ) {
 	if item.State != OpenState || item.AnswerMechanism != PermissionAnswerMechanism {
 		return
@@ -180,7 +182,7 @@ func (j *routineGateSettleJob) settle(
 		// refusal already on record under the same rule says nothing new. See
 		// RoutineGateHoldRepeatInterval: rewriting it every tick was a durable
 		// write per cycle whose only other effect was a full board re-render.
-		if j.holdRecorded(attempts, item, rule) {
+		if j.holdRecorded(reports, item, rule) {
 			return
 		}
 		j.recordAttempt(ctx, item, rule, HeldOutcome)
@@ -218,18 +220,18 @@ func (j *routineGateSettleJob) settle(
 // declined, and a policy that started declining for a new reason must be able
 // to say so.
 func (j *routineGateSettleJob) holdRecorded(
-	attempts map[ItemID]DeliveryAttempt,
+	reports map[ItemID]*DeliveryReport,
 	item Item,
 	rule string,
 ) bool {
-	attempt, ok := attempts[item.ItemID]
-	if !ok {
+	report, ok := reports[item.ItemID]
+	if !ok || report == nil || report.AttemptedAt == nil {
 		return false
 	}
-	if attempt.EffectiveOutcome() != HeldOutcome || attempt.EffectiveCarrier() != rule {
+	if report.Status != HeldStatus || report.Carrier != rule {
 		return false
 	}
-	last := attempt.EffectiveAttemptedAt().Time()
+	last := report.AttemptedAt.Time()
 	return j.currentDateTimeGetter.Now().Time().Before(last.Add(RoutineGateHoldRepeatInterval))
 }
 
