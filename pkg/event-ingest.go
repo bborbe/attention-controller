@@ -180,6 +180,7 @@ func (j *eventIngestJob) IngestOnce(ctx context.Context) error {
 
 	cursors := j.loadCursors(ctx, root)
 	opened, closed, skipped := 0, 0, 0
+	advanced := false
 	for _, name := range names {
 		if err := ctx.Err(); err != nil {
 			return nil
@@ -198,8 +199,16 @@ func (j *eventIngestJob) IngestOnce(ctx context.Context) error {
 		opened += counts.opened
 		closed += counts.closed
 		skipped += counts.skipped
+		advanced = advanced || counts.advanced
 	}
-	j.saveCursors(ctx, root, cursors)
+	// ⚠️ Written only when a cursor actually moved. The cursor file is the whole
+	// population — 6676 entries on 2026-11-16 — so rewriting it on every pass
+	// rewrote ~400 KB every two seconds to record that nothing had changed. A
+	// skipped write is safe because an unchanged cursor and an unwritten one are
+	// the same claim; the next pass that does advance writes the full set.
+	if advanced {
+		j.saveCursors(ctx, root, cursors)
+	}
 	glog.V(2).Infof(
 		"job=attention-watcher action=ingest files=%d opened=%d closed=%d skipped=%d",
 		len(names),
@@ -212,9 +221,10 @@ func (j *eventIngestJob) IngestOnce(ctx context.Context) error {
 
 // ingestCounts is what one file's pass did, for the cycle's log line.
 type ingestCounts struct {
-	opened  int
-	closed  int
-	skipped int
+	opened   int
+	closed   int
+	skipped  int
+	advanced bool
 }
 
 // eventRecordAt is one decoded record together with the byte offset AFTER it,
@@ -234,11 +244,15 @@ func (j *eventIngestJob) ingestFile(
 	cursors *eventIngestCursors,
 ) (ingestCounts, error) {
 	var counts ingestCounts
-	content, err := readRootFile(root, name)
+	content, start, err := readRootFileFrom(root, name, cursors.Offsets[name])
 	if err != nil {
 		return counts, err
 	}
-	records, rewound := readEventRecords(content, cursors.Offsets[name])
+	// A file SHORTER than its cursor has been truncated or replaced, and
+	// readRootFileFrom has already re-read it from the start. The settled-ts
+	// mark below is what tells a line already consumed from a genuine re-ask.
+	rewound := start < cursors.Offsets[name]
+	records := readEventRecords(content, start)
 	for _, entry := range records {
 		if err := ctx.Err(); err != nil {
 			return counts, nil
@@ -246,6 +260,7 @@ func (j *eventIngestJob) ingestFile(
 		if rewound && entry.record.TS != nil && *entry.record.TS <= cursors.Marks[name] {
 			// Settled already — a re-read, not a new event.
 			cursors.Offsets[name] = entry.after
+			counts.advanced = true
 			continue
 		}
 		forwarded, err := j.forward(ctx, entry.record)
@@ -262,6 +277,7 @@ func (j *eventIngestJob) ingestFile(
 			counts.closed++
 		}
 		cursors.Offsets[name] = entry.after
+		counts.advanced = true
 		if entry.record.TS != nil {
 			cursors.Marks[name] = maxFloat(cursors.Marks[name], *entry.record.TS)
 		}
@@ -302,16 +318,19 @@ func (j *eventIngestJob) forward(
 // case where the settled-`ts` guard applies. A torn final line is left: the hook
 // appends while this reads, so a partial line is expected rather than
 // exceptional.
-func readEventRecords(content []byte, offset int64) ([]eventRecordAt, bool) {
-	rewound := false
-	if int64(len(content)) < offset {
-		offset = 0
-		rewound = true
+// readEventRecords decodes the records in content, which begins at offset in the
+// file.
+//
+// ⚠️ offset is the base the returned `after` positions are measured from, not a
+// slice point: the caller has already read only the tail it needs (see
+// readRootFileFrom), so content starts at offset. The rewind decision lives in
+// the reader, which is the only place the file's size is known — this function
+// is handed a tail and has no way to tell a rewind from ordinary appending.
+func readEventRecords(content []byte, offset int64) []eventRecordAt {
+	if len(content) == 0 {
+		return nil
 	}
-	if int64(len(content)) == offset {
-		return nil, rewound
-	}
-	reader := bufio.NewReader(bytes.NewReader(content[offset:]))
+	reader := bufio.NewReader(bytes.NewReader(content))
 	records := make([]eventRecordAt, 0)
 	consumed := offset
 	for {
@@ -327,7 +346,7 @@ func readEventRecords(content []byte, offset int64) ([]eventRecordAt, bool) {
 		}
 		records = append(records, eventRecordAt{record: record, after: consumed})
 	}
-	return records, rewound
+	return records
 }
 
 // decodeEventRecord decodes one line, reporting false for a line that carries
@@ -456,6 +475,62 @@ func readRootFile(root *os.Root, name string) ([]byte, error) {
 		return nil, closeErr
 	}
 	return content, nil
+}
+
+// readRootFileFrom reads name from offset to the end of the file, and reports
+// where the returned content begins.
+//
+// ⚠️ This is what keeps a pass over an unchanged log cheap, and it is the whole
+// reason the ingest is affordable. The job tails EVERY event log every two
+// seconds; on 2026-11-16 that was 6676 files and 162 MB, and reading each one in
+// full to discover that nothing had been appended cost 55% of the process's
+// allocation and 17% of its CPU. A file already at its cursor now costs one
+// open, one stat and one close.
+//
+// The returned start is not always the offset asked for: a file SHORTER than
+// offset has been truncated or replaced, and is re-read from 0 with start 0. The
+// caller detects that rewind by comparing start against its own cursor, and
+// applies the settled-`ts` mark to the lines it re-reads. Empty content with
+// start == offset means nothing was appended.
+func readRootFileFrom(root *os.Root, name string, offset int64) ([]byte, int64, error) {
+	handle, err := root.Open(name)
+	if err != nil {
+		return nil, offset, err
+	}
+	info, statErr := handle.Stat()
+	if statErr != nil {
+		_ = handle.Close()
+		return nil, offset, statErr
+	}
+	size := info.Size()
+	if size < offset {
+		offset = 0
+	}
+	if size == offset {
+		if closeErr := handle.Close(); closeErr != nil {
+			return nil, offset, closeErr
+		}
+		return nil, offset, nil
+	}
+	if offset > 0 {
+		if _, seekErr := handle.Seek(offset, io.SeekStart); seekErr != nil {
+			_ = handle.Close()
+			return nil, offset, seekErr
+		}
+	}
+	// Sized from the stat so the common case — a handful of appended lines —
+	// allocates once instead of growing a buffer by doubling. A file that grows
+	// between the stat and the read simply appends past the capacity, which
+	// bytes.Buffer grows into.
+	buffer := bytes.NewBuffer(make([]byte, 0, size-offset))
+	if _, readErr := buffer.ReadFrom(handle); readErr != nil {
+		_ = handle.Close()
+		return nil, offset, readErr
+	}
+	if closeErr := handle.Close(); closeErr != nil {
+		return nil, offset, closeErr
+	}
+	return buffer.Bytes(), offset, nil
 }
 
 // maxFloat returns the larger of two values, used to keep a file's settled mark

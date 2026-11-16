@@ -58,7 +58,9 @@ var _ = Describe("attention watcher delivery job", func() {
 		store.DeliveryAttemptsReturns(map[pkg.ItemID]pkg.DeliveryAttempt{}, nil)
 		store.RecordAttemptReturns(&pkg.DeliveryAttempt{}, nil)
 		carrier = &recordingCarrier{verdict: pkg.DeliveryOK}
-		job = pkg.NewAttentionWatcherJob(store, carrier, &fakeHeadlessDeliverer{}, time.Hour)
+		job = pkg.NewAttentionWatcherJob(
+			store, carrier, &fakeHeadlessDeliverer{}, time.Hour, libtime.NewCurrentDateTime(),
+		)
 	})
 
 	It("carries an answered permission card and records delivered", func() {
@@ -140,7 +142,9 @@ var _ = Describe("attention watcher delivery job", func() {
 		// reports `no-pane`, and before the headless arm existed that answer was
 		// dropped with no record at all.
 		headless := &fakeHeadlessDeliverer{terminal: true}
-		job = pkg.NewAttentionWatcherJob(store, carrier, headless, time.Hour)
+		job = pkg.NewAttentionWatcherJob(
+			store, carrier, headless, time.Hour, libtime.NewCurrentDateTime(),
+		)
 		carrier.verdict = pkg.DeliveryNoPane
 		store.ReadBoardReturns(pkg.Items{
 			answeredItem("item-1", "operator", pkg.Decision("allow")),
@@ -157,12 +161,63 @@ var _ = Describe("attention watcher delivery job", func() {
 		// A tab session's answer still goes through the carrier: the headless arm
 		// must not take a card that has a pane.
 		headless := &fakeHeadlessDeliverer{terminal: true}
-		job = pkg.NewAttentionWatcherJob(store, carrier, headless, time.Hour)
+		job = pkg.NewAttentionWatcherJob(
+			store, carrier, headless, time.Hour, libtime.NewCurrentDateTime(),
+		)
 		store.ReadBoardReturns(pkg.Items{
 			answeredItem("item-1", "operator", pkg.Decision("allow")),
 		}, nil)
 		Expect(job.DeliverOnce(context.Background())).To(Succeed())
 		Expect(carrier.calls).To(ConsistOf("item-1=allow"))
 		Expect(headless.calls).To(BeEmpty())
+	})
+
+	// The backoff pair. A card that could not be carried used to be re-attempted
+	// on every tick for the life of the process: `failed` is not terminal, so
+	// `deliverable` stayed true. On 2026-11-16 that was ~20 refusals a second
+	// across ~40 stuck cards, each one a durable write that also woke the board.
+	It("does not re-attempt a card that failed inside the retry backoff", func() {
+		clock := libtime.NewCurrentDateTime()
+		job = pkg.NewAttentionWatcherJob(
+			store, carrier, &fakeHeadlessDeliverer{}, time.Hour, clock,
+		)
+		store.DeliveryAttemptsReturns(map[pkg.ItemID]pkg.DeliveryAttempt{
+			"item-1": {
+				ItemID:      pkg.ItemID("item-1"),
+				Carrier:     "watcher:attention-watcher",
+				Outcome:     pkg.FailedOutcome,
+				AttemptedAt: clock.Now(),
+			},
+		}, nil)
+		store.ReadBoardReturns(pkg.Items{
+			answeredItem("item-1", "operator", pkg.Decision("allow")),
+		}, nil)
+
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+		Expect(carrier.calls).To(BeEmpty())
+	})
+
+	It("re-attempts a failed card once the retry backoff has passed", func() {
+		clock := libtime.NewCurrentDateTime()
+		job = pkg.NewAttentionWatcherJob(
+			store, carrier, &fakeHeadlessDeliverer{}, time.Hour, clock,
+		)
+		store.DeliveryAttemptsReturns(map[pkg.ItemID]pkg.DeliveryAttempt{
+			"item-1": {
+				ItemID:      pkg.ItemID("item-1"),
+				Carrier:     "watcher:attention-watcher",
+				Outcome:     pkg.FailedOutcome,
+				AttemptedAt: clock.Now(),
+			},
+		}, nil)
+		store.ReadBoardReturns(pkg.Items{
+			answeredItem("item-1", "operator", pkg.Decision("allow")),
+		}, nil)
+		clock.SetNow(
+			clock.Now().Add(libtime.Duration(pkg.AttentionDeliveryRetryBackoff + time.Second)),
+		)
+
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+		Expect(carrier.calls).To(ConsistOf("item-1=allow"))
 	})
 })

@@ -311,6 +311,16 @@ func (f *federatingAttentionStore) DeliveryAttempts(
 	return f.local.DeliveryAttempts(ctx)
 }
 
+// DeliveryReports delegates to the LOCAL store only, on the same rule
+// DeliveryAttempts follows: a peer's attempt is not this store's measurement, so
+// a card federated from upstream renders its delivery stage as absent.
+func (f *federatingAttentionStore) DeliveryReports(
+	ctx context.Context,
+	items Items,
+) (map[ItemID]*DeliveryReport, error) {
+	return f.local.DeliveryReports(ctx, items)
+}
+
 // isRemote reports whether the peer, rather than the local store, owns this
 // item.
 //

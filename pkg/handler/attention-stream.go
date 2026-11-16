@@ -418,6 +418,9 @@ func (a *attentionStreamHandler) render(ctx context.Context) (map[string]string,
 		return nil, errors.Wrap(ctx, err, "read failed")
 	}
 	provenances := a.provenance.Resolve(ctx, items)
+	// Derived for the whole board in one read, not one read per row: this
+	// render runs several times a second over every item the board holds.
+	reports := deliveryReportsOf(ctx, a.store, items)
 	// ⚠️ No token is read here either: the stream's rows must render exactly as
 	// the page's do, and the page's Jump button is now gated on the pane alone.
 	rendered := make(map[string]string, len(items))
@@ -425,7 +428,7 @@ func (a *attentionStreamHandler) render(ctx context.Context) (map[string]string,
 		row := newAttentionPageRow(
 			item,
 			provenances[item.ItemID],
-			deliveryReportOf(ctx, a.store, item.ItemID),
+			reports[item.ItemID],
 			a.speakEnabled,
 			a.vaultName,
 		)
