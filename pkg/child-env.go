@@ -13,7 +13,7 @@ import (
 // inherits.
 //
 // ⚠️ It is an allowlist, never os.Environ(). This service's environment carries
-// ATTENTION_STORE_TOKEN and ATTENTION_UPSTREAM_TOKEN, and every job here spawns a
+// ATTENTION_STORE_TOKEN, and every job here spawns a
 // child on a timer — ~60 an hour across the five jobs. Handing a child the whole
 // environment copies both service credentials into a short-lived process that
 // has no use for either, and turns every child's crash dump, its argv and any

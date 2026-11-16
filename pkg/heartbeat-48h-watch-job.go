@@ -756,8 +756,8 @@ func (l *kubectlHeartbeatJobLister) List(ctx context.Context) ([]HeartbeatJob, e
 		"json",
 	)
 	// ⚠️ An allowlisted environment plus this job's own KUBECONFIG, never the
-	// inherited one: this service holds ATTENTION_STORE_TOKEN and
-	// ATTENTION_UPSTREAM_TOKEN, and kubectl needs neither. The kubeconfig is
+	// inherited one: this service holds ATTENTION_STORE_TOKEN, and kubectl does
+	// not need it. The kubeconfig is
 	// passed as the extra pair so it overrides rather than sits beside an
 	// inherited value.
 	cmd.Env = childEnv(heartbeat48hKubeconfigEnv + "=" + l.kubeconfigPath)

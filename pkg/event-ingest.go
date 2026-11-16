@@ -187,6 +187,13 @@ func (j *eventIngestJob) IngestOnce(ctx context.Context) error {
 			return nil
 		}
 		counts, err := j.ingestFile(ctx, root, name, cursors)
+		// ⚠️ Accumulated BEFORE the error check, not after it. A file whose pass
+		// failed on one record has still advanced its cursor past the records
+		// before it — those effects landed — and dropping that advance would
+		// re-read and re-forward them on the next pass. The old unconditional
+		// save persisted it; this keeps that property while still skipping the
+		// write when nothing moved.
+		advanced = advanced || counts.advanced
 		if err != nil {
 			// The cursor for this file was not advanced past the failed
 			// record, so the next pass retries it rather than skipping it.
@@ -200,7 +207,6 @@ func (j *eventIngestJob) IngestOnce(ctx context.Context) error {
 		opened += counts.opened
 		closed += counts.closed
 		skipped += counts.skipped
-		advanced = advanced || counts.advanced
 	}
 	// ⚠️ Written only when a cursor actually moved. The cursor file is the whole
 	// population — 6676 entries on 2026-11-16 — so rewriting it on every pass

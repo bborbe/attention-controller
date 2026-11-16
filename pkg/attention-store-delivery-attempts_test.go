@@ -202,4 +202,21 @@ var _ = Describe("Delivery reports bulk read", func() {
 		Expect(reports[delivered.ItemID].Status).To(Equal(pkg.DeliveredStatus))
 		Expect(reports[untouched.ItemID].Status).To(Equal(pkg.NeverAttemptedStatus))
 	})
+
+	It("omits an item the local store does not hold, so a federated row renders no stage", func() {
+		attentionStore := store()
+		local := push(attentionStore, "gate-1")
+		remote := *local
+		remote.ItemID = pkg.ItemID("fed-from-peer-0000000000000000")
+
+		reports, err := attentionStore.DeliveryReports(ctx, pkg.Items{*local, remote})
+		Expect(err).To(BeNil())
+		Expect(reports).To(HaveLen(1))
+		// ⚠️ NO entry, never a fabricated `never_attempted`: a peer answered this
+		// card, so a status derived here would put a false undeliverable marker on
+		// every answered remote row. An absent entry makes the caller's lookup nil
+		// and renders the stage absent, exactly as Delivery's ErrItemNotFound did.
+		_, ok := reports[remote.ItemID]
+		Expect(ok).To(BeFalse())
+	})
 })

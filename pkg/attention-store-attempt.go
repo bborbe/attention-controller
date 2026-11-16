@@ -200,6 +200,19 @@ func (a *attentionStore) DeliveryReports(
 				// messages onto one failure.
 				return err
 			}
+			// ⚠️ An item the LOCAL store does not hold is a federated row: a peer
+			// answered it, no attempt was ever recorded here, and Delivery answers
+			// ErrItemNotFound for it. Deriving a report anyway would fabricate
+			// `never_attempted` and put a false undeliverable marker on every
+			// answered remote card, so no entry is written and the caller's lookup
+			// yields nil — the stage renders absent, exactly as it did through
+			// Delivery.
+			if _, err := a.store.Get(ctx, tx, item.ItemID.String()); err != nil {
+				if isNotFound(err) {
+					continue
+				}
+				return err
+			}
 			attempt, err := a.attempts.Get(ctx, tx, item.ItemID.String())
 			switch {
 			case err == nil:

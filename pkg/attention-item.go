@@ -176,9 +176,9 @@ type Item struct {
 	// "seen" call — never supplied by the caller, and first write wins, exactly as
 	// FlaggedAt and EscalatedAt are stamped.
 	//
-	// One value per item, recorded by the store that OWNS it: a card federated
-	// from an upstream store records nothing here, because writing it would write
-	// a peer's field. Absent on every item not rendered since the field existed.
+	// One value per item, recorded by the store that OWNS it: writing it would
+	// write a field this store does not own. Absent on every item not rendered
+	// since the field existed.
 	// See docs/attention-item-timeline.md.
 	DisplayedAt *libtime.DateTime `json:"displayed_at,omitempty"`
 

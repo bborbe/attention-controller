@@ -118,7 +118,7 @@ type application struct {
 	// SessionsDir and AttentionStateDir: an unset vault is a legitimate state,
 	// and defaulting it would point the board at a guessed path instead of
 	// simply rendering no task names.
-	VaultDir string `required:"false" arg:"vault-dir"              env:"VAULT_DIR"                usage:"directory holding the vault whose task files record the session each task belongs to (empty renders no task names)"`
+	VaultDir string `required:"false" arg:"vault-dir"              env:"VAULT_DIR"              usage:"directory holding the vault whose task files record the session each task belongs to (empty renders no task names)"`
 	// JumpListen is the address of the legacy pane-addressed jump listener.
 	//
 	// ⚠️ It is NOT the fleet-jump server's origin any more — that server is
@@ -132,7 +132,7 @@ type application struct {
 	// ⚠️ Empty disables the legacy listener entirely. That is the switch for the
 	// day the last consumer is re-pointed, and it is a configuration change
 	// rather than a code change on purpose.
-	JumpListen string `required:"false" arg:"jump-listen"            env:"JUMP_LISTEN"              usage:"address of the legacy pane-addressed jump listener (empty disables it)"                                                     default:"127.0.0.1:1337"`
+	JumpListen string `required:"false" arg:"jump-listen"            env:"JUMP_LISTEN"            usage:"address of the legacy pane-addressed jump listener (empty disables it)"                                                     default:"127.0.0.1:1337"`
 	// JumpTokenPath is the file holding the jump token the legacy pane-addressed
 	// route requires.
 	// Empty resolves to ~/.claude/secrets/jump-token, the same path
@@ -145,7 +145,7 @@ type application struct {
 	// rule, and the tag costs nothing but a less useful startup line. Both the
 	// local review funnel and the bot flagged the omission, and a tag that is
 	// correct for a credential-adjacent field is the cheaper default.
-	JumpTokenPath string `required:"false" arg:"jump-token-path"        env:"JUMP_TOKEN_PATH"          usage:"file holding the jump token the legacy pane-addressed jump route requires (empty resolves to ~/.claude/secrets/jump-token)"                                  display:"length"`
+	JumpTokenPath string `required:"false" arg:"jump-token-path"        env:"JUMP_TOKEN_PATH"        usage:"file holding the jump token the legacy pane-addressed jump route requires (empty resolves to ~/.claude/secrets/jump-token)"                                  display:"length"`
 	// AttentionStoreListen is the address of the second, cluster-reachable
 	// listener. It serves the business API only, and every request to it must
 	// carry the bearer token in AttentionStoreToken.
@@ -155,7 +155,7 @@ type application struct {
 	// has, and the store then serves exactly as it does today. It is logged
 	// rather than silent, so a client that stops reaching the store is traceable
 	// to the setting that disabled it instead of to a bug.
-	AttentionStoreListen string `required:"false" arg:"attention-store-listen" env:"ATTENTION_STORE_LISTEN"   usage:"address of the second listener serving the business API behind a bearer token (empty disables it)"`
+	AttentionStoreListen string `required:"false" arg:"attention-store-listen" env:"ATTENTION_STORE_LISTEN" usage:"address of the second listener serving the business API behind a bearer token (empty disables it)"`
 	// AttentionStoreToken is the bearer token every request to the second
 	// listener must present.
 	//
@@ -165,47 +165,15 @@ type application struct {
 	// ⚠️ Empty disables the second listener entirely — the store never serves
 	// the API unauthenticated on a non-loopback address. That is the
 	// fail-closed default, not a degenerate configuration.
-	AttentionStoreToken string `required:"false" arg:"attention-store-token"  env:"ATTENTION_STORE_TOKEN"    usage:"bearer token every request to the second listener must present (empty disables the listener)"                                                                display:"length"`
-	// AttentionUpstreamURL is the base URL of a PEER attention store whose open
-	// items this instance merges into its own board.
-	//
-	// ⚠️ Empty disables federation entirely, which is a supported configuration
-	// rather than a degenerate one: an instance with no peer serves exactly the
-	// board it serves today. It is logged rather than silent, so a card that
-	// stops appearing is traceable to the setting that disabled it instead of to
-	// a bug — the same switch AttentionStoreListen has.
-	//
-	// ⚠️ It is the peer's BUSINESS API listener — the bearer-gated one — not its
-	// board. The board listener renders HTML and is deliberately not exposed; the
-	// business API is the surface a token can gate.
-	AttentionUpstreamURL string `required:"false" arg:"attention-upstream-url" env:"ATTENTION_UPSTREAM_URL"   usage:"base URL of a peer attention store whose open items are merged into this instance's board (empty disables federation)"`
-	// AttentionUpstreamToken is the bearer token the peer's business API
-	// requires.
-	//
-	// ⚠️ A credential: never logged, never rendered. display:"length" makes
-	// argument.Parse()'s startup dump print this field's length rather than its
-	// value.
-	//
-	// ⚠️ There is deliberately NO arg: tag. Its sibling AttentionStoreToken has
-	// one, and the review of the change that added it flagged the consequence: an
-	// argv-passed token is readable in the process's ps output by every local
-	// user. This field has no operational need for a flag — the peer's address
-	// and token are configured together in the deployment — so it is env-only
-	// rather than repeating a known exposure for symmetry's sake.
-	//
-	// ⚠️ Empty disables federation, exactly as an empty URL does. The two halves
-	// are required TOGETHER: a URL with no token would call a gated API that
-	// answers 401, which is a configured-looking instance that silently federates
-	// nothing.
-	AttentionUpstreamToken string `required:"false"                              env:"ATTENTION_UPSTREAM_TOKEN" usage:"bearer token the peer attention store's business API requires (empty disables federation)"                                                                   display:"length"`
+	AttentionStoreToken string `required:"false" arg:"attention-store-token"  env:"ATTENTION_STORE_TOKEN"  usage:"bearer token every request to the second listener must present (empty disables the listener)"                                                                display:"length"`
 	// TTSURL is the tts server's base URL. Optional: with no value the
 	// read-aloud route is not registered and the page renders no read-aloud
 	// control, so a host without a tts server serves the same page minus one
 	// control rather than one that always fails.
-	TTSURL          string            `required:"false" arg:"tts-url"                env:"TTS_URL"                  usage:"base URL of the tts server the board's read-aloud control forwards to (empty disables it)"                                  default:"http://127.0.0.1:12000"`
-	BuildGitVersion string            `required:"false" arg:"build-git-version"      env:"BUILD_GIT_VERSION"        usage:"Build Git version"                                                                                                          default:"dev"`
-	BuildGitCommit  string            `required:"false" arg:"build-git-commit"       env:"BUILD_GIT_COMMIT"         usage:"Build Git commit hash"                                                                                                      default:"none"`
-	BuildDate       *libtime.DateTime `required:"false" arg:"build-date"             env:"BUILD_DATE"               usage:"Build timestamp (RFC3339)"`
+	TTSURL          string            `required:"false" arg:"tts-url"                env:"TTS_URL"                usage:"base URL of the tts server the board's read-aloud control forwards to (empty disables it)"                                  default:"http://127.0.0.1:12000"`
+	BuildGitVersion string            `required:"false" arg:"build-git-version"      env:"BUILD_GIT_VERSION"      usage:"Build Git version"                                                                                                          default:"dev"`
+	BuildGitCommit  string            `required:"false" arg:"build-git-commit"       env:"BUILD_GIT_COMMIT"       usage:"Build Git commit hash"                                                                                                      default:"none"`
+	BuildDate       *libtime.DateTime `required:"false" arg:"build-date"             env:"BUILD_DATE"             usage:"Build timestamp (RFC3339)"`
 }
 
 func (a *application) Run(ctx context.Context, sentryClient libsentry.Client) error {
@@ -241,21 +209,12 @@ func (a *application) Run(ctx context.Context, sentryClient libsentry.Client) er
 	// subscribe to it. Two instances would be a channel nothing writes to.
 	notifier := pkg.NewAttentionChangeNotifier()
 
-	// ⚠️ The federation wraps the NOTIFYING store, not the other way round, and
-	// the order is the whole of the correctness here. A write the federation
-	// proxies to the peer changes nothing locally, so it must not wake this
-	// instance's live views; with the notifier INSIDE the federation, a proxied
-	// answer leaves the local store untouched and signals nothing, which is
-	// exactly right. Reversed, every federated write would fire a board re-read
-	// for a store that did not move.
-	store := a.federate(pkg.NewNotifyingAttentionStore(rawStore, notifier))
+	// The notifier sits inside the store so a successful write signals it, and
+	// the board's live channel subscribes to the same instance.
+	store := pkg.NewNotifyingAttentionStore(rawStore, notifier)
 
 	// The stage-delta histogram is registered on the same default registry, and
-	// takes the process context so a cancelled process stops its reads. Its
-	// source is the FEDERATED store, deliberately: a federated card's attempts
-	// stay on its owning store, which is what makes this instance's
-	// answered→delivered a statement about this store's population rather than
-	// a merged one.
+	// takes the process context so a cancelled process stops its reads.
 	boardmetrics.NewStageDeltaCollector(
 		ctx,
 		prometheus.DefaultRegisterer,
@@ -268,29 +227,6 @@ func (a *application) Run(ctx context.Context, sentryClient libsentry.Client) er
 		a.createHTTPServer(sentryClient, db, store, notifier, boardMetrics, livenessChecker),
 	)
 
-}
-
-// federate wraps the store so a peer attention store's items are visible on
-// this instance's board, when a peer is configured.
-//
-// ⚠️ Both halves of the configuration are required together, and an empty
-// either way disables the whole thing rather than half of it. A URL with no
-// token would call a gated API that answers 401 — an instance that looks
-// configured and federates nothing — so the two are checked as one setting.
-//
-// ⚠️ It is logged when disabled, mirroring addAttentionStoreAPIListener, so a
-// card that stops appearing is traceable to the setting that disabled it
-// instead of to a bug. The URL is logged; the token never is.
-func (a *application) federate(store pkg.AttentionStore) pkg.AttentionStore {
-	if a.AttentionUpstreamURL == "" || a.AttentionUpstreamToken == "" {
-		glog.Warningf("attention federation disabled (upstream url or token is empty)")
-		return store
-	}
-	glog.V(2).Infof("attention federation enabled, reading peer at %s", a.AttentionUpstreamURL)
-	return pkg.NewFederatingAttentionStore(
-		store,
-		pkg.NewHTTPRemoteAttentionStore(a.AttentionUpstreamURL, a.AttentionUpstreamToken),
-	)
 }
 
 // createAttentionStore builds the attention store.

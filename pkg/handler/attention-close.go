@@ -108,18 +108,6 @@ func wrapItemError(ctx context.Context, err error, itemID pkg.ItemID, what strin
 			http.StatusNotFound,
 			map[string]any{"item_id": itemID.String()},
 		)
-	case errors.Is(err, pkg.ErrPeerUnavailable):
-		// ⚠️ Checked BEFORE the catch-all, and the order is load-bearing: this
-		// mapping is otherwise binary, so without this branch a failed peer call
-		// arrives as 409 VALIDATION_ERROR and reads as a malformed request —
-		// when in fact it is the one failure here that is NOT the caller's fault
-		// and IS worth retrying.
-		return libhttp.WrapWithDetails(
-			errors.Wrap(ctx, err, what),
-			pkg.ErrorCodePeerUnavailable,
-			http.StatusServiceUnavailable,
-			map[string]any{"item_id": itemID.String()},
-		)
 	case errors.Is(err, pkg.ErrPermissionCloseWithoutDecision):
 		return libhttp.WrapWithDetails(
 			errors.Wrap(ctx, err, what),
