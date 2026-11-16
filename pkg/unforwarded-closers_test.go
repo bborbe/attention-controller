@@ -223,7 +223,7 @@ var _ = Describe("UnforwardedClosers", func() {
 
 		store := &mocks.AttentionStore{}
 		recorder := &unforwardedLogRecorder{}
-		job := pkg.NewUnforwardedClosersJob(fixture.scanner(), store, time.Hour, recorder.Logf)
+		job := pkg.NewUnforwardedClosersJob(fixture.scanner(), store, nil, time.Hour, recorder.Logf)
 		job.RunOnce(context.Background())
 
 		Expect(store.PushCallCount()).To(Equal(0))
@@ -353,7 +353,7 @@ var _ = Describe("UnforwardedOutcome", func() {
 				TranscriptRoot: fixture.root,
 				Now:            unforwardedClock(),
 			})
-			job := pkg.NewUnforwardedClosersJob(scanner, nil, time.Hour, recorder.Logf)
+			job := pkg.NewUnforwardedClosersJob(scanner, nil, nil, time.Hour, recorder.Logf)
 
 			job.RunOnce(context.Background())
 
@@ -371,7 +371,13 @@ var _ = Describe("UnforwardedOutcome", func() {
 			fixture := newUnforwardedFixture()
 			fixture.openRow("s9", "iiiiiiii", "question", "", unforwardedNow-600, "Stop")
 			recorder := &unforwardedLogRecorder{}
-			job := pkg.NewUnforwardedClosersJob(fixture.scanner(), nil, time.Hour, recorder.Logf)
+			job := pkg.NewUnforwardedClosersJob(
+				fixture.scanner(),
+				nil,
+				nil,
+				time.Hour,
+				recorder.Logf,
+			)
 
 			job.RunOnce(context.Background())
 
@@ -395,7 +401,13 @@ var _ = Describe("UnforwardedPosting", func() {
 			store := &mocks.AttentionStore{}
 			store.PushReturns(&pkg.Item{ItemID: pkg.ItemID("card-1")}, nil)
 			recorder := &unforwardedLogRecorder{}
-			job := pkg.NewUnforwardedClosersJob(fixture.scanner(), store, time.Hour, recorder.Logf)
+			job := pkg.NewUnforwardedClosersJob(
+				fixture.scanner(),
+				store,
+				nil,
+				time.Hour,
+				recorder.Logf,
+			)
 
 			job.RunOnce(context.Background())
 
@@ -421,10 +433,85 @@ var _ = Describe("UnforwardedPosting", func() {
 		fixture := newUnforwardedFixture()
 		fixture.openRow("s11", "kkkkkkkk", "question", "", unforwardedNow-600, "Stop")
 		recorder := &unforwardedLogRecorder{}
-		job := pkg.NewUnforwardedClosersJob(fixture.scanner(), nil, time.Hour, recorder.Logf)
+		job := pkg.NewUnforwardedClosersJob(fixture.scanner(), nil, nil, time.Hour, recorder.Logf)
 
 		job.RunOnce(context.Background())
 
 		Expect(recorder.Lines()).To(HaveLen(1))
+	})
+})
+
+// The session-liveness filter on the mint site.
+//
+// ⚠️ The two halves are deliberately paired. The DEAD spec alone is satisfied by
+// an arm that mints nothing at all — a blanket disable also produces zero cards
+// for a dead session. The LIVE spec is the positive control that proves the arm
+// is still a recovery path: a gate from a session that is still running is
+// re-presented, because that session can still act on the answer. Measured
+// 2026-11-16: 601 cards from 112 sessions, of which the sampled exited ones
+// (2e074f82, e577041e, aa160ccd, 1d2c9896) had no registry entry and the live
+// ones (4314b3f3, 3052a109) did.
+var _ = Describe("UnforwardedDeadSession", func() {
+	It("mints a card for a LIVE session's unforwarded gate", func() {
+		fixture := newUnforwardedFixture()
+		fixture.openRow("live-session", "llllllll", "question", "", unforwardedNow-600, "Stop")
+		store := &mocks.AttentionStore{}
+		store.PushReturns(&pkg.Item{ItemID: pkg.ItemID("card-live")}, nil)
+		liveness := &mocks.SessionLivenessChecker{}
+		liveness.IsLiveReturns(true)
+		recorder := &unforwardedLogRecorder{}
+		job := pkg.NewUnforwardedClosersJob(
+			fixture.scanner(), store, liveness, time.Hour, recorder.Logf,
+		)
+
+		job.RunOnce(context.Background())
+
+		Expect(store.PushCallCount()).To(Equal(1))
+		_, sessionID := liveness.IsLiveArgsForCall(0)
+		Expect(sessionID).To(Equal("live-session"))
+	})
+
+	It("does not mint a card for a session that is no longer live", func() {
+		fixture := newUnforwardedFixture()
+		fixture.openRow("dead-session", "mmmmmmmm", "question", "", unforwardedNow-600, "Stop")
+		store := &mocks.AttentionStore{}
+		liveness := &mocks.SessionLivenessChecker{}
+		liveness.IsLiveReturns(false)
+		recorder := &unforwardedLogRecorder{}
+		job := pkg.NewUnforwardedClosersJob(
+			fixture.scanner(), store, liveness, time.Hour, recorder.Logf,
+		)
+
+		job.RunOnce(context.Background())
+
+		Expect(store.PushCallCount()).To(Equal(0))
+		lines := recorder.Lines()
+		// The scan line still reports the loss; the skip line names why it was
+		// not carded. Dropping the count too would hide the loss entirely.
+		Expect(lines).To(HaveLen(2))
+		Expect(lines[0]).To(ContainSubstring("action=scan scanned=1 unforwarded=1"))
+		Expect(lines[1]).To(ContainSubstring("action=skip_dead_session item=mmmmmmmm"))
+	})
+
+	It("cards a live session's gate and skips a dead one in the same scan", func() {
+		fixture := newUnforwardedFixture()
+		fixture.openRow("live-session", "nnnnnnnn", "question", "", unforwardedNow-600, "Stop")
+		fixture.openRow("dead-session", "oooooooo", "question", "", unforwardedNow-600, "Stop")
+		store := &mocks.AttentionStore{}
+		store.PushReturns(&pkg.Item{ItemID: pkg.ItemID("card-1")}, nil)
+		liveness := &mocks.SessionLivenessChecker{}
+		liveness.IsLiveStub = func(_ context.Context, sessionID string) bool {
+			return sessionID == "live-session"
+		}
+		recorder := &unforwardedLogRecorder{}
+		job := pkg.NewUnforwardedClosersJob(
+			fixture.scanner(), store, liveness, time.Hour, recorder.Logf,
+		)
+
+		job.RunOnce(context.Background())
+
+		Expect(store.PushCallCount()).To(Equal(1))
+		_, request := store.PushArgsForCall(0)
+		Expect(request.DedupKey).To(Equal(pkg.DedupKey("unforwarded:nnnnnnnn")))
 	})
 })

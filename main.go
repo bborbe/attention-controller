@@ -602,6 +602,7 @@ func (a *application) addUnforwardedClosersJob(
 	ctx context.Context,
 	runner run.ConcurrentRunner,
 	store pkg.AttentionStore,
+	liveness pkg.SessionLivenessChecker,
 ) {
 	stateDir := a.UnforwardedStateDir
 	if stateDir == "" {
@@ -627,11 +628,17 @@ func (a *application) addUnforwardedClosersJob(
 	// measurement this job exists to produce, and it is read from the launchd
 	// stderr log at default verbosity. A V-gated line would be invisible exactly
 	// when the count matters.
+	//
+	// ⚠️ The liveness checker is the SAME instance the store resolves producer
+	// liveness through, so "the session is live" has one answer in this process.
+	// A second checker would let the arm card a session the store already reads
+	// as gone.
 	runner.Add(
 		ctx,
 		pkg.NewUnforwardedClosersJob(
 			scanner,
 			store,
+			liveness,
 			pkg.UnforwardedClosersInterval,
 			glog.Infof,
 		).Run,
@@ -1056,7 +1063,7 @@ func (a *application) addInProcessJobs(
 	// what moves is only the tick. It re-reads state this process already owns
 	// and writes its count as a log line, so there is no second lifecycle to
 	// deploy, version or observe.
-	a.addUnforwardedClosersJob(ctx, runner, store)
+	a.addUnforwardedClosersJob(ctx, runner, store, liveness)
 	// ⚠️ The attention-watcher jobs register from here rather than from the caller
 	// for the same reason this method exists at all: createHTTPServer sits at the
 	// linter's length bound, and each job's rationale belongs beside the job.
