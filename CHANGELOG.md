@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.91.2
 
 - fix: **the delivery and menu arms read the attempt records for the cards in hand instead of scanning the whole attempts bucket.** `DeliveryAttempts` walks every recorded attempt, and the bucket has no delete path — it grows with every card the store has ever held — yet both arms called it on their two-second tick. Measured 2026-11-16 after the other arms were fixed: it was the largest single CPU consumer left in the process, 24 % of a 25 s profile. Both now read `DeliveryReports(ctx, items)`, the same one-transaction read the board render uses, so the cost is proportional to the open board rather than to the store's whole history. `retryDue` takes the report's `AttemptedAt` rather than a `DeliveryAttempt`, which is all it ever needed. Measured on the restarted service: **104 % → 8–14 % of a core**, with the remaining cost event-log ingest (stat-per-log) and JSON decode.
 
