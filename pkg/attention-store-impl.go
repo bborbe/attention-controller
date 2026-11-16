@@ -456,23 +456,8 @@ func (a *attentionStore) putItem(ctx context.Context, tx libkv.Tx, item Item) er
 		// one-time; the alternative, marking on any write, would mark an index
 		// built that had never seen the pre-existing items, and the read would
 		// silently under-return.
-		if err := a.liveIndex.Add(ctx, tx, liveIndexMarkerKey, Item{}); err != nil {
-			return errors.Wrap(ctx, err, "mark live index built failed")
-		}
-		// All three markers, for the reason above: a store with no items bucket
-		// held no items, so every index this same call maintains is complete by
-		// construction.
-		if err := a.openIndex.Add(ctx, tx, openIndexMarkerKey, Item{}); err != nil {
-			return errors.Wrap(ctx, err, "mark open index built failed")
-		}
-		if err := a.dedupIndex.Add(ctx, tx, dedupIndexMarkerKey, Item{}); err != nil {
-			return errors.Wrap(ctx, err, "mark dedup index built failed")
-		}
-		// The answered index is marked here for the same reason: a store whose
-		// items bucket did not exist held no answered ask, so the record this
-		// write just maintained is complete by construction.
-		if err := a.answeredIndex.Add(ctx, tx, answeredIndexMarkerKey, Item{}); err != nil {
-			return errors.Wrap(ctx, err, "mark answered index built failed")
+		if err := a.markIndexesBuilt(ctx, tx); err != nil {
+			return err
 		}
 	}
 	return a.reconcileIndexes(ctx, tx, item, previous)

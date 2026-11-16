@@ -212,6 +212,37 @@ func openIndexWorthy(item Item) bool {
 	return item.State == OpenState
 }
 
+// markIndexesBuilt marks every derived index as built, inside the caller's
+// transaction. `putItem` runs it only when the items bucket did not exist before
+// that write, so the indexes — which the same write has just maintained — are
+// complete by construction.
+//
+// ⚠️ One loop rather than five nested calls. `putItem`'s `firstEver` branch is
+// already the deepest block in that function, and the fifth `if err := …` there
+// tripped `nestif` (complexity 4). The set is the same one `reconcileIndexes`
+// maintains, so an index added later belongs in both.
+//
+// ⚠️ The history index is deliberately absent, as it always was: its marker is
+// written by `ensureHistoryIndex`, which builds it from the whole items bucket.
+// Marking it here would claim a build that had never seen the pre-existing rows.
+func (a *attentionStore) markIndexesBuilt(ctx context.Context, tx libkv.Tx) error {
+	for _, index := range []struct {
+		store libkv.StoreTx[string, Item]
+		key   string
+		name  string
+	}{
+		{a.liveIndex, liveIndexMarkerKey, "live"},
+		{a.openIndex, openIndexMarkerKey, "open"},
+		{a.dedupIndex, dedupIndexMarkerKey, "dedup"},
+		{a.answeredIndex, answeredIndexMarkerKey, "answered"},
+	} {
+		if err := index.store.Add(ctx, tx, index.key, Item{}); err != nil {
+			return errors.Wrapf(ctx, err, "mark %s index built failed", index.name)
+		}
+	}
+	return nil
+}
+
 // reconcileIndexes brings ALL FIVE derived indexes in line with one item: the
 // live index holds everything not closed, the open-only index holds open items
 // only, the dedup index holds open items keyed by producer and dedup key, the
