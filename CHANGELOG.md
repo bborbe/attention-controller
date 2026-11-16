@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.90.2
 
 - fix: **the unforwarded-closers arm no longer re-presents a lost gate whose session has exited as a card the operator can only dismiss.** `pkg/unforwarded-closers-job.go`'s `post` pushed a card for every finding without consulting `UnforwardedFinding.Session`, so a gate from a session that had already ended was re-presented under `owner:attention-unforwarded-closers` — a liveness model that never expires the card — and the operator spent a decision on something nobody could answer. Measured 2026-11-16: 601 such cards from 112 distinct sessions; the sampled exited sessions (2e074f82, e577041e, aa160ccd, 1d2c9896) had no session-registry entry and the live ones (4314b3f3, 3052a109) did. `post` now skips a finding whose session `SessionLivenessChecker.IsLive` reports gone, logging `action=skip_dead_session` so the loss stays visible while the card is not minted; a live session's lost gate is still re-presented, which keeps the arm a recovery path rather than a silence. A nil checker fails open (mint), matching `IsLive`'s own fail-open on an unreadable registry: neither may suppress a gate that might still be answerable. The scan count is unchanged — `unforwarded` still reports the lost gates; only the minting is filtered.
 
