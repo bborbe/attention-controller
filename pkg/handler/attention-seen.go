@@ -47,8 +47,7 @@ func NewAttentionSeenHandler(store pkg.AttentionStore) http.Handler {
 }
 
 // wrapSeenError maps the store's seen-write failures onto responses. A missing
-// item — including a federated one this store does not own — is a 404; anything
-// else is an internal failure.
+// item is a 404; anything else is an internal failure.
 func wrapSeenError(ctx context.Context, err error, itemID pkg.ItemID) error {
 	if errors.Is(err, pkg.ErrItemNotFound) {
 		return libhttp.WrapWithDetails(

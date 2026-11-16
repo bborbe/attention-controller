@@ -17,7 +17,6 @@ var _ = Describe("childEnv", func() {
 		GinkgoT().Setenv("HOME", "/Users/example")
 		GinkgoT().Setenv("TMPDIR", "/tmp")
 		GinkgoT().Setenv("ATTENTION_STORE_TOKEN", "store-secret")
-		GinkgoT().Setenv("ATTENTION_UPSTREAM_TOKEN", "upstream-secret")
 
 		env := childEnv("SWEEP_GATE_STATE_DIR=/state")
 
@@ -27,7 +26,6 @@ var _ = Describe("childEnv", func() {
 		Expect(env).To(ContainElement("SWEEP_GATE_STATE_DIR=/state"))
 		for _, pair := range env {
 			Expect(pair).NotTo(HavePrefix("ATTENTION_STORE_TOKEN="))
-			Expect(pair).NotTo(HavePrefix("ATTENTION_UPSTREAM_TOKEN="))
 		}
 	})
 

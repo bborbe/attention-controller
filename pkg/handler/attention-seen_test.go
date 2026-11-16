@@ -148,22 +148,6 @@ var _ = Describe("Attention seen handler", func() {
 		Expect(errors.Is(err, pkg.ErrItemNotFound)).To(BeTrue())
 	})
 
-	It("answers 404 for a federated item and writes nothing locally", func() {
-		remote := &mocks.RemoteAttentionStore{}
-		federating := pkg.NewFederatingAttentionStore(store, remote)
-		federatingHandler := handler.NewAttentionSeenHandler(federating)
-
-		rec := seen(federatingHandler, pkg.ItemID("peer-owned-item"))
-		Expect(rec.Code).To(Equal(http.StatusNotFound))
-
-		// The write is local-only: a proxied write would have needed a peer
-		// call, and a local write would have created a row.
-		_, err := store.Get(ctx, pkg.ItemID("peer-owned-item"))
-		Expect(err).NotTo(BeNil())
-		Expect(errors.Is(err, pkg.ErrItemNotFound)).To(BeTrue())
-		Expect(remote.FlagCallCount()).To(Equal(0))
-	})
-
 	It("issues the seen call before the filter parks a row", func() {
 		push()
 

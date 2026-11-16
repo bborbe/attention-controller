@@ -17,11 +17,11 @@ package pkg
 // ⚠️ They live in `pkg` rather than `pkg/handler` because they are the wire
 // names of this package's own sentinel errors — ErrAlreadyAnswered,
 // ErrIllegalTransition and ErrItemNotFound are declared here, and a code is
-// what those sentinels read as on the wire. The federating client
-// (attention-remote.go) has to turn a peer's response BACK into the sentinel,
-// and it cannot import `pkg/handler`: handler imports pkg, so the reverse edge
-// is a cycle. Pairing each code with the sentinel it names is what lets the
-// client round-trip an error faithfully instead of collapsing the two 409s.
+// what those sentinels read as on the wire. A client that maps a response BACK
+// into the sentinel cannot import `pkg/handler`: handler imports pkg, so the
+// reverse edge is a cycle. Pairing each code with the sentinel it names is what
+// lets a response round-trip an error faithfully instead of collapsing the two
+// 409s.
 const (
 	// ErrorCodeAlreadyEscalated is the code a caller receives when another
 	// session stamped the item first. Distinct from ErrorCodeItemNotOpen: the
@@ -53,30 +53,14 @@ const (
 	// was none — and collapsing them here would erase the distinction between
 	// "already handled" and "no longer exists".
 	//
-	// ⚠️ Both are HTTP 409, which is why the federating client reads this field
+	// ⚠️ Both are HTTP 409, which is why a client reads this field
 	// rather than the status: a status-only mapping cannot tell them apart, and
-	// a federated answer that lost a race would report "no longer exists".
+	// an answer that lost a race would report "no longer exists".
 	//
 	// The response carries the item's closed_at, because the terminal state is
 	// the whole of what the caller can act on: the item is not coming back, and
 	// the arm's next move is to return to the queue rather than to retry.
 	ErrorCodeItemClosed = "ITEM_CLOSED"
-
-	// ErrorCodePeerUnavailable is the code a caller receives when a federated
-	// call to the peer store failed for a reason this store cannot classify.
-	//
-	// It is deliberately not ErrorCodeValidation, which is what it used to
-	// arrive as. The request was well formed and named a real item, so reporting
-	// it as a malformed request asked the caller to correct something that was
-	// not wrong — and the operator reading that body could not tell "I sent it
-	// wrong" from "the peer is down".
-	//
-	// ⚠️ It travels with HTTP 503 rather than 409, and that pairing is the
-	// point: a 409 tells the caller the request lost a race or named a state the
-	// item is not in, so retrying is pointless — while an unavailable peer is
-	// exactly the case where retrying IS right. Sending a peer outage as 409
-	// therefore gives the caller the one instruction that is wrong.
-	ErrorCodePeerUnavailable = "PEER_UNAVAILABLE"
 
 	// ErrorCodePermissionCloseWithoutDecision is the code a caller receives when
 	// it closes an open `permission` item naming an arm and carrying no decision.

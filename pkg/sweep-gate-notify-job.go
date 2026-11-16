@@ -1376,8 +1376,8 @@ func (l *sweepGateCommandSubjectLister) List(ctx context.Context) ([]SweepGateSu
 	// command line.
 	cmd := exec.CommandContext(ctx, l.python, l.script)
 	// ⚠️ An allowlisted environment plus this job's own SWEEP_GATE_* pair, never
-	// the inherited one: this service holds ATTENTION_STORE_TOKEN and
-	// ATTENTION_UPSTREAM_TOKEN, and the enumerator needs neither.
+	// the inherited one: this service holds ATTENTION_STORE_TOKEN, and the
+	// enumerator does not need it.
 	cmd.Env = childEnv(sweepGateManagersEnv + "=" + l.managersDir)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -1593,8 +1593,8 @@ func (p *sweepGateCommandAdhocPass) Run(
 	// the pass takes no arguments, so no gate output reaches the command line.
 	cmd := exec.CommandContext(commandCtx, p.python, p.script)
 	// ⚠️ An allowlisted environment plus this pass's own SWEEP_GATE_ADHOC_STATE,
-	// never the inherited one: this service holds ATTENTION_STORE_TOKEN and
-	// ATTENTION_UPSTREAM_TOKEN, and the pass needs neither.
+	// never the inherited one: this service holds ATTENTION_STORE_TOKEN, and the
+	// pass does not need it.
 	cmd.Env = childEnv(
 		sweepGateAdhocStateEnv + "=" + filepath.Join(stateDir, sweepGateAdhocStateFileName),
 	)

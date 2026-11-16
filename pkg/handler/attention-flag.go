@@ -116,16 +116,6 @@ func wrapFlagError(ctx context.Context, err error, itemID pkg.ItemID, what strin
 			http.StatusConflict,
 			map[string]any{"item_id": itemID.String()},
 		)
-	case errors.Is(err, pkg.ErrPeerUnavailable):
-		// ⚠️ Before the catch-all, as in wrapItemError and wrapEscalateError: a
-		// failed peer call is not a malformed request, and it is the only failure
-		// here a retry can clear.
-		return libhttp.WrapWithDetails(
-			errors.Wrap(ctx, err, what),
-			pkg.ErrorCodePeerUnavailable,
-			http.StatusServiceUnavailable,
-			map[string]any{"item_id": itemID.String()},
-		)
 	default:
 		return libhttp.WrapWithDetails(
 			errors.Wrap(ctx, err, what),

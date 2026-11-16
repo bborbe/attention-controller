@@ -247,9 +247,8 @@ type AttentionStore interface {
 	// stamp is permanent — which is why the trigger is the board's own paint and
 	// never the server render.
 	//
-	// It is a LOCAL write and is never forwarded to a peer: a federated item is
-	// absent from this store, so the call answers ErrItemNotFound and writes
-	// nothing.
+	// It is a LOCAL write: a card this store does not hold answers
+	// ErrItemNotFound and writes nothing.
 	MarkSeen(ctx context.Context, itemID ItemID) (*Item, error)
 
 	// Close applies open -> closed or answered -> closed. Closing an item that

@@ -73,8 +73,7 @@ var _ = Describe("Notifying attention store", func() {
 
 	// ⚠️ Load-bearing, not cosmetic: `route` is variadic, so a decorator that
 	// silently drops it still compiles — and this decorator sits in the
-	// production Answer chain ahead of the federating one, so every local answer
-	// passes through it.
+	// production Answer chain, so every local answer passes through it.
 	It("forwards the answer route to the wrapped store", func() {
 		item := &pkg.Item{}
 		inner.AnswerReturns(item, nil)

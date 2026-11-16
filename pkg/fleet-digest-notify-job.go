@@ -551,8 +551,7 @@ func (c *fleetDigestCommandChecker) Check(
 	// command line.
 	cmd := exec.CommandContext(commandCtx, c.python, c.script, "--check")
 	// ⚠️ An allowlisted environment, not the inherited one: this service holds
-	// ATTENTION_STORE_TOKEN and ATTENTION_UPSTREAM_TOKEN, and the staleness engine
-	// needs neither.
+	// ATTENTION_STORE_TOKEN, and the staleness engine does not need it.
 	cmd.Env = childEnv()
 	var output bytes.Buffer
 	cmd.Stdout = &output
