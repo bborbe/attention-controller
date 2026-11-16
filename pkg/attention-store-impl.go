@@ -144,6 +144,8 @@ func (a *attentionStore) newItem(ctx context.Context, request PushRequest) (*Ite
 	if err != nil {
 		return nil, errors.Wrap(ctx, err, "generate item id failed")
 	}
+	createdAt := a.currentDateTimeGetter.Now()
+	expiresAt, defaulted := expiresAtOrDefault(request.ExpiresAt, createdAt)
 	item := &Item{
 		ItemID:            itemID,
 		ProducerID:        request.ProducerID,
@@ -160,9 +162,12 @@ func (a *attentionStore) newItem(ctx context.Context, request PushRequest) (*Ite
 		AnswerCardinality: request.AnswerCardinality,
 		Questions:         request.Questions,
 		State:             OpenState,
-		CreatedAt:         a.currentDateTimeGetter.Now(),
+		CreatedAt:         createdAt,
 		AskedAt:           askedAtOrNil(request.AskedAt),
-		ExpiresAt:         request.ExpiresAt,
+		ExpiresAt:         expiresAt,
+		// Recorded so the renewal pass can tell this deadline from a producer's
+		// own TTL. See Item.ExpiresAtDefaulted.
+		ExpiresAtDefaulted: defaulted,
 	}
 	if err := item.Validate(ctx); err != nil {
 		return nil, errors.Wrap(ctx, err, "validate item failed")
@@ -189,14 +194,15 @@ func (a *attentionStore) Get(ctx context.Context, itemID ItemID) (*Item, error) 
 	return result, nil
 }
 
-// Read returns the open items an arm should render, and removes dead askers as
-// a side effect so the window between producer-exit and removal is one read at
-// most.
+// Read returns the open items an arm should render, and removes expired ones as
+// a side effect so the window between a passed `expires_at` and removal is one
+// read at most.
 //
-// An item is removed only when all three hold: its state is open, its producer
-// is not live, and it is a question the producer asked rather than a report it
-// made. An `answered` or `closed` item is never pruned — removing it would
-// rewrite history the schema says is never rewritten.
+// An item is removed only when both hold: its state is open and its
+// `expires_at` (or the created_at + DefaultItemExpiry default) has passed. A
+// dead liveness subject alone removes nothing — see classifyForRead. An
+// `answered` or `closed` item is never pruned — removing it would rewrite
+// history the schema says is never rewritten.
 //
 // It deliberately excludes `answered`. Read answers "what should an arm act on
 // now", and the JSON read API hands what it returns to consumers that answer
@@ -222,11 +228,9 @@ func (a *attentionStore) Read(ctx context.Context) (Items, error) {
 // queue, which is the lifetime the operator asked for.
 //
 // The prune is shared with Read rather than reimplemented, and widening the
-// filter did not widen it: only `open` items are ever removed, and only when
-// their producer is gone and it asked rather than reported. An `answered` item
-// is exempt by the schema's rule that its history is never rewritten, so it is
-// returned without a liveness test — passing it through that branch would prune
-// it.
+// filter did not widen it: only `open` items are ever removed, and only once
+// they have expired. An `answered` item is exempt by the schema's rule that its
+// history is never rewritten, so it is returned before the expiry test.
 func (a *attentionStore) ReadBoard(ctx context.Context) (Items, error) {
 	return a.read(ctx, true)
 }
@@ -240,85 +244,64 @@ type readDisposition struct {
 
 // classifyForRead decides what one item's read does with it.
 //
-// It is a method rather than an inline branch because the state check, the
-// liveness check and the asked/reported split together exceed the complexity
-// budget the linter allows the read loop — and because the answered case must
-// return *before* the liveness check, which is easier to see stated once here
-// than as an early return buried in a closure.
+// ⚠️ It is a plain function rather than a method: nothing about the decision
+// depends on the store any more. It used to consult the per-read liveness
+// snapshot, which is why it hung off the receiver; with liveness gone from the
+// read path, the receiver would be a parameter that is never read.
 //
 // ⚠️ The answered case is first on purpose. It is not a widening of the state
-// condition below it: it returns before the liveness branch, so an answered
-// item is never liveness-tested and never pruned, which is the schema's rule
-// that its history is never rewritten.
-func (a *attentionStore) classifyForRead(
-	ctx context.Context,
+// condition below it: it returns before the expiry branch, so an answered item
+// is never pruned, which is the schema's rule that its history is never
+// rewritten. The answered sweep closes it instead.
+//
+// ⚠️ Liveness is deliberately NOT consulted. A dead liveness subject used to
+// remove an open ask — `session:` and `owner:` alike resolved against the
+// session registry — and the idle-reaper ends headless workers after 15–30
+// minutes idle, so the store deleted their open questions, and with them the
+// answers about to land, before the session was resumed. [[Attention Item
+// Schema]] § Expiry now makes `expires_at` the one clock that clears an item,
+// asked or reported, whatever its subject reads. A reported condition (`ack`)
+// was already kept on a dead subject, so dropping the probe changes nothing for
+// it.
+func classifyForRead(
 	item Item,
 	includeAnswered bool,
-	liveness sessionLiveness,
 	now libtime.DateTime,
-) (readDisposition, error) {
+) readDisposition {
 	if item.State == AnsweredState && includeAnswered {
-		// Rendered as a dimmed record. Never liveness-tested and never pruned.
-		return readDisposition{keep: true}, nil
+		// Rendered as a dimmed record. Never pruned.
+		return readDisposition{keep: true}
 	}
 	if item.State != OpenState {
-		return readDisposition{}, nil
+		return readDisposition{}
 	}
 	if isExpired(&item, now) {
-		// ⚠️ Checked BEFORE liveness, and the order is load-bearing. An expired
-		// item is moot whoever is still alive, and an `owner:` item is never
-		// liveness-pruned at all — so this branch is the only thing bounding the
-		// survivor the marker exists to keep. Without it the marker trades
-		// "gates vanish before they are answered" for "gates never vanish".
 		glog.V(2).
-			Infof("removing item %s: expires_at %s has passed", item.ItemID, item.ExpiresAt.Time())
-		return readDisposition{remove: true}, nil
+			Infof("removing item %s: expires_at %s has passed", item.ItemID, effectiveExpiresAt(&item).Time())
+		return readDisposition{remove: true}
 	}
-	live, err := a.isProducerLiveWith(ctx, &item, liveness)
-	if err != nil {
-		return readDisposition{}, errors.Wrap(ctx, err, "check producer liveness failed")
-	}
-	if live {
-		return readDisposition{keep: true}, nil
-	}
-	if isAsked(&item) {
-		// ⚠️ Name the REF, not the producer. For an `owner:` item the producer is
-		// exactly what was NOT tested, so logging ProducerID would point a reader
-		// at the exited worker rather than the dead owner — the one line
-		// explaining a vanished operator gate naming the wrong party.
-		glog.V(2).
-			Infof("removing item %s: %s asked and its liveness subject is gone", item.ItemID, item.LivenessRef)
-		return readDisposition{remove: true}, nil
-	}
-	// The producer reported a condition rather than asking a question.
-	// The operator can still act on it, so it stays open.
-	return readDisposition{keep: true}, nil
+	return readDisposition{keep: true}
 }
 
-// isExpired reports whether the producer's own deadline has passed.
+// isExpired reports whether the item's deadline has passed.
 //
-// ⚠️ An item with no `expires_at` does NOT expire, and that is the schema's
-// default rather than an oversight: a lost ask costs work stalled silently, so
-// persistence is what an unanswered item gets unless its producer declares a
-// deadline — the schema's "a gate on an action that becomes moot at a known
-// time". Reading an absent field as an expired one would reintroduce exactly
-// the lost ask this read path exists to prevent.
+// ⚠️ An item with no `expires_at` expires at created_at + DefaultItemExpiry.
+// Every push stores that default, so the fallback is reached only by a row
+// written before it existed — and reading that absence as "never" would keep
+// the row forever, now that a dead liveness subject removes nothing.
 //
 // ⚠️ The comparison is `!now.Before(deadline)`, not `now.After(deadline)`: an
 // item whose deadline is exactly now has expired, and the two spellings differ
 // on that instant.
 func isExpired(item *Item, now libtime.DateTime) bool {
-	if item.ExpiresAt == nil {
-		return false
-	}
-	return !now.Time().Before(item.ExpiresAt.Time())
+	return !now.Time().Before(effectiveExpiresAt(item).Time())
 }
 
 // read is the shared body of Read and ReadBoard; includeAnswered is their only
 // difference.
 //
-// ⚠️ The state check is not merely a filter. It also guards the
-// producer-liveness branch and the prune below it, so an item admitted past it
+// ⚠️ The state check is not merely a filter. It also guards the expiry
+// branch and the prune below it, so an item admitted past it
 // must be returned deliberately rather than falling through — which is why the
 // `answered` case returns early instead of widening the condition.
 //
@@ -337,24 +320,18 @@ func isExpired(item *Item, now libtime.DateTime) bool {
 //
 //  1. a short `View` that only decodes the stored items — it takes no writer
 //     lock at all, so it cannot starve a Push;
-//  2. classification, including the per-item liveness I/O, outside every
-//     transaction, so no lock is held while a file is stat'd or a registry is
-//     scanned;
-//  3. a short `Update` that removes the dead items, opened only when there is
-//     something to remove, so the common healthy read stays read-only end to
-//     end.
+//  2. classification outside every transaction — an expiry test against one
+//     `now`, with no liveness I/O since a dead subject removes nothing;
+//  3. a short `Update` that removes the expired items, opened only when there
+//     is something to remove, so the common healthy read stays read-only end
+//     to end.
 //
 // ⚠️ The prune is a compare-and-delete, not a blind delete. The disposition
-// comes from a snapshot, and two independent things can change after it is
-// taken: the item's STATE (Answer and Close take no liveness gate, so an item
-// can legitimately be answered while still open) and the producer's LIVENESS
-// (which is not monotonic — a refreshed heartbeat or a resumed session flips it
-// back). `pruneDead` re-reads the STATE against the live value inside its own
-// transaction, which is the repo's own rule: a compare-and-set belongs inside
-// the transaction, never as a separate read then write. Its LIVENESS re-check
-// is the documented exception — it takes a fresh snapshot resolved just before
-// the transaction opens, so the writer lock is never held across a registry
-// listing. The residual window is therefore resolve → lock-acquire, not zero.
+// comes from a snapshot, and the item can change after it is taken: it can be
+// answered or closed, and a dedup re-push can rewrite its `expires_at`.
+// `pruneExpired` re-reads the item inside its own transaction, which is the
+// repo's own rule: a compare-and-set belongs inside the transaction, never as a
+// separate read then write.
 func (a *attentionStore) read(ctx context.Context, includeAnswered bool) (Items, error) {
 	// ⚠️ The open-only read scans the open-only index, so it never decodes the
 	// answered items classifyForRead would discard. ReadBoard keeps the live
@@ -372,12 +349,6 @@ func (a *attentionStore) read(ctx context.Context, includeAnswered bool) (Items,
 		return nil, errors.Wrap(ctx, err, "read failed")
 	}
 
-	// The classification's own liveness source: one listing answers every
-	// session lookup the read classifies, however many items it holds. The prune
-	// below builds its own for its re-check, so a read lists the registry at most
-	// twice — once here, once there.
-	liveness := newReadSessionLiveness(a.sessionLivenessChecker)
-
 	// ⚠️ One `now` for the whole scan, not one per item. The getter is cheap — a
 	// vDSO call with no lock — so this is not a cost argument: it is that every
 	// item in a read should be judged against the SAME instant, or two items
@@ -385,17 +356,14 @@ func (a *attentionStore) read(ctx context.Context, includeAnswered bool) (Items,
 	now := a.currentDateTimeGetter.Now()
 
 	kept := make(Items, 0, len(items))
-	dead := make([]string, 0, len(items))
+	expired := make([]string, 0, len(items))
 	for _, stored := range items {
-		disposition, err := a.classifyForRead(ctx, stored.item, includeAnswered, liveness, now)
-		if err != nil {
-			return nil, errors.Wrap(ctx, err, "classify item failed")
-		}
+		disposition := classifyForRead(stored.item, includeAnswered, now)
 		if disposition.keep {
 			kept = append(kept, stored.item)
 		}
 		if disposition.remove {
-			dead = append(dead, stored.key)
+			expired = append(expired, stored.key)
 		}
 	}
 
@@ -408,7 +376,7 @@ func (a *attentionStore) read(ctx context.Context, includeAnswered bool) (Items,
 		kept = suppressAnsweredTwins(kept)
 	}
 
-	if err := a.pruneDead(ctx, dead); err != nil {
+	if err := a.pruneExpired(ctx, expired); err != nil {
 		return nil, err
 	}
 	return kept, nil
@@ -962,7 +930,7 @@ func (a *attentionStore) readOpenItems(ctx context.Context) ([]storedItem, error
 // Push behind it.
 //
 // ⚠️ The `key` it returns is the index key, which IS the item id — the same key
-// the items bucket uses — so `pruneDead` still removes exactly the key the scan
+// the items bucket uses — so `pruneExpired` still removes exactly the key the scan
 // enumerated, and the property `storedItem` documents is preserved rather than
 // weakened.
 func (a *attentionStore) readItems(ctx context.Context) ([]storedItem, error) {
@@ -985,57 +953,33 @@ func (a *attentionStore) readItems(ctx context.Context) ([]storedItem, error) {
 	return items, nil
 }
 
-// pruneDead removes the items a read classified as dead, in one short write
-// transaction.
+// pruneExpired removes the items a read classified as expired, in one short
+// write transaction.
 //
 // It opens no transaction when there is nothing to remove, which is the common
-// case: a store whose producers are all live never takes the writer lock on a
+// case: a store with no expired open item never takes the writer lock on a
 // read.
 //
-// ⚠️ It is a COMPARE-AND-DELETE, not a blind delete, and both re-checks below
-// are load-bearing. The disposition was computed from the snapshot `readItems`
-// took, and two independent things can change between that snapshot and this
-// transaction:
+// ⚠️ It is a COMPARE-AND-DELETE, not a blind delete. The disposition was
+// computed from the snapshot `readItems` took, and the item can change between
+// that snapshot and this transaction:
 //
-//   - the item's STATE. Answer and Close take no liveness gate — an answer may
+//   - its STATE. Answer and Close take no liveness gate — an answer may
 //     legitimately name an item whose asker is gone — so an item classified
-//     dead while open can be answered before this runs. Deleting it would
+//     expired while open can be answered before this runs. Deleting it would
 //     rewrite history the schema says is never rewritten, which is the one
 //     thing the prune exists not to do. Measured 2026-09-27: without this
 //     check, an answer landing inside the classification window left the item
 //     gone from `History` entirely.
-//   - the producer's LIVENESS, which is NOT monotonic. A refreshed heartbeat
-//     file, a session resumed under the same id, or an unreadable registry
-//     (which reads as live) each flip a producer back — and
-//     `updateExistingIfLive` then updates that item's key in place, so a blind
-//     delete would remove an item a live producer has just refreshed.
+//   - its DEADLINE. `updateExistingIfLive` rewrites an open row in place on a
+//     dedup re-push — `ExpiresAt` included — so the deadline the scan saw is
+//     not necessarily the one standing now.
 //
-// The STATE is re-read here against the live value, inside the transaction. The
-// LIVENESS is re-read from a snapshot taken just before that transaction opens
-// — see the ⚠️ below for what that does and does not close. The liveness check
-// does file I/O, but only for the dead subset — the whole scan still runs
-// outside every transaction, which is what the split was for.
-//
-// ⚠️ The liveness re-check takes its OWN source rather than the one the
-// classification used. A source answers from the snapshot it took, so reusing
-// the read's would answer "is this producer live now?" with the value from
-// before the classification — which can never differ from the verdict that put
-// the item here, making the re-check a no-op. A fresh source lists the registry
-// again, so a session resumed between the classification and that listing is
-// seen as live and its item is kept.
-//
-// ⚠️ The window it closes is classification → prune. The window it leaves open
-// is resolve → lock-acquire: a session resumed after the listing but before the
-// write is still pruned. Stated rather than implied, because the snapshot is
-// fresher, not live. The source is resolved BEFORE the transaction opens, so the
-// writer lock is never held across a registry listing; a read that prunes
-// nothing still returns above and lists nothing extra.
-func (a *attentionStore) pruneDead(ctx context.Context, keys []string) error {
+// Both are re-read here against the live value, inside the transaction.
+func (a *attentionStore) pruneExpired(ctx context.Context, keys []string) error {
 	if len(keys) == 0 {
 		return nil
 	}
-	liveness := newReadSessionLiveness(a.sessionLivenessChecker)
-	liveness.resolveNow(ctx)
 	// ⚠️ One `now` for the whole batch, matching `read()`: every key in a single
 	// prune is judged against the same instant, so a deadline cannot fall between
 	// two keys of the same batch.
@@ -1047,7 +991,7 @@ func (a *attentionStore) pruneDead(ctx context.Context, keys []string) error {
 	removed := 0
 	err := a.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
 		for _, key := range keys {
-			remove, err := a.stillRemovable(ctx, tx, key, liveness, now)
+			remove, err := a.stillRemovable(ctx, tx, key, now)
 			if err != nil {
 				return err
 			}
@@ -1055,14 +999,14 @@ func (a *attentionStore) pruneDead(ctx context.Context, keys []string) error {
 				continue
 			}
 			if err := a.removeItem(ctx, tx, key); err != nil {
-				return errors.Wrapf(ctx, err, "remove dead item %s failed", key)
+				return errors.Wrapf(ctx, err, "remove expired item %s failed", key)
 			}
 			removed++
 		}
 		return nil
 	})
 	if err != nil {
-		return errors.Wrap(ctx, err, "prune dead items failed")
+		return errors.Wrap(ctx, err, "prune expired items failed")
 	}
 	if removed > 0 {
 		a.historyPage.invalidate()
@@ -1070,28 +1014,16 @@ func (a *attentionStore) pruneDead(ctx context.Context, keys []string) error {
 	return nil
 }
 
-// stillRemovable re-checks one key the read classified for removal, against a
-// snapshot taken after the disposition rather than the one it came from —
-// fresher, not live. The window it closes is classification → prune; the window
-// it leaves open is resolve → lock-acquire, so a session resumed inside that
-// second window is still pruned. Named rather than implied: the earlier wording
-// claimed "the value that is live now", which the snapshot does not give.
+// stillRemovable re-checks one key the read classified for removal, against the
+// item as it stands inside the prune's transaction.
 //
-// ⚠️ It is named for what it answers — "should this still be removed?" — rather
-// than for liveness, because removal now has two independent causes and only one
-// of them is death. A name that said `Dead` would read as a promise that the
-// liveness check below decides, and it does not.
-//
-// It is a method rather than an inline branch for the same reason
-// classifyForRead is one: the state check, the expiry check and the liveness
-// check together exceed the complexity budget the linter allows the prune loop,
-// and the not-found case is easier to read stated once here than as a nested
-// continue.
+// ⚠️ Liveness is not re-checked, because it never decided the removal: a dead
+// liveness subject alone removes nothing ([[Attention Item Schema]] § Expiry).
+// Only the item's state and its deadline can change the verdict.
 func (a *attentionStore) stillRemovable(
 	ctx context.Context,
 	tx libkv.Tx,
 	key string,
-	liveness sessionLiveness,
 	now libtime.DateTime,
 ) (bool, error) {
 	item, err := a.store.Get(ctx, tx, key)
@@ -1101,7 +1033,7 @@ func (a *attentionStore) stillRemovable(
 			// error: the item is gone, which is what this call wanted.
 			return false, nil
 		}
-		return false, errors.Wrapf(ctx, err, "get dead item %s failed", key)
+		return false, errors.Wrapf(ctx, err, "get expired item %s failed", key)
 	}
 	// Answered or closed since the snapshot. Its history is never rewritten, so
 	// it is left exactly as it now stands — this is the check that stops the
@@ -1109,37 +1041,14 @@ func (a *attentionStore) stillRemovable(
 	if item.State != OpenState {
 		return false, nil
 	}
-	// ⚠️ Expiry is re-checked FIRST, and the re-check is not redundant with the
-	// classification. `updateExistingIfLive` rewrites an open row in place on a
-	// dedup re-push — `ExpiresAt` included — so the deadline the scan saw is not
-	// necessarily the one standing now.
-	//
-	// ⚠️ And it must NOT sit behind the liveness re-check below. That re-check
-	// exists because LIVENESS IS NOT MONOTONIC; expiry is monotonic. For an
-	// `owner:` ref `isProducerLiveWith` returns a constant `true`, so an expired
-	// owner item left behind the liveness check is hidden from the board while
-	// its row survives — and the next dedup re-push of the same key resurrects
-	// it, because `updateExistingIfLive` matches the row that was never deleted.
-	// A board that hides a row is not a row that is gone.
-	if isExpired(item, now) {
-		return true, nil
-	}
-	live, err := a.isProducerLiveWith(ctx, item, liveness)
-	if err != nil {
-		return false, errors.Wrapf(ctx, err, "recheck liveness for dead item %s failed", key)
-	}
-	// Liveness is not monotonic: a resumed session or a refreshed heartbeat
-	// makes a producer live again, and updateExistingIfLive updates that item's
-	// key in place — so a producer that was gone when the scan ran may be
-	// holding this item now.
-	return !live, nil
+	return isExpired(item, now), nil
 }
 
 // History returns items NEWEST-FIRST, up to limit of them, skipping the first
 // offset.
 //
 // It is deliberately not Read. Read answers "what should an arm render now": it
-// filters to open items and removes dead askers as a side effect, which makes
+// filters to open items and removes expired ones as a side effect, which makes
 // it blind to everything that has left the queue — and it cannot report a
 // history at all, because the act of reading would delete part of what it
 // reports. History prunes nothing, and narrows on exactly one thing: an expired
@@ -1595,6 +1504,174 @@ func (a *attentionStore) Close(
 	return result, nil
 }
 
+// RenewLive pushes the defaulted deadline of every open item whose liveness
+// subject is still live forward to now + DefaultItemExpiry, and reports how many
+// it moved.
+//
+// ⚠️ Liveness may EXTEND a deadline and must never remove an item: `expires_at`
+// is the one clock that clears one ([[Attention Item Schema]] § Expiry), and this
+// pass only moves that clock. It is what keeps a reaped-then-resumed session's
+// question — and the answer that landed on it — alive past the first push's 24 h.
+//
+// ⚠️ It runs from the periodic maintenance loop, never from a read. Renewing is a
+// write, and a write on the read path is the writer-lock-across-a-scan shape
+// v0.23.2 removed; the per-read liveness snapshot went for the same class of
+// cost.
+//
+// ⚠️ Three things are deliberately not renewed:
+//   - a PRODUCER-SET deadline (`ExpiresAtDefaulted` false with an `ExpiresAt`
+//     set). The producer named a deadline and the store does not overrule it —
+//     `approve-run.py` and `attention-ask.py` set one, and so does every
+//     unforwarded closer. A row carrying NO deadline is the legacy case and IS
+//     renewed: see defaultedDeadline.
+//   - an item whose subject reads dead. That is the bound: an item is cleared at
+//     most DefaultItemExpiry after its last renewal.
+//   - an item with more than renewalThreshold left. See that constant.
+func (a *attentionStore) RenewLive(ctx context.Context) (int, error) {
+	if err := a.ensureLiveIndex(ctx); err != nil {
+		return 0, errors.Wrap(ctx, err, "ensure live index failed")
+	}
+	// One `now` for the whole pass, matching `read()`: two items written together
+	// must not straddle the threshold inside a single scan.
+	now := a.currentDateTimeGetter.Now()
+	due, err := a.dueDefaultedKeys(ctx, now)
+	if err != nil {
+		return 0, err
+	}
+	if len(due) == 0 {
+		return 0, nil
+	}
+	renewed := 0
+	err = a.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
+		for _, key := range due {
+			moved, err := a.renewDefaultedItem(ctx, tx, key, now)
+			if err != nil {
+				return err
+			}
+			if moved {
+				renewed++
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, errors.Wrap(ctx, err, "renew live expiries failed")
+	}
+	if renewed > 0 {
+		// An open item's deadline is what History's open-item filter reads, so a
+		// renewal changes what a cached page would report.
+		a.historyPage.invalidate()
+	}
+	return renewed, nil
+}
+
+// dueDefaultedKeys returns the live-index keys of the open items whose deadline
+// came from the default, is within renewalThreshold of passing, and whose
+// liveness subject still reads live.
+//
+// ⚠️ The liveness probe runs HERE, in the read-only phase, and not inside the
+// write that follows. `isProducerLive` reads a host-local registry, and doing
+// that under bbolt's single writer lock is the long-transaction shape this file
+// already removed once. A verdict one pass stale can only OVER-extend — a
+// session that died a moment ago keeps its item until its next deadline, which
+// is the bound § Expiry states — and can never delete, so the snapshot is
+// acceptable here where the read path's was not. An unreadable registry reads as
+// live through the checker's own rule, which is the fail-safe direction: keep.
+func (a *attentionStore) dueDefaultedKeys(
+	ctx context.Context,
+	now libtime.DateTime,
+) ([]string, error) {
+	candidates := make([]storedItem, 0)
+	err := a.db.View(ctx, func(ctx context.Context, tx libkv.Tx) error {
+		return a.liveIndex.Map(ctx, tx, func(ctx context.Context, key string, item Item) error {
+			if key == liveIndexMarkerKey {
+				return nil
+			}
+			if item.State != OpenState || !defaultedDeadline(&item) {
+				return nil
+			}
+			if now.Add(renewalThreshold).Before(effectiveExpiresAt(&item)) {
+				return nil
+			}
+			candidates = append(candidates, storedItem{key: key, item: item})
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, errors.Wrap(ctx, err, "scan live index failed")
+	}
+	due := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		item := candidate.item
+		live, err := a.isProducerLive(ctx, &item)
+		if err != nil {
+			// ⚠️ Skip the ITEM, never the pass. An unparseable `liveness_ref` is a
+			// property of one stored row, and returning here killed renewal for every
+			// item on every tick — a dead pass whose only trace was a log line, while
+			// live sessions' items ran out their deadlines. The skipped row keeps the
+			// bound a dead subject gets: cleared at most DefaultItemExpiry after its
+			// last renewal. Only the index scan's own failure stays an error.
+			glog.V(1).Infof(
+				"item=%s liveness_ref=%q action=skip_liveness_ref: %v",
+				candidate.key,
+				item.LivenessRef,
+				err,
+			)
+			continue
+		}
+		if !live {
+			continue
+		}
+		due = append(due, candidate.key)
+	}
+	return due, nil
+}
+
+// renewDefaultedItem moves one item's defaulted deadline forward, re-checking
+// inside the transaction that it is still an open item with a defaulted one.
+//
+// ⚠️ The re-check is the repo's compare-and-set rule rather than defensiveness.
+// The scan above is a separate read, and a dedup re-push between the two
+// rewrites BOTH the deadline and its provenance — so a producer that switched to
+// declaring its own TTL must not have that TTL overwritten by this pass, and one
+// that re-armed the default must not be renewed twice for the same instant.
+//
+// ⚠️ A legacy row (no `ExpiresAt`, flag false) passes the re-check as defaulted,
+// and the renewal records the flag — otherwise the row would renew once and be
+// skipped forever after. See defaultedDeadline.
+func (a *attentionStore) renewDefaultedItem(
+	ctx context.Context,
+	tx libkv.Tx,
+	key string,
+	now libtime.DateTime,
+) (bool, error) {
+	item, err := a.store.Get(ctx, tx, key)
+	if err != nil {
+		if isNotFound(err) {
+			// Another pass, or a prune, removed it. Nothing to renew.
+			return false, nil
+		}
+		return false, errors.Wrapf(ctx, err, "get item %s for renewal failed", key)
+	}
+	if item.State != OpenState || !defaultedDeadline(item) {
+		return false, nil
+	}
+	if now.Add(renewalThreshold).Before(effectiveExpiresAt(item)) {
+		return false, nil
+	}
+	deadline := now.Add(DefaultItemExpiry)
+	item.ExpiresAt = &deadline
+	// ⚠️ The provenance is RECORDED here, and that is what makes a legacy row's
+	// renewal repeatable. A legacy row carries no deadline and no flag, so
+	// renewing it without this line would move the deadline once and then skip it
+	// on every later pass — the row would die one window later instead of never.
+	item.ExpiresAtDefaulted = true
+	if err := a.putItem(ctx, tx, *item); err != nil {
+		return false, errors.Wrapf(ctx, err, "renew item %s failed", key)
+	}
+	return true, nil
+}
+
 // SweepAnswered closes every answered item whose AnsweredAt is older than
 // maxAge, and then every open item that repeats an ask already answered.
 //
@@ -1737,14 +1814,25 @@ func (a *attentionStore) closeAnsweredItem(
 // closeItem and countLostAnswer live in attention-store-close.go.
 
 // updateExistingIfLive applies duplicate suppression. Suppression compares
-// dedup_key *within a live producer_id*: when an open item already carries this
-// producer and dedup key and its producer is still live, the push updates that
-// item rather than adding a row.
+// dedup_key within a producer_id: when an open item already carries this
+// producer and dedup key, the push updates that item rather than adding a row.
 //
-// It returns nil — meaning "no suppression applied, create a new row" — in two
-// distinct cases, and both are deliberate: no open item matches, or one matches
-// but its producer's liveness has already failed. Reviving the dead producer's
-// row would let a gone asker's item reappear under a new claim.
+// ⚠️ It no longer consults liveness, and the name is the only thing left of the
+// old rule. Suppression used to be scoped to a LIVE producer — a re-push from a
+// producer that read dead created a second row instead of collapsing, on the
+// reasoning that reviving a gone asker's row would let its item reappear under
+// a new claim. That reasoning rested on the read path deleting a dead
+// producer's row: with that prune gone ([[Attention Item Schema]] § Expiry) the
+// dead row survives for its full window, so declining to collapse wrote a
+// SECOND open row for the same ask and the operator was shown one question
+// twice for up to 24 h. Liveness now extends a deadline and removes nothing, so
+// the collapse is unconditional: one open row per (producer, dedup key),
+// whatever its subject reads.
+//
+// It returns nil — meaning "no suppression applied, create a new row" — in
+// exactly one case: no open item matches. An answered or closed row does not
+// match either, which is the schema's open-scoped rule: a re-raise after an
+// answer is a new row, and the board withholds it through suppressAnsweredTwins.
 func (a *attentionStore) updateExistingIfLive(
 	ctx context.Context,
 	tx libkv.Tx,
@@ -1757,19 +1845,11 @@ func (a *attentionStore) updateExistingIfLive(
 	if existing == nil {
 		return nil, nil
 	}
-	live, err := a.isProducerLive(ctx, existing)
-	if err != nil {
-		return nil, errors.Wrap(ctx, err, "check producer liveness failed")
-	}
-	if !live {
-		return nil, nil
-	}
 	existing.Payload = request.Payload
 	existing.Context = request.Context
 	existing.Options = request.Options
 	existing.InterruptClass = request.InterruptClass
 	existing.ProvenanceClass = request.ProvenanceClass
-	existing.ExpiresAt = request.ExpiresAt
 	// A suppressed re-push is a re-ask of the same question, and this block
 	// already resets CreatedAt to now for exactly that reason — so the ask time
 	// follows the same rule, including the case where the re-push carries none
@@ -1777,6 +1857,15 @@ func (a *attentionStore) updateExistingIfLive(
 	// previous push).
 	existing.AskedAt = askedAtOrNil(request.AskedAt)
 	existing.CreatedAt = a.currentDateTimeGetter.Now()
+	// ⚠️ After CreatedAt, never before: a re-push without a deadline re-arms the
+	// default from the NEW created_at. Copying the request's nil straight in would
+	// clear the stored default and leave the row with no expiry at all.
+	expiresAt, defaulted := expiresAtOrDefault(request.ExpiresAt, existing.CreatedAt)
+	existing.ExpiresAt = expiresAt
+	// The provenance of the deadline follows the push that last wrote it, exactly
+	// as the deadline itself does: a producer that switches to declaring its own
+	// TTL stops being renewable, and one that drops back to the default starts.
+	existing.ExpiresAtDefaulted = defaulted
 	if err := a.putItem(ctx, tx, *existing); err != nil {
 		return nil, errors.Wrap(ctx, err, "update existing item failed")
 	}
@@ -1821,42 +1910,28 @@ func (a *attentionStore) findOpenByDedupKey(
 }
 
 // isProducerLive resolves the item's declared liveness model against the
-// checker directly. It is the PUSH path's form — duplicate suppression runs
-// outside any read, so it has no per-read liveness source to reuse.
+// checker. The producer knows which model it is, so the store never guesses.
+//
+// ⚠️ Its one caller is the renewal pass (`dueDefaultedKeys`). The read path no
+// longer consults liveness at all — a dead subject removes nothing, and
+// `expires_at` is the one clock that clears an item — and duplicate suppression
+// stopped consulting it for the same reason: with a dead row no longer pruned,
+// declining to collapse wrote a second open row for one ask. Liveness now only
+// decides whether a defaulted deadline is pushed forward.
 func (a *attentionStore) isProducerLive(ctx context.Context, item *Item) (bool, error) {
-	return a.isProducerLiveWith(ctx, item, a.sessionLivenessChecker)
-}
-
-// isProducerLiveWith resolves the item's declared liveness model against the
-// given source. The producer knows which model it is, so the store never
-// guesses; each read-path caller hands in its own source, so the lookups one
-// caller makes are answered from a single registry listing.
-func (a *attentionStore) isProducerLiveWith(
-	ctx context.Context,
-	item *Item,
-	liveness sessionLiveness,
-) (bool, error) {
 	model, value, err := item.LivenessRef.Parse(ctx)
 	if err != nil {
 		return false, errors.Wrap(ctx, err, "parse liveness ref failed")
 	}
 	switch model {
 	case SessionLivenessModel:
-		return liveness.IsLive(ctx, value), nil
+		return a.sessionLivenessChecker.IsLive(ctx, value), nil
 	case OwnerLivenessModel:
 		// ⚠️ Always live, deliberately — a decision, not an oversight. The owner
 		// is a subject whose ABSENCE CANNOT BE READ: the session registry deletes
 		// an entry on exit, so a human owner who was never registered and an
-		// owner that has exited produce the same signal. Reading either as gone
-		// prunes an operator gate the operator can still answer — the defect this
-		// model exists to fix, one layer in. So this model probes NOTHING.
-		//
-		// ⚠️ The bound on this model is `expires_at`, enforced in
-		// `classifyForRead` — and checked BEFORE this probe, so an `owner:` item
-		// past its declared deadline is removed however alive its owner reads.
-		// An item declaring no deadline is unbounded, which is the schema's
-		// default: persistence is what an unanswered ask gets unless its
-		// producer says otherwise.
+		// owner that has exited produce the same signal. So this model probes
+		// NOTHING, and a re-push always collapses onto the open row.
 		return true, nil
 	case HeartbeatLivenessModel:
 		return a.isHeartbeatFresh(value), nil
@@ -1874,13 +1949,4 @@ func (a *attentionStore) isHeartbeatFresh(path string) bool {
 	}
 	now := a.currentDateTimeGetter.Now().Time()
 	return now.Sub(info.ModTime()) <= a.heartbeatWindow.Duration()
-}
-
-// isAsked reports whether the item is a question the producer asked of someone
-// else, as opposed to a condition it reported. The schema draws the
-// distinction but declares no field carrying it, so it is read from
-// answer_mechanism: `ack` is defined as a condition report, and the other two
-// are questions.
-func isAsked(item *Item) bool {
-	return item.AnswerMechanism != AckAnswerMechanism
 }

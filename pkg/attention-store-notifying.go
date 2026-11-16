@@ -54,16 +54,16 @@ func (n *notifyingAttentionStore) Get(ctx context.Context, itemID ItemID) (*Item
 	return n.store.Get(ctx, itemID)
 }
 
-// Read delegates and never signals. It is not side-effect free — it prunes dead
-// askers — but that prune is driven by a producer's liveness rather than by
-// this call, and signalling from a read would make each live view's own
+// Read delegates and never signals. It is not side-effect free — it prunes
+// EXPIRED items — but that prune is driven by an item's own `expires_at` rather
+// than by this call, and signalling from a read would make each live view's own
 // re-read wake every other one.
 func (n *notifyingAttentionStore) Read(ctx context.Context) (Items, error) {
 	return n.store.Read(ctx)
 }
 
 // ReadBoard delegates and never signals, on the same reasoning as Read: it is a
-// read, and the prune it shares with Read is driven by a producer's liveness
+// read, and the prune it shares with Read is driven by an item's `expires_at`
 // rather than by this call. Signalling from it would make each live view's own
 // re-read wake every other one — the read is what the board does on every
 // change, so a signal here would be a feedback loop.
@@ -237,4 +237,17 @@ func (n *notifyingAttentionStore) SweepAnswered(
 		n.notifier.Notify()
 	}
 	return closed, nil
+}
+
+// RenewLive delegates and NEVER signals, on a stricter reasoning than
+// SweepAnswered's conditional.
+//
+// ⚠️ It runs on the same ticker and moves nothing a view renders: a renewal
+// writes `expires_at` on an item that is still open and still inside its window,
+// so the set of cards and their content are unchanged. Signalling would wake
+// every live view to re-read an unchanged store once per interval for the life of
+// the process — and unlike the sweep, it would do so on EVERY pass, because a
+// renewal happens whenever a defaulted deadline crosses the threshold.
+func (n *notifyingAttentionStore) RenewLive(ctx context.Context) (int, error) {
+	return n.store.RenewLive(ctx)
 }

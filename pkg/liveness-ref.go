@@ -20,11 +20,14 @@ import (
 type LivenessModel string
 
 const (
-	// SessionLivenessModel is a long-lived producer whose absence is
-	// meaningful. An item it *asked* is removed; an item it *reported* is kept.
+	// SessionLivenessModel is a long-lived producer whose absence is meaningful.
+	// ⚠️ It no longer removes an item: `expires_at` is the one clock that clears
+	// one. A dead session stops its defaulted deadline being renewed, so the item
+	// is cleared at most 24 h after its last renewal.
 	SessionLivenessModel LivenessModel = "session"
 	// HeartbeatLivenessModel is a short-lived producer that exits by design. A
-	// stale heartbeat means the producer is gone, and its *report* stays.
+	// stale heartbeat means the producer is gone, which stops the renewal of its
+	// defaulted deadline and leaves its report readable until that deadline.
 	HeartbeatLivenessModel LivenessModel = "heartbeat"
 	// OwnerLivenessModel is a producer that is *supposed* to exit, whose
 	// question is the operator's to answer rather than its own — a worker that
@@ -34,7 +37,8 @@ const (
 	// ⚠️ It is a third MODEL and NOT a second probe: it resolves against
 	// nothing. The registry deletes an entry on exit, so a never-registered
 	// owner and an exited one are indistinguishable, and reading either as gone
-	// prunes the gate this model exists to keep. See [[Attention Item Schema]]
+	// would stop the renewal of a gate this model exists to keep — an item is
+	// cleared only by its `expires_at`. See [[Attention Item Schema]]
 	// § How liveness is checked.
 	OwnerLivenessModel LivenessModel = "owner"
 )

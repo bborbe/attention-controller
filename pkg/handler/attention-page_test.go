@@ -1795,9 +1795,9 @@ var _ = Describe("AttentionPageHandler", func() {
 
 		// The prefix is reserved for the action lines — the global handlers and
 		// the parse guard log without it — which is what makes this count
-		// unambiguous where a bare console.error count is not. TEN since the
-		// decision path's stale arm gained its own line, matching the form path.
-		Expect(strings.Count(body, "attention board: ")).To(Equal(10))
+		// unambiguous where a bare console.error count is not. ELEVEN since the
+		// held-answer delivery path gained its own HTTP line and catch line.
+		Expect(strings.Count(body, "attention board: ")).To(Equal(11))
 
 		// THREE now: the form path's two failure branches, and the decision path's
 		// stale arm, which gained one when it took the form path's shape. Each
@@ -1809,10 +1809,10 @@ var _ = Describe("AttentionPageHandler", func() {
 	})
 
 	// The reserved prefix is asserted here as well as in the spec above, so a
-	// later change that introduces an eleventh occurrence fails loudly instead
+	// later change that introduces a twelfth occurrence fails loudly instead
 	// of silently widening a name another spec depends on.
-	It("keeps the reserved console prefix at exactly ten lines", func() {
-		Expect(strings.Count(get("GET").Body.String(), "attention board: ")).To(Equal(10))
+	It("keeps the reserved console prefix at exactly eleven lines", func() {
+		Expect(strings.Count(get("GET").Body.String(), "attention board: ")).To(Equal(11))
 	})
 
 	// The stream's own health. A stream that has stopped for good — a 404 after

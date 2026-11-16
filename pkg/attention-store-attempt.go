@@ -9,6 +9,7 @@ import (
 
 	"github.com/bborbe/errors"
 	libkv "github.com/bborbe/kv"
+	"github.com/golang/glog"
 )
 
 // RecordAttempt stores what an attempting arm observed about one item's answer.
@@ -23,10 +24,12 @@ import (
 // the item's CreatedAt, and a record with nothing to join to could never be
 // read back — a write that can never be observed is a bug wearing a success.
 //
-// A re-attempt overwrites the previous record. The record answers "what
-// happened to this item's answer", and the last arm to try is the one whose
-// outcome the reader needs; an append-only list would make the common read a
-// fold over history for no gain.
+// A re-attempt overwrites the previous record's carrier, outcome and
+// attempted_at — but a settled `delivered` is first-write-wins: the settlement
+// is carried forward untouched, so a redundant carrier arriving after the gate
+// was already settled cannot erase a real delivery. The record still answers
+// "what happened to this item's answer"; the last arm to try keeps the top-level
+// fields, and the settlement keeps the one fact a later write must not lose.
 func (a *attentionStore) RecordAttempt(
 	ctx context.Context,
 	itemID ItemID,
@@ -53,6 +56,30 @@ func (a *attentionStore) RecordAttempt(
 		if err := attempt.Validate(ctx); err != nil {
 			return errors.Wrap(ctx, err, "validate delivery attempt failed")
 		}
+		// ⚠️ A settled delivery is first-write-wins. Once an arm has observed
+		// that the answer reached the session, a redundant carrier arriving
+		// later must not overwrite that with its own failure — the false
+		// negative measured 2026-11-06 on card f2e9520d105f97d8911cc0f562f60454,
+		// where a delivered record read failed 15 seconds later. The later write
+		// is still stored in the top-level fields, so both writes stay visible
+		// with their own writer and timestamp; only the settlement is frozen.
+		var existing *DeliveryAttempt
+		previous, getErr := a.attempts.Get(ctx, tx, itemID.String())
+		if getErr == nil {
+			existing = previous
+		} else if !isNotFound(getErr) {
+			return errors.Wrap(ctx, getErr, "get delivery attempt failed")
+		}
+		carrySettlement(existing, &attempt, outcome)
+		// The incident's own shape: a redundant carrier reporting a non-delivery
+		// against a gate that already delivered. Log it so the next occurrence is
+		// diagnosable from the log, not only by reading the record.
+		if attempt.Settled != nil && outcome != DeliveredOutcome {
+			glog.V(2).Infof(
+				"kept settled delivery for item %s; ignoring %s outcome from %s",
+				itemID, outcome, carrier,
+			)
+		}
 		if err := a.attempts.Add(ctx, tx, itemID.String(), attempt); err != nil {
 			return errors.Wrap(ctx, err, "add delivery attempt failed")
 		}
@@ -62,6 +89,32 @@ func (a *attentionStore) RecordAttempt(
 		return nil, errors.Wrap(ctx, err, "record attempt failed")
 	}
 	return &attempt, nil
+}
+
+// carrySettlement sets attempt.Settled to the delivery this write must keep.
+//
+// A settled delivery is first-write-wins. An existing settlement is carried
+// forward untouched, and so is an existing `delivered` outcome from a record
+// written before the settlement field shipped — those records carry no
+// settlement, so their outcome is the only evidence of the delivery they hold.
+// A write that itself delivers settles when nothing is settled yet, which is
+// what keeps failed-then-delivered reading as a real recovery.
+func carrySettlement(existing *DeliveryAttempt, attempt *DeliveryAttempt, outcome DeliveryOutcome) {
+	if existing != nil {
+		attempt.Settled = existing.Settled
+		if attempt.Settled == nil && existing.Outcome == DeliveredOutcome {
+			attempt.Settled = &DeliverySettlement{
+				Carrier:     existing.Carrier,
+				AttemptedAt: existing.AttemptedAt,
+			}
+		}
+	}
+	if attempt.Settled == nil && outcome == DeliveredOutcome {
+		attempt.Settled = &DeliverySettlement{
+			Carrier:     attempt.Carrier,
+			AttemptedAt: attempt.AttemptedAt,
+		}
+	}
 }
 
 // Delivery returns the derived delivery status for one item — the one query
@@ -98,10 +151,14 @@ func (a *attentionStore) Delivery(
 		attempt, err := a.attempts.Get(ctx, tx, itemID.String())
 		switch {
 		case err == nil:
-			attemptedAt := attempt.AttemptedAt
-			report.Carrier = attempt.Carrier
+			// ⚠️ Read the EFFECTIVE outcome, never the last write: a redundant
+			// carrier can overwrite the top-level fields after a real delivery,
+			// and reading them directly would report the delivered card as
+			// failed. See DeliveryAttempt.EffectiveOutcome.
+			attemptedAt := attempt.EffectiveAttemptedAt()
+			report.Carrier = attempt.EffectiveCarrier()
 			report.AttemptedAt = &attemptedAt
-			switch attempt.Outcome {
+			switch attempt.EffectiveOutcome() {
 			case DeliveredOutcome:
 				report.Status = DeliveredStatus
 			case HeldOutcome:

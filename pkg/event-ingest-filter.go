@@ -6,6 +6,7 @@ package pkg
 
 import (
 	"context"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -67,15 +68,50 @@ func (f *finishedTaskFilter) Skip(ctx context.Context, record EventIngestRecord)
 		return false
 	}
 	askedAt := time.Unix(int64(*record.TS), 0)
+	name, ok := soleTaskName(record.Detail)
+	if !ok {
+		return false
+	}
 	for _, task := range f.source(ctx) {
-		if task.Name == "" || task.CompletedAt.IsZero() {
+		if task.Name != name || task.CompletedAt.IsZero() {
 			continue
 		}
-		if !task.CompletedAt.After(askedAt) && strings.Contains(record.Detail, task.Name) {
-			return true
-		}
+		return !task.CompletedAt.After(askedAt)
 	}
 	return false
+}
+
+// taskWikilink matches an Obsidian task link in a record's detail.
+//
+// ⚠️ **The closing `]]` is REQUIRED.** An unterminated `[[foo` in prose is not a
+// link, and matching it would suppress a card on ordinary text. An optional
+// `|alias` or `#heading` before the closing brackets is stripped, so
+// `[[Task|alias]]` and `[[Task#Heading]]` both name `Task`.
+var taskWikilink = regexp.MustCompile(`\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]`)
+
+// soleTaskName returns the one task a detail names, or false when it names none
+// or more than one.
+//
+// ⚠️ **Exactly one distinct task, and the whole point of the rule.** A closer
+// that merely MENTIONS a finished task is not a report on it:
+// `"Blocked by [[Open Task]], continuing [[Finished Task]]"` names two, and
+// suppressing it would hide the open one. The substring match this replaces
+// could not tell the two apart — a task name appearing anywhere in the prose was
+// enough — so it suppressed live cards.
+func soleTaskName(detail string) (string, bool) {
+	names := make(map[string]struct{}, 2)
+	for _, match := range taskWikilink.FindAllStringSubmatch(detail, -1) {
+		if name := strings.TrimSpace(match[1]); name != "" {
+			names[name] = struct{}{}
+		}
+	}
+	if len(names) != 1 {
+		return "", false
+	}
+	for name := range names {
+		return name, true
+	}
+	return "", false
 }
 
 // Compile-time guard: the filter must satisfy its own interface.

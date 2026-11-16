@@ -17,10 +17,12 @@ import (
 // NewAttentionReadHandler creates an HTTP handler that returns the items an arm
 // should render.
 //
-// This is the read path's liveness half: an item whose session producer has
-// exited and that the producer *asked* is omitted — and removed from the store
-// as a side effect of this read — while an item it merely *reported* survives
-// its producer's exit.
+// ⚠️ The read removes only EXPIRED items, and only as a side effect of the read.
+// It used to be the read path's liveness half — an item whose session producer
+// had exited and that the producer *asked* was omitted and removed — and that is
+// gone: a dead liveness subject no longer removes anything, so a reaped session's
+// question and its answer survive until `expires_at` passes. See [[Attention Item
+// Schema]] § Expiry.
 func NewAttentionReadHandler(store pkg.AttentionStore) http.Handler {
 	return libhttp.NewJSONErrorHandler(
 		libhttp.WithErrorFunc(
