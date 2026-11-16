@@ -38,6 +38,13 @@ const completedDateKey = "completed_date"
 // costs one low-value card; a wrongly suppressed card costs a decision nobody
 // ever sees.
 //
+// ⚠️ **It reads the whole task directory on every call, with no cache.** The
+// Python source cached this behind `STATUS_TTL`; caching is deliberately
+// deferred — a cache changes the staleness, and therefore the safety, argument
+// this filter rests on. What makes the uncached walk acceptable is the order in
+// `Skip`: the walk only runs for a `Stop` record whose detail names exactly one
+// task, so most closers never reach it.
+//
 // ⚠️ **No cross-vault veto.** The Python source dropped a title any vault held
 // OPEN; this service is configured with ONE vault root (`VAULT_DIR`), so there
 // is no second vault to consult and the rule would be inert. It returns if the
@@ -99,7 +106,7 @@ func completedTaskOf(root *os.Root, entry os.DirEntry) (CompletedTask, bool) {
 		glog.V(3).Infof("read vault task %s failed: %v", entry.Name(), err)
 		return CompletedTask{}, false
 	}
-	if !isTerminalTaskStatus(frontmatterValue(content, taskStatusKey)) {
+	if !isTerminalTaskStatus(taskStatus(content)) {
 		return CompletedTask{}, false
 	}
 	completedAt, ok := completionTime(frontmatterValue(content, completedDateKey))
@@ -135,11 +142,33 @@ func completionTime(raw string) (time.Time, bool) {
 		return time.Date(day.Year(), day.Month(), day.Day(), 23, 59, 59, 0, time.Local), true
 	}
 	// A zone-less instant is read in the machine's own zone, the way the Python
-	// source's `astimezone()` read it.
-	for _, layout := range []string{"2006-01-02T15:04:05", "2006-01-02 15:04:05"} {
+	// source's `astimezone()` read it. The seconds-less forms are included because
+	// the Python parser accepted them and a live vault writes them.
+	for _, layout := range []string{
+		"2006-01-02T15:04:05",
+		"2006-01-02 15:04:05",
+		"2006-01-02T15:04",
+		"2006-01-02 15:04",
+	} {
 		if parsed, err := time.ParseInLocation(layout, value, time.Local); err == nil {
 			return parsed, true
 		}
 	}
 	return time.Time{}, false
+}
+
+// taskStatus returns the task's `status` value as the Python source read it: the
+// first whitespace-delimited token of the frontmatter line, with surrounding
+// quotes stripped.
+//
+// ⚠️ The token, not the whole line, because the vault writes `status: "completed"`
+// and, rarely, an inline comment after the value. `frontmatterValue` returns the
+// rest of the line, so comparing it raw would read a quoted or commented status
+// as non-terminal and silently drop the task from the finished set.
+func taskStatus(content []byte) string {
+	status := frontmatterValue(content, taskStatusKey)
+	if fields := strings.Fields(status); len(fields) > 0 {
+		status = fields[0]
+	}
+	return strings.Trim(status, `"'`)
 }

@@ -63,6 +63,11 @@ var _ = Describe("CompletedTaskSource", func() {
 		Expect(byName).NotTo(HaveKey("In Progress Gamma"))
 		// Terminal but undated: no completion moment, so it may suppress nothing.
 		Expect(byName).NotTo(HaveKey("Undated Delta"))
+		// The instant form must resolve exactly, not merely appear — it is the shape
+		// almost every real completion date uses.
+		Expect(byName["Aborted Beta"].CompletedAt.Equal(
+			stdtime.Date(2026, 10, 17, 17, 0, 0, 0, stdtime.UTC),
+		)).To(BeTrue())
 	})
 
 	It("resolves a date-only completion to end of day, not start of day", func() {
