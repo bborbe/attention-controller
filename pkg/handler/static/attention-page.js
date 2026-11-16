@@ -540,6 +540,10 @@ function restoreHeld(held, message) {
    than stacked. */
 function scheduleReload() {
   if (pendingReload !== null) { return; }
+  /* ⚠️ Never while an answer is held: the reload would drop the held answer,
+     which was never sent. A stale answer's reload is best-effort, and the hold
+     wins — the stale item is not open, so nothing retryable is lost. */
+  if (heldAnswer !== null) { return; }
   pendingReload = window.setTimeout(function () { window.location.reload(); }, 2500);
 }
 /* flushHeld delivers the held answer NOW, used when the operator answers the
@@ -677,7 +681,10 @@ function sendAnswer(form, request) {
            is dropped. */
         showNote(form, failure.message, true);
         console.error('attention board: answer failed - HTTP ' + response.status, body);
-        window.setTimeout(function () { window.location.reload(); }, 2500);
+        /* The shared, cancellable reload — never a second inline timer: a held
+           Allow / Deny answer must be able to cancel it, exactly as it cancels
+           the decision path's own. */
+        scheduleReload();
         return;
       }
       showNote(form, 'Answer failed - HTTP ' + response.status + ' - ' + body, true);
