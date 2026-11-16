@@ -196,9 +196,12 @@ var _ = Describe("transcript reader", func() {
 			path := writeTranscript(root, sessionID,
 				`{"type":"user","message":{"content":"something else"}}`+"\n")
 			Expect(reader.HoldsLine(sessionID, "allow [abc]", nil)).To(BeFalse())
+			concrete, ok := reader.(*transcriptReader)
+			Expect(ok).To(BeTrue())
+			Expect(concrete.cache).To(HaveLen(1))
 			Expect(os.Remove(path)).To(Succeed())
 			Expect(reader.HoldsLine(sessionID, "allow [abc]", nil)).To(BeFalse())
-			Expect(reader.(*transcriptReader).cache).To(BeEmpty())
+			Expect(concrete.cache).To(BeEmpty())
 		})
 	})
 
