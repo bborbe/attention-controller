@@ -125,7 +125,7 @@ func (j *attentionWatcherJob) deliverable(
 	if item.AnsweredBy == attentionWatcherAnsweredBy {
 		return false
 	}
-	if attempt, ok := attempts[item.ItemID]; ok && attempt.Outcome == DeliveredOutcome {
+	if attempt, ok := attempts[item.ItemID]; ok && attempt.EffectiveOutcome() == DeliveredOutcome {
 		return false
 	}
 	if _, ok := itemSessionID(ctx, item); !ok {

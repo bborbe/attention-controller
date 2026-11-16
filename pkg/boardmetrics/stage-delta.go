@@ -124,10 +124,14 @@ var stageDeltaPairs = []stageDeltaPair{
 			// the release IS the delivery — counting either would report a
 			// delivery time for an answer that never arrived, which is 245 of
 			// the 736 answered cards measured on 2026-11-11.
-			if attempt.Outcome != pkg.DeliveredOutcome {
+			if attempt.EffectiveOutcome() != pkg.DeliveredOutcome {
 				return 0, false
 			}
-			return secondsBetween(item.AnsweredAt, &attempt.AttemptedAt)
+			// ⚠️ The settlement's own time, not the last write's: a redundant
+			// carrier can overwrite AttemptedAt after the delivery, and the
+			// answered->delivered latency is the delivery's, not its echo's.
+			settledAt := attempt.EffectiveAttemptedAt()
+			return secondsBetween(item.AnsweredAt, &settledAt)
 		},
 	},
 }

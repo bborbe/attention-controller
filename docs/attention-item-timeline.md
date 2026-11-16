@@ -59,12 +59,13 @@ An absent timestamp renders as `—`, never as a zero delta. A delta computed fr
 
 | Reader-visible outcome | Derivation |
 |---|---|
-| `delivered` | an attempt record exists with `outcome: delivered` |
+| `delivered` | an attempt record exists with `outcome: delivered`, **or** with a `settled` sub-record |
 | `failed` | an attempt record exists with `outcome: failed` |
 | `never_attempted` | **no** attempt record, and the item's `answered_at` is **after** the trail epoch |
 | `pre_trail_unknown` | **no** attempt record, and the item's `answered_at` is **before** the trail epoch |
 
 - **Only `delivered` and `failed` are stored**; `never_attempted` and `pre_trail_unknown` are derived by the reader against a trail epoch.
+- **A settled delivery is first-write-wins.** A `delivered` write records a `settled` sub-record (the delivering carrier and its `attempted_at`). A later write still updates the top-level `outcome` / `carrier` / `attempted_at`, but carries the settlement forward untouched, so a redundant carrier arriving after the gate was settled cannot erase a real delivery. Both writes stay visible: the top-level fields are the last write, the settlement is the delivery. Readers use the effective outcome, never the raw `outcome`. A later `delivered` still upgrades an earlier `failed`/`held`.
 - **The epoch gates on `answered_at`, not `created_at`**, and it is an **instant, not a date**. An unanswered item falls back to `created_at` — the only timestamp it has.
 - **A close is not a delivery.** The discriminator is `answered_at`, never `state`. An item closed with no `answered_at` was *cleared*: its answer's fate is `never_attempted` or `pre_trail_unknown`, never `delivered`.
 - **The attempting arm is not the answering arm**, and the set of attempting arms is open.
