@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.90.1
 
 - fix: **an answered card whose session is headless is delivered through claude-wrapper instead of being dropped.** `pkg/menu-answer.go` routed `DeliveryNoPane` to `settleQuietly` and `pkg/attention-watcher-job.go` recorded nothing for the same verdict, so a `sdk-cli` worker's answered question reached no one — measured 2026-11-15 as `verdict=no-pane reason="session bd29a653 is pane-less — no pane by construction"` followed by the worker re-asking the identical question. The new `HeadlessAnswerDeliverer` writes the answer as a turn through the wrapper's message route (`POST /api/1.0/sessions/{id}/message`), resuming the session first (`POST /api/1.0/sessions` with `{"resume": …, "cwd": …}`) when the wrapper answers 404 `ErrSessionNotFound` or 410 `ErrSessionExited`; a resume is keyed by the resumed id, so no second session is minted. The turn carries the question and the answer, and ends with `/vault-cli:work-on-task "<task>"` only when the item's provenance resolved a task name. A delivery that cannot land stays pending and is retried each cycle with an `action=headless_retry` line naming the item, reason and attempt count, until it succeeds once or the item's `expires_at` passes — at which point the failure is recorded. A tab session keeps the pane path unchanged
 
