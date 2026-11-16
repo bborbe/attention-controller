@@ -556,10 +556,35 @@ function flushHeld() {
   clearHold();
   deliverHeld(held);
 }
+/* flushHeldOnUnload delivers the held answer when the page goes away.
+   ⚠️ Load bearing: closing or navigating away inside the hold would otherwise
+   drop an answer the operator already gave, and the asking session would wait
+   for a reply that never comes — the hold must not turn a click into silence.
+   `pagehide` covers close, navigation and bfcache entry alike, and sendBeacon
+   is preferred because a plain fetch is cancelled with the document;
+   keepalive is the fallback where sendBeacon is absent. Undo is unaffected:
+   an undone answer was never held, so there is nothing to send. */
+function flushHeldOnUnload() {
+  if (!heldAnswer) { return; }
+  var held = heldAnswer;
+  clearHold();
+  var url = '/api/1.0/attention/' + encodeURIComponent(held.itemID) + '/answer';
+  var body = JSON.stringify(held.request);
+  if (navigator.sendBeacon) {
+    navigator.sendBeacon(url, new Blob([body], { type: 'application/json' }));
+    return;
+  }
+  fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: body,
+    keepalive: true
+  });
+}
+window.addEventListener('pagehide', flushHeldOnUnload);
 /* undoHeld cancels the held answer and puts its card back on top, open and
    pending. Nothing is delivered, so the store still holds the item as open and
-   the asking session hears nothing. */
-function undoHeld() {
+   the asking session hears nothing. */function undoHeld() {
   if (!heldAnswer) { return; }
   var held = heldAnswer;
   clearHold();
@@ -1621,13 +1646,25 @@ function replayFailure(row) {
     return row ? row.querySelector('button[data-speak]') : null;
   }
   function upsertRow(itemID, html) {
-    /* A held card is off the board and waiting to be delivered or undone, so a
-       stream frame for it must not re-insert it under the bar — the bar says it
-       is held, and a second copy would let the operator click it again. The
-       held card's own answer is what changes the item next. */
-    if (heldAnswer && heldAnswer.itemID === itemID) { return; }
     /* Prepared first: a throw in here leaves the board untouched. */
     var prepared = preparedHTML(html, itemID);
+    /* A held card is off the board and waiting to be delivered or undone, so a
+       frame that still shows it OPEN must not re-insert it under the bar — the
+       bar says it is held, and a second copy would let the operator click it
+       again. The held card's own answer is what changes the item next.
+       ⚠️ A frame that shows it ANSWERED is the other case and must not be
+       ignored: the store moved on under the hold (another arm answered it, or
+       its producer withdrew it), so delivering would be refused and Undo would
+       restore a card the store no longer has open. The hold is moot — cancel it
+       and let the frame render. */
+    if (heldAnswer && heldAnswer.itemID === itemID) {
+      var heldProbe = document.createElement('div');
+      heldProbe.innerHTML = prepared;
+      var heldNode = heldProbe.firstElementChild;
+      if (!heldNode || !isAnswered(heldNode)) { return; }
+      delete removedAnchors[itemID];
+      clearHold();
+    }
     var hidden = -1;
     for (var i = 0; i < parked.length; i++) {
       if (parked[i].id === itemID) { hidden = i; }

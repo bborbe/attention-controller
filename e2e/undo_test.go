@@ -266,6 +266,57 @@ var _ = Describe("the held answer", func() {
 		Eventually(func() pkg.State { return getItem(second).State }, "5s").
 			Should(Equal(pkg.AnsweredState))
 	})
+
+	// The hold must not turn a click into silence. Leaving the page inside the
+	// window delivers the answer through the pagehide path instead of dropping
+	// it, so the asking session is never left waiting on a reply the operator
+	// already gave.
+	// ⚠️ Navigation rather than page.Close(): Playwright closes a page at the
+	// protocol level and skips the unload events, so a close-based case would
+	// assert the harness rather than the page. A navigation fires pagehide for
+	// the same reason a tab close does.
+	It("delivers the held answer when the page is left inside the window", func() {
+		itemID := pushPermission("e2e: unload case", "e2e-unload")
+
+		page := newPage("")
+		defer func() { _ = page.Close() }()
+
+		Eventually(func() int { return rowCount(page, itemID) }).Should(Equal(1))
+
+		Expect(page.Locator(rowSelector(itemID) + " button[data-decision=deny]").Click()).To(Succeed())
+		Eventually(func() int { return rowCount(page, itemID) }).Should(Equal(0))
+		Expect(getItem(itemID).State).To(Equal(pkg.OpenState))
+
+		// Nothing has been delivered yet: the answer is held, not sent.
+		_, err := page.Goto("about:blank")
+		Expect(err).NotTo(HaveOccurred())
+
+		Eventually(func() pkg.State { return getItem(itemID).State }, "6s", "100ms").
+			Should(Equal(pkg.AnsweredState))
+		Expect(getItem(itemID).Decision).To(Equal(pkg.DenyDecision))
+	})
+
+	// The other direction: a stream frame that shows the held item ANSWERED means
+	// the store moved on under the hold, so the hold is cancelled rather than left
+	// offering an Undo that would restore a card the store no longer has open.
+	It("cancels the hold when the store answers the held item from another arm", func() {
+		itemID := pushPermission("e2e: answered under hold", "e2e-answered-under-hold")
+
+		page := newPage("")
+		defer func() { _ = page.Close() }()
+
+		Eventually(func() int { return rowCount(page, itemID) }).Should(Equal(1))
+
+		Expect(page.Locator(rowSelector(itemID) + " button[data-decision=deny]").Click()).To(Succeed())
+		Eventually(func() int { return rowCount(page, itemID) }).Should(Equal(0))
+		Eventually(func() bool { return undoBarActive(page) }).Should(BeTrue())
+
+		// Another arm answers it through the API while the board is holding.
+		answer(itemID)
+
+		Eventually(func() bool { return undoBarActive(page) }, "5s").Should(BeFalse())
+		Expect(getItem(itemID).State).To(Equal(pkg.AnsweredState))
+	})
 })
 
 // firstRowOffsetTop reads the offsetTop of the board's first card. It is the

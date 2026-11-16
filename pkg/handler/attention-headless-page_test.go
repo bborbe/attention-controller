@@ -504,6 +504,19 @@ var _ = Describe("the Allow / Deny pair on the served page", func() {
 			Expect(body).To(ContainSubstring(
 				"window.setTimeout(function () { window.location.reload(); }, 2500);",
 			))
+
+			// The hold must not turn a click into silence in either direction:
+			// closing the tab inside the window delivers the answer instead of
+			// dropping it, and a frame that shows the held item already ANSWERED
+			// cancels the hold rather than letting Undo restore a card the store
+			// no longer has open.
+			Expect(body).To(ContainSubstring("function flushHeldOnUnload()"))
+			Expect(body).To(ContainSubstring(
+				"window.addEventListener('pagehide', flushHeldOnUnload);",
+			))
+			Expect(body).To(ContainSubstring(
+				"if (!heldNode || !isAnswered(heldNode)) { return; }",
+			))
 		},
 	)
 })
