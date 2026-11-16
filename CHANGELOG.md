@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.91.3
 
 - fix: **the board re-renders only the rows whose inputs changed, instead of re-templating the whole board on every store change.** `attentionStreamHandler.render` executed the row template for all 536 rows the board held, on every write, at roughly 0.5 s of CPU per render — and the unforwarded-closers arm posts hundreds of cards in a batch, so one scan re-templated the entire board hundreds of times to change one row each. `boardSnapshot` now carries the `rowInput` each row was derived from (item, provenance, delivery report); the next render compares inputs and carries an unchanged row's HTML over verbatim. The template output is a pure function of those three inputs plus the handler's own immutable `speakEnabled` / `vaultName`, which is what makes carrying a row over exact rather than approximate. Measured on the live board 2026-11-16: **536 rows per render → 4.8** (988 renders / 529 479 rows before; 278 renders / 1 323 rows after), steady-state CPU **8.9–20.3 %, mean ~13 %**. `attention_board_rows_rendered_total` now counts rows RE-RENDERED rather than rows drawn, because the counter exists to show what a render cost and a carried-over row cost nothing.
 
