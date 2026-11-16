@@ -201,11 +201,19 @@ func (r *transcriptReader) HoldsLine(sessionID string, line string, since *int64
 	if r.cachedAbsence(path, info, key) {
 		return false
 	}
-	raw, ok := r.readWindow(path, since)
+	readWindow := r.readWindow
+	if readWindow == nil {
+		// Only NewTranscriptReader sets this; the default keeps a directly
+		// constructed reader from panicking on the hot path.
+		readWindow = readTranscriptWindow
+	}
+	raw, ok := readWindow(path, since)
 	if !ok {
 		r.forgetAbsence(path)
 		return false
 	}
+	// The scan below walks an already-read in-memory buffer: no I/O, so there is
+	// nothing to cancel mid-loop and the interface carries no ctx.
 	for _, chunk := range bytes.Split(raw, []byte("\n")) {
 		if transcriptRecordQuotes(string(chunk), want) {
 			return true
