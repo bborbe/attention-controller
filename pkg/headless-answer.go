@@ -30,8 +30,6 @@ type AnswerContext struct {
 }
 
 // AnswerContextResolver resolves the delivery context for one answered item.
-//
-//counterfeiter:generate -o ../mocks/answer-context-resolver.go --fake-name AnswerContextResolver . AnswerContextResolver
 type AnswerContextResolver interface {
 	// AnswerContext returns the item's delivery context, or a zero value when
 	// nothing could be resolved.
@@ -75,8 +73,6 @@ func (r *provenanceAnswerContext) AnswerContext(
 // headless `sdk-cli` worker — so the pane path does not fail on those cards, it
 // has nothing to type into. Treating that as "nothing to do" silently dropped
 // the operator's answer, and the worker re-asked the identical question.
-//
-//counterfeiter:generate -o ../mocks/headless-answer-deliverer.go --fake-name HeadlessAnswerDeliverer . HeadlessAnswerDeliverer
 type HeadlessAnswerDeliverer interface {
 	// DeliverHeadless attempts one delivery of an answered card.
 	//
