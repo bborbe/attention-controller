@@ -207,7 +207,7 @@ type stageDeltaCollector struct {
 
 	// mu guards the cached reading AND is held across the population read, so
 	// two scrapes arriving together share one read instead of starting one
-	// each — the same shape the federating store's peer cache uses.
+	// each.
 	mu          sync.Mutex
 	snapshot    []stageDeltaHistogram
 	refreshedAt libtime.DateTime

@@ -701,8 +701,8 @@ func readTeamVaultField(ctx context.Context, field string) (string, error) {
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	// ⚠️ An allowlisted environment, not the inherited one: this service holds
-	// ATTENTION_STORE_TOKEN and ATTENTION_UPSTREAM_TOKEN, and teamvault-cli needs
-	// neither. HOME is what it does need — its config lives under it — so a child
+	// ATTENTION_STORE_TOKEN, and teamvault-cli does not need it. HOME is what it
+	// does need — its config lives under it — so a child
 	// that cannot find its credentials without HOME still works.
 	cmd.Env = childEnv()
 	if err := cmd.Run(); err != nil {

@@ -86,13 +86,6 @@ func wrapRateError(ctx context.Context, err error, itemID pkg.ItemID) error {
 			http.StatusNotFound,
 			map[string]any{"item_id": itemID.String()},
 		)
-	case errors.Is(err, pkg.ErrPeerUnavailable):
-		return libhttp.WrapWithDetails(
-			errors.Wrap(ctx, err, "rate failed"),
-			pkg.ErrorCodePeerUnavailable,
-			http.StatusServiceUnavailable,
-			map[string]any{"item_id": itemID.String()},
-		)
 	default:
 		return errors.Wrap(ctx, err, "rate failed")
 	}
