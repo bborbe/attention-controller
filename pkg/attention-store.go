@@ -272,6 +272,12 @@ type AttentionStore interface {
 	// ErrItemNotFound rather than an orphan record, because the read surface
 	// joins the record to the item's CreatedAt and a record with nothing to
 	// join to could never be read back.
+	//
+	// ⚠️ A settled `delivered` is first-write-wins. Later writes keep the
+	// top-level carrier/outcome/attempted_at, but the settlement is carried
+	// forward, so a redundant carrier arriving after the gate was settled cannot
+	// erase a real delivery. Read `Delivery` or `DeliveryAttempt.EffectiveOutcome`
+	// rather than the raw Outcome.
 	RecordAttempt(
 		ctx context.Context,
 		itemID ItemID,

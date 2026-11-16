@@ -9,6 +9,7 @@ import (
 
 	"github.com/bborbe/errors"
 	libkv "github.com/bborbe/kv"
+	"github.com/golang/glog"
 )
 
 // RecordAttempt stores what an attempting arm observed about one item's answer.
@@ -23,10 +24,12 @@ import (
 // the item's CreatedAt, and a record with nothing to join to could never be
 // read back — a write that can never be observed is a bug wearing a success.
 //
-// A re-attempt overwrites the previous record. The record answers "what
-// happened to this item's answer", and the last arm to try is the one whose
-// outcome the reader needs; an append-only list would make the common read a
-// fold over history for no gain.
+// A re-attempt overwrites the previous record's carrier, outcome and
+// attempted_at — but a settled `delivered` is first-write-wins: the settlement
+// is carried forward untouched, so a redundant carrier arriving after the gate
+// was already settled cannot erase a real delivery. The record still answers
+// "what happened to this item's answer"; the last arm to try keeps the top-level
+// fields, and the settlement keeps the one fact a later write must not lose.
 func (a *attentionStore) RecordAttempt(
 	ctx context.Context,
 	itemID ItemID,
@@ -67,6 +70,17 @@ func (a *attentionStore) RecordAttempt(
 		switch {
 		case getErr == nil:
 			attempt.Settled = existing.Settled
+			// ⚠️ Seed the settlement from a record written BEFORE this change
+			// shipped: those carry no Settled sub-record, so an existing
+			// `delivered` outcome is the only evidence of the delivery they hold.
+			// Without this, a post-upgrade redundant carrier erases exactly the
+			// pre-upgrade deliveries this fix exists to protect.
+			if attempt.Settled == nil && existing.Outcome == DeliveredOutcome {
+				attempt.Settled = &DeliverySettlement{
+					Carrier:     existing.Carrier,
+					AttemptedAt: existing.AttemptedAt,
+				}
+			}
 		case isNotFound(getErr):
 		default:
 			return errors.Wrap(ctx, getErr, "get delivery attempt failed")
@@ -76,6 +90,15 @@ func (a *attentionStore) RecordAttempt(
 				Carrier:     carrier,
 				AttemptedAt: attempt.AttemptedAt,
 			}
+		}
+		// The incident's own shape: a redundant carrier reporting a non-delivery
+		// against a gate that already delivered. Log it so the next occurrence is
+		// diagnosable from the log, not only by reading the record.
+		if attempt.Settled != nil && outcome != DeliveredOutcome {
+			glog.V(2).Infof(
+				"kept settled delivery for item %s; ignoring %s outcome from %s",
+				itemID, outcome, carrier,
+			)
 		}
 		if err := a.attempts.Add(ctx, tx, itemID.String(), attempt); err != nil {
 			return errors.Wrap(ctx, err, "add delivery attempt failed")

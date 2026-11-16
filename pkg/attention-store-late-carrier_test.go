@@ -121,4 +121,35 @@ var _ = Describe("A settled delivery survives a late carrier write", func() {
 		Expect(deliveredAt.Equal(now.Add(-15 * stdtime.Second))).To(BeTrue())
 		Expect(stored.EffectiveOutcome()).To(Equal(pkg.DeliveredOutcome))
 	})
+
+	// The other direction must keep working: the first arm to reach the session
+	// is the one whose outcome the reader needs, so failed-then-delivered is a
+	// real recovery. A future refactor that froze the top-level fields whenever a
+	// settlement existed would break exactly this.
+	It("still upgrades a failed attempt when a later carrier delivers", func() {
+		attentionStore := store()
+		item := push(attentionStore, "gate-2")
+
+		_, err := attentionStore.RecordAttempt(
+			ctx, item.ItemID, "supervisor:attention-poll", pkg.FailedOutcome,
+		)
+		Expect(err).To(BeNil())
+
+		report, err := attentionStore.Delivery(ctx, item.ItemID)
+		Expect(err).To(BeNil())
+		Expect(report.Status).To(Equal(pkg.FailedStatus))
+
+		now = now.Add(15 * stdtime.Second)
+		_, err = attentionStore.RecordAttempt(
+			ctx, item.ItemID, "watcher:attention-watcher", pkg.DeliveredOutcome,
+		)
+		Expect(err).To(BeNil())
+
+		report, err = attentionStore.Delivery(ctx, item.ItemID)
+		Expect(err).To(BeNil())
+		Expect(report.Status).To(Equal(pkg.DeliveredStatus),
+			"failed-then-delivered is a real recovery and must keep reading as delivered")
+		Expect(report.Carrier).To(Equal("watcher:attention-watcher"),
+			"the report must name the arm that delivered")
+	})
 })
