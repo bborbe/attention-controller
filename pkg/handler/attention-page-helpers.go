@@ -681,6 +681,37 @@ ul.items { list-style: none; padding: 0; margin: 0; }
    no transition — it decides which of the rows the store already returned are
    drawn. */
 .board-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 0 0 16px; }
+/* The held-answer bar. ⚠️ It is ALWAYS in the document and always occupies its
+   fixed height; only its visibility toggles. That is what keeps the top card's
+   offsetTop constant when the bar appears and when it hides — a bar that
+   entered or left the flow would move every card under the operator's cursor,
+   and the next-card flow is the property this feature must not disturb.
+   visibility rather than display is load bearing for the same reason: display
+   would remove the box and shift the board. */
+.undo-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 40px;
+  margin: 0 0 12px;
+  visibility: hidden;
+}
+.undo-bar.is-active { visibility: visible; }
+.undo-verb { font-weight: 600; }
+.undo-verb::after { content: ": "; }
+.undo-title { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 48ch; }
+.undo-button {
+  font-family: inherit;
+  font-size: 13px;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 5px 12px;
+  cursor: pointer;
+}
+.undo-button:hover { border-color: var(--muted); }
+.undo-countdown { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
 /* An answered item stays on the board as a dimmed record rather than
    disappearing: the operator asked to see what they answered, and the record is
    the only place the answer standing in their name is visible. It leaves when
