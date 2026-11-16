@@ -89,6 +89,48 @@ type ClaudeWrapperClient interface {
 		decision string,
 		expectRequestID *string,
 	) (DeliveryVerdict, string)
+
+	// WrapperMessageDeliverer is the turn-writing half: it carries a finished
+	// answer into a session that has already ended its turn.
+	//
+	// It is embedded rather than repeated so one client serves both arms, while
+	// the delivery arm still depends on the narrower interface and needs no
+	// probe/answer route from its fakes.
+	WrapperMessageDeliverer
+}
+
+// WrapperMessageDeliverer carries an answer TURN into a headless session.
+//
+// ⚠️ It is a NARROWER interface than ClaudeWrapperClient on purpose: the settle
+// arm needs to probe and answer an open gate, while the delivery arm needs to
+// write a turn into a session that has already ended one. The delivery arm
+// depends only on this half, so its fakes implement no route they never call.
+type WrapperMessageDeliverer interface {
+	// DeliverMessage writes one turn into the session, resuming it first when
+	// the wrapper no longer holds it.
+	//
+	// It returns `retry` for anything that is not the wrapper's own answer —
+	// an outage, a busy session, a refused resume — because a dropped answer is
+	// the failure this route exists to remove.
+	DeliverMessage(
+		ctx context.Context,
+		sessionID string,
+		cwd string,
+		text string,
+	) (DeliveryVerdict, string)
+
+	// SessionMode reports the mode the wrapper recorded for a session at spawn —
+	// "headless" or "interactive".
+	//
+	// ⚠️ The wrapper KEEPS a record for a session that has exited (that is why a
+	// delivery can tell 404 `ErrSessionNotFound` from 410 `ErrSessionExited`), so
+	// this answers for a reaped session too. The session registry cannot: its
+	// record is deleted on exit, which is why the pane carrier cannot distinguish
+	// a reaped headless worker from a reaped tab session.
+	//
+	// The second return is false when the wrapper holds no record at all, so an
+	// unreadable or absent record is never mistaken for "not headless".
+	SessionMode(ctx context.Context, sessionID string) (string, bool)
 }
 
 // NewClaudeWrapperClient creates the client.
@@ -250,6 +292,139 @@ func (c *claudeWrapperClient) AnswerViaWrapper(
 	}
 }
 
+// DeliverMessage writes one answer turn into a headless session.
+//
+// ⚠️ The message route is tried FIRST, and the resume only when the wrapper says
+// the session is gone (404 `ErrSessionNotFound`) or exited (410
+// `ErrSessionExited`). Resuming first would restart a child that was still
+// running, and the wrapper refuses that with 409 `ErrSessionLive` — a refusal
+// this route must not turn into a dropped answer.
+//
+// A resume is keyed by the RESUMED id, so it does not mint a second session: the
+// conversation the answer belongs to keeps its own id.
+func (c *claudeWrapperClient) DeliverMessage(
+	ctx context.Context,
+	sessionID string,
+	cwd string,
+	text string,
+) (DeliveryVerdict, string) {
+	if c.baseURL == "" {
+		return DeliveryRetry, "no wrapper configured (ATTENTION_WRAPPER_URL unset)"
+	}
+	if !isUUID(sessionID) {
+		// A value that is not a UUID cannot be a wrapper key, so no retry can
+		// ever succeed: refusing is the honest answer, and it surfaces the card.
+		return DeliveryRefuse, "session id " + shortID(sessionID) + " is not a wrapper session id"
+	}
+	if strings.TrimSpace(text) == "" {
+		// A resume with no prompt is a no-op, so an empty turn would record a
+		// delivery that never happened.
+		return DeliveryRefuse, "empty answer turn"
+	}
+	status, ok := c.postMessage(ctx, sessionID, text)
+	if !ok {
+		return DeliveryRetry, "wrapper unreachable"
+	}
+	if status >= 200 && status < 300 {
+		return DeliveryOK, "message delivered to session " + shortID(sessionID)
+	}
+	if status != http.StatusNotFound && status != http.StatusGone {
+		return DeliveryRetry, "wrapper answered " + itoa(status) + " to the message"
+	}
+	// The wrapper holds no live child for the session. Resume it, then send the
+	// same turn — the answer is the reason the child is being brought back.
+	if verdict, reason, resumed := c.resumeSession(ctx, sessionID, cwd); !resumed {
+		return verdict, reason
+	}
+	status, ok = c.postMessage(ctx, sessionID, text)
+	if !ok {
+		return DeliveryRetry, "wrapper unreachable after resume"
+	}
+	if status >= 200 && status < 300 {
+		return DeliveryOK, "resumed and delivered to session " + shortID(sessionID)
+	}
+	return DeliveryRetry, "resumed but the message answered " + itoa(status)
+}
+
+// resumeSession asks the wrapper to continue the conversation under its own id.
+//
+// The resumed spawn carries the session's cwd so the child restarts in the
+// workspace it was working in; an empty cwd is legal and lets the wrapper inherit
+// its own.
+// SessionMode reports the mode the wrapper recorded for a session at spawn.
+//
+// ⚠️ A record that cannot be read is reported as absent, never as "not
+// headless": the caller must be able to tell "the wrapper says interactive" from
+// "the wrapper did not answer", because only the first may refuse an answer.
+func (c *claudeWrapperClient) SessionMode(
+	ctx context.Context,
+	sessionID string,
+) (string, bool) {
+	status, body, ok := c.request(ctx, "/api/1.0/sessions", nil)
+	if !ok || status != http.StatusOK {
+		return "", false
+	}
+	var sessions []struct {
+		ID   string `json:"id"`
+		Mode string `json:"mode"`
+	}
+	if err := json.Unmarshal(body, &sessions); err != nil {
+		return "", false
+	}
+	for _, session := range sessions {
+		if session.ID == sessionID {
+			return session.Mode, true
+		}
+	}
+	return "", false
+}
+
+func (c *claudeWrapperClient) resumeSession(
+	ctx context.Context,
+	sessionID string,
+	cwd string,
+) (DeliveryVerdict, string, bool) {
+	payload, err := json.Marshal(map[string]string{
+		"resume": sessionID,
+		"cwd":    cwd,
+	})
+	if err != nil {
+		return DeliveryRefuse, "encode resume failed", false
+	}
+	status, _, ok := c.request(ctx, "/api/1.0/sessions", payload)
+	if !ok {
+		return DeliveryRetry, "wrapper unreachable during resume", false
+	}
+	switch {
+	case status >= 200 && status < 300:
+		return DeliveryOK, "resumed session " + shortID(sessionID), true
+	case status == http.StatusConflict:
+		// ErrSessionLive: something already brought it back between the failed
+		// message and this resume. The session is there, so send the turn.
+		return DeliveryOK, "session " + shortID(sessionID) + " is live again", true
+	default:
+		return DeliveryRetry, "resume refused with " + itoa(status), false
+	}
+}
+
+// postMessage posts one turn and reports the status, or false when the wrapper
+// could not be reached.
+func (c *claudeWrapperClient) postMessage(
+	ctx context.Context,
+	sessionID string,
+	text string,
+) (int, bool) {
+	payload, err := json.Marshal(map[string]string{"text": text})
+	if err != nil {
+		return 0, false
+	}
+	status, _, ok := c.request(ctx, "/api/1.0/sessions/"+sessionID+"/message", payload)
+	if !ok {
+		return 0, false
+	}
+	return status, true
+}
+
 // request performs one wrapper call and returns the status, body and whether
 // the call completed.
 //
@@ -338,5 +513,8 @@ func itoa(value int) string {
 	return strconv.Itoa(value)
 }
 
-// Compile-time guard: the client must satisfy its own interface.
-var _ ClaudeWrapperClient = (*claudeWrapperClient)(nil)
+// Compile-time guards: the client must satisfy both of its interfaces.
+var (
+	_ ClaudeWrapperClient     = (*claudeWrapperClient)(nil)
+	_ WrapperMessageDeliverer = (*claudeWrapperClient)(nil)
+)

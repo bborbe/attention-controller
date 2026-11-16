@@ -34,6 +34,7 @@ type UnforwardedLogf func(format string, args ...any)
 type UnforwardedClosersJob struct {
 	scanner  *UnforwardedClosersScanner
 	store    AttentionStore
+	liveness SessionLivenessChecker
 	interval time.Duration
 	logf     UnforwardedLogf
 	now      libtime.CurrentDateTimeGetter
@@ -46,9 +47,17 @@ type UnforwardedClosersJob struct {
 // the launchd job posted with `--post`, so main passes this process's own store,
 // while a spec that only exercises the count passes nil and gets exactly one
 // line per cycle.
+//
+// ⚠️ A nil liveness checker means "every session is live", so every finding is
+// still carded. That is the deliberate fail-open direction: this arm exists to
+// recover a gate that never reached the store, and silently dropping one
+// because the probe was not wired would turn a missing card into an invisible
+// one — the exact loss the arm exists to prevent. A nil checker therefore mints
+// too much, never too little.
 func NewUnforwardedClosersJob(
 	scanner *UnforwardedClosersScanner,
 	store AttentionStore,
+	liveness SessionLivenessChecker,
 	interval time.Duration,
 	logf UnforwardedLogf,
 ) *UnforwardedClosersJob {
@@ -61,6 +70,7 @@ func NewUnforwardedClosersJob(
 	return &UnforwardedClosersJob{
 		scanner:  scanner,
 		store:    store,
+		liveness: liveness,
 		interval: interval,
 		logf:     logf,
 		now:      libtime.NewCurrentDateTime(),
@@ -93,12 +103,32 @@ func (j *UnforwardedClosersJob) RunOnce(ctx context.Context) UnforwardedScan {
 
 // post re-presents one lost gate on the operator's board.
 //
+// ⚠️ A finding whose session is no longer live is logged and NOT carded. The
+// card's `owner:` liveness ref keeps it on the board indefinitely, but its
+// answer can only be delivered back to the session that asked — and that
+// session has exited, so the card is a decision the operator can only dismiss.
+// Measured 2026-11-16: 601 such cards from 112 sessions, none of whose sessions
+// could answer. The check is a FILTER, not a disable: a live session's lost gate
+// is still re-presented, which is what keeps the arm a recovery path rather than
+// a silence. A nil checker fails open (see NewUnforwardedClosersJob), and
+// `IsLive` itself fails open on an unreadable registry, so neither can suppress
+// a gate that might still be answerable.
+//
 // The dedup key is the local item id, so a repeated scan of the same window
 // re-posts nothing while the card stays open: one lost gate, one card. A failed
 // post is logged, never swallowed — a silent failure here would look exactly
 // like a clean scan.
 func (j *UnforwardedClosersJob) post(ctx context.Context, finding UnforwardedFinding) {
 	if j.store == nil {
+		return
+	}
+	if j.liveness != nil && !j.liveness.IsLive(ctx, finding.Session) {
+		j.logf(
+			"job=%s action=skip_dead_session item=%s session=%s",
+			UnforwardedClosersJobName,
+			finding.Item,
+			firstEight(finding.Session),
+		)
 		return
 	}
 	expiresAt := j.now.Now().Add(libtime.Duration(unforwardedClosersCardTTL))

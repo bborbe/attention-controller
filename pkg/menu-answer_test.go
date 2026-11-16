@@ -303,10 +303,11 @@ var _ = Describe("menu answer job", func() {
 		Expect(outcome).To(Equal(pkg.FailedOutcome))
 	})
 
-	It("records nothing when the session is pane-less by construction", func() {
-		// The normal shape for every headless `sdk-cli` worker: nothing was
-		// attempted and nothing failed, so a `failed` record would render an
-		// undeliverable card for a failure the arm never experienced.
+	It("records nothing when the session is pane-less and no headless arm is wired", func() {
+		// With no delivery arm configured nothing can carry the answer, and
+		// nothing was attempted — so a `failed` record would render an
+		// undeliverable card for a failure the arm never experienced. `main.go`
+		// always wires the headless arm; this is the degenerate configuration.
 		locator.verdict = pkg.DeliveryNoPane
 		locator.pane = 0
 		item := answeredMenuItem("item-1", nil)
@@ -317,6 +318,57 @@ var _ = Describe("menu answer job", func() {
 		Expect(job.DeliverOnce(context.Background())).To(Succeed())
 		Expect(writer.sent).To(BeEmpty())
 		Expect(store.RecordAttemptCallCount()).To(Equal(0))
+	})
+
+	// ⚠️ The reaped-session branch. A gone session is refused by the pane
+	// carrier because its `Entrypoint` lived in a registry record deleted on
+	// exit; the wrapper still knows whether it ran headless, so only that case
+	// is resumed. Measured 2026-11-16: session 46e673cf, item 76901296…, answered
+	// and settled `failed` with "has no live process with a tty".
+	It(
+		"resumes a reaped HEADLESS session through the delivery arm instead of settling failed",
+		func() {
+			locator.verdict = pkg.DeliveryRefuse
+			locator.pane = 0
+			locator.reason = "session 46e673cf has no live process with a tty"
+			headless := &fakeHeadlessDeliverer{terminal: true, canResume: true}
+			job = pkg.NewMenuAnswerJob(
+				store, locator, writer, time.Hour,
+				pkg.WithMenuAnswerTimings(0, 2),
+				pkg.WithMenuAnswerMaxCycles(2),
+				pkg.WithMenuAnswerHeadlessDelivery(headless),
+			)
+			item := answeredMenuItem("item-1", nil)
+			item.Options = pkg.AnswerOptions{{Label: "Yes"}}
+			item.Answer = &pkg.Answer{Kind: pkg.OptionAnswerKind, Value: "Yes"}
+			store.ReadBoardReturns(pkg.Items{item}, nil)
+
+			Expect(job.DeliverOnce(context.Background())).To(Succeed())
+			Expect(headless.calls).To(HaveLen(1), "the answer must reach the headless arm")
+			Expect(writer.sent).To(BeEmpty())
+		},
+	)
+
+	It("still refuses a reaped TAB session, so the pane boundary holds", func() {
+		locator.verdict = pkg.DeliveryRefuse
+		locator.pane = 0
+		locator.reason = "session 46e673cf has no live process with a tty"
+		headless := &fakeHeadlessDeliverer{terminal: true, canResume: false}
+		job = pkg.NewMenuAnswerJob(
+			store, locator, writer, time.Hour,
+			pkg.WithMenuAnswerTimings(0, 2),
+			pkg.WithMenuAnswerMaxCycles(2),
+			pkg.WithMenuAnswerHeadlessDelivery(headless),
+		)
+		item := answeredMenuItem("item-1", nil)
+		item.Options = pkg.AnswerOptions{{Label: "Yes"}}
+		item.Answer = &pkg.Answer{Kind: pkg.OptionAnswerKind, Value: "Yes"}
+		store.ReadBoardReturns(pkg.Items{item}, nil)
+
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+		Expect(headless.calls).To(BeEmpty(), "a dead tab session must not be resumed")
+		_, _, _, outcome := store.RecordAttemptArgsForCall(0)
+		Expect(outcome).To(Equal(pkg.FailedOutcome))
 	})
 
 	It("types again when the operator re-answers the card", func() {

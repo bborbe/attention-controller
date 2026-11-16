@@ -412,6 +412,19 @@ func WithMenuAnswerMaxCycles(cycles int) MenuAnswerOption {
 	}
 }
 
+// WithMenuAnswerHeadlessDelivery sets the arm that carries an answer into a
+// session with no pane.
+//
+// ⚠️ It is an option rather than a constructor parameter so the arm's shape
+// stays readable at the call site, but it is not optional in practice: without
+// it a pane-less session's answer is dropped, which is the defect this arm
+// exists to remove.
+func WithMenuAnswerHeadlessDelivery(headless HeadlessAnswerDeliverer) MenuAnswerOption {
+	return func(job *menuAnswerJob) {
+		job.headless = headless
+	}
+}
+
 // NewMenuAnswerJob creates the menu arm.
 //
 // The locator and the writer are separate because the pane is resolved by the
@@ -445,6 +458,7 @@ type menuAnswerJob struct {
 	store       AttentionStore
 	locator     PaneLocator
 	writer      PaneTextWriter
+	headless    HeadlessAnswerDeliverer
 	interval    time.Duration
 	keySettle   time.Duration
 	submitPolls int
@@ -583,13 +597,28 @@ func (j *menuAnswerJob) deliver(
 	if verdict != DeliveryOK {
 		switch verdict {
 		case DeliveryRefuse:
+			// ⚠️ A refusal is not always undeliverable. When the session is GONE,
+			// the pane carrier cannot tell a reaped headless worker from a reaped
+			// tab session: the discriminator it reads (`Entrypoint`) lives in the
+			// session registry, whose record is deleted on exit. The wrapper can
+			// tell them apart — it keeps the exited record with its spawn mode —
+			// so only a session the wrapper reports as headless is resumed here.
+			// A dead TAB session keeps this refusal, which is what SC3 requires.
+			// Measured 2026-11-16: session 46e673cf, item 76901296…, answered and
+			// settled `failed` with "has no live process with a tty".
+			if j.headless != nil && j.headless.CanResume(ctx, sessionID) {
+				j.deliverHeadless(ctx, item, progress, reason)
+				break
+			}
 			j.settle(ctx, item, progress, FailedOutcome, reason)
 		case DeliveryNoPane:
-			// ⚠️ Nothing was attempted and nothing failed. A pane-less session is
-			// pane-less by construction — the normal shape for every headless
-			// `sdk-cli` worker — so recording `failed` would render an undeliverable
-			// card for a failure the arm never experienced.
-			j.settleQuietly(item, progress, verdict, reason)
+			// ⚠️ A pane-less session is pane-less by construction — the normal
+			// shape for every headless `sdk-cli` worker — so the keys have nowhere
+			// to go. It used to settle quietly here, which recorded nothing and
+			// delivered nothing: the operator's answer was dropped and the worker
+			// re-asked the identical question. The wrapper owns that child's stdin,
+			// so the answer goes there instead.
+			j.deliverHeadless(ctx, item, progress, reason)
 		case DeliveryResolved:
 			// The gate was already gone when the arm looked. It DID pick the answer
 			// up, so an absent record would derive as "no arm ever attempted it",
@@ -700,6 +729,30 @@ func (j *menuAnswerJob) settle(
 		reason,
 	)
 	j.recordAttempt(ctx, item, outcome)
+}
+
+// deliverHeadless carries the answer into a session that has no pane.
+//
+// ⚠️ A pending answer STAYS pending: the card is not marked done, so the next
+// cycle retries it. Only a terminal outcome from the headless arm — delivered,
+// failed for good, or expired — stops this arm, which is what makes the retry
+// bounded by the item's own deadline rather than by this loop's allowance.
+func (j *menuAnswerJob) deliverHeadless(
+	ctx context.Context,
+	item Item,
+	progress *menuProgress,
+	reason string,
+) {
+	if j.headless == nil {
+		// No arm can carry it on this host: nothing was attempted and nothing
+		// failed, so this keeps the old quiet settle rather than recording a
+		// failure the arm never experienced.
+		j.settleQuietly(item, progress, DeliveryNoPane, reason)
+		return
+	}
+	if j.headless.DeliverHeadless(ctx, item) {
+		progress.done = true
+	}
 }
 
 // settleQuietly marks the card terminal WITHOUT recording an attempt.

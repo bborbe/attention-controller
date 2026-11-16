@@ -538,6 +538,7 @@ func (a *application) addUnforwardedClosersJob(
 	ctx context.Context,
 	runner run.ConcurrentRunner,
 	store pkg.AttentionStore,
+	liveness pkg.SessionLivenessChecker,
 ) {
 	stateDir := a.UnforwardedStateDir
 	if stateDir == "" {
@@ -563,11 +564,17 @@ func (a *application) addUnforwardedClosersJob(
 	// measurement this job exists to produce, and it is read from the launchd
 	// stderr log at default verbosity. A V-gated line would be invisible exactly
 	// when the count matters.
+	//
+	// ⚠️ The liveness checker is the SAME instance the store resolves producer
+	// liveness through, so "the session is live" has one answer in this process.
+	// A second checker would let the arm card a session the store already reads
+	// as gone.
 	runner.Add(
 		ctx,
 		pkg.NewUnforwardedClosersJob(
 			scanner,
 			store,
+			liveness,
 			pkg.UnforwardedClosersInterval,
 			glog.Infof,
 		).Run,
@@ -875,7 +882,7 @@ func (a *application) createHTTPServer(
 		if err := a.addAnsweredSweep(ctx, runner, store); err != nil {
 			return err
 		}
-		if err := a.addInProcessJobs(ctx, runner, store, panes, livenessChecker); err != nil {
+		if err := a.addInProcessJobs(ctx, runner, store, panes, livenessChecker, provenance); err != nil {
 			return err
 		}
 
@@ -934,6 +941,7 @@ func (a *application) addInProcessJobs(
 	store pkg.AttentionStore,
 	panes pkg.PaneLister,
 	liveness pkg.SessionLivenessChecker,
+	provenance pkg.ProvenanceResolver,
 ) error {
 	runner.Add(ctx, pkg.NewMetricsPushJob(
 		prometheus.DefaultGatherer,
@@ -991,11 +999,11 @@ func (a *application) addInProcessJobs(
 	// what moves is only the tick. It re-reads state this process already owns
 	// and writes its count as a log line, so there is no second lifecycle to
 	// deploy, version or observe.
-	a.addUnforwardedClosersJob(ctx, runner, store)
+	a.addUnforwardedClosersJob(ctx, runner, store, liveness)
 	// ⚠️ The attention-watcher jobs register from here rather than from the caller
 	// for the same reason this method exists at all: createHTTPServer sits at the
 	// linter's length bound, and each job's rationale belongs beside the job.
-	return a.addAttentionWatcherJobs(ctx, runner, store, panes, liveness)
+	return a.addAttentionWatcherJobs(ctx, runner, store, panes, liveness, provenance)
 }
 
 // addAttentionWatcherJobs registers the seven jobs ported from the Python
@@ -1015,6 +1023,7 @@ func (a *application) addAttentionWatcherJobs(
 	store pkg.AttentionStore,
 	panes pkg.PaneLister,
 	liveness pkg.SessionLivenessChecker,
+	provenance pkg.ProvenanceResolver,
 ) error {
 	stateDir, contextDir, transcriptRoot, err := a.attentionWatcherDirs(ctx)
 	if err != nil {
@@ -1047,9 +1056,25 @@ func (a *application) addAttentionWatcherJobs(
 		pkg.NewFinishedTaskFilter(pkg.NewCompletedTaskSource(a.VaultDir)),
 		pkg.EventIngestInterval,
 	).Run)
+	// ⚠️ ONE wrapper client, two arms. The settle arm answers an open gate and
+	// the delivery arms carry a finished answer, and both reach the same wrapper
+	// over the same base URL — two clients would be two timeout policies and two
+	// places for the URL to be read differently.
+	wrapper := pkg.NewClaudeWrapperClient(a.AttentionWrapperURL)
+	// The headless delivery arm carries an answer into a session with no pane,
+	// which is the normal shape for every `sdk-cli` worker. Its cwd and task come
+	// from the item's own provenance, resolved through the SAME resolver the board
+	// renders from, so the turn cannot name a task the board does not show.
+	headless := pkg.NewHeadlessAnswerDelivery(
+		store,
+		wrapper,
+		pkg.NewProvenanceAnswerContext(provenance),
+		libtime.NewCurrentDateTime(),
+	)
 	runner.Add(ctx, pkg.NewAttentionWatcherJob(
 		store,
 		carrier,
+		headless,
 		pkg.AttentionWatcherDeliveryInterval,
 	).Run)
 	runner.Add(ctx, pkg.NewMenuAnswerJob(
@@ -1057,6 +1082,7 @@ func (a *application) addAttentionWatcherJobs(
 		carrier,
 		writer,
 		pkg.MenuAnswerInterval,
+		pkg.WithMenuAnswerHeadlessDelivery(headless),
 	).Run)
 	// ⚠️ An empty wrapper URL leaves the arm unregistered rather than failing
 	// startup: a host with no claude-wrapper has no routine gates to settle, and
@@ -1065,7 +1091,7 @@ func (a *application) addAttentionWatcherJobs(
 	if a.AttentionWrapperURL != "" {
 		runner.Add(ctx, pkg.NewRoutineGateSettleJob(
 			store,
-			pkg.NewClaudeWrapperClient(a.AttentionWrapperURL),
+			wrapper,
 			pkg.NewRoutinePolicy(nil),
 			writer,
 			pkg.RoutineGateSettleInterval,
@@ -1099,7 +1125,7 @@ func (a *application) addAttentionWatcherJobs(
 // items and panes.
 func (a *application) logAttentionWatcherRegistration() {
 	glog.V(2).Infof(
-		"job=attention-watcher action=registered arms=prune,ingest,deliver,menu,crossing settle=%t",
+		"job=attention-watcher action=registered arms=prune,ingest,deliver,menu,headless,crossing settle=%t",
 		a.AttentionWrapperURL != "",
 	)
 }

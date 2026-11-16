@@ -58,7 +58,7 @@ var _ = Describe("attention watcher delivery job", func() {
 		store.DeliveryAttemptsReturns(map[pkg.ItemID]pkg.DeliveryAttempt{}, nil)
 		store.RecordAttemptReturns(&pkg.DeliveryAttempt{}, nil)
 		carrier = &recordingCarrier{verdict: pkg.DeliveryOK}
-		job = pkg.NewAttentionWatcherJob(store, carrier, time.Hour)
+		job = pkg.NewAttentionWatcherJob(store, carrier, &fakeHeadlessDeliverer{}, time.Hour)
 	})
 
 	It("carries an answered permission card and records delivered", func() {
@@ -133,5 +133,36 @@ var _ = Describe("attention watcher delivery job", func() {
 		store.ReadBoardReturns(pkg.Items{item}, nil)
 		Expect(job.DeliverOnce(context.Background())).To(Succeed())
 		Expect(carrier.calls).To(BeEmpty())
+	})
+
+	It("hands a pane-less card to the headless arm instead of dropping it", func() {
+		// A `sdk-cli` worker has no pane by construction. The prose carrier
+		// reports `no-pane`, and before the headless arm existed that answer was
+		// dropped with no record at all.
+		headless := &fakeHeadlessDeliverer{terminal: true}
+		job = pkg.NewAttentionWatcherJob(store, carrier, headless, time.Hour)
+		carrier.verdict = pkg.DeliveryNoPane
+		store.ReadBoardReturns(pkg.Items{
+			answeredItem("item-1", "operator", pkg.Decision("allow")),
+		}, nil)
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+		Expect(headless.calls).To(Equal([]pkg.ItemID{"item-1"}))
+		// The prose arm attempts the pane first — that is how it learns there is
+		// none — but records nothing: a pane-less session is not a failed delivery.
+		Expect(carrier.calls).To(HaveLen(1))
+		Expect(store.RecordAttemptCallCount()).To(Equal(0))
+	})
+
+	It("keeps the pane path for a tab session", func() {
+		// A tab session's answer still goes through the carrier: the headless arm
+		// must not take a card that has a pane.
+		headless := &fakeHeadlessDeliverer{terminal: true}
+		job = pkg.NewAttentionWatcherJob(store, carrier, headless, time.Hour)
+		store.ReadBoardReturns(pkg.Items{
+			answeredItem("item-1", "operator", pkg.Decision("allow")),
+		}, nil)
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+		Expect(carrier.calls).To(ConsistOf("item-1=allow"))
+		Expect(headless.calls).To(BeEmpty())
 	})
 })
