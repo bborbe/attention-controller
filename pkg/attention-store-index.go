@@ -16,7 +16,7 @@ import (
 //
 // ⚠️ It is a split by responsibility rather than by line count, and it was made
 // when `attention-store-impl.go` reached 1937 lines against `revive`'s
-// `file-length-limit: max: 2000`. The four indexes it declares are one subject:
+// `file-length-limit: max: 2000`. The indexes it declares are one subject:
 // each is a copy of the items bucket's data in a shape one read can use, each is
 // rebuildable from that bucket, and each is maintained by `reconcileIndexes` on
 // the way in and `removeIndexEntry` on the way out.
@@ -136,8 +136,9 @@ var attentionDedupIndexBucketName = libkv.NewBucketName("attention-dedup-index")
 const dedupIndexMarkerKey = "!"
 
 // dedupIndexSeparator joins the producer id to the dedup key. It is the same
-// `"\x00"` `suppressAnsweredTwins` already joins this exact pair with, so the
-// two spellings of one identity cannot drift apart.
+// `"\x00"` the answered record's `askIdentity` uses between the dedup key and
+// the payload, so one separator spells every identity in this file and the two
+// cannot drift apart.
 //
 // ⚠️ The join is NOT injective — `("a\x00b", "c")` and `("a", "b\x00c")` produce
 // one key. The scan this index replaces compared the two FIELDS and could not
@@ -211,12 +212,13 @@ func openIndexWorthy(item Item) bool {
 	return item.State == OpenState
 }
 
-// reconcileIndexes brings ALL FOUR derived indexes in line with one item: the
+// reconcileIndexes brings ALL FIVE derived indexes in line with one item: the
 // live index holds everything not closed, the open-only index holds open items
-// only, the dedup index holds open items keyed by producer and dedup key, and
-// the history index holds everything, keyed by creation time.
+// only, the dedup index holds open items keyed by producer and dedup key, the
+// answered index holds one entry per answered ASK, and the history index holds
+// everything, keyed by creation time.
 //
-// ⚠️ One function for all four rather than four call sites that must agree. An
+// ⚠️ One function for all five rather than five call sites that must agree. An
 // item moving between states has to leave one index as it enters the other, and
 // splitting that across callers is how an index silently drifts — the failure
 // `rebuildIndex` exists to repair.
@@ -243,6 +245,14 @@ func (a *attentionStore) reconcileIndexes(
 	// is the only index whose key is derived from a field a rewrite touches
 	// (`CreatedAt`), which is why it is the only one that needs the previous item.
 	if err := a.reconcileDedupIndex(ctx, tx, item); err != nil {
+		return err
+	}
+	// ⚠️ The answered record is the one index whose entry is NOT owned by the
+	// item that writes it: it is keyed by the ASK, and every re-raise of that
+	// ask shares the key. Its reconcile therefore only ever adds — see
+	// reconcileAnsweredIndex — because the generic remove-on-unworthy would erase
+	// the record when a re-raise (an open item) is written.
+	if err := a.reconcileAnsweredIndex(ctx, tx, item); err != nil {
 		return err
 	}
 	// ⚠️ History is the one index whose predicate is constant — every item belongs
@@ -366,6 +376,17 @@ func (a *attentionStore) removeIndexEntry(
 		item.ItemID,
 	); err != nil {
 		return err
+	}
+	// The answered record is dropped only when the deleted item was the ANSWER
+	// itself. An expired-open row carries none, and a re-raise shares the record
+	// with the twin that wrote it — removing it there would unsuppress the very
+	// ask this record exists to keep answered.
+	if item.AnsweredAt != nil {
+		if err := a.removeIndexKey(
+			ctx, tx, a.answeredIndex, askIdentity(*item), "answered",
+		); err != nil {
+			return err
+		}
 	}
 	return a.removeIndexKey(ctx, tx, a.historyIndex, timeOrderedIndexKey(key, *item), "history")
 }
