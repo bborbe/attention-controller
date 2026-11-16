@@ -63,34 +63,14 @@ func (a *attentionStore) RecordAttempt(
 		// where a delivered record read failed 15 seconds later. The later write
 		// is still stored in the top-level fields, so both writes stay visible
 		// with their own writer and timestamp; only the settlement is frozen.
-		//
-		// A later DeliveredOutcome still settles an earlier failed/held write:
-		// failed-then-delivered is a real recovery and must keep working.
-		existing, getErr := a.attempts.Get(ctx, tx, itemID.String())
-		switch {
-		case getErr == nil:
-			attempt.Settled = existing.Settled
-			// ⚠️ Seed the settlement from a record written BEFORE this change
-			// shipped: those carry no Settled sub-record, so an existing
-			// `delivered` outcome is the only evidence of the delivery they hold.
-			// Without this, a post-upgrade redundant carrier erases exactly the
-			// pre-upgrade deliveries this fix exists to protect.
-			if attempt.Settled == nil && existing.Outcome == DeliveredOutcome {
-				attempt.Settled = &DeliverySettlement{
-					Carrier:     existing.Carrier,
-					AttemptedAt: existing.AttemptedAt,
-				}
-			}
-		case isNotFound(getErr):
-		default:
+		var existing *DeliveryAttempt
+		previous, getErr := a.attempts.Get(ctx, tx, itemID.String())
+		if getErr == nil {
+			existing = previous
+		} else if !isNotFound(getErr) {
 			return errors.Wrap(ctx, getErr, "get delivery attempt failed")
 		}
-		if attempt.Settled == nil && outcome == DeliveredOutcome {
-			attempt.Settled = &DeliverySettlement{
-				Carrier:     carrier,
-				AttemptedAt: attempt.AttemptedAt,
-			}
-		}
+		carrySettlement(existing, &attempt, outcome)
 		// The incident's own shape: a redundant carrier reporting a non-delivery
 		// against a gate that already delivered. Log it so the next occurrence is
 		// diagnosable from the log, not only by reading the record.
@@ -109,6 +89,32 @@ func (a *attentionStore) RecordAttempt(
 		return nil, errors.Wrap(ctx, err, "record attempt failed")
 	}
 	return &attempt, nil
+}
+
+// carrySettlement sets attempt.Settled to the delivery this write must keep.
+//
+// A settled delivery is first-write-wins. An existing settlement is carried
+// forward untouched, and so is an existing `delivered` outcome from a record
+// written before the settlement field shipped — those records carry no
+// settlement, so their outcome is the only evidence of the delivery they hold.
+// A write that itself delivers settles when nothing is settled yet, which is
+// what keeps failed-then-delivered reading as a real recovery.
+func carrySettlement(existing *DeliveryAttempt, attempt *DeliveryAttempt, outcome DeliveryOutcome) {
+	if existing != nil {
+		attempt.Settled = existing.Settled
+		if attempt.Settled == nil && existing.Outcome == DeliveredOutcome {
+			attempt.Settled = &DeliverySettlement{
+				Carrier:     existing.Carrier,
+				AttemptedAt: existing.AttemptedAt,
+			}
+		}
+	}
+	if attempt.Settled == nil && outcome == DeliveredOutcome {
+		attempt.Settled = &DeliverySettlement{
+			Carrier:     attempt.Carrier,
+			AttemptedAt: attempt.AttemptedAt,
+		}
+	}
 }
 
 // Delivery returns the derived delivery status for one item — the one query
