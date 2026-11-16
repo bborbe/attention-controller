@@ -987,6 +987,37 @@ var _ = Describe("the attention board", func() {
 		Consistently(func() int { return rowCount(page, answeredID) }).Should(Equal(0))
 	})
 
+	// The cleanup helper must speak the shape a question-bearing card requires:
+	// one `answers` entry per question, each naming its own tab. A singular
+	// `answer` for such a card is rejected 409 by the guard in
+	// pkg/attention-item.go, so the helper reads the item first and posts the
+	// per-question shape. This asserts the stored result directly, so it fails on
+	// the unfixed helper whatever the spec order and whatever any other spec did —
+	// unlike a criterion that only observes the empty-board specs, which pass
+	// whenever the unrelated rating spec closes its card first.
+	It(
+		"answers a question-bearing card through the helper, one entry per question with distinct tabs",
+		func() {
+			itemID := pushQuestions(
+				"e2e: the helper closes a two-question card",
+				"e2e-answer-helper-questions",
+			)
+
+			answer(itemID)
+
+			item := answeredItem(itemID)
+			Expect(item.Answers).To(HaveLen(2))
+			byQuestion := map[string]pkg.QuestionAnswer{}
+			for _, answer := range item.Answers {
+				byQuestion[answer.Question] = answer
+			}
+			Expect(byQuestion).To(HaveLen(2))
+			Expect(byQuestion).To(HaveKey("Alpha"))
+			Expect(byQuestion).To(HaveKey("Beta"))
+			Expect(item.Answer).To(BeNil())
+		},
+	)
+
 	// The board records that it painted a card, once per card: the first load
 	// stamps displayed_at from the store's own clock, and a second load leaves
 	// that instant identical because the store's first write wins. The card is
