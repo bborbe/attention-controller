@@ -191,6 +191,12 @@ func (a *attentionStore) DeliveryReports(
 	}
 	err := a.db.View(ctx, func(ctx context.Context, tx libkv.Tx) error {
 		for _, item := range items {
+			// A board-sized read is 772 rows (measured 2026-11-16), so the loop
+			// honours a caller that has gone away rather than holding the read
+			// transaction open for a render nobody is waiting for any more.
+			if err := ctx.Err(); err != nil {
+				return errors.Wrap(ctx, err, "delivery reports cancelled")
+			}
 			attempt, err := a.attempts.Get(ctx, tx, item.ItemID.String())
 			switch {
 			case err == nil:
