@@ -73,6 +73,21 @@ type AttentionStore interface {
 	// from a cache and hands back the same backing array as the previous reader.
 	History(ctx context.Context, limit int, offset int, filters ...HistoryFilter) (Items, error)
 
+	// HistoryCreatedSince returns every item whose CreatedAt is at or after
+	// since, in ANY state, newest-first.
+	//
+	// ⚠️ It is a TIME bound, for callers whose question is time-shaped. The
+	// history index is keyed by creation time, so the walk stops at the first
+	// older key WITHOUT decoding it: the cost is one window's items, never the
+	// store's lifetime. A page-size bound is the wrong shape for the same
+	// question (it miscounts whenever a window holds more items than the page),
+	// and an unbounded read is correct but decodes every row ever written.
+	//
+	// ⚠️ Unlike History it applies no expiry narrowing and is NOT cached: since
+	// moves on every call, so a cache entry could never be hit again and would
+	// only hold the result on the heap.
+	HistoryCreatedSince(ctx context.Context, since libtime.DateTime) (Items, error)
+
 	// SweepAnswered closes every answered item whose AnsweredAt is older than
 	// maxAge, and every open item that repeats an ask already answered,
 	// returning how many it closed in total.

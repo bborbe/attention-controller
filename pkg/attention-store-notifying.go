@@ -81,6 +81,14 @@ func (n *notifyingAttentionStore) History(
 	return n.store.History(ctx, limit, offset, filters...)
 }
 
+// HistoryCreatedSince delegates and never signals: it is a counting read.
+func (n *notifyingAttentionStore) HistoryCreatedSince(
+	ctx context.Context,
+	since libtime.DateTime,
+) (Items, error) {
+	return n.store.HistoryCreatedSince(ctx, since)
+}
+
 // Answer delegates and signals on success.
 func (n *notifyingAttentionStore) Answer(
 	ctx context.Context,
