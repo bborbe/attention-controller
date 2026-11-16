@@ -10,7 +10,10 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 // transcriptReaderTailBytes is the tail a delivery check reads when it has no
@@ -37,6 +40,12 @@ const transcriptReaderBackupBytes = 4096
 // turn-end check reads. Transcripts reach hundreds of MB; the turn-end records
 // are a few hundred bytes and always last, so the tail is enough.
 const transcriptReaderTurnEndTailBytes = 64 * 1024
+
+// transcriptNegativeCacheMaxLines bounds the absent-line proofs kept for ONE
+// transcript path. The hot path carries one card per pane, so the working set
+// is a handful; the cap only stops a long-lived path accumulating every line it
+// was ever asked about.
+const transcriptNegativeCacheMaxLines = 64
 
 // transcriptTurnEndSubtypes are the records the harness appends when a turn
 // ENDS. A permission gate holds its turn open, so a turn-end as the session's
@@ -90,11 +99,29 @@ type TranscriptReader interface {
 // `~/.claude/projects/*/<session>.jsonl` — is a caller's decision rather than
 // something baked into the reader.
 func NewTranscriptReader(root string) TranscriptReader {
-	return &transcriptReader{root: root}
+	return &transcriptReader{root: root, readWindow: readTranscriptWindow}
 }
 
 type transcriptReader struct {
 	root string
+
+	// readWindow is a seam for the specs: they swap in a counting reader to
+	// prove an unchanged transcript is scanned once across N calls. Production
+	// always uses readTranscriptWindow.
+	readWindow func(path string, since *int64) ([]byte, bool)
+
+	mu    sync.Mutex
+	cache map[string]*transcriptAbsence
+}
+
+// transcriptAbsence is the proof, for ONE transcript path, that a set of lines
+// was ABSENT from the file as it stood at (size, mtime). Any change to either
+// invalidates the whole entry, so a line appended after the scan is never
+// masked by the earlier miss.
+type transcriptAbsence struct {
+	size  int64
+	mtime time.Time
+	lines map[string]struct{}
 }
 
 // Path returns the newest transcript for the session, or "".
@@ -144,17 +171,39 @@ func (r *transcriptReader) Offset(sessionID string) (int64, bool) {
 // wraps an arriving message ("The user sent a new message while you were
 // working: …"), and a wrapped delivery is still a delivery. A tool result that
 // happens to quote the delivered line is filtered out by the record-type test.
+//
+// ⚠️ A MISS is cached; a hit is not. The delivery carrier asks this on every
+// ~2.6 s tick while a composer is busy, and an uncached miss re-read the
+// transcript tail each time — measured 2026-11-16 at v0.92.0: 1113 retries in
+// 17 min, 17.8 GB of 34.5 GB allocated from this one path. The proof is keyed
+// on the file's (size, mtime), so an append invalidates it and a line that
+// arrived after the scan is never masked by the earlier miss.
 func (r *transcriptReader) HoldsLine(sessionID string, line string, since *int64) bool {
 	path := r.Path(sessionID)
 	if path == "" {
+		// No transcript under this session: any proof held for a file that was
+		// pruned or rotated away is now about a different file.
+		r.forgetMissing()
 		return false
 	}
 	want := strings.TrimSpace(line)
 	if want == "" {
 		return false
 	}
-	raw, ok := readTranscriptWindow(path, since)
+	info, err := os.Stat(path)
+	if err != nil {
+		// A transcript that vanished between the glob and the stat proves
+		// nothing, and any cached proof about it is now about another file.
+		r.forgetAbsence(path)
+		return false
+	}
+	key := transcriptAbsenceKey(want, since)
+	if r.cachedAbsence(path, info, key) {
+		return false
+	}
+	raw, ok := r.readWindow(path, since)
 	if !ok {
+		r.forgetAbsence(path)
 		return false
 	}
 	for _, chunk := range bytes.Split(raw, []byte("\n")) {
@@ -162,7 +211,83 @@ func (r *transcriptReader) HoldsLine(sessionID string, line string, since *int64
 			return true
 		}
 	}
+	r.rememberAbsence(path, info, key)
 	return false
+}
+
+// transcriptAbsenceKey identifies one (line, since) question. A nil since and a
+// non-positive one ask the same question — the tail window — so they share a
+// key; readTranscriptWindow treats `since <= 0` as "no offset" for the same
+// reason.
+func transcriptAbsenceKey(line string, since *int64) string {
+	if since == nil || *since <= 0 {
+		return line + "\x00"
+	}
+	return line + "\x00" + strconv.FormatInt(*since, 10)
+}
+
+// cachedAbsence reports whether (path, key) was already proven absent against
+// exactly this file state. A size or mtime change drops the entry first, so the
+// answer can only ever be about the file as it stands now.
+func (r *transcriptReader) cachedAbsence(path string, info os.FileInfo, key string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entry, ok := r.cache[path]
+	if !ok {
+		return false
+	}
+	if entry.size != info.Size() || !entry.mtime.Equal(info.ModTime()) {
+		delete(r.cache, path)
+		return false
+	}
+	_, hit := entry.lines[key]
+	return hit
+}
+
+// rememberAbsence records one absent line against the file state it was proven
+// against, replacing the entry whenever that state moved.
+func (r *transcriptReader) rememberAbsence(path string, info os.FileInfo, key string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.cache == nil {
+		r.cache = make(map[string]*transcriptAbsence, 1)
+	}
+	entry, ok := r.cache[path]
+	if !ok || entry.size != info.Size() || !entry.mtime.Equal(info.ModTime()) {
+		entry = &transcriptAbsence{
+			size:  info.Size(),
+			mtime: info.ModTime(),
+			lines: make(map[string]struct{}, 1),
+		}
+		r.cache[path] = entry
+	}
+	if len(entry.lines) >= transcriptNegativeCacheMaxLines {
+		// The working set is one card per pane; a path that outgrew the cap is
+		// asked about lines that can no longer be in flight. Start over rather
+		// than grow without bound.
+		entry.lines = make(map[string]struct{}, 1)
+	}
+	entry.lines[key] = struct{}{}
+}
+
+// forgetAbsence drops every proof held for one path.
+func (r *transcriptReader) forgetAbsence(path string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.cache, path)
+}
+
+// forgetMissing drops proofs whose transcript no longer exists. Path() returns
+// "" when the glob finds nothing, so the vanished path is not known at the call
+// site; sweeping the few in-flight entries is cheaper than tracking it.
+func (r *transcriptReader) forgetMissing() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for path := range r.cache {
+		if _, err := os.Stat(path); err != nil {
+			delete(r.cache, path)
+		}
+	}
 }
 
 // TurnEnded reports whether the session's last timestamped record is a
@@ -267,7 +392,15 @@ func readTranscriptWindow(path string, since *int64) ([]byte, bool) {
 	if _, err := file.Seek(start, 0); err != nil {
 		return nil, false
 	}
-	buf := make([]byte, transcriptReaderScanMaxBytes)
+	// ⚠️ Size the buffer to what will be read, never to the cap. A fixed
+	// transcriptReaderScanMaxBytes allocation made every call cost 16 MiB
+	// whatever the window held — measured 2026-11-16 at v0.92.0: 1113 calls,
+	// 17.8 GB. The cap bounds the read; it is not the working size.
+	length := size - start
+	if length > transcriptReaderScanMaxBytes {
+		length = transcriptReaderScanMaxBytes
+	}
+	buf := make([]byte, length)
 	n, err := file.Read(buf)
 	if err != nil && n == 0 {
 		return nil, false
