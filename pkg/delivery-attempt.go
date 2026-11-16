@@ -137,6 +137,59 @@ type DeliveryAttempt struct {
 	Carrier     string           `json:"carrier"`
 	Outcome     DeliveryOutcome  `json:"outcome"`
 	AttemptedAt libtime.DateTime `json:"attempted_at"`
+
+	// Settled is the first write that actually reached the asking session.
+	//
+	// ⚠️ It is written once and never overwritten, so a redundant carrier that
+	// arrives after the gate is already settled cannot erase a real delivery.
+	// The top-level Carrier/Outcome/AttemptedAt keep their last-write meaning,
+	// so both writes stay visible with their own writer and timestamp: "the
+	// delivery happened, then this arm reported a failure" is distinguishable
+	// from "nothing was ever delivered".
+	//
+	// ⚠️ Only DeliveredOutcome settles. A later delivered still upgrades an
+	// earlier failed/held write, which is the one direction that must keep
+	// working: the first arm to reach the session is the one whose outcome the
+	// reader needs, and a failed-then-delivered sequence is a real recovery.
+	Settled *DeliverySettlement `json:"settled,omitempty"`
+}
+
+// DeliverySettlement is the attempt that reached the asking session — kept
+// beside the last write rather than replacing it, so a settled delivery is
+// never lost to a later carrier's failure.
+type DeliverySettlement struct {
+	Carrier     string           `json:"carrier"`
+	AttemptedAt libtime.DateTime `json:"attempted_at"`
+}
+
+// EffectiveOutcome is the outcome a reader should act on: the settled delivery
+// when one exists, otherwise the last write.
+//
+// ⚠️ Every reader that asks "did this answer reach the session?" must use this
+// rather than Outcome. Reading Outcome directly is the false negative this
+// record exists to remove — a delivered card read as failed after a redundant
+// carrier's late write.
+func (d DeliveryAttempt) EffectiveOutcome() DeliveryOutcome {
+	if d.Settled != nil {
+		return DeliveredOutcome
+	}
+	return d.Outcome
+}
+
+// EffectiveCarrier is the arm that produced the effective outcome.
+func (d DeliveryAttempt) EffectiveCarrier() string {
+	if d.Settled != nil {
+		return d.Settled.Carrier
+	}
+	return d.Carrier
+}
+
+// EffectiveAttemptedAt is when the effective outcome was observed.
+func (d DeliveryAttempt) EffectiveAttemptedAt() libtime.DateTime {
+	if d.Settled != nil {
+		return d.Settled.AttemptedAt
+	}
+	return d.AttemptedAt
 }
 
 // Validate returns an error when the record is not one an arm could have

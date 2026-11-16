@@ -53,6 +53,30 @@ func (a *attentionStore) RecordAttempt(
 		if err := attempt.Validate(ctx); err != nil {
 			return errors.Wrap(ctx, err, "validate delivery attempt failed")
 		}
+		// ⚠️ A settled delivery is first-write-wins. Once an arm has observed
+		// that the answer reached the session, a redundant carrier arriving
+		// later must not overwrite that with its own failure — the false
+		// negative measured 2026-11-06 on card f2e9520d105f97d8911cc0f562f60454,
+		// where a delivered record read failed 15 seconds later. The later write
+		// is still stored in the top-level fields, so both writes stay visible
+		// with their own writer and timestamp; only the settlement is frozen.
+		//
+		// A later DeliveredOutcome still settles an earlier failed/held write:
+		// failed-then-delivered is a real recovery and must keep working.
+		existing, getErr := a.attempts.Get(ctx, tx, itemID.String())
+		switch {
+		case getErr == nil:
+			attempt.Settled = existing.Settled
+		case isNotFound(getErr):
+		default:
+			return errors.Wrap(ctx, getErr, "get delivery attempt failed")
+		}
+		if attempt.Settled == nil && outcome == DeliveredOutcome {
+			attempt.Settled = &DeliverySettlement{
+				Carrier:     carrier,
+				AttemptedAt: attempt.AttemptedAt,
+			}
+		}
 		if err := a.attempts.Add(ctx, tx, itemID.String(), attempt); err != nil {
 			return errors.Wrap(ctx, err, "add delivery attempt failed")
 		}
@@ -98,10 +122,14 @@ func (a *attentionStore) Delivery(
 		attempt, err := a.attempts.Get(ctx, tx, itemID.String())
 		switch {
 		case err == nil:
-			attemptedAt := attempt.AttemptedAt
-			report.Carrier = attempt.Carrier
+			// ⚠️ Read the EFFECTIVE outcome, never the last write: a redundant
+			// carrier can overwrite the top-level fields after a real delivery,
+			// and reading them directly would report the delivered card as
+			// failed. See DeliveryAttempt.EffectiveOutcome.
+			attemptedAt := attempt.EffectiveAttemptedAt()
+			report.Carrier = attempt.EffectiveCarrier()
 			report.AttemptedAt = &attemptedAt
-			switch attempt.Outcome {
+			switch attempt.EffectiveOutcome() {
 			case DeliveredOutcome:
 				report.Status = DeliveredStatus
 			case HeldOutcome:
