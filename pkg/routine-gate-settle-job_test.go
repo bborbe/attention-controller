@@ -44,6 +44,17 @@ func (f *fakeWrapper) AnswerViaWrapper(
 	return f.verdict, "scripted"
 }
 
+// DeliverMessage is part of ClaudeWrapperClient's embedded delivery half. This
+// arm never writes a turn, so the method is unreachable here.
+func (f *fakeWrapper) DeliverMessage(
+	_ context.Context,
+	_ string,
+	_ string,
+	_ string,
+) (pkg.DeliveryVerdict, string) {
+	return pkg.DeliveryRefuse, "not used by the settle arm"
+}
+
 // fakePolicy is a scripted RoutinePolicy.
 type fakePolicy struct {
 	rule    string
