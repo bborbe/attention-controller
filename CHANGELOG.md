@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.92.2
 
 - fix: **the event ingest honours the hook's `forward: false`, so a close the hook marked local-only no longer clears a board card.** `forward()`'s close branch called `sink.Close` for every close record; the decoder has parsed the flag into `EventIngestRecord.Forward` since the port, but nothing read it, so the Python watcher's `if rec.get("forward", True):` guard was dropped in the port. A local-only close is now consumed (`false, nil`, the `idle` / class-3 convention) instead of forwarded, while a record carrying `forward: true` and a legacy record with no `forward` key still close — the decoder's absent-key default stays `true`, matching the watcher. Consequence on the live board: a closer card no longer vanishes on the next `UserPromptSubmit` in the asking session, which is the defect `cleared_by: {"event": "SessionEnd"}` was written to remove.
 
