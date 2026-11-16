@@ -80,6 +80,16 @@ type HeadlessAnswerDeliverer interface {
 	// for good, or expired — and false when the answer is still pending, which
 	// is what makes the next watcher cycle retry it.
 	DeliverHeadless(ctx context.Context, item Item) bool
+
+	// CanResume reports whether the wrapper holds a record for this session AND
+	// that record says the session ran headless.
+	//
+	// ⚠️ This is the ONLY question the pane carrier cannot answer for a reaped
+	// session: the session registry's record is deleted on exit, so `Entrypoint`
+	// is gone, while the wrapper keeps its record (which is why a delivery can
+	// tell 404 from 410). A caller routing a gone session's answer must ask this
+	// before handing it over, so a dead TAB session keeps its refusal.
+	CanResume(ctx context.Context, sessionID string) bool
 }
 
 // NewHeadlessAnswerDelivery creates the headless delivery arm.
@@ -143,6 +153,17 @@ func (d *headlessAnswerDelivery) release(id ItemID) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	delete(d.inFlight, id)
+}
+
+// CanResume reports whether the wrapper holds this session and says it ran
+// headless. An unreadable record reports false, so it refuses rather than
+// resuming something it could not identify.
+func (d *headlessAnswerDelivery) CanResume(ctx context.Context, sessionID string) bool {
+	if d.wrapper == nil || sessionID == "" {
+		return false
+	}
+	mode, ok := d.wrapper.SessionMode(ctx, sessionID)
+	return ok && strings.EqualFold(strings.TrimSpace(mode), "headless")
 }
 
 // DeliverHeadless attempts one delivery, retrying until delivered once or the
