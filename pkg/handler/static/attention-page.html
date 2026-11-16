@@ -32,6 +32,19 @@
      only by the stream's own onerror, so a healthy board, a quiet board and an
      empty board all render exactly what they rendered before. */}}
 <div class="board-controls"><a class="board-filter" data-board-kind href="{{ .KindHref }}" data-all-kinds="{{if .AllKinds}}true{{else}}false{{end}}" data-hidden-open="{{ .HiddenOpen }}" data-hidden-all="{{ .HiddenAll }}"><svg class="switch" viewBox="0 0 44 24" aria-hidden="true" focusable="false"><rect class="switch-track" x="1" y="1" width="42" height="22" rx="11"/><circle class="switch-knob" cx="12" cy="12" r="8"/></svg><span class="switch-label">{{if .AllKinds}}Managers only{{else}}Show all kinds{{end}}</span></a>{{if .HiddenCount}}<span class="kind-hidden" data-kind-hidden>{{ .HiddenCount }} hidden</span>{{end}}<button type="button" class="board-filter" data-board-filter role="switch" aria-checked="{{if .HideAnswered}}true{{else}}false{{end}}"><svg class="switch" viewBox="0 0 44 24" aria-hidden="true" focusable="false"><rect class="switch-track" x="1" y="1" width="42" height="22" rx="11"/><circle class="switch-knob" cx="12" cy="12" r="8"/></svg><span class="switch-label">Hide answered</span></button><button type="button" class="board-filter flag-filter" data-flag-filter role="switch" aria-checked="{{if .FlagFilter}}true{{else}}false{{end}}"><svg class="switch" viewBox="0 0 44 24" aria-hidden="true" focusable="false"><rect class="switch-track" x="1" y="1" width="42" height="22" rx="11"/><circle class="switch-knob" cx="12" cy="12" r="8"/></svg><span class="switch-label">Hide flagged</span></button><span class="stream-stale" data-stream-stale hidden>Not tracking the store - showing the last known state.</span></div>
+{{/* The held-answer bar. ⚠️ It is ALWAYS in the document and always occupies its
+     fixed height; only its visibility toggles, which is what keeps the top
+     card's offsetTop constant when the bar appears and when it hides. A bar
+     that entered or left the flow would move every card under the operator's
+     cursor, and the next-card flow is the property this feature must not
+     disturb. The contents are filled by the script: a held answer names the
+     verb, the card and the seconds left, and Undo (or the U key) restores the
+     card and delivers nothing.
+     ⚠️ No aria-live on the bar, and the countdown is aria-hidden: the countdown
+     updates every 100 ms, and a live region over it would make a screen reader
+     announce the bar continuously. The verb, the card name and the Undo button
+     stay in the reading order. */}}
+<div class="undo-bar" data-undo-bar><span class="undo-verb" data-undo-verb></span><span class="undo-title" data-undo-title></span><button type="button" class="undo-button" data-undo>Undo · U</button><span class="undo-countdown" data-undo-countdown aria-hidden="true"></span></div>
 {{if .Items}}<ul class="items">
 {{range .Items}}{{template "attention-row" .}}{{end}}</ul>
 {{else}}<p class="empty">{{if .HiddenCount}}No cards of this kind need attention. The others are hidden by the kind filter above.{{else}}Nothing needs attention.{{end}}</p>
