@@ -392,12 +392,13 @@ document.addEventListener('change', function (event) {
    write. The card disappears on the click so the next card moves up — the
    operator asked for the top-card flow, not a scrolling queue — and the header
    bar names what is held with an Undo control and a countdown.
-   ⚠️ The hold is 4700 ms rather than 5000 so the click-to-delivery delta the
+   ⚠️ The hold is 4500 ms rather than 5000 so the click-to-delivery delta the
    acceptance criterion measures stays at or under five seconds even with a
-   timer tick and event-loop jitter (measured overhead ~100 ms under load); the
+   timer tick and event-loop jitter (measured overhead ~100 ms under load, so
+   this leaves 400 ms of margin rather than the 300 ms a 4700 ms hold left); the
    countdown still opens at 5. Only ONE answer is held at a time: answering the
    next card flushes the previous one immediately, so no stack builds. */
-var UNDO_HOLD_MS = 4700;
+var UNDO_HOLD_MS = 4500;
 var heldAnswer = null;
 /* pendingReload is the id of a scheduled STALE-answer reload, held so a new
    answer can cancel it. ⚠️ Load bearing: without this, a reload fires 2.5 s

@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/mxschmitt/playwright-go"
 	. "github.com/onsi/ginkgo/v2"
@@ -240,6 +241,13 @@ var _ = Describe("the held answer", func() {
 		Expect(page.Locator(rowSelector(first) + " button[data-decision=deny]").Click()).To(Succeed())
 		Eventually(func() int { return rowCount(page, first) }).Should(Equal(0))
 		Expect(atomic.LoadInt32(&answers)).To(Equal(int32(0)))
+
+		// ⚠️ Wait out the 400 ms decision-suppression window the first click opens.
+		// It exists so the next card's pair cannot be answered by the second half
+		// of a double-click; a click inside it is swallowed on purpose, so a spec
+		// that answered the second card immediately would race the debounce and
+		// fail on a fast host rather than test the flush.
+		time.Sleep(600 * time.Millisecond)
 
 		// Answering the second card flushes the first immediately, well before the
 		// first hold's timer could have expired.
