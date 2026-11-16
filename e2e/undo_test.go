@@ -91,7 +91,9 @@ var _ = Describe("the held answer", func() {
 		// reserved, so this is the "before it appears" reading the criterion names.
 		before := firstRowOffsetTop(page)
 
-		Expect(page.Locator(rowSelector(clicked) + " button[data-decision=deny]").Click()).To(Succeed())
+		Expect(
+			page.Locator(rowSelector(clicked) + " button[data-decision=deny]").Click(),
+		).To(Succeed())
 		Eventually(func() int { return rowCount(page, clicked) }).Should(Equal(0))
 		Eventually(func() bool { return undoBarActive(page) }).Should(BeTrue())
 
@@ -145,7 +147,9 @@ var _ = Describe("the held answer", func() {
 			}
 		})
 
-		Expect(page.Locator(rowSelector(itemID) + " button[data-decision=deny]").Click()).To(Succeed())
+		Expect(
+			page.Locator(rowSelector(itemID) + " button[data-decision=deny]").Click(),
+		).To(Succeed())
 		Eventually(func() int { return rowCount(page, itemID) }).Should(Equal(0))
 		Eventually(func() bool { return undoBarActive(page) }).Should(BeTrue())
 
@@ -198,7 +202,9 @@ var _ = Describe("the held answer", func() {
 		}`)
 		Expect(err).NotTo(HaveOccurred())
 
-		Expect(page.Locator(rowSelector(itemID) + " button[data-decision=deny]").Click()).To(Succeed())
+		Expect(
+			page.Locator(rowSelector(itemID) + " button[data-decision=deny]").Click(),
+		).To(Succeed())
 
 		Eventually(func() int32 { return atomic.LoadInt32(&answers) }, "6s", "100ms").
 			Should(Equal(int32(1)))
@@ -238,7 +244,9 @@ var _ = Describe("the held answer", func() {
 		})
 
 		// Hold the first answer.
-		Expect(page.Locator(rowSelector(first) + " button[data-decision=deny]").Click()).To(Succeed())
+		Expect(
+			page.Locator(rowSelector(first) + " button[data-decision=deny]").Click(),
+		).To(Succeed())
 		Eventually(func() int { return rowCount(page, first) }).Should(Equal(0))
 		Expect(atomic.LoadInt32(&answers)).To(Equal(int32(0)))
 
@@ -251,7 +259,9 @@ var _ = Describe("the held answer", func() {
 
 		// Answering the second card flushes the first immediately, well before the
 		// first hold's timer could have expired.
-		Expect(page.Locator(rowSelector(second) + " button[data-decision=deny]").Click()).To(Succeed())
+		Expect(
+			page.Locator(rowSelector(second) + " button[data-decision=deny]").Click(),
+		).To(Succeed())
 		Eventually(func() int32 { return atomic.LoadInt32(&answers) }, "2s", "100ms").
 			Should(Equal(int32(1)))
 		Eventually(func() pkg.State { return getItem(first).State }, "5s").
@@ -283,7 +293,9 @@ var _ = Describe("the held answer", func() {
 
 		Eventually(func() int { return rowCount(page, itemID) }).Should(Equal(1))
 
-		Expect(page.Locator(rowSelector(itemID) + " button[data-decision=deny]").Click()).To(Succeed())
+		Expect(
+			page.Locator(rowSelector(itemID) + " button[data-decision=deny]").Click(),
+		).To(Succeed())
 		Eventually(func() int { return rowCount(page, itemID) }).Should(Equal(0))
 		Expect(getItem(itemID).State).To(Equal(pkg.OpenState))
 
@@ -307,7 +319,9 @@ var _ = Describe("the held answer", func() {
 
 		Eventually(func() int { return rowCount(page, itemID) }).Should(Equal(1))
 
-		Expect(page.Locator(rowSelector(itemID) + " button[data-decision=deny]").Click()).To(Succeed())
+		Expect(
+			page.Locator(rowSelector(itemID) + " button[data-decision=deny]").Click(),
+		).To(Succeed())
 		Eventually(func() int { return rowCount(page, itemID) }).Should(Equal(0))
 		Eventually(func() bool { return undoBarActive(page) }).Should(BeTrue())
 

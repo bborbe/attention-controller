@@ -32,9 +32,9 @@ type AttentionStore interface {
 	Get(ctx context.Context, itemID ItemID) (*Item, error)
 
 	// Read returns the items an arm should render: the open items whose
-	// producer is still live, or whose producer reported rather than asked.
-	// Dead askers are removed from the store as a side effect of the read, so
-	// the window between producer-exit and removal is one read at most.
+	// `expires_at` has not passed, whatever their liveness subject reads.
+	// Expired open items are removed from the store as a side effect of the
+	// read, so the window between expiry and removal is one read at most.
 	Read(ctx context.Context) (Items, error)
 
 	// ReadBoard returns the items the board renders: the open items Read
@@ -55,7 +55,7 @@ type AttentionStore interface {
 	// and what escalated rather than for rendering.
 	//
 	// It is deliberately not Read: Read answers "what should an arm show now"
-	// and prunes dead askers as a side effect, which makes it blind to anything
+	// and prunes expired items as a side effect, which makes it blind to anything
 	// that has left the queue — and a pruning read cannot report a history,
 	// because the act of reading would delete part of what it reports. History
 	// never prunes, never filters on liveness and never filters on state.
@@ -101,6 +101,28 @@ type AttentionStore interface {
 	// stays read-only: a read that writes is the writer-lock-across-a-scan shape
 	// v0.23.2 removed.
 	SweepAnswered(ctx context.Context, maxAge libtime.Duration) (int, error)
+
+	// RenewLive pushes the defaulted `expires_at` of every open item whose
+	// liveness subject is still live forward to now + DefaultItemExpiry, and
+	// returns how many it moved.
+	//
+	// ⚠️ Liveness may extend a deadline and never removes an item: `expires_at`
+	// is the one clock that clears one. It is what keeps a reaped-then-resumed
+	// session's question — and the answer that landed on it — alive past the
+	// first push's 24 h.
+	//
+	// ⚠️ A producer-set deadline is never renewed. Only an item whose deadline
+	// came from the store's 24 h default is renewable, so a producer that named
+	// its own TTL keeps it. A row carrying NO deadline — one written before the
+	// default existed — counts as defaulted and is renewed like any other, and
+	// the first renewal records `expires_at_defaulted` so it stays renewable.
+	// See pkg/attention-item-expiry.go § defaultedDeadline.
+	//
+	// It is a separate call rather than a step inside Read because the read path
+	// stays read-only: a read that writes is the writer-lock-across-a-scan shape
+	// v0.23.2 removed, and the per-read liveness snapshot was removed for the
+	// same class of cost.
+	RenewLive(ctx context.Context) (int, error)
 
 	// Answer applies open -> answered as an atomic compare-and-set. Exactly one
 	// of two concurrent answers transitions the item; the loser receives

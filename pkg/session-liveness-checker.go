@@ -30,9 +30,9 @@ import (
 // the registry itself changes only when a session starts or exits, so nearly
 // every one of those listings re-read bytes that had not moved.
 //
-// ⚠️ The window is NOT a correctness budget. `readSessionLiveness` re-lists
-// fresh on a miss before it answers "gone", so a stale window can only ever
-// delay a prune, never cause one.
+// ⚠️ The window is NOT a correctness budget. `IsLive` re-lists fresh on a miss
+// before it answers "gone", so a stale window can only ever delay a "gone",
+// never cause one.
 const sessionRegistryCacheWindow = libtime.Duration(1 * time.Second)
 
 // freshListingWindow bounds how old a "fresh" listing may be when the registry
@@ -89,25 +89,29 @@ func NewSessionLivenessCheckerWithClock(
 }
 
 // NewAlwaysLiveSessionLivenessChecker returns a checker that reports every
-// session live, so no item is ever classified dead and nothing is ever pruned.
+// session live, so no item's defaulted deadline is ever left unrenewed.
 //
 // ⚠️ This is the cluster backend's checker, and it exists because the registry
 // the other constructor reads is host-local. `NewSessionLivenessChecker` reads
 // `~/.claude/sessions/<pid>.json`, which names sessions on ONE host — a backend
 // in a cluster reads every producer elsewhere as gone. The store already fails
 // open when that directory is *absent* (an unreadable registry reads as live —
-// see IsLive), so an ordinary container prunes nothing by accident; but the
-// guarantee must not rest on whether a path happens to exist. A container that
-// creates `$HOME/.claude/sessions` — an emptyDir mount, or a base image that
-// makes the directory — turns the registry *readable and empty*, and every item
-// is then pruned on the next read. Wiring this checker makes the cluster's
+// see IsLive), so an ordinary container does not stop renewing by accident; but
+// the guarantee must not rest on whether a path happens to exist. A container
+// that creates `$HOME/.claude/sessions` — an emptyDir mount, or a base image
+// that makes the directory — turns the registry *readable and empty*, and every
+// producer is then read as gone. Wiring this checker makes the cluster's
 // behaviour explicit rather than a side effect of the filesystem.
 //
-// ⚠️ Items are then bounded by age alone: `answered-max-age` closes answered
-// items, and nothing else removes them. That is the intended shape for a
-// cluster backend — "the attention controller in the cluster only stores
-// attentions and makes them available for others" — and it is why the schema's
-// dead-asker resolution stays a host-side concern rather than this one's.
+// ⚠️ Its effect is now the opposite of pruning: a liveness verdict no longer
+// removes an item, it only decides whether a defaulted `expires_at` is pushed
+// forward — so an always-live checker means a defaulted deadline on the cluster
+// backend is renewed indefinitely. Items there are bounded by the answered
+// sweep (`answered-max-age`) and by whatever `expires_at` a producer declares.
+// That is the intended shape for a cluster backend — "the attention controller
+// in the cluster only stores its attentions and makes them available for
+// others" — and it is why the schema's dead-asker resolution stays a host-side
+// concern rather than this one's.
 func NewAlwaysLiveSessionLivenessChecker() SessionLivenessChecker {
 	return &alwaysLiveSessionLivenessChecker{}
 }
@@ -184,28 +188,6 @@ func (s SessionIDs) Contains(sessionID string) bool {
 		return false
 	}
 	return collection.Contains(s, sessionID)
-}
-
-// sessionSnapshotter is the one-listing capability the real checker also
-// satisfies. ⚠️ It is deliberately NOT a member of SessionLivenessChecker: a
-// zero-value Counterfeiter fake of that interface would return "unreadable"
-// from a stubbed LiveSessions, and an unreadable registry reads as *everything
-// is live*, which would silently disable pruning in every test that injects
-// one. Keeping it separate lets the read path take a snapshot from the real
-// checker while every injected fake keeps working through the fallback.
-type sessionSnapshotter interface {
-	// LiveSessions lists the live sessions in one read of the registry. The
-	// second result is false when the registry could not be read at all.
-	LiveSessions(ctx context.Context) (SessionIDs, bool)
-}
-
-// sessionFreshLister is the uncached half of the one-listing capability: it
-// lists the registry without consulting the cache. It is separate from
-// sessionSnapshotter for the same reason that interface is separate from
-// SessionLivenessChecker — a fake that implements only the cached listing
-// must keep working, and must not silently satisfy this one.
-type sessionFreshLister interface {
-	LiveSessionsFresh(ctx context.Context) (SessionIDs, bool)
 }
 
 // IsLive reports whether any registry entry carries this session id. The
@@ -332,9 +314,9 @@ var sessionRegistryLister = func(ctx context.Context, s *sessionLivenessChecker)
 // gone, while an unreadable one proves nothing and reads as live.
 //
 // ⚠️ The ctx parameter is unused, and the signature is kept anyway: it is the
-// single body both halves of the listing capability share, so it carries the
-// shape sessionSnapshotter and sessionFreshLister declare rather than a shape
-// this body needs. Dropping it would make the two callers adapt instead.
+// single body both halves of the listing capability share — LiveSessions and
+// LiveSessionsFresh — so it carries their shape rather than a shape this body
+// needs. Dropping it would make the two callers adapt instead.
 func (s *sessionLivenessChecker) list(ctx context.Context) (SessionIDs, bool) {
 	ids, readable, _ := s.listResolved(ctx)
 	return ids, readable
@@ -458,115 +440,6 @@ func (s *sessionLivenessChecker) entrySessionID(root *os.Root, name string) (str
 		return "", false
 	}
 	return entry.SessionID, true
-}
-
-// sessionLiveness answers "is this session live?" for one caller. Both the
-// checker itself and a one-read snapshot satisfy it, so a caller can be handed
-// either without knowing which.
-type sessionLiveness interface {
-	IsLive(ctx context.Context, sessionID string) bool
-}
-
-// sessionSnapshot is one read's view of the session registry: the ids the
-// listing collected, and whether the listing could be read at all. An
-// unreadable snapshot reports every session live, the same direction the
-// checker takes, so a read that could not see the registry keeps everything
-// rather than sweeping it.
-type sessionSnapshot struct {
-	ids      SessionIDs
-	readable bool
-}
-
-// IsLive reports whether the snapshot holds this session id.
-func (s sessionSnapshot) IsLive(ctx context.Context, sessionID string) bool {
-	if sessionID == "" {
-		return false
-	}
-	if !s.readable {
-		return true
-	}
-	return s.ids.Contains(sessionID)
-}
-
-// readSessionLiveness answers liveness for ONE caller, resolving the registry at
-// most once. The read path builds one for its classification and the prune
-// builds its own for the re-check, so a read holds two of these and the registry
-// is listed at most twice per read.
-//
-// ⚠️ The snapshot is taken LAZILY, on the first session-liveness lookup. A read
-// that tests no session-model item — one whose items all carry heartbeat refs —
-// must not list the registry at all, and resolving in the constructor would
-// list it for every read regardless of what the read contains.
-//
-// ⚠️ A lookup that MISSES re-lists fresh before it answers "gone" — see IsLive.
-// That is what makes the checker's cache window safe: the snapshot may be up to
-// sessionRegistryCacheWindow old, but a wrong "gone" prunes a live item, while a
-// wrong "live" only delays a prune by up to that window. The direction of the
-// guarantee is one-sided on purpose, and the guard fires at most ONCE per
-// instance, so a read whose items are all genuinely dead does not re-list once
-// per item.
-type readSessionLiveness struct {
-	checker  SessionLivenessChecker
-	resolved sessionLiveness
-	// rechecked is whether the miss guard has already fired for this instance.
-	rechecked bool
-}
-
-// newReadSessionLiveness creates a per-caller liveness source over a checker.
-func newReadSessionLiveness(checker SessionLivenessChecker) *readSessionLiveness {
-	return &readSessionLiveness{checker: checker}
-}
-
-// IsLive resolves the source on the first call and answers from it thereafter.
-// A miss against that source re-lists the registry once — see the type comment.
-func (r *readSessionLiveness) IsLive(ctx context.Context, sessionID string) bool {
-	r.resolveNow(ctx)
-	if r.resolved.IsLive(ctx, sessionID) {
-		return true
-	}
-	// Already re-listed for this read: the answer stands, so a read whose items
-	// are all dead pays one extra listing rather than one per item.
-	if r.rechecked {
-		return false
-	}
-	r.rechecked = true
-	fresh, ok := r.checker.(sessionFreshLister)
-	if !ok {
-		// A checker that cannot list fresh — a Counterfeiter fake, or any future
-		// remote probe — answers from its snapshot alone, so the guard is inert
-		// there and the interface stays the only contract a caller must satisfy.
-		return false
-	}
-	ids, readable := fresh.LiveSessionsFresh(ctx)
-	r.resolved = sessionSnapshot{ids: ids, readable: readable}
-	return r.resolved.IsLive(ctx, sessionID)
-}
-
-// resolveNow takes the one snapshot this source will use, if it has not been
-// taken already.
-//
-// ⚠️ It exists for the prune, which must resolve BEFORE it opens its write
-// transaction: resolving lazily inside that transaction would hold the writer
-// lock across a whole registry listing, which is the lock-hold the read split
-// exists to avoid. The snapshot is still lazy in the sense that a read that
-// prunes nothing never builds a source at all.
-func (r *readSessionLiveness) resolveNow(ctx context.Context) {
-	if r.resolved == nil {
-		r.resolved = r.resolve(ctx)
-	}
-}
-
-// resolve takes the one snapshot this read will use. A checker that can list
-// the registry is snapshotted once; one that cannot — a Counterfeiter fake, or
-// any future remote probe — is used directly, so the read still answers and the
-// interface stays the only contract a caller must satisfy.
-func (r *readSessionLiveness) resolve(ctx context.Context) sessionLiveness {
-	snapshotter, ok := r.checker.(sessionSnapshotter)
-	if !ok {
-		return r.checker
-	}
-	ids, readable := snapshotter.LiveSessions(ctx)
-	return sessionSnapshot{ids: ids, readable: readable}
 }
 
 // sessionsDirFromEnv resolves the registry directory, honouring an override so

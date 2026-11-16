@@ -128,6 +128,137 @@ var _ = Describe("runAnsweredSweep", func() {
 	})
 })
 
+// runExpiryRenewal's spec mirrors runAnsweredSweep's, because the two loops are
+// registered as a pair and share a failure mode: each must keep ticking through a
+// store error, hand its pass its own deadline, and return nil on cancellation
+// rather than taking the process down through the shared runner. It departs from
+// its sibling in one rule: this loop runs ONE pass at startup, before its first
+// tick, because the read path judges a legacy row with no `expires_at` against
+// created_at + 24 h.
+var _ = Describe("runExpiryRenewal", func() {
+	var ctx context.Context
+	var store *mocks.AttentionStore
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		store = &mocks.AttentionStore{}
+		store.RenewLiveReturns(0, nil)
+	})
+
+	It("runs exactly one renewal at startup, before any interval elapses", func() {
+		// ⚠️ This replaces "no call before the first tick", which encoded the hole: a
+		// read judges a legacy row with no `expires_at` against created_at + 24 h, so
+		// for the first interval after a restart a read could sweep a row older than
+		// that whose producer is alive — the loss this loop exists to prevent. A
+		// one-hour interval makes "before any tick" true by construction rather than
+		// by timing luck.
+		runCtx, cancel := context.WithCancel(ctx)
+		done := make(chan error, 1)
+		go func() {
+			done <- runExpiryRenewal(store, time.Hour)(runCtx)
+		}()
+
+		Eventually(store.RenewLiveCallCount, "2s").Should(Equal(1))
+		// Still exactly one a moment later: a one-hour ticker adds nothing, so the
+		// call above cannot have come from a tick.
+		Consistently(store.RenewLiveCallCount, "200ms").Should(Equal(1))
+		cancel()
+		Eventually(done, "2s").Should(Receive(BeNil()))
+	})
+
+	It("returns on cancellation without renewing, the startup pass included", func() {
+		cancelled, cancel := context.WithCancel(ctx)
+		cancel()
+
+		// The startup pass does not outrank cancellation: a cancelled context means
+		// shutdown, so the pass is skipped rather than run against a dead context.
+		// ⚠️ A long interval, not a short one, and for the reason the sibling spec
+		// gives: a 1 ms ticker races the cancellation — ticker.C becomes ready a
+		// millisecond after NewTicker, so a goroutine descheduled past that boundary
+		// leaves Go choosing between two ready cases at random and the zero-call
+		// assertion fails on a loaded runner.
+		renewal := runExpiryRenewal(store, time.Second)
+		Expect(renewal(cancelled)).To(Succeed())
+		Expect(store.RenewLiveCallCount()).To(Equal(0))
+	})
+
+	It("keeps ticking after a failed renewal instead of returning the error", func() {
+		// A failed pass costs one interval of renewal; it loses nothing, because the
+		// deadlines it would have moved are still ahead of now. Returning the error
+		// would drop the board over something the board survives.
+		store.RenewLiveReturnsOnCall(0, 0, errors.New(ctx, "renewal exploded"))
+
+		runCtx, cancel := context.WithCancel(ctx)
+		done := make(chan error, 1)
+		go func() {
+			done <- runExpiryRenewal(store, time.Millisecond)(runCtx)
+		}()
+
+		// Two calls is the assertion that matters: the first failed and the loop came
+		// back for a second, rather than unwinding with the error.
+		Eventually(store.RenewLiveCallCount, "2s").Should(BeNumerically(">=", 2))
+		cancel()
+		Eventually(done, "2s").Should(Receive(BeNil()))
+	})
+
+	It("enters the ticker after a failing startup pass, and a later tick renews", func() {
+		// ⚠️ The startup pass must not become a new way to lose the loop: a failure
+		// there is a log line and one interval of degraded renewal, never an aborted
+		// startup and never a skipped ticker. The first call here IS the startup pass,
+		// so a second call proves the ticker was entered, and the mock's second return
+		// (renewed > 0, no error) proves that tick succeeded rather than failing too.
+		store.RenewLiveReturnsOnCall(0, 0, errors.New(ctx, "startup renewal exploded"))
+		store.RenewLiveReturnsOnCall(1, 2, nil)
+
+		runCtx, cancel := context.WithCancel(ctx)
+		done := make(chan error, 1)
+		go func() {
+			done <- runExpiryRenewal(store, 5*time.Millisecond)(runCtx)
+		}()
+
+		Eventually(store.RenewLiveCallCount, "2s").Should(BeNumerically(">=", 2))
+		cancel()
+		Eventually(done, "2s").Should(Receive(BeNil()))
+	})
+
+	It("hands each renewal its own deadline", func() {
+		// The deadline IS the per-tick bound, and nothing else here can notice its
+		// absence: the mock ignores the context, so a regression back to a bare `ctx`
+		// would leave every spec green while silently re-disabling the bound.
+		runCtx, cancel := context.WithCancel(ctx)
+		done := make(chan error, 1)
+		go func() {
+			done <- runExpiryRenewal(store, time.Millisecond)(runCtx)
+		}()
+
+		Eventually(store.RenewLiveCallCount, "2s").Should(BeNumerically(">=", 1))
+		callCtx := store.RenewLiveArgsForCall(0)
+		_, hasDeadline := callCtx.Deadline()
+		Expect(
+			hasDeadline,
+		).To(BeTrue(), "every pass must carry its own deadline, the startup one included")
+		cancel()
+		Eventually(done, "2s").Should(Receive(BeNil()))
+	})
+
+	It("keeps ticking after a renewal that moved items", func() {
+		// The renewed > 0 branch is the one path the other specs never reach — both
+		// keep the count at zero — so the line that reports what a pass did is
+		// otherwise uncovered.
+		store.RenewLiveReturnsOnCall(0, 3, nil)
+
+		runCtx, cancel := context.WithCancel(ctx)
+		done := make(chan error, 1)
+		go func() {
+			done <- runExpiryRenewal(store, time.Millisecond)(runCtx)
+		}()
+
+		Eventually(store.RenewLiveCallCount, "2s").Should(BeNumerically(">=", 2))
+		cancel()
+		Eventually(done, "2s").Should(Receive(BeNil()))
+	})
+})
+
 var _ = Describe("parseAnsweredMaxAge", func() {
 	var ctx context.Context
 

@@ -37,9 +37,13 @@ func (p ProducerID) String() string {
 //
 //	session:<id>     a long-lived producer whose absence is meaningful
 //	owner:<id>       a producer that is supposed to exit, whose question is the
-//	                 owner's to answer — never pruned on liveness, because an
-//	                 owner's absence cannot be read
+//	                 owner's to answer — its survival follows the owner's, and
+//	                 an owner's absence cannot be read, so it reads as live
 //	heartbeat:<path> a short-lived producer that exits by design
+//
+// ⚠️ None of the three removes an item any more. `expires_at` is the one clock
+// that clears an item ([[Attention Item Schema]] § Expiry); liveness decides
+// duplicate suppression and whether a defaulted deadline is renewed.
 type LivenessRef string
 
 // String returns the liveness ref as a string.
@@ -312,9 +316,26 @@ type Item struct {
 	// that closed it, never a constant. Absent when the close was caused by an
 	// answer, which AnsweredAt and AnsweredBy already record.
 	CloseReason CloseReason `json:"close_reason,omitempty"`
-	// ExpiresAt is the producer's own deadline, if it has one. Absent means the
-	// item does not expire on a timer.
+	// ExpiresAt is the producer's own deadline. A push that carries none is
+	// stored with CreatedAt + DefaultItemExpiry, so every item written by this
+	// store carries one; see effectiveExpiresAt for rows written before that.
 	ExpiresAt *libtime.DateTime `json:"expires_at,omitempty"`
+	// ExpiresAtDefaulted records that ExpiresAt came from the store's 24 h
+	// default rather than from the producer. Written by the store on every push
+	// and on every dedup re-push, and true exactly when the push carried no
+	// ExpiresAt.
+	//
+	// ⚠️ It exists so the renewal pass can tell a defaulted deadline from a
+	// producer's own TTL, and only the former is renewed. Comparing ExpiresAt
+	// against CreatedAt + DefaultItemExpiry cannot carry that: a renewal moves
+	// the value, and a producer may legitimately set exactly that instant.
+	// Absent means false, which is what a producer-declared deadline reads as.
+	//
+	// ⚠️ Absent is also what every row written before this field reads as, and
+	// those carry no ExpiresAt either — so the renewal pass treats a MISSING
+	// deadline as defaulted too (see defaultedDeadline), and a legacy row with a
+	// live producer is renewed rather than dying at created_at + 24 h.
+	ExpiresAtDefaulted bool `json:"expires_at_defaulted,omitempty"`
 }
 
 // Validate returns an error when the item violates the schema's field rules.
