@@ -83,7 +83,13 @@ var _ = Describe("the card's timeline in the info panel", func() {
 	renderOne := func(item pkg.Item, report *pkg.DeliveryReport, deliveryErr error) string {
 		fake := &mocks.AttentionStore{}
 		fake.ReadBoardReturns(pkg.Items{item}, nil)
-		fake.DeliveryReturns(report, deliveryErr)
+		// The board derives every row's report in ONE read, so the seam is the
+		// batch method — stubbing Delivery alone would never be called.
+		reports := map[pkg.ItemID]*pkg.DeliveryReport{}
+		if report != nil {
+			reports[item.ItemID] = report
+		}
+		fake.DeliveryReportsReturns(reports, deliveryErr)
 		provenance := &mocks.ProvenanceResolver{}
 		provenance.ResolveReturns(pkg.Provenances{})
 		httpHandler := handler.NewAttentionPageHandler(

@@ -146,46 +146,12 @@ func (a *attentionStore) Delivery(
 			}
 			return errors.Wrap(ctx, err, "get item failed")
 		}
-		report = &DeliveryReport{ItemID: itemID}
-
 		attempt, err := a.attempts.Get(ctx, tx, itemID.String())
 		switch {
 		case err == nil:
-			// ⚠️ Read the EFFECTIVE outcome, never the last write: a redundant
-			// carrier can overwrite the top-level fields after a real delivery,
-			// and reading them directly would report the delivered card as
-			// failed. See DeliveryAttempt.EffectiveOutcome.
-			attemptedAt := attempt.EffectiveAttemptedAt()
-			report.Carrier = attempt.EffectiveCarrier()
-			report.AttemptedAt = &attemptedAt
-			switch attempt.EffectiveOutcome() {
-			case DeliveredOutcome:
-				report.Status = DeliveredStatus
-			case HeldOutcome:
-				report.Status = HeldStatus
-			default:
-				report.Status = FailedStatus
-			}
+			report = deriveDeliveryReport(item, attempt)
 		case isNotFound(err):
-			// No record. Which absence this is turns on whether a record could
-			// have existed at all — and that is a question about when the item's
-			// answer was ROUTED, not when the item was created.
-			//
-			// ⚠️ The attempting arm is not the answering arm, so an attempt can
-			// only happen strictly AFTER an answer. An item created before the
-			// epoch and answered after it was inside the trail's window: reading it
-			// `pre_trail_unknown` would hide a real, actionable `never_attempted`,
-			// which is the failure this record exists to remove. An unanswered item
-			// has no answer time, so it falls back to CreatedAt.
-			since := item.CreatedAt.Time()
-			if item.AnsweredAt != nil {
-				since = item.AnsweredAt.Time()
-			}
-			if since.Before(DeliveryTrailEpoch) {
-				report.Status = PreTrailUnknownStatus
-			} else {
-				report.Status = NeverAttemptedStatus
-			}
+			report = deriveDeliveryReport(item, nil)
 		default:
 			return errors.Wrap(ctx, err, "get delivery attempt failed")
 		}
@@ -195,6 +161,131 @@ func (a *attentionStore) Delivery(
 		return nil, errors.Wrap(ctx, err, "delivery failed")
 	}
 	return report, nil
+}
+
+// DeliveryReports returns the derived delivery status for every item given, in
+// ONE read transaction.
+//
+// ⚠️ It exists because the board derives a report for every row it draws, and a
+// per-row Delivery call opened one read transaction per row. Measured on the
+// live board 2026-11-16: 772 rows per render at 3.5 renders per second, so
+// ~2700 read transactions a second, and the bbolt page walk behind each of them
+// was the largest single CPU consumer in the process. This is the same read,
+// once.
+//
+// The items are passed in rather than read here because every caller already
+// holds them from ReadBoard; re-reading them would be a second read of a set
+// the caller is holding. An item with no attempt record still gets a report —
+// the absent case is derived from the item's own timestamps, exactly as
+// Delivery derives it, because both call deriveDeliveryReport.
+//
+// An empty items slice yields an empty non-nil map, so a caller can range over
+// it without a nil check.
+func (a *attentionStore) DeliveryReports(
+	ctx context.Context,
+	items Items,
+) (map[ItemID]*DeliveryReport, error) {
+	reports := make(map[ItemID]*DeliveryReport, len(items))
+	if len(items) == 0 {
+		return reports, nil
+	}
+	err := a.db.View(ctx, func(ctx context.Context, tx libkv.Tx) error {
+		for _, item := range items {
+			// A board-sized read is 772 rows (measured 2026-11-16), so the loop
+			// honours a caller that has gone away rather than holding the read
+			// transaction open for a render nobody is waiting for any more.
+			if err := ctx.Err(); err != nil {
+				// ⚠️ Returned bare, not wrapped: this closure is wrapped once by
+				// the caller below, and wrapping here as well would stack two
+				// messages onto one failure.
+				return err
+			}
+			// ⚠️ An item the LOCAL store does not hold is a federated row: a peer
+			// answered it, no attempt was ever recorded here, and Delivery answers
+			// ErrItemNotFound for it. Deriving a report anyway would fabricate
+			// `never_attempted` and put a false undeliverable marker on every
+			// answered remote card, so no entry is written and the caller's lookup
+			// yields nil — the stage renders absent, exactly as it did through
+			// Delivery.
+			if _, err := a.store.Get(ctx, tx, item.ItemID.String()); err != nil {
+				if isNotFound(err) {
+					continue
+				}
+				return err
+			}
+			attempt, err := a.attempts.Get(ctx, tx, item.ItemID.String())
+			switch {
+			case err == nil:
+				reports[item.ItemID] = deriveDeliveryReport(&item, attempt)
+			case isNotFound(err):
+				reports[item.ItemID] = deriveDeliveryReport(&item, nil)
+			default:
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, errors.Wrap(ctx, err, "delivery reports failed")
+	}
+	return reports, nil
+}
+
+// deriveDeliveryReport answers one item's delivery status from the item and its
+// attempt record — attempt nil when no carrier has recorded one.
+//
+// ⚠️ One derivation, two readers: Delivery reads one item and calls this, and
+// DeliveryReports reads a whole board and calls this per item. Duplicating the
+// body would let the single and the batch read disagree about the same record,
+// which is the drift the board's "a row sent over the stream is identical to
+// the same row on a fresh load" claim cannot survive.
+//
+// ⚠️ It reads the EFFECTIVE outcome, never the last write: a redundant carrier
+// can overwrite the top-level fields after a real delivery, and reading them
+// directly would report the delivered card as failed. See
+// DeliveryAttempt.EffectiveOutcome.
+//
+// ⚠️ A `closed` item is NOT read as delivered. Per [[Attention Item Schema]],
+// *a close is a clear, not an answer* — the discriminator is `answered_at`,
+// never `state` — so nothing here keys on State. An item cleared from the board
+// with no answer reads `never_attempted` or `pre_trail_unknown`, which is the
+// truth: nothing was routed, so nothing was delivered.
+func deriveDeliveryReport(item *Item, attempt *DeliveryAttempt) *DeliveryReport {
+	report := &DeliveryReport{ItemID: item.ItemID}
+	if attempt == nil {
+		// No record. Which absence this is turns on whether a record could have
+		// existed at all — and that is a question about when the item's answer
+		// was ROUTED, not when the item was created.
+		//
+		// ⚠️ The attempting arm is not the answering arm, so an attempt can only
+		// happen strictly AFTER an answer. An item created before the epoch and
+		// answered after it was inside the trail's window: reading it
+		// `pre_trail_unknown` would hide a real, actionable `never_attempted`,
+		// which is the failure this record exists to remove. An unanswered item
+		// has no answer time, so it falls back to CreatedAt.
+		since := item.CreatedAt.Time()
+		if item.AnsweredAt != nil {
+			since = item.AnsweredAt.Time()
+		}
+		if since.Before(DeliveryTrailEpoch) {
+			report.Status = PreTrailUnknownStatus
+		} else {
+			report.Status = NeverAttemptedStatus
+		}
+		return report
+	}
+	attemptedAt := attempt.EffectiveAttemptedAt()
+	report.Carrier = attempt.EffectiveCarrier()
+	report.AttemptedAt = &attemptedAt
+	switch attempt.EffectiveOutcome() {
+	case DeliveredOutcome:
+		report.Status = DeliveredStatus
+	case HeldOutcome:
+		report.Status = HeldStatus
+	default:
+		report.Status = FailedStatus
+	}
+	return report
 }
 
 // DeliveryAttempts returns every recorded delivery attempt, keyed by item id.

@@ -321,6 +321,21 @@ type AttentionStore interface {
 	// this record exists to remove.
 	Delivery(ctx context.Context, itemID ItemID) (*DeliveryReport, error)
 
+	// DeliveryReports returns the derived delivery status for every item given,
+	// in ONE read transaction.
+	//
+	// It exists for the board, which derives a report for every row it draws.
+	// Delivery opens one read transaction per item, which is right for a single
+	// card and wrong for a page of them: measured 2026-11-16, the live board
+	// rendered 772 rows per render at 3.5 renders per second, so a per-row call
+	// cost ~2700 read transactions a second. This reads the same records once.
+	//
+	// The items are passed in because every caller already holds them from
+	// ReadBoard. Each item gets a report — an item with no attempt record
+	// included, since the absent case is derived from the item's own
+	// timestamps. The map is non-nil and empty for an empty input.
+	DeliveryReports(ctx context.Context, items Items) (map[ItemID]*DeliveryReport, error)
+
 	// DeliveryAttempts returns every recorded delivery attempt, keyed by item
 	// id.
 	//

@@ -1076,6 +1076,7 @@ func (a *application) addAttentionWatcherJobs(
 		carrier,
 		headless,
 		pkg.AttentionWatcherDeliveryInterval,
+		libtime.NewCurrentDateTime(),
 	).Run)
 	runner.Add(ctx, pkg.NewMenuAnswerJob(
 		store,
@@ -1095,6 +1096,7 @@ func (a *application) addAttentionWatcherJobs(
 			pkg.NewRoutinePolicy(nil),
 			writer,
 			pkg.RoutineGateSettleInterval,
+			libtime.NewCurrentDateTime(),
 		).Run)
 	}
 	// ⚠️ The release-expired-holds arm is deliberately NOT registered: its book

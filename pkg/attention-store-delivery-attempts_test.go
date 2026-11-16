@@ -118,3 +118,105 @@ var _ = Describe("Delivery attempts bulk read", func() {
 		Expect(attempts[held.ItemID].Outcome).To(Equal(pkg.HeldOutcome))
 	})
 })
+
+// DeliveryReports is the board's read: it derives every row's status in one
+// transaction instead of one per row. The property that matters is not that it
+// is faster but that it AGREES with Delivery — a batch that derived its own
+// answer could report a card differently depending on whether it arrived over
+// the stream or on a fresh load.
+var _ = Describe("Delivery reports bulk read", func() {
+	var ctx context.Context
+	var db libkv.DB
+	var now stdtime.Time
+
+	store := func() pkg.AttentionStore {
+		sessionLivenessChecker := &mocks.SessionLivenessChecker{}
+		sessionLivenessChecker.IsLiveReturns(true)
+		return pkg.NewAttentionStore(
+			db,
+			pkg.NewItemIDGenerator(),
+			sessionLivenessChecker,
+			libtime.CurrentDateTimeGetterFunc(func() libtime.DateTime {
+				return libtime.DateTime(now)
+			}),
+			libtime.Duration(15*60*1e9),
+		)
+	}
+
+	push := func(attentionStore pkg.AttentionStore, dedupKey string) *pkg.Item {
+		item, err := attentionStore.Push(ctx, pkg.PushRequest{
+			ProducerID:      pkg.ProducerID("session-a"),
+			ProducerKind:    pkg.SessionProducerKind,
+			LivenessRef:     pkg.LivenessRef("session:session-a"),
+			DedupKey:        pkg.DedupKey(dedupKey),
+			InterruptClass:  "approve",
+			Payload:         "deploy prod?",
+			AnswerMechanism: pkg.MessageAnswerMechanism,
+		})
+		Expect(err).To(BeNil())
+		return item
+	}
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		now = pkg.DeliveryTrailEpoch.Add(stdtime.Hour)
+		var err error
+		db, err = libboltkv.OpenTemp(ctx)
+		Expect(err).To(BeNil())
+	})
+
+	AfterEach(func() {
+		Expect(db.Close()).To(BeNil())
+	})
+
+	It("returns an empty map for an empty item set", func() {
+		reports, err := store().DeliveryReports(ctx, pkg.Items{})
+		Expect(err).To(BeNil())
+		Expect(reports).ShouldNot(BeNil())
+		Expect(reports).To(BeEmpty())
+	})
+
+	It("derives the same report the single-item read derives, attempted or not", func() {
+		attentionStore := store()
+		delivered := push(attentionStore, "gate-1")
+		untouched := push(attentionStore, "gate-2")
+		_, err := attentionStore.RecordAttempt(
+			ctx, delivered.ItemID, "supervisor:attention-next", pkg.DeliveredOutcome,
+		)
+		Expect(err).To(BeNil())
+
+		reports, err := attentionStore.DeliveryReports(
+			ctx, pkg.Items{*delivered, *untouched},
+		)
+		Expect(err).To(BeNil())
+		Expect(reports).To(HaveLen(2))
+
+		// ⚠️ Parity with Delivery, asserted per item rather than by hardcoding
+		// the expected status: the two readers sharing deriveDeliveryReport is
+		// the property, so a change that made them disagree must fail here.
+		for _, item := range []*pkg.Item{delivered, untouched} {
+			single, err := attentionStore.Delivery(ctx, item.ItemID)
+			Expect(err).To(BeNil())
+			Expect(reports[item.ItemID]).To(Equal(single))
+		}
+		Expect(reports[delivered.ItemID].Status).To(Equal(pkg.DeliveredStatus))
+		Expect(reports[untouched.ItemID].Status).To(Equal(pkg.NeverAttemptedStatus))
+	})
+
+	It("omits an item the local store does not hold, so a federated row renders no stage", func() {
+		attentionStore := store()
+		local := push(attentionStore, "gate-1")
+		remote := *local
+		remote.ItemID = pkg.ItemID("fed-from-peer-0000000000000000")
+
+		reports, err := attentionStore.DeliveryReports(ctx, pkg.Items{*local, remote})
+		Expect(err).To(BeNil())
+		Expect(reports).To(HaveLen(1))
+		// ⚠️ NO entry, never a fabricated `never_attempted`: a peer answered this
+		// card, so a status derived here would put a false undeliverable marker on
+		// every answered remote row. An absent entry makes the caller's lookup nil
+		// and renders the stage absent, exactly as Delivery's ErrItemNotFound did.
+		_, ok := reports[remote.ItemID]
+		Expect(ok).To(BeFalse())
+	})
+})

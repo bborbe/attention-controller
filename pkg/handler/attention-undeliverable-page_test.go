@@ -194,7 +194,7 @@ var _ = Describe("the undeliverable marker on the served page", func() {
 	// of this input: a real store's Delivery fails only on a bbolt error, which
 	// this spec cannot inject. The property under test is the page's fail-soft
 	// behaviour — one card's unreadable status must not take the page down — and
-	// the fake's Delivery is the only seam that can produce the failure.
+	// the fake's DeliveryReports is the only seam that can produce the failure.
 	It("renders the card without a marker when the delivery read fails", func() {
 		failing := &mocks.AttentionStore{}
 		failing.ReadBoardReturns(pkg.Items{
@@ -205,7 +205,7 @@ var _ = Describe("the undeliverable marker on the served page", func() {
 				CreatedAt: libtime.NewCurrentDateTime().Now(),
 			},
 		}, nil)
-		failing.DeliveryReturns(nil, errors.New(ctx, "delivery read failed"))
+		failing.DeliveryReportsReturns(nil, errors.New(ctx, "delivery read failed"))
 		provenance := &mocks.ProvenanceResolver{}
 		provenance.ResolveReturns(pkg.Provenances{})
 		handlerUnderTest := handler.NewAttentionPageHandler(

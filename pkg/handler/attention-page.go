@@ -113,6 +113,10 @@ func NewAttentionPageHandler(store pkg.AttentionStore,
 				// Derived once per request rather than per row: every row on the
 				// page addresses the same vault.
 				vaultName := vaultNameFromDir(vaultDir)
+				// Derived for the whole page in one read, on the same rule the
+				// provenance above follows: the read behind a report is per
+				// card, so doing it per row is one transaction per row.
+				reports := deliveryReportsOf(ctx, store, items)
 				rows := make([]attentionPageRow, 0, len(items))
 				for _, item := range items {
 					rows = append(
@@ -120,7 +124,7 @@ func NewAttentionPageHandler(store pkg.AttentionStore,
 						newAttentionPageRow(
 							item,
 							provenances[item.ItemID],
-							deliveryReportOf(ctx, store, item.ItemID),
+							reports[item.ItemID],
 							speakEnabled,
 							vaultName,
 						),
