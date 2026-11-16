@@ -32,6 +32,33 @@ const EventIngestInterval = 2 * time.Second
 // keep the two readers independent until the Python watcher is retired.
 const eventIngestCursorFile = "attention-ingest-cursors.json"
 
+// eventIngestQuarantineFile is where the job records every record it skipped
+// past because the sink refused it permanently.
+//
+// ⚠️ It exists because a skip that leaves only a log line is not a record. The
+// log is rotated and its volume is the very symptom the skip relieves, so a
+// rejected record's reason has to survive somewhere durable. The skip is also
+// made CONDITIONAL on this write: if the quarantine cannot be persisted the
+// cursor does not move and the record is retried, because advancing past a
+// record with no record of why is the silent loss the task forbids.
+const eventIngestQuarantineFile = "attention-ingest-quarantine.json"
+
+// eventIngestQuarantineEntry is one record skipped past permanently.
+//
+// Reason is the sink's own error text, read at the moment of refusal — never a
+// literal the caller supplied — so it names the actual schema violation (e.g.
+// "3 options are marked recommended") rather than a generic "invalid record".
+type eventIngestQuarantineEntry struct {
+	File   string `json:"file"`
+	ItemID string `json:"item_id"`
+	// Start is the byte offset the record starts at, and After the offset the
+	// cursor advanced to. Together they name the exact bytes skipped, so the
+	// record can be replayed by hand if the store's schema later accepts it.
+	Start  int64  `json:"start"`
+	After  int64  `json:"after"`
+	Reason string `json:"reason"`
+}
+
 // eventIngestKinds is the set of event kinds the board can render. A record of
 // any other kind is consumed (its offset advances) but never forwarded: `idle`
 // is the session moving, not a gate.
@@ -240,7 +267,11 @@ type ingestCounts struct {
 // outage — precisely the loss the down-store criterion forbids.
 type eventRecordAt struct {
 	record EventIngestRecord
-	after  int64
+	// start is the byte offset the record begins at; after is the offset of the
+	// next record. start is carried so a permanent skip can name the exact bytes
+	// it quarantined.
+	start int64
+	after int64
 }
 
 // ingestFile tails one log from its cursor and forwards what it reads.
@@ -284,12 +315,32 @@ func (j *eventIngestJob) ingestFile(
 			// not landed, so only an error the sink itself declares permanent is
 			// skipped past.
 			if isPermanentIngestError(err) {
+				// ⚠️ The quarantine write is LOAD-BEARING, not best-effort. If the
+				// record cannot be persisted, the cursor does not move and this
+				// record is retried next pass — advancing past a record with no
+				// durable record of why is exactly the silent loss the task
+				// forbids, and a log line is not a record (it rotates, and its
+				// volume is the symptom the skip relieves).
+				quarantineErr := j.recordQuarantine(ctx, root, eventIngestQuarantineEntry{
+					File:   name,
+					ItemID: entry.record.ItemID,
+					Start:  entry.start,
+					After:  entry.after,
+					// The reason is the sink's own error text, read HERE at
+					// runtime — never a literal the caller typed — so it names the
+					// actual rejection the store gave.
+					Reason: err.Error(),
+				})
+				if quarantineErr != nil {
+					return counts, quarantineErr
+				}
 				cursors.Offsets[name] = entry.after
 				counts.advanced = true
 				counts.skipped++
 				glog.Warningf(
-					"job=attention-watcher action=ingest_skip_invalid file=%s error=%v",
+					"job=attention-watcher action=ingest_skip_invalid file=%s item=%s error=%v",
 					name,
+					entry.record.ItemID,
 					err,
 				)
 				continue
@@ -373,7 +424,11 @@ func readEventRecords(content []byte, offset int64) []eventRecordAt {
 		if !ok {
 			continue
 		}
-		records = append(records, eventRecordAt{record: record, after: consumed})
+		records = append(records, eventRecordAt{
+			record: record,
+			start:  consumed - int64(len(line)),
+			after:  consumed,
+		})
 	}
 	return records
 }
@@ -486,6 +541,74 @@ func (j *eventIngestJob) saveCursors(
 		glog.Warningf("job=attention-watcher action=ingest_cursor_rename error=%v", err)
 	}
 	_ = ctx
+}
+
+// loadQuarantine reads the durable quarantine list, treating an absent or
+// unreadable file as "nothing quarantined yet".
+//
+// ⚠️ A parse failure returns nil rather than an error: the list is rewritten on
+// the next quarantine write, and refusing to ingest because the list is corrupt
+// would stop the whole arm over records it is not even reading.
+func (j *eventIngestJob) loadQuarantine(root *os.Root) []eventIngestQuarantineEntry {
+	content, err := readRootFile(root, eventIngestQuarantineFile)
+	if err != nil {
+		return nil
+	}
+	var entries []eventIngestQuarantineEntry
+	if err := json.Unmarshal(content, &entries); err != nil {
+		glog.Warningf("job=attention-watcher action=ingest_quarantine_parse error=%v", err)
+		return nil
+	}
+	return entries
+}
+
+// recordQuarantine appends one entry to the durable quarantine list.
+//
+// ⚠️ Unlike saveCursors, a failure here is RETURNED, not logged: the caller must
+// not advance the cursor past a record it could not record. The write is atomic
+// (tmp + rename) so a torn file cannot lose every earlier entry.
+func (j *eventIngestJob) recordQuarantine(
+	ctx context.Context,
+	root *os.Root,
+	entry eventIngestQuarantineEntry,
+) error {
+	entries := j.loadQuarantine(root)
+	replaced := false
+	for i := range entries {
+		if entries[i].File == entry.File &&
+			entries[i].ItemID == entry.ItemID &&
+			entries[i].Start == entry.Start {
+			entries[i] = entry
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		entries = append(entries, entry)
+	}
+	body, err := json.MarshalIndent(entries, "", "  ")
+	if err != nil {
+		return errors.Wrap(ctx, err, "marshal ingest quarantine failed")
+	}
+	tmpName := eventIngestQuarantineFile + ".tmp"
+	handle, err := root.OpenFile(tmpName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return errors.Wrap(ctx, err, "open ingest quarantine failed")
+	}
+	if _, err := handle.Write(append(body, '\n')); err != nil {
+		_ = handle.Close()
+		_ = root.Remove(tmpName)
+		return errors.Wrap(ctx, err, "write ingest quarantine failed")
+	}
+	if err := handle.Close(); err != nil {
+		_ = root.Remove(tmpName)
+		return errors.Wrap(ctx, err, "close ingest quarantine failed")
+	}
+	if err := root.Rename(tmpName, eventIngestQuarantineFile); err != nil {
+		_ = root.Remove(tmpName)
+		return errors.Wrap(ctx, err, "rename ingest quarantine failed")
+	}
+	return nil
 }
 
 // readRootFile reads a file through the confined root, returning an error when
