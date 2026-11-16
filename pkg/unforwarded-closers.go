@@ -152,19 +152,27 @@ type UnforwardedClosersConfig struct {
 	Now libtime.CurrentDateTimeGetter
 }
 
-// unforwardedForwardedHistoryLimit is 0 — an UNBOUNDED history read.
+// unforwardedForwardedMargin widens the forwarded lookup's time bound below the
+// scan window, to absorb clock skew between the hook that stamps an event row and
+// the store that stamps the item it became.
 //
-// ⚠️ It was 20000, and that bound was a defect, not a trade. Measured
-// 2026-11-16 on the live store: the forwarded set built from a 20000-item page
-// read `unforwarded=67` while an independent reconciliation over the full store
-// and the same event logs found 56 — the extra 11 were rows whose store item sat
-// outside the page, so a delivered gate was reported lost. That is the exact
-// false-positive class this check exists to remove, reproduced by the fix for it.
+// ⚠️ The lookup is bounded by TIME, and the bound is exact rather than a trade.
+// A row is forwarded when the store holds an item whose dedup_key is that row's
+// id, and that item is CREATED by ingesting that row — the store stamps its own
+// `Now()` at push, and a suppressed re-push only moves it forward. So no item
+// created before the window can forward a row inside it, and reading only items
+// created since `window.since - margin` misses nothing.
 //
-// `History` documents `limit <= 0` as the unbounded compatibility path, and this
-// arm reads once per 900 s — not on the 2 s tick whose full-history decode the
-// v0.91.1 CPU work removed. A correctness bound cannot be set from a page size.
-const unforwardedForwardedHistoryLimit = 0
+// Both earlier bounds were the wrong shape. A 20000-item page (v0.91.4) is a
+// COUNT bound on a time question: measured 2026-11-16 it read `unforwarded=67`
+// against a full reconciliation's 56, because more than 20000 items were created
+// inside the window. Unbounded (v0.91.5) fixed that but decoded every row ever
+// written on every scan — ~1.8 GB of allocation per pass — and History's page
+// cache then kept the whole store on the heap between scans.
+//
+// Both clocks run on the same host, so the skew is milliseconds; five minutes is
+// a wide safety margin that costs a few hundred extra decodes, not a lifetime.
+const unforwardedForwardedMargin = 5 * time.Minute
 
 // UnforwardedClosersScanner counts attention items that should have reached the
 // store but did not.
@@ -206,7 +214,11 @@ func (s *UnforwardedClosersScanner) Scan(ctx context.Context) UnforwardedScan {
 	if err := s.checkStateDir(ctx); err != nil {
 		return UnforwardedScan{Err: err}
 	}
-	forwarded, err := s.readForwarded(ctx)
+	current := s.now.Now()
+	forwarded, err := s.readForwarded(
+		ctx,
+		libtime.DateTime(current.Time().Add(-s.window-unforwardedForwardedMargin)),
+	)
 	if err != nil {
 		return UnforwardedScan{Err: err}
 	}
@@ -214,7 +226,7 @@ func (s *UnforwardedClosersScanner) Scan(ctx context.Context) UnforwardedScan {
 	if err != nil {
 		return UnforwardedScan{Err: err}
 	}
-	now := unixSeconds(s.now.Now())
+	now := unixSeconds(current)
 	window := unforwardedWindow{
 		since:       now - s.window.Seconds(),
 		until:       now,
@@ -274,11 +286,12 @@ type unforwardedTranscriptMessage struct {
 // set looks the same as a store with nothing in it.
 func (s *UnforwardedClosersScanner) readForwarded(
 	ctx context.Context,
+	since libtime.DateTime,
 ) (map[string]struct{}, error) {
 	if s.store == nil {
 		return nil, errors.Errorf(ctx, "no store configured for the forwarded lookup")
 	}
-	items, err := s.store.History(ctx, unforwardedForwardedHistoryLimit, 0)
+	items, err := s.store.HistoryCreatedSince(ctx, since)
 	if err != nil {
 		return nil, errors.Wrapf(ctx, err, "read forwarded items from store")
 	}
