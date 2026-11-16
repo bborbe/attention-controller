@@ -152,16 +152,19 @@ type UnforwardedClosersConfig struct {
 	Now libtime.CurrentDateTimeGetter
 }
 
-// unforwardedForwardedHistoryLimit bounds the forwarded lookup's history read.
+// unforwardedForwardedHistoryLimit is 0 — an UNBOUNDED history read.
 //
-// ⚠️ It is a bounded page, not an unbounded read, and the bound is the trade
-// this design accepts. `History` walks its index newest-first, so the page holds
-// the most recent items — the same population the scan's 24 h window covers.
-// Measured 2026-11-16: ~4.1k open rows per window, so 20k is roughly five times
-// the headroom. A row older than the page reads as not forwarded, which mints a
-// card rather than hiding one — the safe direction for an arm whose job is to
-// make losses visible.
-const unforwardedForwardedHistoryLimit = 20000
+// ⚠️ It was 20000, and that bound was a defect, not a trade. Measured
+// 2026-11-16 on the live store: the forwarded set built from a 20000-item page
+// read `unforwarded=67` while an independent reconciliation over the full store
+// and the same event logs found 56 — the extra 11 were rows whose store item sat
+// outside the page, so a delivered gate was reported lost. That is the exact
+// false-positive class this check exists to remove, reproduced by the fix for it.
+//
+// `History` documents `limit <= 0` as the unbounded compatibility path, and this
+// arm reads once per 900 s — not on the 2 s tick whose full-history decode the
+// v0.91.1 CPU work removed. A correctness bound cannot be set from a page size.
+const unforwardedForwardedHistoryLimit = 0
 
 // UnforwardedClosersScanner counts attention items that should have reached the
 // store but did not.
