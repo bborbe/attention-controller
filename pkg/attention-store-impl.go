@@ -5,6 +5,7 @@
 package pkg
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -49,7 +50,7 @@ func NewAttentionStore(
 		sessionLivenessChecker: sessionLivenessChecker,
 		currentDateTimeGetter:  currentDateTimeGetter,
 		heartbeatWindow:        heartbeatWindow,
-		historyPage:            &historyPageCache{},
+		historyPage:            newHistoryPageCache(),
 	}
 	if len(lostAnswers) > 0 {
 		store.lostAnswers = lostAnswers[0]
@@ -1002,61 +1003,192 @@ func (a *attentionStore) stillRemovable(
 //
 // A read transaction, not a write one: this path mutates nothing, so it takes
 // no writer lock and cannot interleave with the pruning Read does.
+//
+// ⚠️ It decodes the page it was given, so a caller that only forwards the page
+// should call HistoryJSON instead — that path writes the cached body with no
+// decode at all. This form exists for callers that need the structs.
 func (a *attentionStore) History(
 	ctx context.Context,
 	limit int,
 	offset int,
 	filters ...HistoryFilter,
 ) (Items, error) {
+	body, err := a.HistoryJSON(ctx, limit, offset, filters...)
+	if err != nil {
+		return nil, err
+	}
+	var items Items
+	if err := json.Unmarshal(body, &items); err != nil {
+		return nil, errors.Wrap(ctx, err, "unmarshal history page failed")
+	}
+	return items, nil
+}
+
+// HistoryJSON returns one History page as the exact JSON body the history
+// endpoint serves.
+//
+// ⚠️ It is the endpoint's read, and it exists so the cache can hold the ENCODED
+// page. Caching the decoded Items is what put 156 MB of live heap on the process
+// for one 10,000-row page — see historyPageCache. A cache hit here writes the
+// bytes it already holds; a miss walks the index once, encodes once, and stores
+// the body.
+//
+// ⚠️ A miss does not materialise the page as `Items`: the walk encodes each row
+// straight into the response buffer. That is what keeps a cold burst bounded —
+// the decoded slice of one 10,000-row page is 156 MB, and it would exist for
+// every concurrent miss even though only the encoded body is retained.
+//
+// ⚠️ Concurrent misses for the SAME page share one walk (historyPageCache.flights),
+// and concurrent misses for DISTINCT pages are capped (historyPageDecodeLimit), so
+// a burst cannot multiply the walk cost by the number of callers.
+//
+// ⚠️ The body ends in a newline because `json.Encoder` appends one and the
+// endpoint has always been served through it. Dropping it would change every
+// consumer's byte count for no reason.
+func (a *attentionStore) HistoryJSON(
+	ctx context.Context,
+	limit int,
+	offset int,
+	filters ...HistoryFilter,
+) ([]byte, error) {
 	if err := a.ensureHistoryIndex(ctx); err != nil {
 		return nil, errors.Wrap(ctx, err, "ensure history index failed")
 	}
 	if offset < 0 {
 		offset = 0
 	}
-	// ⚠️ The caller must not modify the returned slice: a cache hit hands back
-	// the same backing array as the previous reader. The handler only encodes it.
 	key := newHistoryPageKey(limit, offset, filters)
-	cached, gen := a.historyPage.load(key)
-	if cached != nil {
-		return a.reapplyExpiry(cached), nil
+	if cached, _ := a.historyPage.load(key, a.currentDateTimeGetter.Now()); cached != nil {
+		return cached, nil
 	}
-	var items Items
-	err := a.db.View(ctx, func(ctx context.Context, tx libkv.Tx) error {
-		var err error
-		items, err = historyPageCollector(a, ctx, tx, limit, offset, newHistoryMatcher(filters))
-		return err
-	})
+	flight, joined := a.historyPage.begin(key)
+	if joined {
+		<-flight.done
+		return flight.body, flight.err
+	}
+	body, validUntil, err := a.buildHistoryPage(ctx, limit, offset, filters)
+	a.historyPage.complete(key, flight, body, validUntil, err)
 	if err != nil {
-		return nil, errors.Wrap(ctx, err, "history failed")
+		return nil, err
 	}
-	a.historyPage.store(gen, key, items)
-	return items, nil
+	return body, nil
 }
 
-// collectHistoryPage walks the history index in reverse and collects one page.
+// buildHistoryPage walks one page under a decode slot.
+//
+// ⚠️ The slot is taken around the walk AND the encode: the buffer is the thing a
+// burst would multiply, so releasing it before the body exists would defeat the
+// cap.
+func (a *attentionStore) buildHistoryPage(
+	ctx context.Context,
+	limit int,
+	offset int,
+	filters []HistoryFilter,
+) ([]byte, libtime.DateTime, error) {
+	if !a.historyPage.acquireDecode(ctx) {
+		return nil, libtime.DateTime{}, ctx.Err()
+	}
+	defer a.historyPage.releaseDecode()
+	body, validUntil, err := historyPageCollector(
+		a,
+		ctx,
+		limit,
+		offset,
+		newHistoryMatcher(filters),
+	)
+	if err != nil {
+		return nil, libtime.DateTime{}, errors.Wrap(ctx, err, "history failed")
+	}
+	// ⚠️ One line per BUILD, never per read: a cache hit returns before this
+	// point, so counting these lines counts index walks. That is the observable
+	// the single-flight and cache-hit claims are measured against — a burst of
+	// concurrent requests for one page must add exactly one.
+	key := newHistoryPageKey(limit, offset, filters)
+	glog.V(2).Infof(
+		"history page built: limit=%d offset=%d producers=%q dedup_prefix=%q bytes=%d",
+		key.limit,
+		key.offset,
+		key.producers,
+		key.dedupPrefix,
+		len(body),
+	)
+	return body, validUntil, nil
+}
+
+// collectHistoryPageJSON walks one page and encodes it as it goes.
+//
+// ⚠️ It encodes each row into the buffer instead of collecting `Items` first.
+// The decoded slice of a 10,000-row page is 156 MB of live heap (measured
+// 2026-11-16) and it would exist for every concurrent miss even though only the
+// encoded body is retained — the streaming form is what makes the memory cost of a
+// miss the body alone.
+//
+// It also returns the instant the page stops matching a fresh walk: the earliest
+// deadline among its OPEN items, or the zero instant when the page holds none.
+// See historyPageCache for why the cache needs it.
+func (a *attentionStore) collectHistoryPageJSON(
+	ctx context.Context,
+	limit int,
+	offset int,
+	filter historyMatcher,
+) ([]byte, libtime.DateTime, error) {
+	var body bytes.Buffer
+	body.WriteByte('[')
+	var validUntil libtime.DateTime
+	wrote := 0
+	err := a.db.View(ctx, func(ctx context.Context, tx libkv.Tx) error {
+		return a.walkHistoryPage(ctx, tx, limit, offset, filter, func(item Item) error {
+			if wrote > 0 {
+				body.WriteByte(',')
+			}
+			encoded, err := json.Marshal(item)
+			if err != nil {
+				return errors.Wrap(ctx, err, "marshal history item failed")
+			}
+			body.Write(encoded)
+			wrote++
+			if item.State == OpenState {
+				deadline := effectiveExpiresAt(&item)
+				if validUntil.Time().IsZero() || deadline.Time().Before(validUntil.Time()) {
+					validUntil = deadline
+				}
+			}
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, libtime.DateTime{}, err
+	}
+	body.WriteString("]\n")
+	return body.Bytes(), validUntil, nil
+}
+
+// walkHistoryPage walks the history index in reverse and hands each page row to
+// visit.
 //
 // ⚠️ It is a separate function because the cursor loop, the marker skip and the
 // two bound checks together exceed the complexity budget the linter allows the
 // read — the same reason `dueAnsweredKeys` and `closeAnsweredItem` were split out
 // of `SweepAnswered`. The split is by responsibility rather than by line count:
-// this walks an index, `History` decides the bounds.
+// this walks an index, `History` decides the bounds, and the visitor decides what
+// the page becomes.
 //
 // The order is newest-first because the index is keyed by creation time and the
 // cursor is REVERSE — `Rewind` positions at the highest key and `Next` descends.
-func (a *attentionStore) collectHistoryPage(
+func (a *attentionStore) walkHistoryPage(
 	ctx context.Context,
 	tx libkv.Tx,
 	limit int,
 	offset int,
 	filter historyMatcher,
-) (Items, error) {
+	visit func(Item) error,
+) error {
 	bucket, err := tx.Bucket(ctx, attentionHistoryIndexBucketName)
 	if err != nil {
 		if errors.Is(err, libkv.BucketNotFoundError) {
-			return Items{}, nil
+			return nil
 		}
-		return nil, errors.Wrap(ctx, err, "get history index bucket failed")
+		return errors.Wrap(ctx, err, "get history index bucket failed")
 	}
 	it := bucket.IteratorReverse()
 	defer it.Close()
@@ -1065,12 +1197,12 @@ func (a *attentionStore) collectHistoryPage(
 	// stated purpose is a stable count — a deadline crossed mid-walk would drop a
 	// row from a set the caller is counting.
 	now := a.currentDateTimeGetter.Now()
-	items := make(Items, 0)
 	skipped := 0
+	kept := 0
 	for it.Rewind(); it.Valid(); it.Next() {
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return ctx.Err()
 		default:
 		}
 		// ⚠️ Skipped by NAME, never by position. The marker sorts below every real
@@ -1083,7 +1215,7 @@ func (a *attentionStore) collectHistoryPage(
 		}
 		item, keep, err := filter.decode(ctx, it.Item())
 		if err != nil {
-			return nil, err
+			return err
 		}
 		if !keep {
 			continue
@@ -1104,12 +1236,15 @@ func (a *attentionStore) collectHistoryPage(
 			skipped++
 			continue
 		}
-		if limit > 0 && len(items) >= limit {
+		if limit > 0 && kept >= limit {
 			break
 		}
-		items = append(items, item)
+		if err := visit(item); err != nil {
+			return err
+		}
+		kept++
 	}
-	return items, nil
+	return nil
 }
 
 // decodeHistoryIndexEntry unmarshals one history index entry into an Item.

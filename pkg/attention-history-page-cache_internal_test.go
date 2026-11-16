@@ -7,6 +7,8 @@ package pkg
 import (
 	"context"
 	"fmt"
+	"sync"
+	"time"
 
 	libboltkv "github.com/bborbe/boltkv"
 	libkv "github.com/bborbe/kv"
@@ -63,13 +65,12 @@ var _ = Describe("history page cache", func() {
 		historyPageCollector = func(
 			a *attentionStore,
 			ctx context.Context,
-			tx libkv.Tx,
 			limit int,
 			offset int,
 			filter historyMatcher,
-		) (Items, error) {
+		) ([]byte, libtime.DateTime, error) {
 			walks++
-			return a.collectHistoryPage(ctx, tx, limit, offset, filter)
+			return a.collectHistoryPageJSON(ctx, limit, offset, filter)
 		}
 	})
 
@@ -140,9 +141,10 @@ var _ = Describe("history page cache", func() {
 	})
 
 	// ⚠️ The cache key cannot carry time, but the walk drops an OPEN item once it
-	// expires. An expiry is not a write, so no invalidate arrives — without the
-	// re-check the cached page would serve the expired item for as long as it
-	// stayed cached, silently undoing the endpoint's one narrowing.
+	// expires. An expiry is not a write, so no invalidate arrives — the entry
+	// carries the earliest deadline among its OPEN items instead, and past that
+	// instant it is dropped and the read re-walks. The page therefore loses the
+	// expired row without ever being decoded on a hit.
 	It("drops an item that expires while its page is cached", func() {
 		expiresAt := now.Add(libtime.Duration(60 * 1e9))
 		_, err := store.Push(ctx, PushRequest{
@@ -166,7 +168,7 @@ var _ = Describe("history page cache", func() {
 
 		second, err := store.History(ctx, 10, 0)
 		Expect(err).To(BeNil())
-		Expect(walks).To(Equal(1), "the page is still cached")
+		Expect(walks).To(Equal(2), "the expiry horizon has passed, so the page is re-walked")
 		Expect(second).To(BeEmpty(),
 			"an item that expired while cached must not be served from it")
 	})
@@ -225,5 +227,167 @@ var _ = Describe("history page cache", func() {
 		Expect(filtered).To(HaveLen(1), "the filter is part of the cache key")
 		Expect(filtered[0].ProducerID).To(Equal(ProducerID("session-b")))
 		Expect(walks).To(Equal(2))
+	})
+
+	// ⚠️ The cache holds the ENCODED page, so a hit must return the identical
+	// bytes. If it returned a re-encoded body the decode would be back on the hot
+	// path, which is the whole cost the cache exists to remove.
+	It("returns the same body on a cache hit", func() {
+		push("session-a", "gate-1")
+		push("session-a", "gate-2")
+
+		first, err := store.HistoryJSON(ctx, 10, 0)
+		Expect(err).To(BeNil())
+		Expect(walks).To(Equal(1))
+
+		second, err := store.HistoryJSON(ctx, 10, 0)
+		Expect(err).To(BeNil())
+		Expect(walks).To(Equal(1), "a repeat read must not re-walk")
+		Expect(second).To(Equal(first), "a hit must serve the cached bytes unchanged")
+	})
+
+	// ⚠️ This is the spec that closes the GC spiral: a page larger than the budget
+	// is served but never retained, so no polling pattern can park a page on the
+	// heap. Without it the budget is decorative — the entry would be stored and
+	// only evicted by the next store.
+	It("does not cache a page larger than the byte budget", func() {
+		originalBudget := historyPageCacheBudget
+		DeferCleanup(func() { historyPageCacheBudget = originalBudget })
+		historyPageCacheBudget = 1
+
+		push("session-a", "gate-1")
+
+		_, err := store.HistoryJSON(ctx, 10, 0)
+		Expect(err).To(BeNil())
+		Expect(walks).To(Equal(1))
+		Expect(store.historyPage.size()).To(Equal(0), "an oversized page must not be retained")
+
+		_, err = store.HistoryJSON(ctx, 10, 0)
+		Expect(err).To(BeNil())
+		Expect(walks).To(Equal(2), "nothing was cached, so the page is re-walked")
+	})
+
+	// ⚠️ The budget is a TOTAL, not a per-entry cap: filling past it must evict the
+	// least recently used page, or a caller issuing several distinct queries holds
+	// every one of them on the heap.
+	It("evicts the least recently used page so the total stays inside the budget", func() {
+		originalBudget := historyPageCacheBudget
+		DeferCleanup(func() { historyPageCacheBudget = originalBudget })
+
+		push("session-a", "gate-1")
+		push("session-a", "gate-2")
+
+		full, err := store.HistoryJSON(ctx, 10, 0)
+		Expect(err).To(BeNil())
+		Expect(walks).To(Equal(1))
+
+		// A budget that fits exactly the page just read and nothing else.
+		historyPageCacheBudget = len(full)
+
+		_, err = store.HistoryJSON(ctx, 1, 0)
+		Expect(err).To(BeNil())
+		Expect(walks).To(Equal(2))
+		Expect(store.historyPage.size()).To(BeNumerically("<=", historyPageCacheBudget),
+			"the total must never exceed the budget")
+
+		_, err = store.HistoryJSON(ctx, 10, 0)
+		Expect(err).To(BeNil())
+		Expect(walks).To(Equal(3), "the older page was evicted, so it must be re-walked")
+	})
+
+	// ⚠️ The pollers tick on the same cadence, so a miss is routinely several
+	// misses at once. Without the flight map each of them walks the index and the
+	// cache is refilled N times for one answer.
+	It("walks once when many callers ask for the same page at once", func() {
+		push("session-a", "gate-1")
+		push("session-a", "gate-2")
+
+		arrived := make(chan struct{}, 1)
+		release := make(chan struct{})
+		originalCollector := historyPageCollector
+		DeferCleanup(func() { historyPageCollector = originalCollector })
+		historyPageCollector = func(
+			a *attentionStore,
+			ctx context.Context,
+			limit int,
+			offset int,
+			filter historyMatcher,
+		) ([]byte, libtime.DateTime, error) {
+			walks++
+			arrived <- struct{}{}
+			<-release
+			return a.collectHistoryPageJSON(ctx, limit, offset, filter)
+		}
+
+		bodies := make([][]byte, 12)
+		errs := make([]error, 12)
+		var wg sync.WaitGroup
+		for i := 0; i < 12; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				bodies[i], errs[i] = store.HistoryJSON(ctx, 10, 0)
+			}(i)
+		}
+		// One caller must own the walk; the rest join its flight.
+		<-arrived
+		close(release)
+		wg.Wait()
+
+		for i := range errs {
+			Expect(errs[i]).To(BeNil())
+			Expect(bodies[i]).To(Equal(bodies[0]))
+		}
+		Expect(walks).To(Equal(1), "concurrent callers for one page must share one walk")
+	})
+
+	// ⚠️ The budget bounds what is retained; this bounds what is in flight. A
+	// burst of DISTINCT pages is the case the budget alone cannot cover — each
+	// miss holds its own buffer until it is stored.
+	It("caps how many pages are built at once", func() {
+		originalSlots := store.historyPage.decodes
+		DeferCleanup(func() { store.historyPage.decodes = originalSlots })
+		store.historyPage.decodes = make(chan struct{}, 1)
+
+		push("session-a", "gate-1")
+		push("session-a", "gate-2")
+		push("session-a", "gate-3")
+
+		var mu sync.Mutex
+		inFlight, peak := 0, 0
+		originalCollector := historyPageCollector
+		DeferCleanup(func() { historyPageCollector = originalCollector })
+		historyPageCollector = func(
+			a *attentionStore,
+			ctx context.Context,
+			limit int,
+			offset int,
+			filter historyMatcher,
+		) ([]byte, libtime.DateTime, error) {
+			mu.Lock()
+			inFlight++
+			if inFlight > peak {
+				peak = inFlight
+			}
+			mu.Unlock()
+			time.Sleep(20 * time.Millisecond)
+			body, validUntil, err := a.collectHistoryPageJSON(ctx, limit, offset, filter)
+			mu.Lock()
+			inFlight--
+			mu.Unlock()
+			return body, validUntil, err
+		}
+
+		var wg sync.WaitGroup
+		for _, limit := range []int{1, 2, 3} {
+			wg.Add(1)
+			go func(limit int) {
+				defer wg.Done()
+				_, _ = store.HistoryJSON(ctx, limit, 0)
+			}(limit)
+		}
+		wg.Wait()
+
+		Expect(peak).To(Equal(1), "a decode limit of 1 must serialise the walks")
 	})
 })

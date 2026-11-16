@@ -102,7 +102,7 @@ func NewAttentionHistoryHandler(store pkg.AttentionStore) http.Handler {
 				if err != nil {
 					return err
 				}
-				items, err := store.History(ctx, limit, offset, pkg.HistoryFilter{
+				body, err := store.HistoryJSON(ctx, limit, offset, pkg.HistoryFilter{
 					Producers:      historyProducers(req),
 					DedupKeyPrefix: pkg.DedupKey(req.URL.Query().Get(historyDedupPrefixParam)),
 				})
@@ -113,8 +113,14 @@ func NewAttentionHistoryHandler(store pkg.AttentionStore) http.Handler {
 						http.StatusInternalServerError,
 					)
 				}
-				if err := libhttp.SendJSONResponse(ctx, resp, items, http.StatusOK); err != nil {
-					return errors.Wrap(ctx, err, "send response failed")
+				// ⚠️ The body is written as-is, not re-encoded from Items: the
+				// cache holds this exact byte slice, and encoding it again on every
+				// hit would put back the 156 MB-per-page decode the cache exists to
+				// avoid. The headers are what SendJSONResponse would have set.
+				resp.Header().Set(libhttp.ContentTypeHeaderName, libhttp.ApplicationJsonContentType)
+				resp.WriteHeader(http.StatusOK)
+				if _, err := resp.Write(body); err != nil {
+					return errors.Wrap(ctx, err, "write response failed")
 				}
 				return nil
 			},

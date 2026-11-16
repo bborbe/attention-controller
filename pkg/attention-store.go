@@ -69,9 +69,26 @@ type AttentionStore interface {
 	// before limit and offset, so a page holds up to limit MATCHING items. No
 	// filter — or a zero one — narrows nothing, which is every existing caller.
 	//
-	// ⚠️ The caller must not modify the returned slice: a repeat read is served
-	// from a cache and hands back the same backing array as the previous reader.
+	// ⚠️ The slice is a fresh decode of the cached body on every call, so a
+	// caller may modify it. That is a change from the shared backing array this
+	// method used to hand out, and it is the price of the cache holding the
+	// encoded page: the endpoint takes HistoryJSON and pays no decode at all.
 	History(ctx context.Context, limit int, offset int, filters ...HistoryFilter) (Items, error)
+
+	// HistoryJSON returns the same page as History, encoded, and is the form the
+	// history endpoint serves.
+	//
+	// ⚠️ It exists so the page cache can hold the ENCODED body rather than the
+	// decoded Items: the decoded form of one 10,000-row page measured 156 MB of
+	// live heap against a 112 MiB GOMEMLIMIT, which is the GC death spiral of
+	// 2026-11-16. A caller that only forwards the page takes this form and pays
+	// no decode; one that needs the structs calls History, which decodes this
+	// body.
+	//
+	// The bounds, filters and narrowing are History's exactly — this is that
+	// read, encoded — and the body carries a trailing newline because the
+	// endpoint has always been served through `json.Encoder`.
+	HistoryJSON(ctx context.Context, limit int, offset int, filters ...HistoryFilter) ([]byte, error)
 
 	// HistoryCreatedSince returns every item whose CreatedAt is at or after
 	// since, in ANY state, newest-first.
