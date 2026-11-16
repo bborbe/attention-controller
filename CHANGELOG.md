@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.91.0
 
 - refactor: **remove the attention-store federation feature — the board is local only.** An instance no longer merges a peer store's open items into its own board. Deletes `pkg/attention-store-federating.go`, `pkg/attention-remote.go` (the HTTP peer client), their tests and the `mocks/remote-attention-store.go` counterfeiter mock, and removes the `AttentionUpstreamURL` / `AttentionUpstreamToken` settings (env `ATTENTION_UPSTREAM_URL`, `ATTENTION_UPSTREAM_TOKEN`) together with `main.go`'s `federate` wrapper. The `PEER_UNAVAILABLE` wire code and its `ErrPeerUnavailable` sentinel go with it: only the peer client could produce them, so the five handler arms that mapped them to `503` were unreachable. Every manager runs on the local machine, so the peer contributed nothing — measured 2026-11-15, 491,781 `federated read failed` lines in the Mac's log, the last three reads serving 301 local items only. Removing the two plist keys is a separate change.
 
