@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.88.0
 
 - feat: **the class-3 filter is live — the finished-task source it reads is implemented and wired at the `NewEventIngestJob` call site**, which passed `nil` and left the filter inert since PR #210. `NewCompletedTaskSource` walks the configured vault's `25 Tasks/` and returns the tasks whose `status` is `completed` or `aborted` and whose `completed_date` is present, resolving a date-only value to **end of that day** so a card written earlier on the completion day is not suppressed as though the task had finished first; an undated terminal task is excluded, because a task whose completion moment is unknown may suppress nothing. The detail match inside `Skip` replaces `strings.Contains` — which suppressed on a task name appearing anywhere in the prose — with a wikilink rule that requires **exactly one** distinct `[[Task]]` and refuses an unterminated link, so a closer naming two tasks, or naming none, is delivered rather than hidden. Fails open in every direction: an unreadable vault, an unreadable file or a cancelled walk suppresses nothing. The cross-vault open veto is not ported — the service is configured with one vault root, so it has no second vault to consult.
 
