@@ -483,10 +483,40 @@ func pushQuestions(payload, dedupKey string) string {
 
 // answer answers a card through the API, so the board learns about it over the
 // SSE stream rather than from its own form handler.
+//
+// It posts the shape the card it is given requires. A card carrying `questions`
+// takes one `answers` entry per question — the same shape the board's own form
+// posts, and the shape the store insists on: a singular `answer` for such a card
+// is rejected 409 by the guard in pkg/attention-item.go, which is correct and
+// load-bearing. That guard exists because accepting the singular field would
+// store an answer with no tab attached, so the producer reading `answers` back
+// would find nothing for any question and the routing the questions exist to
+// provide would be gone. The cleanup loops that call this over every open item
+// reach question-bearing cards too, so the helper has to speak both shapes or
+// those specs fail on the guard rather than on the thing they assert.
 func answer(itemID string) {
+	questions := getItem(itemID).Questions
+	if len(questions) == 0 {
+		post("api/1.0/attention/"+itemID+"/answer", map[string]any{
+			"answered_by": "e2e",
+			"answer":      map[string]string{"kind": "text", "value": "e2e answer"},
+		})
+		return
+	}
+	answers := make([]map[string]string, 0, len(questions))
+	for _, question := range questions {
+		// A `text` answer carries `value` whatever the question's cardinality —
+		// the operator's own words are one string either way — so it closes a
+		// question of any kind without having to choose one of its options.
+		answers = append(answers, map[string]string{
+			"question": question.Tab,
+			"kind":     "text",
+			"value":    "e2e answer",
+		})
+	}
 	post("api/1.0/attention/"+itemID+"/answer", map[string]any{
 		"answered_by": "e2e",
-		"answer":      map[string]string{"kind": "text", "value": "e2e answer"},
+		"answers":     answers,
 	})
 }
 
