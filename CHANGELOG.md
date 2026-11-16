@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.91.5
 
 - fix: **the forwarded lookup reads the whole store history, not a 20 000-item page, so a delivered gate whose item sits outside the page is no longer reported lost.** v0.91.4 replaced the retired watcher-log parse with an `AttentionStore.History` read, but bounded that read at 20 000 items as a cost trade. Measured on the live store the same day: the page-built forwarded set reported `unforwarded=67` while an independent reconciliation over the full store and the same event logs found 56 — the extra 11 were rows whose store item fell outside the page, so a gate the ingest *had* carried was reported as never delivered. That is the exact false-positive class the fix exists to remove, reproduced by the fix itself, and a correctness bound cannot be set from a page size. `History` documents `limit <= 0` as the unbounded compatibility path; the arm reads once per 900 s, not on the 2 s tick whose full-history decode the v0.91.1 CPU work removed, so the cost the bound was protecting against does not apply here.
 
