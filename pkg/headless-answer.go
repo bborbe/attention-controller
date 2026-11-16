@@ -105,33 +105,26 @@ type headlessAnswerDelivery struct {
 	wrapper  WrapperMessageDeliverer
 	contexts AnswerContextResolver
 	now      libtime.CurrentDateTimeGetter
-	// mu guards delivered, attempts and inFlight.
-	//
-	// ⚠️ ONE instance is wired into BOTH the attention-watcher job and the
-	// menu-answer job, and those run concurrently on `run.NewConcurrentRunner`.
-	// Go treats a concurrent map read/write as an unrecoverable fatal error — not
-	// a recoverable panic — so an unsynchronised map here crashes the whole
-	// controller the first time a menu card and a non-menu headless card are
-	// delivered at the same instant.
+	// mu guards delivered, attempts and inFlight. ⚠️ ONE instance serves BOTH the
+	// attention-watcher and the menu-answer job, which run concurrently on
+	// `run.NewConcurrentRunner`; a concurrent map read/write is an unrecoverable
+	// fatal error, so an unsynchronised map here crashes the controller.
 	mu sync.Mutex
-	// delivered is the at-most-once guard. The store's own `delivered` attempt
-	// record is the durable half, but a delivery whose record write failed would
-	// otherwise be re-sent on the next cycle — and a re-sent turn is a second
-	// instruction to a worker that already acted on the first.
+	// delivered is the at-most-once guard: the store's `delivered` attempt record
+	// is the durable half, but a delivery whose record write failed would be
+	// re-sent next cycle — a second instruction to a worker that already acted.
 	delivered map[ItemID]bool
-	// attempts counts the retries logged for one card, so the log line carries
-	// the count the operator reads as "this has been failing for N cycles".
+	// attempts counts the retries logged for one card, for the "failing N cycles"
+	// count the operator reads.
 	attempts map[ItemID]int
-	// inFlight marks a card a concurrent cycle is already working on, so two jobs
-	// racing on one card deliver it once rather than twice.
+	// inFlight marks a card a concurrent cycle already works on, so two racing
+	// jobs deliver it once rather than twice.
 	inFlight map[ItemID]bool
 }
 
-// begin reserves a card for this cycle.
-//
-// It returns terminal=true when the card is already settled (nothing to do) and
-// reserved=false when another cycle holds it — a non-terminal skip, because the
-// owning cycle still has to report the outcome.
+// begin reserves a card for this cycle: terminal=true when it is already
+// settled, reserved=false when another cycle holds it — a non-terminal skip,
+// because the owning cycle still reports the outcome.
 func (d *headlessAnswerDelivery) begin(id ItemID) (terminal bool, reserved bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -213,10 +206,9 @@ func (d *headlessAnswerDelivery) DeliverHeadless(ctx context.Context, item Item)
 	}
 }
 
-// expired reports whether the producer's own deadline has passed.
-//
-// An absent deadline never expires — the schema's default — so a card with no
-// `expires_at` is retried for as long as the board holds it.
+// expired reports whether the producer's own deadline has passed. An absent
+// deadline never expires — the schema's default — so a card with no `expires_at`
+// is retried for as long as the board holds it.
 func (d *headlessAnswerDelivery) expired(item Item) bool {
 	if item.ExpiresAt == nil || d.now == nil {
 		return false
@@ -259,10 +251,9 @@ func (d *headlessAnswerDelivery) settle(
 
 // retry logs a cycle that delivered nothing and leaves the answer pending.
 //
-// ⚠️ The line is the record. Nothing is written to the attempt trail — a retry
-// is not a failure yet — so without it a delivery that keeps failing is
-// indistinguishable from one that is quietly not attempted, which is exactly how
-// this defect stayed invisible.
+// ⚠️ The line IS the record: nothing is written to the attempt trail, because a
+// retry is not a failure yet. Without it, a delivery that keeps failing looks
+// exactly like one that is quietly not attempted — how this defect stayed hidden.
 func (d *headlessAnswerDelivery) retry(item Item, reason string) {
 	d.mu.Lock()
 	d.attempts[item.ItemID]++
@@ -346,15 +337,13 @@ func AnswerTurnText(ctx context.Context, item Item, answerContext AnswerContext)
 	return builder.String(), true
 }
 
-// shellQuote wraps a value in single quotes for a shell, escaping every embedded
-// single quote as '\”.
+// shellQuote wraps a value in single quotes for a shell, escaping each embedded
+// single quote as the close-quote, escaped-quote, reopen-quote sequence.
 //
-// ⚠️ The task name reaches this function from a vault page any worker can write,
-// and vault task names routinely carry apostrophes ("A Worker's Ask …"). An
-// unquoted interpolation both breaks the command — the shell ends the argument at
-// the apostrophe — and lets a quote in a name arrive at the shell as syntax. Single
-// quotes suppress every expansion ($, backtick, glob), which is why the escaping is
-// the `'\”` form rather than a double-quoted one.
+// ⚠️ The task name comes from a vault page any worker can write, and vault task
+// names routinely carry apostrophes. Unquoted, the shell ends the argument at the
+// apostrophe and a quote in a name arrives as syntax. Single quotes also suppress
+// every expansion, which is why the escaping is not the double-quoted form.
 func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }
