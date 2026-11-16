@@ -597,6 +597,19 @@ func (j *menuAnswerJob) deliver(
 	if verdict != DeliveryOK {
 		switch verdict {
 		case DeliveryRefuse:
+			// ⚠️ A refusal is not always undeliverable. When the session is GONE,
+			// the pane carrier cannot tell a reaped headless worker from a reaped
+			// tab session: the discriminator it reads (`Entrypoint`) lives in the
+			// session registry, whose record is deleted on exit. The wrapper can
+			// tell them apart — it keeps the exited record with its spawn mode —
+			// so only a session the wrapper reports as headless is resumed here.
+			// A dead TAB session keeps this refusal, which is what SC3 requires.
+			// Measured 2026-11-16: session 46e673cf, item 76901296…, answered and
+			// settled `failed` with "has no live process with a tty".
+			if j.headless != nil && j.headless.CanResume(ctx, sessionID) {
+				j.deliverHeadless(ctx, item, progress, reason)
+				break
+			}
 			j.settle(ctx, item, progress, FailedOutcome, reason)
 		case DeliveryNoPane:
 			// ⚠️ A pane-less session is pane-less by construction — the normal

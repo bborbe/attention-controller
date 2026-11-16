@@ -55,6 +55,12 @@ func (f *fakeWrapper) DeliverMessage(
 	return pkg.DeliveryRefuse, "not used by the settle arm"
 }
 
+// SessionMode is part of the delivery half this arm never routes through; it
+// reports no record, so a gone session refuses rather than resuming.
+func (f *fakeWrapper) SessionMode(_ context.Context, _ string) (string, bool) {
+	return "", false
+}
+
 // fakePolicy is a scripted RoutinePolicy.
 type fakePolicy struct {
 	rule    string

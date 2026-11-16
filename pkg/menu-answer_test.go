@@ -320,6 +320,57 @@ var _ = Describe("menu answer job", func() {
 		Expect(store.RecordAttemptCallCount()).To(Equal(0))
 	})
 
+	// ⚠️ The reaped-session branch. A gone session is refused by the pane
+	// carrier because its `Entrypoint` lived in a registry record deleted on
+	// exit; the wrapper still knows whether it ran headless, so only that case
+	// is resumed. Measured 2026-11-16: session 46e673cf, item 76901296…, answered
+	// and settled `failed` with "has no live process with a tty".
+	It(
+		"resumes a reaped HEADLESS session through the delivery arm instead of settling failed",
+		func() {
+			locator.verdict = pkg.DeliveryRefuse
+			locator.pane = 0
+			locator.reason = "session 46e673cf has no live process with a tty"
+			headless := &fakeHeadlessDeliverer{terminal: true, canResume: true}
+			job = pkg.NewMenuAnswerJob(
+				store, locator, writer, time.Hour,
+				pkg.WithMenuAnswerTimings(0, 2),
+				pkg.WithMenuAnswerMaxCycles(2),
+				pkg.WithMenuAnswerHeadlessDelivery(headless),
+			)
+			item := answeredMenuItem("item-1", nil)
+			item.Options = pkg.AnswerOptions{{Label: "Yes"}}
+			item.Answer = &pkg.Answer{Kind: pkg.OptionAnswerKind, Value: "Yes"}
+			store.ReadBoardReturns(pkg.Items{item}, nil)
+
+			Expect(job.DeliverOnce(context.Background())).To(Succeed())
+			Expect(headless.calls).To(HaveLen(1), "the answer must reach the headless arm")
+			Expect(writer.sent).To(BeEmpty())
+		},
+	)
+
+	It("still refuses a reaped TAB session, so the pane boundary holds", func() {
+		locator.verdict = pkg.DeliveryRefuse
+		locator.pane = 0
+		locator.reason = "session 46e673cf has no live process with a tty"
+		headless := &fakeHeadlessDeliverer{terminal: true, canResume: false}
+		job = pkg.NewMenuAnswerJob(
+			store, locator, writer, time.Hour,
+			pkg.WithMenuAnswerTimings(0, 2),
+			pkg.WithMenuAnswerMaxCycles(2),
+			pkg.WithMenuAnswerHeadlessDelivery(headless),
+		)
+		item := answeredMenuItem("item-1", nil)
+		item.Options = pkg.AnswerOptions{{Label: "Yes"}}
+		item.Answer = &pkg.Answer{Kind: pkg.OptionAnswerKind, Value: "Yes"}
+		store.ReadBoardReturns(pkg.Items{item}, nil)
+
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+		Expect(headless.calls).To(BeEmpty(), "a dead tab session must not be resumed")
+		_, _, _, outcome := store.RecordAttemptArgsForCall(0)
+		Expect(outcome).To(Equal(pkg.FailedOutcome))
+	})
+
 	It("types again when the operator re-answers the card", func() {
 		// A changed answer must win over the stale at-most-once marker, exactly as
 		// the prose carrier lets a different answer win over its pending marker.
