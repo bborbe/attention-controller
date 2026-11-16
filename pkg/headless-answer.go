@@ -8,6 +8,7 @@ import (
 	"context"
 	"strconv"
 	"strings"
+	"sync"
 
 	libtime "github.com/bborbe/time"
 	"github.com/golang/glog"
@@ -29,6 +30,8 @@ type AnswerContext struct {
 }
 
 // AnswerContextResolver resolves the delivery context for one answered item.
+//
+//counterfeiter:generate -o ../mocks/answer-context-resolver.go --fake-name AnswerContextResolver . AnswerContextResolver
 type AnswerContextResolver interface {
 	// AnswerContext returns the item's delivery context, or a zero value when
 	// nothing could be resolved.
@@ -72,6 +75,8 @@ func (r *provenanceAnswerContext) AnswerContext(
 // headless `sdk-cli` worker — so the pane path does not fail on those cards, it
 // has nothing to type into. Treating that as "nothing to do" silently dropped
 // the operator's answer, and the worker re-asked the identical question.
+//
+//counterfeiter:generate -o ../mocks/headless-answer-deliverer.go --fake-name HeadlessAnswerDeliverer . HeadlessAnswerDeliverer
 type HeadlessAnswerDeliverer interface {
 	// DeliverHeadless attempts one delivery of an answered card.
 	//
@@ -95,6 +100,7 @@ func NewHeadlessAnswerDelivery(
 		now:       now,
 		delivered: map[ItemID]bool{},
 		attempts:  map[ItemID]int{},
+		inFlight:  map[ItemID]bool{},
 	}
 }
 
@@ -103,6 +109,15 @@ type headlessAnswerDelivery struct {
 	wrapper  WrapperMessageDeliverer
 	contexts AnswerContextResolver
 	now      libtime.CurrentDateTimeGetter
+	// mu guards delivered, attempts and inFlight.
+	//
+	// ⚠️ ONE instance is wired into BOTH the attention-watcher job and the
+	// menu-answer job, and those run concurrently on `run.NewConcurrentRunner`.
+	// Go treats a concurrent map read/write as an unrecoverable fatal error — not
+	// a recoverable panic — so an unsynchronised map here crashes the whole
+	// controller the first time a menu card and a non-menu headless card are
+	// delivered at the same instant.
+	mu sync.Mutex
 	// delivered is the at-most-once guard. The store's own `delivered` attempt
 	// record is the durable half, but a delivery whose record write failed would
 	// otherwise be re-sent on the next cycle — and a re-sent turn is a second
@@ -111,14 +126,55 @@ type headlessAnswerDelivery struct {
 	// attempts counts the retries logged for one card, so the log line carries
 	// the count the operator reads as "this has been failing for N cycles".
 	attempts map[ItemID]int
+	// inFlight marks a card a concurrent cycle is already working on, so two jobs
+	// racing on one card deliver it once rather than twice.
+	inFlight map[ItemID]bool
+}
+
+// begin reserves a card for this cycle.
+//
+// It returns terminal=true when the card is already settled (nothing to do) and
+// reserved=false when another cycle holds it — a non-terminal skip, because the
+// owning cycle still has to report the outcome.
+func (d *headlessAnswerDelivery) begin(id ItemID) (terminal bool, reserved bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.delivered[id] {
+		return true, false
+	}
+	if d.inFlight[id] {
+		return false, false
+	}
+	d.inFlight[id] = true
+	return false, true
+}
+
+// release clears the in-flight mark for a card this cycle reserved.
+func (d *headlessAnswerDelivery) release(id ItemID) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	delete(d.inFlight, id)
 }
 
 // DeliverHeadless attempts one delivery, retrying until delivered once or the
 // item's own deadline passes.
 func (d *headlessAnswerDelivery) DeliverHeadless(ctx context.Context, item Item) bool {
-	if d.delivered[item.ItemID] {
+	if ctx.Err() != nil {
+		// The cycle was cancelled before it could act — a shutdown, or a runner
+		// draining. The card stays pending: nothing was attempted, so nothing may
+		// be recorded, and the next cycle owns it.
+		return false
+	}
+	terminal, reserved := d.begin(item.ItemID)
+	if terminal {
 		return true
 	}
+	if !reserved {
+		// A concurrent cycle owns this card. Not terminal — that cycle still has
+		// to report the outcome — so this cycle reports "not done" and moves on.
+		return false
+	}
+	defer d.release(item.ItemID)
 	if d.expired(item) {
 		d.settle(ctx, item, FailedOutcome,
 			"answer expired before it could be delivered ("+d.attemptsOf(item)+")")
@@ -142,7 +198,7 @@ func (d *headlessAnswerDelivery) DeliverHeadless(ctx context.Context, item Item)
 	if d.contexts != nil {
 		answerContext = d.contexts.AnswerContext(ctx, item)
 	}
-	text, ok := AnswerTurnText(item, answerContext)
+	text, ok := AnswerTurnText(ctx, item, answerContext)
 	if !ok {
 		d.settle(ctx, item, FailedOutcome, "the card carries no answer to deliver")
 		return true
@@ -179,12 +235,15 @@ func (d *headlessAnswerDelivery) settle(
 	outcome DeliveryOutcome,
 	reason string,
 ) {
+	d.mu.Lock()
 	d.delivered[item.ItemID] = true
+	attempts := d.attempts[item.ItemID]
+	d.mu.Unlock()
 	glog.V(2).Infof(
 		"job=attention-watcher action=headless item=%s verdict=%s attempts=%d reason=%q",
 		item.ItemID,
 		outcome,
-		d.attempts[item.ItemID],
+		attempts,
 		reason,
 	)
 	if _, err := d.store.RecordAttempt(
@@ -209,19 +268,25 @@ func (d *headlessAnswerDelivery) settle(
 // indistinguishable from one that is quietly not attempted, which is exactly how
 // this defect stayed invisible.
 func (d *headlessAnswerDelivery) retry(item Item, reason string) {
+	d.mu.Lock()
 	d.attempts[item.ItemID]++
+	attempts := d.attempts[item.ItemID]
+	d.mu.Unlock()
 	glog.V(2).Infof(
 		"job=attention-watcher action=headless_retry item=%s session=%s attempts=%d reason=%q",
 		item.ItemID,
 		shortID(string(item.ProducerID)),
-		d.attempts[item.ItemID],
+		attempts,
 		reason,
 	)
 }
 
 // attemptsOf renders the retry count for an expiry reason.
 func (d *headlessAnswerDelivery) attemptsOf(item Item) string {
-	return "after " + strconv.Itoa(d.attempts[item.ItemID]) + " attempts"
+	d.mu.Lock()
+	attempts := d.attempts[item.ItemID]
+	d.mu.Unlock()
+	return "after " + strconv.Itoa(attempts) + " attempts"
 }
 
 // deliverySessionID returns the id the wrapper is keyed by.
@@ -249,7 +314,7 @@ func deliverySessionID(ctx context.Context, item Item) (string, bool) {
 // answer. The closing command is appended only when the task name resolved —
 // `/vault-cli:work-on-task ""` would name no task, and a resume with no prompt
 // is a no-op, so the answer itself is what makes the turn non-empty.
-func AnswerTurnText(item Item, answerContext AnswerContext) (string, bool) {
+func AnswerTurnText(ctx context.Context, item Item, answerContext AnswerContext) (string, bool) {
 	answers := answerLines(item)
 	if len(answers) == 0 {
 		return "", false
@@ -264,7 +329,7 @@ func AnswerTurnText(item Item, answerContext AnswerContext) (string, bool) {
 		builder.WriteString(itemContext)
 		builder.WriteString("\n")
 	}
-	if options := menuOptionLines(item); len(options) > 0 {
+	if options := menuOptionLines(ctx, item); len(options) > 0 {
 		builder.WriteString("\nOptions offered:\n")
 		for _, option := range options {
 			builder.WriteString(option)
@@ -278,11 +343,24 @@ func AnswerTurnText(item Item, answerContext AnswerContext) (string, bool) {
 		builder.WriteString("\n")
 	}
 	if task := strings.TrimSpace(answerContext.TaskName); task != "" {
-		builder.WriteString("\nThen continue the task: /vault-cli:work-on-task \"")
-		builder.WriteString(task)
-		builder.WriteString("\"\n")
+		builder.WriteString("\nThen continue the task: /vault-cli:work-on-task ")
+		builder.WriteString(shellQuote(task))
+		builder.WriteString("\n")
 	}
 	return builder.String(), true
+}
+
+// shellQuote wraps a value in single quotes for a shell, escaping every embedded
+// single quote as '\”.
+//
+// ⚠️ The task name reaches this function from a vault page any worker can write,
+// and vault task names routinely carry apostrophes ("A Worker's Ask …"). An
+// unquoted interpolation both breaks the command — the shell ends the argument at
+// the apostrophe — and lets a quote in a name arrive at the shell as syntax. Single
+// quotes suppress every expansion ($, backtick, glob), which is why the escaping is
+// the `'\”` form rather than a double-quoted one.
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }
 
 // answerLines renders the answer content the card carries, or an empty list
@@ -335,8 +413,8 @@ func answerLine(answer *Answer) (string, bool) {
 
 // menuOptionLines renders each question unit's offered options, so the answer's
 // label can be read against the choices it was picked from.
-func menuOptionLines(item Item) []string {
-	questions, ok := MenuQuestionsOf(context.Background(), item)
+func menuOptionLines(ctx context.Context, item Item) []string {
+	questions, ok := MenuQuestionsOf(ctx, item)
 	if !ok {
 		return nil
 	}

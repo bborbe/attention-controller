@@ -105,6 +105,8 @@ type ClaudeWrapperClient interface {
 // arm needs to probe and answer an open gate, while the delivery arm needs to
 // write a turn into a session that has already ended one. The delivery arm
 // depends only on this half, so its fakes implement no route they never call.
+//
+//counterfeiter:generate -o ../mocks/wrapper-message-deliverer.go --fake-name WrapperMessageDeliverer . WrapperMessageDeliverer
 type WrapperMessageDeliverer interface {
 	// DeliverMessage writes one turn into the session, resuming it first when
 	// the wrapper no longer holds it.

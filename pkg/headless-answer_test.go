@@ -6,6 +6,7 @@ package pkg_test
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	libtime "github.com/bborbe/time"
@@ -148,7 +149,7 @@ var _ = Describe("headless answer delivery", func() {
 		contexts.context.TaskName = "Migrate Kafka to Per-Env Clusters"
 		Expect(delivery.DeliverHeadless(context.Background(), item)).To(BeTrue())
 		Expect(wrapper.delivered[0]).To(HaveSuffix(
-			"/vault-cli:work-on-task \"Migrate Kafka to Per-Env Clusters\"\n",
+			"/vault-cli:work-on-task 'Migrate Kafka to Per-Env Clusters'\n",
 		))
 	})
 
@@ -212,6 +213,54 @@ var _ = Describe("headless answer delivery", func() {
 		Expect(wrapper.delivered).To(BeEmpty())
 		_, _, _, outcome := store.RecordAttemptArgsForCall(0)
 		Expect(outcome).To(Equal(pkg.FailedOutcome))
+	})
+	// ⚠️ ONE deliverer is wired into both the attention-watcher job and the
+	// menu-answer job, and those run concurrently on `run.NewConcurrentRunner`.
+	// Before the mutex, two cycles touching the delivered/attempts maps at the
+	// same instant were an unrecoverable fatal error, not a recoverable panic.
+	It("delivers once when two concurrent cycles race on the same card", func() {
+		item := headlessItem("item-race")
+		var wg sync.WaitGroup
+		wg.Add(2)
+		for range 2 {
+			go func() {
+				defer GinkgoRecover()
+				defer wg.Done()
+				delivery.DeliverHeadless(context.Background(), item)
+			}()
+		}
+		wg.Wait()
+
+		Expect(wrapper.delivered).To(HaveLen(1),
+			"a re-sent turn is a second instruction to a worker that already acted on the first")
+	})
+
+	It(
+		"quotes a task name carrying an apostrophe so the closing command stays one argument",
+		func() {
+			contexts.context = pkg.AnswerContext{
+				Cwd:      "/workspace/attention-controller",
+				TaskName: "A Worker's Ask Reaches an Answerer",
+			}
+			item := headlessItem("item-quote")
+			Expect(delivery.DeliverHeadless(context.Background(), item)).To(BeTrue())
+
+			Expect(wrapper.delivered).To(HaveLen(1))
+			// Single-quoted with the apostrophe escaped: the shell must see ONE
+			// argument, and the name must not be able to inject syntax.
+			Expect(wrapper.delivered[0]).To(ContainSubstring(
+				`/vault-cli:work-on-task 'A Worker'\''s Ask Reaches an Answerer'`))
+		},
+	)
+
+	It("leaves the card pending when the cycle was already cancelled", func() {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		item := headlessItem("item-cancelled")
+		Expect(delivery.DeliverHeadless(ctx, item)).To(BeFalse())
+		Expect(wrapper.delivered).To(BeEmpty(), "nothing was attempted, so nothing may be recorded")
+		Expect(store.RecordAttemptCallCount()).To(Equal(0))
 	})
 })
 
