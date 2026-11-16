@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.89.1
 
 - fix: **a settled delivery is first-write-wins, so a redundant carrier can no longer overwrite a real `delivered` attempt record with its own `failed`.** The attempt record kept one write per item and the last write won, so a carrier arriving after the gate was already settled erased a real delivery — measured 2026-11-06 on card `f2e9520d105f97d8911cc0f562f60454`, `delivered` at the CLI's sample and `failed` (`supervisor:attention-poll`) 15 seconds later. A `delivered` write now records a `settled` sub-record that later writes carry forward untouched, so `Delivery` reads `delivered` and still names the arm that delivered, while the top-level fields keep the later write — both writes visible with their own carrier and timestamp. `DeliveryAttempt.EffectiveOutcome` / `EffectiveCarrier` / `EffectiveAttemptedAt` are the read side, used by `Delivery`, the watcher job, the menu-answer arm and the stage-delta histogram. A later `delivered` still upgrades an earlier `failed`/`held` write.
 
