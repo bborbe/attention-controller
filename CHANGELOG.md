@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.92.0
 
 - fix: **the forwarded lookup reads only the items created inside the scan window, so the unforwarded-closers scan no longer decodes the whole store history every 900 s.** v0.91.5 made that read unbounded to fix v0.91.4's 20 000-item page, which is correct but decoded every row ever written on every pass. Measured on the live board 2026-11-16 at v0.91.5: 91.4 GB allocated in 85 minutes, `collectHistoryPage` alone 10.5 GB of it, and the CPU profile 89 % garbage collector (`tryDeferToSpanScan` 34 %, `scanObject` 13 %). `History`'s page cache also kept the whole store on the heap between scans. The right bound is **time**, not a count and not everything: a row is forwarded when the store holds an item whose `dedup_key` is that row's id, and the store stamps that item's `CreatedAt` with its own clock when the row is ingested (a suppressed re-push only moves it forward), so no item created before the window can forward a row inside it. New `AttentionStore.HistoryCreatedSince(since)` walks the time-keyed history index newest-first and **breaks on the first older key without decoding it**, so a scan costs one window's items. It keeps expired open items (an item that later expired is still proof of delivery) and is not cached, since `since` moves on every call. The scanner reads from `window.since − 5 min` to absorb clock skew between the hook and the store. The page-size false positives v0.91.5 fixed cannot return: there is no page.
 
