@@ -71,9 +71,6 @@ var (
 	// posted. That card IS the delivered item, so counting the closer would
 	// report a loss that is not one.
 	postedCardPattern = regexp.MustCompile(`(?i)\bcard\s+[0-9a-f]{32}\b`)
-	// forwardLinePattern is the watcher's own forward line for a question or
-	// permission item: `open <kind> <item8> -> <store8>`.
-	forwardLinePattern = regexp.MustCompile(` open\s+\S+\s+([0-9a-f]{8}) ->`)
 )
 
 // UnforwardedOutcome is the three-valued result of one scan.
@@ -133,9 +130,16 @@ type UnforwardedClosersConfig struct {
 	// StateDir holds the producers' `*.events.jsonl` files, `suppressed.jsonl`
 	// and the per-session `<sid>.posted.json` files.
 	StateDir string
-	// WatcherLog is the watcher's log, whose forward lines say which question
-	// and permission rows reached the store.
-	WatcherLog string
+	// Store is the attention store the forwarded lookup reads.
+	//
+	// ⚠️ It replaced `WatcherLog` on 2026-11-16. The lookup used to parse the
+	// watcher's ` open <kind> <item8> ->` lines, but that log stopped being
+	// written at 2026-11-15T15:44:20 and the Go ingest writes to the
+	// controller's own stderr log instead — so the lookup matched nothing and
+	// every row in the window read as unforwarded (`unforwarded` climbed
+	// 0 → 948 over one day). A nil store is a read error, never a clean scan:
+	// a scan with no forwarded source would report every row as lost.
+	Store AttentionStore
 	// TranscriptRoot bounds which transcripts may be read: a path outside it is
 	// ignored, so a poisoned state file cannot aim this reader at any local file.
 	TranscriptRoot string
@@ -148,11 +152,25 @@ type UnforwardedClosersConfig struct {
 	Now libtime.CurrentDateTimeGetter
 }
 
+// unforwardedForwardedHistoryLimit is 0 — an UNBOUNDED history read.
+//
+// ⚠️ It was 20000, and that bound was a defect, not a trade. Measured
+// 2026-11-16 on the live store: the forwarded set built from a 20000-item page
+// read `unforwarded=67` while an independent reconciliation over the full store
+// and the same event logs found 56 — the extra 11 were rows whose store item sat
+// outside the page, so a delivered gate was reported lost. That is the exact
+// false-positive class this check exists to remove, reproduced by the fix for it.
+//
+// `History` documents `limit <= 0` as the unbounded compatibility path, and this
+// arm reads once per 900 s — not on the 2 s tick whose full-history decode the
+// v0.91.1 CPU work removed. A correctness bound cannot be set from a page size.
+const unforwardedForwardedHistoryLimit = 0
+
 // UnforwardedClosersScanner counts attention items that should have reached the
 // store but did not.
 type UnforwardedClosersScanner struct {
 	stateDir       string
-	watcherLog     string
+	store          AttentionStore
 	transcriptRoot string
 	window         time.Duration
 	grace          time.Duration
@@ -175,7 +193,7 @@ func NewUnforwardedClosersScanner(config UnforwardedClosersConfig) *UnforwardedC
 	}
 	return &UnforwardedClosersScanner{
 		stateDir:       config.StateDir,
-		watcherLog:     config.WatcherLog,
+		store:          config.Store,
 		transcriptRoot: config.TranscriptRoot,
 		window:         window,
 		grace:          grace,
@@ -241,29 +259,35 @@ type unforwardedTranscriptMessage struct {
 	Text string
 }
 
-// readForwarded collects the item ids the watcher logged a forward line for.
+// readForwarded collects the item ids the store already holds, keyed by the
+// same eight-character prefix the scan compares against.
+//
+// ⚠️ A row is forwarded when the store holds an item whose `dedup_key` is that
+// row's item id, in ANY state — an answered or closed item is still proof the
+// ingest carried it. The previous implementation read the watcher's log instead,
+// and when that log stopped being written the lookup silently matched nothing:
+// every row read as unforwarded and the count climbed without plateau.
+//
+// ⚠️ A nil store is an error, not an empty set. An empty set is exactly what the
+// retired log produced, so returning one here would restore the defect this
+// check exists to fix — and it would do it silently, because an empty forwarded
+// set looks the same as a store with nothing in it.
 func (s *UnforwardedClosersScanner) readForwarded(
 	ctx context.Context,
 ) (map[string]struct{}, error) {
-	fh, err := os.Open(s.watcherLog)
+	if s.store == nil {
+		return nil, errors.Errorf(ctx, "no store configured for the forwarded lookup")
+	}
+	items, err := s.store.History(ctx, unforwardedForwardedHistoryLimit, 0)
 	if err != nil {
-		return nil, errors.Wrapf(ctx, err, "read watcher log %s", s.watcherLog)
+		return nil, errors.Wrapf(ctx, err, "read forwarded items from store")
 	}
-	defer fh.Close()
-	forwarded := make(map[string]struct{})
-	scanner := newLineScanner(fh)
-	for scanner.Scan() {
-		if err := checkCanceled(ctx); err != nil {
-			return nil, err
+	forwarded := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		if item.DedupKey == "" {
+			continue
 		}
-		for _, match := range forwardLinePattern.FindAllStringSubmatch(scanner.Text(), -1) {
-			if len(match) > 1 {
-				forwarded[match[1]] = struct{}{}
-			}
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, errors.Wrapf(ctx, err, "read watcher log %s", s.watcherLog)
+		forwarded[firstEight(string(item.DedupKey))] = struct{}{}
 	}
 	return forwarded, nil
 }

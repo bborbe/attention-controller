@@ -121,19 +121,24 @@ func (j *attentionWatcherJob) Run(ctx context.Context) error {
 
 // DeliverOnce delivers every answered card that has not yet been delivered.
 func (j *attentionWatcherJob) DeliverOnce(ctx context.Context) error {
-	attempts, err := j.store.DeliveryAttempts(ctx)
-	if err != nil {
-		return errors.Wrap(ctx, err, "read delivery attempts failed")
-	}
 	items, err := j.store.ReadBoard(ctx)
 	if err != nil {
 		return errors.Wrap(ctx, err, "read board failed")
+	}
+	// ⚠️ The reports for THESE items, not DeliveryAttempts. That read scans the
+	// whole attempts bucket, which has no delete path and so grows with every card
+	// the store has ever held — an unbounded scan on a two-second tick. Measured
+	// 2026-11-16 after the other arms were fixed: it was the largest single CPU
+	// consumer left in the process, 24 % of a 25 s profile.
+	reports, err := j.store.DeliveryReports(ctx, items)
+	if err != nil {
+		return errors.Wrap(ctx, err, "read delivery reports failed")
 	}
 	for _, item := range items {
 		if err := ctx.Err(); err != nil {
 			return nil
 		}
-		if !j.deliverable(ctx, item, attempts) {
+		if !j.deliverable(ctx, item, reports) {
 			continue
 		}
 		j.deliver(ctx, item)
@@ -145,7 +150,7 @@ func (j *attentionWatcherJob) DeliverOnce(ctx context.Context) error {
 func (j *attentionWatcherJob) deliverable(
 	ctx context.Context,
 	item Item,
-	attempts map[ItemID]DeliveryAttempt,
+	reports map[ItemID]*DeliveryReport,
 ) bool {
 	if item.State != AnsweredState || item.AnsweredAt == nil {
 		return false
@@ -154,8 +159,8 @@ func (j *attentionWatcherJob) deliverable(
 	if item.AnsweredBy == attentionWatcherAnsweredBy {
 		return false
 	}
-	if attempt, ok := attempts[item.ItemID]; ok {
-		if attempt.EffectiveOutcome() == DeliveredOutcome {
+	if report, ok := reports[item.ItemID]; ok && report != nil {
+		if report.Status == DeliveredStatus {
 			return false
 		}
 		// ⚠️ A failure of THIS answer is retried, but not on the next tick. See
@@ -164,7 +169,7 @@ func (j *attentionWatcherJob) deliverable(
 		// process, and each attempt is a durable write that wakes the board.
 		// `retryDue` ignores any record written before the item was answered, so
 		// another arm's earlier judgement never delays the operator's answer.
-		if !j.retryDue(item, attempt) {
+		if !j.retryDue(item, report.AttemptedAt) {
 			return false
 		}
 	}
@@ -250,12 +255,11 @@ func (j *attentionWatcherJob) recordAttempt(
 // sat on the answer for up to the whole backoff. Only a failure of THIS answer
 // justifies withholding it, so the comparison is against AnsweredAt, not against
 // the carrier name — which the settle arm shares.
-//
-// ⚠️ It reads the EFFECTIVE attempt time, not the raw one, for the same reason
-// the delivery report does: a settlement that landed after a later redundant
-// write is the fact that decides whether the answer is already carried.
-func (j *attentionWatcherJob) retryDue(item Item, attempt DeliveryAttempt) bool {
-	last := attempt.EffectiveAttemptedAt().Time()
+func (j *attentionWatcherJob) retryDue(item Item, attemptedAt *libtime.DateTime) bool {
+	if attemptedAt == nil {
+		return true
+	}
+	last := attemptedAt.Time()
 	if item.AnsweredAt != nil && last.Before(item.AnsweredAt.Time()) {
 		return true
 	}

@@ -103,7 +103,7 @@ var _ = Describe("menu answer job", func() {
 
 	BeforeEach(func() {
 		store = &mocks.AttentionStore{}
-		store.DeliveryAttemptsReturns(map[pkg.ItemID]pkg.DeliveryAttempt{}, nil)
+		store.DeliveryReportsReturns(map[pkg.ItemID]*pkg.DeliveryReport{}, nil)
 		store.RecordAttemptReturns(&pkg.DeliveryAttempt{}, nil)
 		locator = &fakeLocator{verdict: pkg.DeliveryOK, pane: 42}
 		writer = &fakeMenuWriter{unreadableAfter: -1}
@@ -191,8 +191,8 @@ var _ = Describe("menu answer job", func() {
 		item.Options = pkg.AnswerOptions{{Label: "Yes"}}
 		item.Answer = &pkg.Answer{Kind: pkg.OptionAnswerKind, Value: "Yes"}
 		store.ReadBoardReturns(pkg.Items{item}, nil)
-		store.DeliveryAttemptsReturns(map[pkg.ItemID]pkg.DeliveryAttempt{
-			"item-1": {ItemID: "item-1", Outcome: pkg.DeliveredOutcome},
+		store.DeliveryReportsReturns(map[pkg.ItemID]*pkg.DeliveryReport{
+			"item-1": {ItemID: "item-1", Status: pkg.DeliveredStatus},
 		}, nil)
 		Expect(job.DeliverOnce(context.Background())).To(Succeed())
 		Expect(writer.sent).To(BeEmpty())

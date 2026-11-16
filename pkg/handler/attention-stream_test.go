@@ -837,9 +837,13 @@ var _ = Describe("AttentionStreamHandler render counters", func() {
 		Expect(err).Should(BeNil())
 		Expect(readEvent(reader)["item_id"]).Should(Equal(second.ItemID.String()))
 
-		// Three renders of two rows each: the baseline plus one per change.
+		// ⚠️ The counter now reports rows RE-RENDERED, not rows on the board. The
+		// baseline draws both rows; each later change alters exactly one of them,
+		// so each re-executes one template and carries the other over: 2 + 1 + 1.
+		// That saving is the whole point of the dirty-row render — it is what
+		// stops a 536-row board costing ~0.5 s per changed row.
 		Expect(counterValue(registry, "attention_board_renders_total")).Should(Equal(3.0))
-		Expect(counterValue(registry, "attention_board_rows_rendered_total")).Should(Equal(6.0))
+		Expect(counterValue(registry, "attention_board_rows_rendered_total")).Should(Equal(4.0))
 	})
 
 	// A render that returned an error reports nothing, so a board that cannot be
