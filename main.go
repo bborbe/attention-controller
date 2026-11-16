@@ -1160,6 +1160,7 @@ func (a *application) addAttentionWatcherJobs(
 			pkg.NewRoutinePolicy(nil),
 			writer,
 			pkg.RoutineGateSettleInterval,
+			libtime.NewCurrentDateTime(),
 		).Run)
 	}
 	// ⚠️ The release-expired-holds arm is deliberately NOT registered: its book

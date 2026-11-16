@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/bborbe/errors"
+	"github.com/bborbe/validation"
 	"github.com/golang/glog"
 )
 
@@ -265,6 +266,28 @@ func (j *eventIngestJob) ingestFile(
 		}
 		forwarded, err := j.forward(ctx, entry.record)
 		if err != nil {
+			// ⚠️ A PERMANENT failure must not pin the cursor. A record the sink
+			// can never accept — a push request the schema refuses — would
+			// otherwise be re-read and re-pushed every two seconds for the life
+			// of the file. Measured 2026-11-16 on a8719677: one record whose
+			// options carried three `recommended` flags made the ingest the
+			// process's largest CPU consumer while forwarding nothing.
+			//
+			// A transient failure still retries, and that asymmetry is the
+			// point: a store outage must not advance a cursor past work that has
+			// not landed, so only an error the sink itself declares permanent is
+			// skipped past.
+			if isPermanentIngestError(err) {
+				cursors.Offsets[name] = entry.after
+				counts.advanced = true
+				counts.skipped++
+				glog.Warningf(
+					"job=attention-watcher action=ingest_skip_invalid file=%s error=%v",
+					name,
+					err,
+				)
+				continue
+			}
 			// The cursor stays where it was, so the next pass re-reads this
 			// record instead of skipping it.
 			return counts, err
@@ -493,24 +516,25 @@ func readRootFile(root *os.Root, name string) ([]byte, error) {
 // applies the settled-`ts` mark to the lines it re-reads. Empty content with
 // start == offset means nothing was appended.
 func readRootFileFrom(root *os.Root, name string, offset int64) ([]byte, int64, error) {
-	handle, err := root.Open(name)
+	// ⚠️ Stat BEFORE opening. The common case is a log that has not grown since
+	// the last pass, and it must cost one syscall rather than three: the job
+	// stats every log in the directory every two seconds (6681 of them on
+	// 2026-11-16), so an open+stat+close per file stayed the largest single CPU
+	// consumer even after the read itself was made incremental.
+	info, err := root.Stat(name)
 	if err != nil {
 		return nil, offset, err
-	}
-	info, statErr := handle.Stat()
-	if statErr != nil {
-		_ = handle.Close()
-		return nil, offset, statErr
 	}
 	size := info.Size()
 	if size < offset {
 		offset = 0
 	}
 	if size == offset {
-		if closeErr := handle.Close(); closeErr != nil {
-			return nil, offset, closeErr
-		}
 		return nil, offset, nil
+	}
+	handle, err := root.Open(name)
+	if err != nil {
+		return nil, offset, err
 	}
 	if offset > 0 {
 		if _, seekErr := handle.Seek(offset, io.SeekStart); seekErr != nil {
@@ -531,6 +555,17 @@ func readRootFileFrom(root *os.Root, name string, offset int64) ([]byte, int64, 
 		return nil, offset, closeErr
 	}
 	return buffer.Bytes(), offset, nil
+}
+
+// isPermanentIngestError reports whether a forward failure can never succeed on
+// a retry.
+//
+// ⚠️ Only the sink's own validation is treated as permanent. Everything else —
+// an unreadable store, a full disk, a cancelled context — is assumed transient,
+// because moving the cursor past a record that could still land is the loss the
+// tailing contract forbids.
+func isPermanentIngestError(err error) bool {
+	return errors.Is(err, validation.Error)
 }
 
 // maxFloat returns the larger of two values, used to keep a file's settled mark

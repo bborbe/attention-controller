@@ -9,12 +9,26 @@ import (
 	"time"
 
 	"github.com/bborbe/errors"
+	libtime "github.com/bborbe/time"
 	"github.com/golang/glog"
 )
 
 // RoutineGateSettleInterval is how often the originate arm looks for a routine
 // gate to settle. Two seconds matches the delivery arm's poll.
 const RoutineGateSettleInterval = 2 * time.Second
+
+// RoutineGateHoldRepeatInterval is how long a gate's recorded refusal stands
+// before this arm writes it again.
+//
+// ⚠️ Without it the arm rewrote the SAME refusal on every tick, forever. The
+// decision is a pure function of the gate and the policy, so nothing changed
+// between one cycle and the next — but `recordAttempt` is a durable write with
+// its own fdatasync, and every write notifies the board, which then re-renders
+// every row it holds. Measured 2026-11-16: one held card (92392c00) rewritten
+// every 2 s, and the render it woke was the process's largest CPU consumer.
+// Five minutes keeps the record current — the operator still reads "a policy
+// decided, and it declined" — without paying for it 43,200 times a day.
+const RoutineGateHoldRepeatInterval = 5 * time.Minute
 
 // routineGateDecision is the behaviour the arm answers with. A routine gate is
 // by definition one the policy admitted, so it is always an allow.
@@ -53,28 +67,35 @@ type RoutineGateSettleJob interface {
 }
 
 // NewRoutineGateSettleJob creates the originate arm.
+//
+// currentDateTimeGetter is injected rather than reached for, because the hold
+// interval is a decision about elapsed time and a spec has to be able to move
+// the clock instead of sleeping through it.
 func NewRoutineGateSettleJob(
 	store AttentionStore,
 	wrapper ClaudeWrapperClient,
 	policy RoutinePolicy,
 	sessions RoutineGateSessionReader,
 	interval time.Duration,
+	currentDateTimeGetter libtime.CurrentDateTimeGetter,
 ) RoutineGateSettleJob {
 	return &routineGateSettleJob{
-		store:    store,
-		wrapper:  wrapper,
-		policy:   policy,
-		sessions: sessions,
-		interval: interval,
+		store:                 store,
+		wrapper:               wrapper,
+		policy:                policy,
+		sessions:              sessions,
+		interval:              interval,
+		currentDateTimeGetter: currentDateTimeGetter,
 	}
 }
 
 type routineGateSettleJob struct {
-	store    AttentionStore
-	wrapper  ClaudeWrapperClient
-	policy   RoutinePolicy
-	sessions RoutineGateSessionReader
-	interval time.Duration
+	store                 AttentionStore
+	wrapper               ClaudeWrapperClient
+	policy                RoutinePolicy
+	sessions              RoutineGateSessionReader
+	interval              time.Duration
+	currentDateTimeGetter libtime.CurrentDateTimeGetter
 }
 
 // Run settles routine gates until the context is cancelled.
@@ -103,17 +124,28 @@ func (j *routineGateSettleJob) SettleOnce(ctx context.Context) error {
 	if err != nil {
 		return errors.Wrap(ctx, err, "read open items failed")
 	}
+	// Read once for the whole cycle, not once per gate: the hold check below
+	// asks about every open item, and a per-item read would reintroduce the
+	// transaction-per-row cost this arm's own writes already pay for.
+	attempts, err := j.store.DeliveryAttempts(ctx)
+	if err != nil {
+		return errors.Wrap(ctx, err, "read delivery attempts failed")
+	}
 	for _, item := range items {
 		if err := ctx.Err(); err != nil {
 			return nil
 		}
-		j.settle(ctx, item)
+		j.settle(ctx, item, attempts)
 	}
 	return nil
 }
 
 // settle decides and delivers one gate.
-func (j *routineGateSettleJob) settle(ctx context.Context, item Item) {
+func (j *routineGateSettleJob) settle(
+	ctx context.Context,
+	item Item,
+	attempts map[ItemID]DeliveryAttempt,
+) {
 	if item.State != OpenState || item.AnswerMechanism != PermissionAnswerMechanism {
 		return
 	}
@@ -144,6 +176,13 @@ func (j *routineGateSettleJob) settle(ctx context.Context, item Item) {
 			item.ItemID,
 			rule,
 		)
+		// ⚠️ The decision is a pure function of the gate and the policy, so a
+		// refusal already on record under the same rule says nothing new. See
+		// RoutineGateHoldRepeatInterval: rewriting it every tick was a durable
+		// write per cycle whose only other effect was a full board re-render.
+		if j.holdRecorded(attempts, item, rule) {
+			return
+		}
 		j.recordAttempt(ctx, item, rule, HeldOutcome)
 		return
 	}
@@ -171,6 +210,29 @@ func (j *routineGateSettleJob) settle(ctx context.Context, item Item) {
 }
 
 // recordAttempt writes the trail entry, logging rather than failing.
+// holdRecorded reports whether this gate's refusal is already on record — same
+// arm, same rule, recent enough that writing it again would only cost a durable
+// write and the board render it wakes.
+//
+// A different rule re-records: the refusal is a claim about WHY the gate was
+// declined, and a policy that started declining for a new reason must be able
+// to say so.
+func (j *routineGateSettleJob) holdRecorded(
+	attempts map[ItemID]DeliveryAttempt,
+	item Item,
+	rule string,
+) bool {
+	attempt, ok := attempts[item.ItemID]
+	if !ok {
+		return false
+	}
+	if attempt.EffectiveOutcome() != HeldOutcome || attempt.EffectiveCarrier() != rule {
+		return false
+	}
+	last := attempt.EffectiveAttemptedAt().Time()
+	return j.currentDateTimeGetter.Now().Time().Before(last.Add(RoutineGateHoldRepeatInterval))
+}
+
 func (j *routineGateSettleJob) recordAttempt(
 	ctx context.Context,
 	item Item,

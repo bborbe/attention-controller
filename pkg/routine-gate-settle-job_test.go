@@ -10,6 +10,7 @@ import (
 	"os"
 	"time"
 
+	libtime "github.com/bborbe/time"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -117,7 +118,9 @@ var _ = Describe("routine gate settle job", func() {
 			entry: pkg.SessionEntry{PID: os.Getpid(), Entrypoint: "sdk-cli", CWD: "/tmp/ws"},
 			has:   true,
 		}
-		job = pkg.NewRoutineGateSettleJob(store, wrapper, policy, sessions, time.Hour)
+		job = pkg.NewRoutineGateSettleJob(
+			store, wrapper, policy, sessions, time.Hour, libtime.NewCurrentDateTime(),
+		)
 	})
 
 	It("allows and delivers a routine Read gate", func() {
@@ -132,7 +135,9 @@ var _ = Describe("routine gate settle job", func() {
 
 	It("holds a gate the policy refuses, recording the rule", func() {
 		policy = &fakePolicy{rule: "path-outside-workspace:Read", allowed: false}
-		job = pkg.NewRoutineGateSettleJob(store, wrapper, policy, sessions, time.Hour)
+		job = pkg.NewRoutineGateSettleJob(
+			store, wrapper, policy, sessions, time.Hour, libtime.NewCurrentDateTime(),
+		)
 		store.ReadReturns(pkg.Items{permissionItem("item-1")}, nil)
 		Expect(job.SettleOnce(context.Background())).To(Succeed())
 		Expect(wrapper.answered).To(BeEmpty())
@@ -140,6 +145,48 @@ var _ = Describe("routine gate settle job", func() {
 		_, _, carrier, outcome := store.RecordAttemptArgsForCall(0)
 		Expect(carrier).To(Equal("path-outside-workspace:Read"))
 		Expect(outcome).To(Equal(pkg.HeldOutcome))
+	})
+
+	// The hold-repeat pair. The refusal is a pure function of the gate and the
+	// policy, so rewriting it every tick said nothing new — but each write was
+	// durable, and each one woke a full board render.
+	It("does not rewrite a refusal already on record under the same rule", func() {
+		clock := libtime.NewCurrentDateTime()
+		policy = &fakePolicy{rule: "path-outside-workspace:Read", allowed: false}
+		job = pkg.NewRoutineGateSettleJob(store, wrapper, policy, sessions, time.Hour, clock)
+		store.ReadReturns(pkg.Items{permissionItem("item-1")}, nil)
+		store.DeliveryAttemptsReturns(map[pkg.ItemID]pkg.DeliveryAttempt{
+			"item-1": {
+				ItemID:      pkg.ItemID("item-1"),
+				Carrier:     "path-outside-workspace:Read",
+				Outcome:     pkg.HeldOutcome,
+				AttemptedAt: clock.Now(),
+			},
+		}, nil)
+
+		Expect(job.SettleOnce(context.Background())).To(Succeed())
+		Expect(store.RecordAttemptCallCount()).To(Equal(0))
+	})
+
+	It("re-records a refusal once the hold interval has passed", func() {
+		clock := libtime.NewCurrentDateTime()
+		policy = &fakePolicy{rule: "path-outside-workspace:Read", allowed: false}
+		job = pkg.NewRoutineGateSettleJob(store, wrapper, policy, sessions, time.Hour, clock)
+		store.ReadReturns(pkg.Items{permissionItem("item-1")}, nil)
+		store.DeliveryAttemptsReturns(map[pkg.ItemID]pkg.DeliveryAttempt{
+			"item-1": {
+				ItemID:      pkg.ItemID("item-1"),
+				Carrier:     "path-outside-workspace:Read",
+				Outcome:     pkg.HeldOutcome,
+				AttemptedAt: clock.Now(),
+			},
+		}, nil)
+		clock.SetNow(
+			clock.Now().Add(libtime.Duration(pkg.RoutineGateHoldRepeatInterval + time.Second)),
+		)
+
+		Expect(job.SettleOnce(context.Background())).To(Succeed())
+		Expect(store.RecordAttemptCallCount()).To(Equal(1))
 	})
 
 	It("skips a session that has a pane", func() {
