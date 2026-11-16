@@ -500,19 +500,22 @@ func (j *menuAnswerJob) Run(ctx context.Context) error {
 
 // DeliverOnce answers every answered menu card that has not yet been delivered.
 func (j *menuAnswerJob) DeliverOnce(ctx context.Context) error {
-	attempts, err := j.store.DeliveryAttempts(ctx)
-	if err != nil {
-		return errors.Wrap(ctx, err, "read delivery attempts failed")
-	}
 	items, err := j.store.ReadBoard(ctx)
 	if err != nil {
 		return errors.Wrap(ctx, err, "read board failed")
+	}
+	// ⚠️ Reports for THESE items, not DeliveryAttempts: that read scans the whole
+	// attempts bucket, which has no delete path and grows with every card the
+	// store has ever held. Same unbounded two-second scan the delivery arm had.
+	reports, err := j.store.DeliveryReports(ctx, items)
+	if err != nil {
+		return errors.Wrap(ctx, err, "read delivery reports failed")
 	}
 	for _, item := range items {
 		if err := ctx.Err(); err != nil {
 			return nil
 		}
-		questions, ok := j.menuDeliverable(ctx, item, attempts)
+		questions, ok := j.menuDeliverable(ctx, item, reports)
 		if !ok {
 			continue
 		}
@@ -526,7 +529,7 @@ func (j *menuAnswerJob) DeliverOnce(ctx context.Context) error {
 func (j *menuAnswerJob) menuDeliverable(
 	ctx context.Context,
 	item Item,
-	attempts map[ItemID]DeliveryAttempt,
+	reports map[ItemID]*DeliveryReport,
 ) ([]MenuQuestion, bool) {
 	if item.State != AnsweredState || item.AnsweredAt == nil {
 		return nil, false
@@ -535,7 +538,7 @@ func (j *menuAnswerJob) menuDeliverable(
 	if item.AnsweredBy == attentionWatcherAnsweredBy {
 		return nil, false
 	}
-	if attempt, ok := attempts[item.ItemID]; ok && attempt.EffectiveOutcome() == DeliveredOutcome {
+	if report, ok := reports[item.ItemID]; ok && report != nil && report.Status == DeliveredStatus {
 		return nil, false
 	}
 	if _, ok := itemSessionID(ctx, item); !ok {
