@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	libboltkv "github.com/bborbe/boltkv"
 	libtime "github.com/bborbe/time"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -33,34 +34,70 @@ func unforwardedClock() libtime.CurrentDateTimeGetter {
 	})
 }
 
-// unforwardedFixture is one temp state dir plus a transcript root and a watcher
-// log, laid out the way the live attention state dir is.
+// unforwardedFixture is one temp state dir plus a transcript root and the
+// attention store the forwarded lookup reads, laid out the way the live
+// attention state dir is.
 type unforwardedFixture struct {
-	root       string
-	stateDir   string
-	watcherLog string
+	root     string
+	stateDir string
+	store    pkg.AttentionStore
 }
 
 // newUnforwardedFixture creates an empty fixture for one spec.
+//
+// ⚠️ A real boltkv-backed store, never a mock. The forwarded lookup is the thing
+// under test, and a mocked store would let the spec assert a set the real
+// `History` never returns.
 func newUnforwardedFixture() *unforwardedFixture {
 	root := GinkgoT().TempDir()
 	stateDir := filepath.Join(root, "state")
 	Expect(os.MkdirAll(stateDir, 0o750)).To(Succeed())
-	watcherLog := filepath.Join(root, "watcher.log")
-	Expect(os.WriteFile(watcherLog, nil, 0o600)).To(Succeed())
-	return &unforwardedFixture{root: root, stateDir: stateDir, watcherLog: watcherLog}
+	db, err := libboltkv.OpenTemp(context.Background())
+	Expect(err).To(BeNil())
+	DeferCleanup(func() { Expect(db.Close()).To(BeNil()) })
+	liveness := &mocks.SessionLivenessChecker{}
+	liveness.IsLiveReturns(true)
+	store := pkg.NewAttentionStore(
+		db,
+		pkg.NewItemIDGenerator(),
+		liveness,
+		libtime.NewCurrentDateTime(),
+		libtime.Duration(15*60*1e9),
+	)
+	return &unforwardedFixture{root: root, stateDir: stateDir, store: store}
 }
 
 // scanner builds the scanner under test over the fixture.
 func (f *unforwardedFixture) scanner() *pkg.UnforwardedClosersScanner {
 	return pkg.NewUnforwardedClosersScanner(pkg.UnforwardedClosersConfig{
 		StateDir:       f.stateDir,
-		WatcherLog:     f.watcherLog,
+		Store:          f.store,
 		TranscriptRoot: f.root,
 		Window:         24 * time.Hour,
 		Grace:          120 * time.Second,
 		Now:            unforwardedClock(),
 	})
+}
+
+// forward pushes an item the way the Go ingest does: the dedup key IS the row's
+// own item id. The store record is the proof the ingest carried it, so a row
+// with one is forwarded and a row without one is not.
+func (f *unforwardedFixture) forward(session string, itemID string, kind string) {
+	mechanism := pkg.MessageAnswerMechanism
+	if kind == "permission" {
+		mechanism = pkg.PermissionAnswerMechanism
+	}
+	_, err := f.store.Push(context.Background(), pkg.PushRequest{
+		ProducerID:      pkg.ProducerID(session),
+		ProducerKind:    pkg.SessionProducerKind,
+		ProvenanceClass: "hook",
+		LivenessRef:     pkg.LivenessRef("session:" + session),
+		DedupKey:        pkg.DedupKey(itemID),
+		InterruptClass:  "question",
+		Payload:         pkg.Payload("ask for " + itemID),
+		AnswerMechanism: mechanism,
+	})
+	Expect(err).To(BeNil())
 }
 
 // openRow appends one `open` record to a session's event log.
@@ -327,11 +364,39 @@ var _ = Describe("UnforwardedOutcome", func() {
 		Expect(result.Findings).To(HaveLen(1))
 	})
 
+	// ⚠️ The paired control. Without it, a scanner that returns no findings at
+	// all satisfies every criterion here at once — the fix would be
+	// indistinguishable from deleting the detector.
+	It("reports no finding for a row the store already holds", func() {
+		fixture := newUnforwardedFixture()
+		fixture.openRow("s7", "gggggggg", "question", "", unforwardedNow-600, "Stop")
+		fixture.forward("s7", "gggggggg", "question")
+
+		result := fixture.scanner().Scan(context.Background())
+
+		Expect(result.Err).To(BeNil())
+		Expect(result.Outcome()).To(Equal(pkg.UnforwardedOutcomeNone))
+		Expect(result.Findings).To(BeEmpty())
+	})
+
+	It("still reports a row the store does not hold, beside one it does", func() {
+		fixture := newUnforwardedFixture()
+		fixture.openRow("s7", "gggggggg", "question", "", unforwardedNow-600, "Stop")
+		fixture.forward("s7", "gggggggg", "question")
+		fixture.openRow("s7", "hhhhhhhh", "question", "", unforwardedNow-600, "Stop")
+
+		result := fixture.scanner().Scan(context.Background())
+
+		Expect(result.Err).To(BeNil())
+		Expect(result.Findings).To(HaveLen(1))
+		Expect(result.Findings[0].Item).To(Equal("hhhhhhhh"))
+	})
+
 	It("returns a read error when the state dir does not exist", func() {
 		fixture := newUnforwardedFixture()
 		scanner := pkg.NewUnforwardedClosersScanner(pkg.UnforwardedClosersConfig{
 			StateDir:       filepath.Join(fixture.root, "missing"),
-			WatcherLog:     fixture.watcherLog,
+			Store:          fixture.store,
 			TranscriptRoot: fixture.root,
 			Now:            unforwardedClock(),
 		})
@@ -349,7 +414,7 @@ var _ = Describe("UnforwardedOutcome", func() {
 			recorder := &unforwardedLogRecorder{}
 			scanner := pkg.NewUnforwardedClosersScanner(pkg.UnforwardedClosersConfig{
 				StateDir:       filepath.Join(fixture.root, "missing"),
-				WatcherLog:     fixture.watcherLog,
+				Store:          fixture.store,
 				TranscriptRoot: fixture.root,
 				Now:            unforwardedClock(),
 			})
