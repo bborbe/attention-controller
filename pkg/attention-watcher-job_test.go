@@ -174,6 +174,61 @@ var _ = Describe("attention watcher delivery job", func() {
 		Expect(headless.calls).To(BeEmpty())
 	})
 
+	It("resumes an exited session through the headless arm when the pane refuses", func() {
+		// The 2026-11-17 defect: a session once delivered to through a pane exited,
+		// and every cycle refused with "no live process with a tty".
+		headless := &fakeHeadlessDeliverer{terminal: true, canResume: true}
+		job = pkg.NewAttentionWatcherJob(
+			store, carrier, headless, time.Hour, libtime.NewCurrentDateTime(),
+		)
+		carrier.verdict = pkg.DeliveryRefuse
+		store.ReadBoardReturns(pkg.Items{
+			answeredItem("item-1", "operator", pkg.Decision("allow")),
+		}, nil)
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+		Expect(headless.calls).To(Equal([]pkg.ItemID{"item-1"}))
+		// The headless arm settles the card itself; the pane arm records no failure.
+		Expect(store.RecordAttemptCallCount()).To(Equal(0))
+	})
+
+	It("keeps a live tty session on the pane path", func() {
+		headless := &fakeHeadlessDeliverer{terminal: true, canResume: true}
+		job = pkg.NewAttentionWatcherJob(
+			store, carrier, headless, time.Hour, libtime.NewCurrentDateTime(),
+		)
+		store.ReadBoardReturns(pkg.Items{
+			answeredItem("item-1", "operator", pkg.Decision("allow")),
+		}, nil)
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+		Expect(carrier.calls).To(ConsistOf("item-1=allow"))
+		Expect(headless.calls).To(BeEmpty())
+		Expect(store.RecordAttemptCallCount()).To(Equal(1))
+		_, _, _, outcome := store.RecordAttemptArgsForCall(0)
+		Expect(outcome).To(Equal(pkg.DeliveredOutcome))
+	})
+
+	It("refuses with a distinct reason when the exited session cannot be resumed", func() {
+		headless := &fakeHeadlessDeliverer{terminal: true, canResume: false}
+		job = pkg.NewAttentionWatcherJob(
+			store, carrier, headless, time.Hour, libtime.NewCurrentDateTime(),
+		)
+		carrier.verdict = pkg.DeliveryRefuse
+		store.RecordAttemptCountReturns(pkg.DeliveryAttemptParkThreshold, nil)
+		store.ReadBoardReturns(pkg.Items{
+			answeredItem("item-1", "operator", pkg.Decision("allow")),
+		}, nil)
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+		Expect(headless.calls).To(BeEmpty())
+		Expect(store.RecordAttemptCallCount()).To(Equal(1))
+		_, _, _, outcome := store.RecordAttemptArgsForCall(0)
+		Expect(outcome).To(Equal(pkg.FailedOutcome))
+		// Parked, not retried in a hot loop, and the park names the missing fallback.
+		Expect(store.ParkDeliveryCallCount()).To(Equal(1))
+		_, park := store.ParkDeliveryArgsForCall(0)
+		Expect(park.Verdict).To(Equal(pkg.DeliveryRefuse))
+		Expect(park.Reason).To(ContainSubstring("cannot be resumed through the headless path"))
+	})
+
 	// The backoff triple. A card that could not be carried used to be re-attempted
 	// on every tick for the life of the process: `failed` is not terminal, so
 	// `deliverable` stayed true. On 2026-11-16 that was ~20 refusals a second
