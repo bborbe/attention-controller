@@ -372,7 +372,7 @@ func (j *attentionWatcherJob) deliver(
 		j.maybePark(ctx, item, count, verdict, reason)
 	default:
 		// `resolved`: the gate was already gone — nothing left to deliver. It is
-		// still counted and still parked at the threshold, because a retry that
+		// still counted and still parked at the threshold, because a verdict that
 		// never resolves is the same hot loop under another name.
 		j.maybePark(ctx, item, count, verdict, reason)
 	}
