@@ -480,9 +480,7 @@ var _ = Describe("UnforwardedPosting", func() {
 			_, request := store.PushArgsForCall(0)
 			Expect(request.ProducerID).To(Equal(pkg.UnforwardedClosersProducerID))
 			Expect(request.ProducerKind).To(Equal(pkg.CronProducerKind))
-			Expect(request.LivenessRef).To(Equal(
-				pkg.LivenessRef("owner:attention-unforwarded-closers"),
-			))
+			Expect(request.LivenessRef).To(Equal(pkg.LivenessRef("session:s10")))
 			Expect(request.DedupKey).To(Equal(pkg.DedupKey("unforwarded:jjjjjjjj")))
 			Expect(request.Payload).To(Equal(pkg.Payload("ask for jjjjjjjj")))
 			Expect(request.AnswerMechanism).To(Equal(pkg.MessageAnswerMechanism))
@@ -578,5 +576,112 @@ var _ = Describe("UnforwardedDeadSession", func() {
 		Expect(store.PushCallCount()).To(Equal(1))
 		_, request := store.PushArgsForCall(0)
 		Expect(request.DedupKey).To(Equal(pkg.DedupKey("unforwarded:nnnnnnnn")))
+	})
+})
+
+// The arm-side reconciler: a card minted while its session was live must not
+// outlive that session. The pair is deliberate — the DEAD spec alone is
+// satisfied by a reconciler that closes every card, and the LIVE spec is the
+// control that proves a still-answerable card is kept.
+var _ = Describe("UnforwardedReconcile", func() {
+	It("closes an open card whose session is no longer live", func() {
+		fixture := newUnforwardedFixture()
+		store := &mocks.AttentionStore{}
+		store.ReadReturns(pkg.Items{
+			{
+				ItemID:      pkg.ItemID("card-dead"),
+				ProducerID:  pkg.UnforwardedClosersProducerID,
+				State:       pkg.OpenState,
+				LivenessRef: pkg.LivenessRef("session:dead-session"),
+			},
+		}, nil)
+		store.CloseReturns(&pkg.Item{ItemID: pkg.ItemID("card-dead")}, nil)
+		liveness := &mocks.SessionLivenessChecker{}
+		liveness.IsLiveReturns(false)
+		recorder := &unforwardedLogRecorder{}
+		job := pkg.NewUnforwardedClosersJob(
+			fixture.scanner(), store, liveness, time.Hour, recorder.Logf,
+		)
+
+		job.RunOnce(context.Background())
+
+		Expect(store.CloseCallCount()).To(Equal(1))
+		_, itemID, answeredBy, _ := store.CloseArgsForCall(0)
+		Expect(itemID).To(Equal(pkg.ItemID("card-dead")))
+		// A producer withdrawal names no arm — the schema sets answered_by only
+		// on an arm-caused close.
+		Expect(answeredBy).To(Equal(""))
+	})
+
+	It("keeps an open card whose session is still live", func() {
+		fixture := newUnforwardedFixture()
+		store := &mocks.AttentionStore{}
+		store.ReadReturns(pkg.Items{
+			{
+				ItemID:      pkg.ItemID("card-live"),
+				ProducerID:  pkg.UnforwardedClosersProducerID,
+				State:       pkg.OpenState,
+				LivenessRef: pkg.LivenessRef("session:live-session"),
+			},
+		}, nil)
+		liveness := &mocks.SessionLivenessChecker{}
+		liveness.IsLiveReturns(true)
+		recorder := &unforwardedLogRecorder{}
+		job := pkg.NewUnforwardedClosersJob(
+			fixture.scanner(), store, liveness, time.Hour, recorder.Logf,
+		)
+
+		job.RunOnce(context.Background())
+
+		Expect(store.CloseCallCount()).To(Equal(0))
+	})
+
+	It("leaves an owner: card and another producer's card alone", func() {
+		fixture := newUnforwardedFixture()
+		store := &mocks.AttentionStore{}
+		store.ReadReturns(pkg.Items{
+			{
+				ItemID:      pkg.ItemID("card-owner"),
+				ProducerID:  pkg.UnforwardedClosersProducerID,
+				State:       pkg.OpenState,
+				LivenessRef: pkg.LivenessRef("owner:attention-unforwarded-closers"),
+			},
+			{
+				ItemID:      pkg.ItemID("card-other"),
+				ProducerID:  pkg.ProducerID("someone-else"),
+				State:       pkg.OpenState,
+				LivenessRef: pkg.LivenessRef("session:dead-session"),
+			},
+		}, nil)
+		liveness := &mocks.SessionLivenessChecker{}
+		liveness.IsLiveReturns(false)
+		recorder := &unforwardedLogRecorder{}
+		job := pkg.NewUnforwardedClosersJob(
+			fixture.scanner(), store, liveness, time.Hour, recorder.Logf,
+		)
+
+		job.RunOnce(context.Background())
+
+		Expect(store.CloseCallCount()).To(Equal(0))
+	})
+
+	It("does not reconcile without a liveness checker", func() {
+		fixture := newUnforwardedFixture()
+		store := &mocks.AttentionStore{}
+		store.ReadReturns(pkg.Items{
+			{
+				ItemID:      pkg.ItemID("card-dead"),
+				ProducerID:  pkg.UnforwardedClosersProducerID,
+				State:       pkg.OpenState,
+				LivenessRef: pkg.LivenessRef("session:dead-session"),
+			},
+		}, nil)
+		recorder := &unforwardedLogRecorder{}
+		job := pkg.NewUnforwardedClosersJob(fixture.scanner(), store, nil, time.Hour, recorder.Logf)
+
+		job.RunOnce(context.Background())
+
+		Expect(store.ReadCallCount()).To(Equal(0))
+		Expect(store.CloseCallCount()).To(Equal(0))
 	})
 })
