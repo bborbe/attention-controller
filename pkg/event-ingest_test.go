@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	stdtime "time"
 
+	"github.com/bborbe/errors"
+	"github.com/bborbe/validation"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -212,11 +214,43 @@ var _ = Describe("EventIngestJob", func() {
 
 		Expect(job().IngestOnce(ctx)).To(Succeed())
 		Expect(sink.opened).To(BeEmpty())
+		// A transient failure is not a quarantine: nothing was skipped, so no
+		// durable skip record may exist.
+		_, statErr := os.Stat(filepath.Join(stateDir, "attention-ingest-quarantine.json"))
+		Expect(statErr).To(HaveOccurred())
 
 		// The cursor did not advance past the failed record, so the next pass
 		// forwards it rather than skipping it.
 		sink.err = nil
 		Expect(job().IngestOnce(ctx)).To(Succeed())
 		Expect(sink.opened).To(Equal([]string{"a"}))
+	})
+
+	It("quarantines a record the sink rejects permanently, naming the store's reason", func() {
+		writeLog("s1.events.jsonl", record("a", "permission", true, 100))
+		// The store's own cardinality rejection, exactly as it arrives: the
+		// quarantine reason must be read from this error, not a literal.
+		sink.err = errors.Wrap(
+			ctx,
+			validation.Error,
+			"validate Recommended failed: 3 options are marked recommended, at most 1 is allowed",
+		)
+
+		Expect(job().IngestOnce(ctx)).To(Succeed())
+		Expect(sink.opened).To(BeEmpty())
+
+		content, readErr := os.ReadFile(
+			filepath.Join(stateDir, "attention-ingest-quarantine.json"),
+		)
+		Expect(readErr).To(BeNil())
+		Expect(string(content)).To(ContainSubstring(`"item_id": "a"`))
+		Expect(string(content)).To(ContainSubstring("3 options are marked recommended"))
+		Expect(string(content)).To(ContainSubstring("validate Recommended failed"))
+
+		// The cursor advanced past the record, so the next pass does not retry
+		// it — the durable record is what replaces the retry loop.
+		sink.err = nil
+		Expect(job().IngestOnce(ctx)).To(Succeed())
+		Expect(sink.opened).To(BeEmpty())
 	})
 })

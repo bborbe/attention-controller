@@ -218,3 +218,40 @@ type DeliveryReport struct {
 // STORAGE layout, not a schema: [[Attention Item Schema]] § Delivery attempts
 // describes the record, and this names where it is kept.
 var deliveryAttemptBucketName = libkv.NewBucketName("attention-delivery-attempts")
+
+// deliveryAttemptCountBucketName is the bucket attempt COUNTS live in. It is a
+// STORAGE layout, not a schema: [[Attention Item Schema]] § Delivery attempts
+// fixes the attempt record at four fields and derives `never_attempted` from
+// that record's ABSENCE, so a count cannot ride on it — writing a record to
+// carry a count would make `never_attempted` unreachable. The count is
+// therefore a sibling record, and the two answer different questions: the
+// attempt record says what an arm OBSERVED, this says how often anything TRIED.
+var deliveryAttemptCountBucketName = libkv.NewBucketName("attention-delivery-attempt-counts")
+
+// DeliveryAttemptCount is how many times one item's answer has been attempted.
+//
+// ⚠️ It counts EVERY verdict — `ok`, `refuse`, `no-pane` and `retry` alike —
+// because the loop it exists to bound re-tries items no carrier can reach, and
+// those are exactly the verdicts that write no attempt record at all. Measured
+// 2026-11-16: 454,187 deliver lines over 647 items in 5.5 h, ~21 attempts per
+// item, of which only the `ok` and `refuse` minority ever left a record.
+//
+// ⚠️ It is monotonic WITHIN one backoff cycle: a re-attempt increments and never
+// resets, including after a delivery, because the count is evidence of traffic
+// rather than of success. A park's re-open does reset it (see
+// AttentionStore.ClearDeliveryPark), so the count never exceeds
+// DeliveryAttemptParkThreshold between two parks and always reads as
+// attempts-since-last-reopen.
+type DeliveryAttemptCount struct {
+	ItemID ItemID `json:"item_id"`
+	Count  int    `json:"count"`
+	// LastAttemptedAt is when the last attempt happened, from the store's own
+	// clock. It is the backoff anchor: the next attempt is due once
+	// DeliveryAttemptBackoff has elapsed since it.
+	LastAttemptedAt libtime.DateTime `json:"last_attempted_at"`
+	// LastVerdict and LastReason carry the last attempt's verdict so a park
+	// written from the count alone — the crash-recovery branch — still names why
+	// the item stopped.
+	LastVerdict DeliveryVerdict `json:"last_verdict,omitempty"`
+	LastReason  string          `json:"last_reason,omitempty"`
+}
