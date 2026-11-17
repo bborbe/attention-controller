@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.92.4
 
 - fix: **a contended BoltDB file lock no longer hangs the controller forever at startup.** `main.Run` opened the store with `libboltkv.OpenDir`'s default options, and bbolt's `DefaultOptions` carries `Timeout: 0` — wait forever, ignore ctx. When a second process held `bolt.db` (a probe against the datadir, or a predecessor that had not finished exiting), the new instance parked in bbolt's 50 ms `flock` retry loop: it logged `application started`, never bound `18080`, never logged an error, and launchd restarted it into the same hang. Proven 2026-11-16 by a copy-based reproduction — the SIGQUIT goroutine dump showed `main.(*application).Run → boltkv.OpenDir → OpenFile → bbolt.Open → bbolt.flock → time.Sleep(50ms)`, with a no-lock control binding normally. `boltOpenOptions` now bounds the wait at 15 s, so a contended open fails fast with a logged `open db failed` error that KeepAlive can retry, instead of a process that looks alive and serves nothing.
 
