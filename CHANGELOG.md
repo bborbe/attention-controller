@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.92.3
 
 - fix: **a busy composer no longer re-reads the session transcript on every tick, and one delivery check no longer allocates 16 MiB.** Measured on the live board 2026-11-16 at v0.92.0: 34.5 GB allocated in 17 min 50 s, **17.8 GB (56 %) from one path** — `attentionWatcherJob.deliver` → `paneCarrier.retypeGuard` → `transcriptReader.HoldsLine` → `readTranscriptWindow` — with 1113 `verdict=retry` lines, 1110 of them `composer is busy`. Two costs, both on that path. First, `readTranscriptWindow` allocated a fixed `transcriptReaderScanMaxBytes` (16 MiB) buffer on every call regardless of how few bytes it read, so 1113 calls cost 17.8 GB; the buffer is now sized to the bytes actually read, with the cap still bounding the read. Second, a busy composer returns `DeliveryRetry` without recording a failure, so the 5-minute `AttentionDeliveryRetryBackoff` never engages and the guard re-checked an unchanged transcript every ~2.6 s tick; a **negative** `HoldsLine` result is now cached per transcript path, keyed on the file's `(size, mtime)`, so any append invalidates it. A hit is never cached, the check still runs **before** the composer state (a landed answer must count as delivered even while busy), and the entry holds only that path's in-flight lines so two cards on one session cannot evict each other.
 
