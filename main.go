@@ -213,7 +213,13 @@ func boltOpenOptions() libboltkv.ChangeOptions {
 // ⚠️ The two halves run under service.Run, which cancels both when either
 // returns: a failed init step is logged by step name and exits the process
 // non-zero rather than leaving it serving "starting" forever, and a listener
-// that cannot bind takes init down with it, as before.
+// that cannot serve takes init down with it, as before.
+//
+// ⚠️ The db is closed HERE, after service.Run returns, never inside init: the
+// listener is a sibling of init, not a child, so a db closed by init's own
+// defer would close under requests the listener is still draining. service.Run
+// waits for both halves, and runBoardListener returns only once Shutdown has
+// drained every in-flight request.
 func (a *application) Run(ctx context.Context, sentryClient libsentry.Client) error {
 	// The first line this process writes, before any step that can block, so a
 	// hang is attributable from the stderr log rather than read as no start.
@@ -223,21 +229,66 @@ func (a *application) Run(ctx context.Context, sentryClient libsentry.Client) er
 	)
 	libmetrics.NewBuildInfoMetrics().SetBuildInfo(a.BuildGitVersion, a.BuildGitCommit, a.BuildDate)
 
+	// Bound synchronously, before any init step: a port that cannot be bound
+	// fails the process at once rather than racing init.
+	listener, err := net.Listen("tcp", a.Listen)
+	if err != nil {
+		return errors.Wrapf(ctx, err, "listen on %s failed", a.Listen)
+	}
 	gate := factory.CreateStartupGate(factory.CreateHealthzHandler(), promhttp.Handler())
-	return service.Run(
+	// Written by the init half, read only after service.Run has waited for it.
+	var db libkv.DB
+	runErr := service.Run(
 		ctx,
-		a.runBoardListener(gate),
-		a.initAndServe(sentryClient, gate),
+		a.runBoardListener(listener, gate),
+		a.initAndServe(sentryClient, gate, func(opened libkv.DB) { db = opened }),
 	)
+	if db != nil {
+		if err := db.Close(); err != nil {
+			glog.Warningf("close db failed: %v", err)
+		}
+	}
+	return runErr
 }
 
-// runBoardListener serves the board listener through the startup gate.
-func (a *application) runBoardListener(gate http.Handler) run.Func {
+// runBoardListener serves the board listener through the startup gate on the
+// already-bound listener.
+func (a *application) runBoardListener(listener net.Listener, gate http.Handler) run.Func {
 	return func(ctx context.Context) error {
-		glog.V(0).
-			Infof("starting http server listen on %s (starting screen until init completes)", a.Listen)
-		return libhttp.NewServer(a.Listen, gate).Run(ctx)
+		glog.V(0).Infof(
+			"starting http server listen on %s (starting screen until init completes)",
+			listener.Addr(),
+		)
+		options := libhttp.CreateServerOptions()
+		server := libhttp.CreateHTTPServer(a.Listen, gate, options)
+		return serveUntilDone(ctx, server, listener, options.ShutdownTimeout)
 	}
+}
+
+// serveUntilDone serves on listener until ctx ends, then shuts the server down.
+//
+// ⚠️ Unlike libhttp.NewServer, it returns only AFTER Shutdown has drained the
+// in-flight requests (or hit its timeout) — the caller closes the db next, so
+// returning at the start of Shutdown would close it under a running handler.
+func serveUntilDone(
+	ctx context.Context,
+	server *http.Server,
+	listener net.Listener,
+	shutdownTimeout time.Duration,
+) error {
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- server.Serve(listener) }()
+	select {
+	case err := <-serveErr:
+		return errors.Wrap(ctx, err, "board listener failed")
+	case <-ctx.Done():
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)
+	defer cancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		glog.Warningf("board listener shutdown failed: %v", err)
+	}
+	return nil
 }
 
 // runInitStep runs one init step under its name: the gate names it as pending,
@@ -282,9 +333,11 @@ func (a *application) openGate(gate handler.StartupGate, router http.Handler) {
 }
 
 // initAndServe runs the init steps behind the gate, then serves until ctx ends.
+// onOpen receives the opened db; the caller owns closing it (see Run).
 func (a *application) initAndServe(
 	sentryClient libsentry.Client,
 	gate handler.StartupGate,
+	onOpen func(db libkv.DB),
 ) run.Func {
 	return func(ctx context.Context) error {
 		now := libtime.NewCurrentDateTime()
@@ -300,9 +353,9 @@ func (a *application) initAndServe(
 		if err != nil {
 			return err
 		}
-		defer db.Close()
-		// Registered after db.Close so it runs first: a shutting-down process
-		// stops routing new requests to handlers that read the closing db.
+		onOpen(db)
+		// A shutting-down process stops routing new requests to the real router;
+		// the db itself is closed by Run once the listener has drained.
 		defer gate.Close("shutting-down")
 
 		var deps storeDeps

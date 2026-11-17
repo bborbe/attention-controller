@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/bborbe/errors"
+	libkv "github.com/bborbe/kv"
 	libtime "github.com/bborbe/time"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -59,7 +60,6 @@ var _ = Describe("startup ordering", func() {
 		listener, err := net.Listen("tcp", "127.0.0.1:0")
 		Expect(err).NotTo(HaveOccurred())
 		addr := listener.Addr().String()
-		Expect(listener.Close()).To(Succeed())
 
 		app := &application{Listen: addr}
 		gate := factory.CreateStartupGate(factory.CreateHealthzHandler(), http.NotFoundHandler())
@@ -68,7 +68,7 @@ var _ = Describe("startup ordering", func() {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		done := make(chan error, 1)
-		go func() { done <- app.runBoardListener(gate)(ctx) }()
+		go func() { done <- app.runBoardListener(listener, gate)(ctx) }()
 
 		var resp *http.Response
 		Eventually(func() error {
@@ -85,6 +85,43 @@ var _ = Describe("startup ordering", func() {
 		Eventually(done, 5*time.Second).Should(Receive())
 	})
 
+	It("returns only after an in-flight request has finished", func() {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		Expect(err).NotTo(HaveOccurred())
+		addr := listener.Addr().String()
+
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		finished := make(chan struct{})
+		slow := http.HandlerFunc(func(resp http.ResponseWriter, req *http.Request) {
+			close(entered)
+			<-release
+			close(finished)
+		})
+		gate := factory.CreateStartupGate(factory.CreateHealthzHandler(), http.NotFoundHandler())
+		gate.Open(slow)
+
+		app := &application{Listen: addr}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		done := make(chan error, 1)
+		go func() { done <- app.runBoardListener(listener, gate)(ctx) }()
+		go func() {
+			defer GinkgoRecover()
+			resp, err := http.Get("http://" + addr + "/")
+			if err == nil {
+				_ = resp.Body.Close()
+			}
+		}()
+
+		Eventually(entered, 5*time.Second).Should(BeClosed())
+		cancel()
+		Consistently(done, 200*time.Millisecond).ShouldNot(Receive())
+		close(release)
+		Eventually(done, 5*time.Second).Should(Receive(BeNil()))
+		Expect(finished).To(BeClosed())
+	})
+
 	It("fails the process with the step name when the db cannot be opened", func() {
 		dir := GinkgoT().TempDir()
 		notADir := filepath.Join(dir, "file")
@@ -92,7 +129,9 @@ var _ = Describe("startup ordering", func() {
 
 		app := &application{DataDir: notADir}
 		gate := factory.CreateStartupGate(factory.CreateHealthzHandler(), http.NotFoundHandler())
-		err := app.initAndServe(nil, gate)(context.Background())
+		var opened libkv.DB
+		err := app.initAndServe(nil, gate, func(db libkv.DB) { opened = db })(context.Background())
+		Expect(opened).To(BeNil())
 		Expect(err).To(MatchError(ContainSubstring("init step open-db failed")))
 		isReady, _ := gate.Status()
 		Expect(isReady).To(BeFalse())
