@@ -78,30 +78,79 @@ launchd-baseline:
 		|| /usr/libexec/PlistBuddy -c 'Add :SoftResourceLimits:NumberOfFiles integer 4096' "$(LAUNCHD_PLIST)"
 	plutil -lint "$(LAUNCHD_PLIST)"
 
+# The deploy gate. Every entry point runs THIS target, so the readiness proof,
+# the two failure classes and the rollback are implemented once — in
+# `cmd/deploy` — instead of once per caller.
+#
+# ⚠️ It is a gate, not a restart. The driver logs `t_deploy_start` at the
+# launchctl bootstrap, polls /readiness, /healthz and the serving footer every
+# 2 s for 90 s, and on failure restores `$(INSTALL_BIN).prev` and restarts
+# inside a 30 s budget — so a start plus a rollback can never exceed two
+# minutes. It exits non-zero on both a rolled-back deploy and a dark board, and
+# posts the operator's card through the board's own push route once the previous
+# board serves again.
+#
 # bootout + bootstrap, never `kickstart -k`: kickstart keeps the plist launchd
 # cached at bootstrap, so a baseline edit would not apply. bootout is
-# asynchronous, so wait (max 20 s) for the job to be gone before bootstrapping,
+# asynchronous and the driver waits for the job to be gone before bootstrapping,
 # or bootstrap fails with `5: Input/output error`.
+#
+# ⚠️ A restart with no rebuild runs the same gate. That is deliberate: the
+# 2026-11-17 outage was a start that never bound the port, and `launchd-reload`
+# alone can strand the board exactly the same way.
+DEPLOY_MODE ?= reload
 .PHONY: launchd-reload
 launchd-reload:
-	-launchctl bootout gui/$$(id -u)/$(LAUNCHD_LABEL)
-	@i=0; while launchctl print gui/$$(id -u)/$(LAUNCHD_LABEL) >/dev/null 2>&1; do \
-		i=$$((i+1)); [ $$i -le 40 ] || { echo "bootout did not finish" >&2; exit 1; }; sleep 0.5; done
-	launchctl bootstrap gui/$$(id -u) "$(LAUNCHD_PLIST)"
+	@test -f "$(LAUNCHD_PLIST)" || { echo "plist not installed: $(LAUNCHD_PLIST)" >&2; exit 1; }
+	go run -mod=mod ./cmd/deploy \
+		-mode=$(DEPLOY_MODE) \
+		-bin="$(INSTALL_BIN)" \
+		-label="$(LAUNCHD_LABEL)" \
+		-plist="$(LAUNCHD_PLIST)"
 
-.PHONY: install
-install:
+# Builds, signs and installs the binary WITHOUT restarting the service.
+#
+# ⚠️ The previous binary is retained as `.prev` before the swap, and only when
+# it is a DIFFERENT commit. `make install` overwrites the binary in place with no
+# copy, so without this a failed start has nothing to roll back to; and
+# reinstalling the SAME commit must not overwrite the last good copy with an
+# identical build, which would make the rollback restore the very binary that
+# just failed.
+#
+# ⚠️ The whole build → sign → verify → retain → swap sequence runs in ONE shell
+# with a stage path unique to that shell (`$$$$`). A single shared
+# `attention-controller.new` is not safe: two installs running at once — a
+# re-run of the same approval card, a sibling session deploying the same repo —
+# each `mv` the other's staging file, and the loser installs nothing while
+# copying a half-built artifact into `.prev`. Measured 2026-11-17: two concurrent
+# runs left `.prev` and the installed binary identical, both the staged bad build,
+# with the board dark.
+.PHONY: install-bin
+install-bin:
 	@security find-identity -p codesigning | grep -qF '"$(CODESIGN_IDENTITY)"' \
 		|| { echo "codesign identity '$(CODESIGN_IDENTITY)' not in keychain; check: security find-identity -p codesigning" >&2; exit 1; }
 	@test -f "$(LAUNCHD_PLIST)" || { echo "plist not installed: $(LAUNCHD_PLIST)" >&2; exit 1; }
-	mkdir -p "$(dir $(INSTALL_BIN))"
-	go build -o "$(INSTALL_BIN).new" .
-	codesign -f -s "$(CODESIGN_IDENTITY)" -i de.bborbe.attention-controller "$(INSTALL_BIN).new"
-	codesign --verify --strict "$(INSTALL_BIN).new"
-	codesign -d -r- "$(INSTALL_BIN).new" 2>&1 | grep -q 'identifier "de.bborbe.attention-controller" and certificate leaf = H"'
-	mv -f "$(INSTALL_BIN).new" "$(INSTALL_BIN)"
+	@mkdir -p "$(dir $(INSTALL_BIN))"
+	@set -e; \
+		stage="$(INSTALL_BIN).new.$$$$"; \
+		trap 'rm -f "$$stage"' EXIT INT TERM; \
+		go build -o "$$stage" .; \
+		codesign -f -s "$(CODESIGN_IDENTITY)" -i de.bborbe.attention-controller "$$stage"; \
+		codesign --verify --strict "$$stage"; \
+		codesign -d -r- "$$stage" 2>&1 | grep -q 'identifier "de.bborbe.attention-controller" and certificate leaf = H"'; \
+		if [ -f "$(INSTALL_BIN)" ] && \
+			[ "$$(go version -m "$(INSTALL_BIN)" | sed -n 's/.*vcs.revision=//p')" != \
+			  "$$(go version -m "$$stage" | sed -n 's/.*vcs.revision=//p')" ]; then \
+			cp -p "$(INSTALL_BIN)" "$(INSTALL_BIN).prev.$$$$"; \
+			mv -f "$(INSTALL_BIN).prev.$$$$" "$(INSTALL_BIN).prev"; \
+			echo "retained previous binary: $(INSTALL_BIN).prev"; \
+		fi; \
+		mv -f "$$stage" "$(INSTALL_BIN)"
+
+.PHONY: install
+install: install-bin
 	$(MAKE) launchd-baseline
-	$(MAKE) launchd-reload
+	$(MAKE) launchd-reload DEPLOY_MODE=install
 
 deps:
 	go install github.com/bborbe/teamvault-utils/cmd/teamvault-config-parser@latest

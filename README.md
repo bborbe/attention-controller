@@ -75,14 +75,16 @@ make precommit
 
 | Endpoint | Description |
 |----------|-------------|
-| `/healthz` | Health check |
-| `/readiness` | Readiness check |
+| `/healthz` | Health check (200 as soon as the listener binds) |
+| `/readiness` | Readiness check (503 until initialization finishes) |
 | `/metrics` | Prometheus metrics |
 | `/resetdb` | Database reset |
 | `/setloglevel/{level}` | Dynamic log level adjustment |
 | `/testloglevel` | Test logging at all levels |
 | `/sentryalert` | Test Sentry integration |
 | `/debug/pprof/` | Go runtime profiles — CPU (`?seconds=N`), heap, goroutine, cmdline, trace. ⚠️ Unauthenticated, and mounted **only when the listen address is loopback**: `/cmdline` publishes the process argv, which can carry `-attention-store-token`. A non-loopback bind logs and skips the registration. |
+
+The board listener binds before initialization. Until init finishes, `GET /` renders a "starting" page naming the pending step (auto-refresh 2 s) and every other route — `/api/1.0/...` included — answers HTTP 503 `{"status":"starting","step":"<name>"}`; `/healthz` and `/metrics` answer normally. Each init step logs `init step=<name> action=start|done|failed`, and a failed step exits the process non-zero.
 
 ## Development Commands
 
@@ -129,8 +131,19 @@ There is no Kubernetes deploy. The store runs on this machine as the launchd job
 `com.bborbe.attention-controller`, serving `http://127.0.0.1:18080`:
 
 ```bash
-make install   # go build . → codesign with a stable identity → launchctl kickstart
+make install          # build → codesign → retain .prev → restart → readiness gate
+make launchd-reload   # restart only, same gate
+make install-bin      # build + install, no restart
 ```
+
+⚠️ **`make install` is a gate, not a restart.** It is not done until the board
+serves the build it installed: `cmd/deploy` polls `/readiness`, `/healthz` and the
+serving page's own commit footer for 90 s and, when they do not answer, restores
+`~/.local/bin/attention-controller.prev` and restarts inside a 30 s budget — so a
+start plus a rollback can never exceed two minutes. Exit codes: `0` serving,
+`1` rolled back and serving the previous build, `2` board dark, `3` aborted
+before anything was restarted. A failed start posts one card, after the rollback
+has the previous board serving.
 
 ⚠️ **Sign every deploy — never install a plain `go build` binary.** The service
 reads the vault under `~/Documents` at startup, and macOS privacy control (TCC)

@@ -174,6 +174,61 @@ var _ = Describe("attention watcher delivery job", func() {
 		Expect(headless.calls).To(BeEmpty())
 	})
 
+	It("resumes an exited session through the headless arm when the pane refuses", func() {
+		// The 2026-11-17 defect: a session once delivered to through a pane exited,
+		// and every cycle refused with "no live process with a tty".
+		headless := &fakeHeadlessDeliverer{terminal: true, canResume: true}
+		job = pkg.NewAttentionWatcherJob(
+			store, carrier, headless, time.Hour, libtime.NewCurrentDateTime(),
+		)
+		carrier.verdict = pkg.DeliveryRefuse
+		store.ReadBoardReturns(pkg.Items{
+			answeredItem("item-1", "operator", pkg.Decision("allow")),
+		}, nil)
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+		Expect(headless.calls).To(Equal([]pkg.ItemID{"item-1"}))
+		// The headless arm settles the card itself; the pane arm records no failure.
+		Expect(store.RecordAttemptCallCount()).To(Equal(0))
+	})
+
+	It("keeps a live tty session on the pane path", func() {
+		headless := &fakeHeadlessDeliverer{terminal: true, canResume: true}
+		job = pkg.NewAttentionWatcherJob(
+			store, carrier, headless, time.Hour, libtime.NewCurrentDateTime(),
+		)
+		store.ReadBoardReturns(pkg.Items{
+			answeredItem("item-1", "operator", pkg.Decision("allow")),
+		}, nil)
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+		Expect(carrier.calls).To(ConsistOf("item-1=allow"))
+		Expect(headless.calls).To(BeEmpty())
+		Expect(store.RecordAttemptCallCount()).To(Equal(1))
+		_, _, _, outcome := store.RecordAttemptArgsForCall(0)
+		Expect(outcome).To(Equal(pkg.DeliveredOutcome))
+	})
+
+	It("refuses with a distinct reason when the exited session cannot be resumed", func() {
+		headless := &fakeHeadlessDeliverer{terminal: true, canResume: false}
+		job = pkg.NewAttentionWatcherJob(
+			store, carrier, headless, time.Hour, libtime.NewCurrentDateTime(),
+		)
+		carrier.verdict = pkg.DeliveryRefuse
+		store.RecordAttemptCountReturns(pkg.DeliveryAttemptParkThreshold, nil)
+		store.ReadBoardReturns(pkg.Items{
+			answeredItem("item-1", "operator", pkg.Decision("allow")),
+		}, nil)
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+		Expect(headless.calls).To(BeEmpty())
+		Expect(store.RecordAttemptCallCount()).To(Equal(1))
+		_, _, _, outcome := store.RecordAttemptArgsForCall(0)
+		Expect(outcome).To(Equal(pkg.FailedOutcome))
+		// Parked, not retried in a hot loop, and the park names the missing fallback.
+		Expect(store.ParkDeliveryCallCount()).To(Equal(1))
+		_, park := store.ParkDeliveryArgsForCall(0)
+		Expect(park.Verdict).To(Equal(pkg.DeliveryRefuse))
+		Expect(park.Reason).To(ContainSubstring("cannot be resumed through the headless path"))
+	})
+
 	// The backoff triple. A card that could not be carried used to be re-attempted
 	// on every tick for the life of the process: `failed` is not terminal, so
 	// `deliverable` stayed true. On 2026-11-16 that was ~20 refusals a second
@@ -354,23 +409,65 @@ var _ = Describe("attention watcher delivery job", func() {
 		)
 		carrier.verdict = pkg.DeliveryRetry
 		item := boundItem(clock, 10*time.Minute)
-		// An earlier tick already marked THIS answer: the record is after the
-		// answer and past the backoff, so the arm is due to try again but must not
-		// re-write the marker.
-		markedAt := libtime.DateTime(clock.Now().Time().Add(-6 * time.Minute))
+		store.ReadBoardReturns(pkg.Items{item}, nil)
+
+		// First tick past the bound writes the marker.
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+		Expect(store.RecordAttemptCallCount()).To(Equal(1))
+		_, _, markerCarrier, outcome := store.RecordAttemptArgsForCall(0)
+		Expect(outcome).To(Equal(pkg.FailedOutcome))
+
+		// A later tick, once the backoff has passed, must not re-write it. The
+		// record carries the marker's own carrier, so it IS this answer's marker —
+		// that, and not the mere presence of an attempt, is what suppresses.
+		markedAt := libtime.DateTime(clock.Now().Time())
 		store.DeliveryReportsReturns(map[pkg.ItemID]*pkg.DeliveryReport{
 			"item-1": {
 				ItemID:      pkg.ItemID("item-1"),
 				Status:      pkg.FailedStatus,
+				Carrier:     markerCarrier,
 				AttemptedAt: &markedAt,
+			},
+		}, nil)
+		clock.SetNow(
+			clock.Now().Add(libtime.Duration(pkg.AttentionDeliveryRetryBackoff + time.Second)),
+		)
+
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+		Expect(store.RecordAttemptCallCount()).To(Equal(1))
+	})
+
+	// The regression this bound shipped without: card f1b46ed9… (2026-11-17) was
+	// refused 0.4 s after its answer, then retried for 1216 s with no marker at
+	// all. The guard treated that earlier refuse — an attempt at/after the answer
+	// but BEFORE the retry loop — as proof the loop was already marked.
+	It("marks the loop even when an earlier refuse was recorded after the answer", func() {
+		clock := libtime.NewCurrentDateTime()
+		job = pkg.NewAttentionWatcherJob(
+			store, carrier, &fakeHeadlessDeliverer{}, time.Hour, clock,
+		)
+		carrier.verdict = pkg.DeliveryRetry
+		item := boundItem(clock, 10*time.Minute)
+		// A refuse written after the answer but before the loop began: exactly the
+		// shape the old guard mistook for a marker.
+		refusedAt := libtime.DateTime(clock.Now().Time().Add(-9 * time.Minute))
+		store.DeliveryReportsReturns(map[pkg.ItemID]*pkg.DeliveryReport{
+			"item-1": {
+				ItemID:      pkg.ItemID("item-1"),
+				Status:      pkg.FailedStatus,
+				Carrier:     "watcher:attention-watcher",
+				AttemptedAt: &refusedAt,
 			},
 		}, nil)
 		store.ReadBoardReturns(pkg.Items{item}, nil)
 
 		Expect(job.DeliverOnce(context.Background())).To(Succeed())
 
-		Expect(carrier.calls).To(ConsistOf("item-1=allow"))
-		Expect(store.RecordAttemptCallCount()).To(Equal(0))
+		Expect(store.RecordAttemptCallCount()).To(Equal(1))
+		_, _, writtenCarrier, outcome := store.RecordAttemptArgsForCall(0)
+		Expect(outcome).To(Equal(pkg.FailedOutcome))
+		Expect(writtenCarrier).NotTo(Equal("watcher:attention-watcher"),
+			"the marker must be distinguishable from an ordinary attempt")
 	})
 
 	It("keeps retrying after the marker so a later delivery settles delivered", func() {
