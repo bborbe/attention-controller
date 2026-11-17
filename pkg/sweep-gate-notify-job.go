@@ -706,8 +706,10 @@ func sweepGateFirstLine(output string) string {
 // full resolution (~9 s measured), so it runs only where a reader asked for it. The
 // probe is `grep -c 'action=miss'` against the changed-tick count; a check that did
 // not run is `action=guard_error` and deliberately carries no `action=miss`
-// substring, so a failed check cannot inflate the rate. The threshold is 0 misses in
-// >=20 changed ticks.
+// substring, so a failed check cannot inflate the rate. A completed agreeing check
+// is `action=guard_ok`, so `grep -c 'action=guard_ok'` proves the guard actually
+// ran — `action=miss 0` alone cannot. The threshold is 0 misses in >=20 changed
+// ticks.
 //
 // ⚠️ No `//counterfeiter:generate` directive: the six sibling sweep-gate interfaces
 // in this file use the same hand-written stub in the spec, so this one follows that
@@ -734,6 +736,15 @@ func (j *sweepGateNotifyJob) checkMiss(
 		return
 	}
 	if checked.ExitCode == sweepGateTickEmptyCode {
+		// ⚠️ A COMPLETED check is logged positively. Without this line `action=miss 0`
+		// cannot distinguish "checked N times and agreed" from "never ran at all", so
+		// the miss-rate probe would be unprovable even when the guard works perfectly.
+		sweepGateNotifyInfof(
+			"job=%s action=guard_ok subject=%s rc=%d",
+			sweepGateNotifyJobName,
+			subject.Name,
+			checked.ExitCode,
+		)
 		return
 	}
 	// ⚠️ ONLY rc 10 is a MISS. `SweepGateCheckResult`'s contract says anything else

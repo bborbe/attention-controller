@@ -94,7 +94,8 @@ var _ = Describe("attention watcher delivery backoff and park", func() {
 		Expect(park.ItemID).To(Equal(pkg.ItemID("item-1")))
 		Expect(park.Attempts).To(Equal(pkg.DeliveryAttemptParkThreshold))
 		Expect(park.Verdict).To(Equal(pkg.DeliveryRefuse))
-		Expect(park.Reason).To(Equal("scripted"))
+		// The carrier's own reason is kept; the unresumable suffix is appended.
+		Expect(park.Reason).To(HavePrefix("scripted"))
 	})
 
 	It("does not park an item below the threshold", func() {

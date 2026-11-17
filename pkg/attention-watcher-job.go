@@ -32,6 +32,31 @@ const AttentionWatcherDeliveryInterval = 2 * time.Second
 // its answer promptly.
 const AttentionDeliveryRetryBackoff = 5 * time.Minute
 
+// AttentionDeliveryBound is how long an answered card may sit in a RETRY loop —
+// the pane's composer staying busy or unreadable — before this arm marks it
+// undeliverable.
+//
+// ⚠️ It is anchored on the card's ANSWER time, never on the first retry: a card
+// can enter the retry loop later than another arm would have, and starting the
+// clock at the first retry would quietly widen the bound the operator was
+// promised.
+//
+// ⚠️ It is a MARKER, not a stop. The arm keeps retrying past it, because an
+// answer dropped while its gate stays open is worse than a late one (the
+// 2026-10-04 age-gate lesson); the marker is what tells the operator to look
+// instead of waiting blind. The Python watcher carried this bound on the booked
+// arm only and never on the unbooked one — measured 2026-11-14, an unbooked
+// answer retried 34 minutes unmarked. The port unified both arms into this one,
+// so this constant now governs every retry.
+//
+// It is defined from AttentionDeliveryRetryBackoff rather than repeating the
+// literal, so the tree carries exactly ONE five-minute value and a spec can fail
+// on a second one. The bound is one backoff window: an answer that has not been
+// carried by the time a failed delivery would be retried has waited a full
+// retry cycle. The value itself is pinned by a spec, so widening the backoff
+// cannot silently widen the operator's promise.
+const AttentionDeliveryBound = AttentionDeliveryRetryBackoff
+
 // storeReadTimeout bounds the delivery arm's board read.
 //
 // ⚠️ The store is in-process bbolt, so there is no HTTP hop to bound and no
@@ -161,7 +186,7 @@ func (j *attentionWatcherJob) DeliverOnce(ctx context.Context) error {
 		if !j.eligible(ctx, item, counts, parks) {
 			continue
 		}
-		j.deliver(ctx, item)
+		j.deliver(ctx, item, reports[item.ItemID])
 	}
 	return nil
 }
@@ -294,7 +319,11 @@ func (j *attentionWatcherJob) deliverable(
 }
 
 // deliver carries one answer and records what it observed.
-func (j *attentionWatcherJob) deliver(ctx context.Context, item Item) {
+func (j *attentionWatcherJob) deliver(
+	ctx context.Context,
+	item Item,
+	report *DeliveryReport,
+) {
 	sessionID, ok := itemSessionID(ctx, item)
 	if !ok {
 		return
@@ -325,8 +354,7 @@ func (j *attentionWatcherJob) deliver(ctx context.Context, item Item) {
 		// Delivered: any park is over, and the count it took is moot.
 		j.clearPark(ctx, item)
 	case DeliveryRefuse:
-		j.recordAttempt(ctx, item, FailedOutcome)
-		j.maybePark(ctx, item, count, verdict, reason)
+		j.refuse(ctx, item, sessionID, count, reason)
 	case DeliveryNoPane:
 		// ⚠️ A pane-less session is not a failing carrier — it is the normal
 		// shape for every headless `sdk-cli` worker, which has no pane by
@@ -335,14 +363,54 @@ func (j *attentionWatcherJob) deliver(ctx context.Context, item Item) {
 		if j.headless != nil {
 			j.headless.DeliverHeadless(ctx, item)
 		}
+	case DeliveryRetry:
+		// A busy or unreadable composer has not failed yet, so it is not marked
+		// as a failure — but it must not retry unmarked forever either. Past
+		// AttentionDeliveryBound the operator is told, and the retry continues.
+		j.markUndeliverableIfOverdue(ctx, item, report, reason)
 		j.maybePark(ctx, item, count, verdict, reason)
 	default:
-		// `retry` and `resolved` record nothing: retry has not failed yet, and a
-		// resolved gate has nothing left to deliver. They are still counted and
-		// still parked at the threshold, because a retry that never resolves is
-		// the same hot loop under another name.
+		// `resolved`: the gate was already gone — nothing left to deliver. It is
+		// still counted and still parked at the threshold, because a verdict that
+		// never resolves is the same hot loop under another name.
 		j.maybePark(ctx, item, count, verdict, reason)
 	}
+}
+
+// refuse handles a pane refusal.
+//
+// ⚠️ A refusal is not always undeliverable. When the session is gone the pane
+// carrier reports "no live process with a tty" and the answer used to be
+// refused for good, although the wrapper keeps an exited session's record and
+// can resume it — the menu arm already takes that route. Only a session the
+// wrapper reports as headless is resumed; anything else keeps its refusal, now
+// with a reason that names the missing fallback so the log tells the two apart.
+//
+// The retry bound is unchanged: the attempt was counted before this call, so a
+// card that stays undeliverable backs off and parks like any other refusal.
+func (j *attentionWatcherJob) refuse(
+	ctx context.Context,
+	item Item,
+	sessionID string,
+	count int,
+	reason string,
+) {
+	if j.headless != nil && j.headless.CanResume(ctx, sessionID) {
+		if !j.headless.DeliverHeadless(ctx, item) {
+			// Still pending: the headless arm logged why. The attempt is already
+			// counted, so the park bound applies here too.
+			j.maybePark(ctx, item, count, DeliveryRetry, "headless resume pending: "+reason)
+		}
+		return
+	}
+	reason += " — and the session cannot be resumed through the headless path"
+	glog.V(2).Infof(
+		"job=attention-watcher action=refuse_unresumable item=%s reason=%q",
+		item.ItemID,
+		reason,
+	)
+	j.recordAttempt(ctx, item, FailedOutcome)
+	j.maybePark(ctx, item, count, DeliveryRefuse, reason)
 }
 
 // recordAttemptCount bumps how many times this item's answer has been tried and
@@ -441,6 +509,47 @@ func (j *attentionWatcherJob) clearPark(ctx context.Context, item Item) {
 			err,
 		)
 	}
+}
+
+// markUndeliverableIfOverdue records a terminal `failed` attempt for an answer
+// that has sat in a retry loop past AttentionDeliveryBound, so the operator is
+// told instead of waiting blind.
+//
+// ⚠️ It MARKS, it does not stop. The `failed` record is not terminal for the
+// arm: `retryDue` spaces the next attempt by AttentionDeliveryRetryBackoff, and
+// a later DeliveryOK overwrites the record with a settled `delivered`
+// (RecordAttempt is first-write-wins on the settlement). Dropping the entry here
+// would lose the answer while its gate stays open — the 2026-10-04 age-gate
+// lesson.
+//
+// ⚠️ Exactly ONE marker per answer. Any attempt recorded at or after the item's
+// AnsweredAt already marks this answer, so a later tick past the bound writes
+// nothing. Without this the marker would be re-written every backoff window for
+// the life of the card.
+func (j *attentionWatcherJob) markUndeliverableIfOverdue(
+	ctx context.Context,
+	item Item,
+	report *DeliveryReport,
+	reason string,
+) {
+	if item.AnsweredAt == nil {
+		return
+	}
+	answeredAt := item.AnsweredAt.Time()
+	if j.currentDateTimeGetter.Now().Time().Before(answeredAt.Add(AttentionDeliveryBound)) {
+		return
+	}
+	if report != nil && report.AttemptedAt != nil &&
+		!report.AttemptedAt.Time().Before(answeredAt) {
+		return
+	}
+	glog.V(2).Infof(
+		"job=attention-watcher action=undeliverable item=%s bound=%s reason=%q",
+		item.ItemID,
+		AttentionDeliveryBound,
+		reason,
+	)
+	j.recordAttempt(ctx, item, FailedOutcome)
 }
 
 // recordAttempt writes the trail entry, logging rather than failing: the

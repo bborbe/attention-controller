@@ -6,6 +6,8 @@ package pkg_test
 
 import (
 	"context"
+	"os"
+	"strings"
 	"time"
 
 	libtime "github.com/bborbe/time"
@@ -172,6 +174,61 @@ var _ = Describe("attention watcher delivery job", func() {
 		Expect(headless.calls).To(BeEmpty())
 	})
 
+	It("resumes an exited session through the headless arm when the pane refuses", func() {
+		// The 2026-11-17 defect: a session once delivered to through a pane exited,
+		// and every cycle refused with "no live process with a tty".
+		headless := &fakeHeadlessDeliverer{terminal: true, canResume: true}
+		job = pkg.NewAttentionWatcherJob(
+			store, carrier, headless, time.Hour, libtime.NewCurrentDateTime(),
+		)
+		carrier.verdict = pkg.DeliveryRefuse
+		store.ReadBoardReturns(pkg.Items{
+			answeredItem("item-1", "operator", pkg.Decision("allow")),
+		}, nil)
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+		Expect(headless.calls).To(Equal([]pkg.ItemID{"item-1"}))
+		// The headless arm settles the card itself; the pane arm records no failure.
+		Expect(store.RecordAttemptCallCount()).To(Equal(0))
+	})
+
+	It("keeps a live tty session on the pane path", func() {
+		headless := &fakeHeadlessDeliverer{terminal: true, canResume: true}
+		job = pkg.NewAttentionWatcherJob(
+			store, carrier, headless, time.Hour, libtime.NewCurrentDateTime(),
+		)
+		store.ReadBoardReturns(pkg.Items{
+			answeredItem("item-1", "operator", pkg.Decision("allow")),
+		}, nil)
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+		Expect(carrier.calls).To(ConsistOf("item-1=allow"))
+		Expect(headless.calls).To(BeEmpty())
+		Expect(store.RecordAttemptCallCount()).To(Equal(1))
+		_, _, _, outcome := store.RecordAttemptArgsForCall(0)
+		Expect(outcome).To(Equal(pkg.DeliveredOutcome))
+	})
+
+	It("refuses with a distinct reason when the exited session cannot be resumed", func() {
+		headless := &fakeHeadlessDeliverer{terminal: true, canResume: false}
+		job = pkg.NewAttentionWatcherJob(
+			store, carrier, headless, time.Hour, libtime.NewCurrentDateTime(),
+		)
+		carrier.verdict = pkg.DeliveryRefuse
+		store.RecordAttemptCountReturns(pkg.DeliveryAttemptParkThreshold, nil)
+		store.ReadBoardReturns(pkg.Items{
+			answeredItem("item-1", "operator", pkg.Decision("allow")),
+		}, nil)
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+		Expect(headless.calls).To(BeEmpty())
+		Expect(store.RecordAttemptCallCount()).To(Equal(1))
+		_, _, _, outcome := store.RecordAttemptArgsForCall(0)
+		Expect(outcome).To(Equal(pkg.FailedOutcome))
+		// Parked, not retried in a hot loop, and the park names the missing fallback.
+		Expect(store.ParkDeliveryCallCount()).To(Equal(1))
+		_, park := store.ParkDeliveryArgsForCall(0)
+		Expect(park.Verdict).To(Equal(pkg.DeliveryRefuse))
+		Expect(park.Reason).To(ContainSubstring("cannot be resumed through the headless path"))
+	})
+
 	// The backoff triple. A card that could not be carried used to be re-attempted
 	// on every tick for the life of the process: `failed` is not terminal, so
 	// `deliverable` stayed true. On 2026-11-16 that was ~20 refusals a second
@@ -291,5 +348,138 @@ var _ = Describe("attention watcher delivery job", func() {
 		// declared bound is not the one in force.
 		Expect(elapsed).To(BeNumerically("<=", 6*time.Second),
 			"storeReadTimeout is not applied at the delivery arm's board read")
+	})
+
+	// The delivery bound. A busy or unreadable composer is a `retry`, which is
+	// not a failure — so it recorded nothing and retried every two seconds for as
+	// long as the card lived. Measured 2026-11-17 from the controller's own
+	// stderr: 148 distinct ids entered this loop, the longest spans 3771 s, and
+	// two of them were swept closed at 60 min still reading `never_attempted` —
+	// the answer was lost with no marker at all. These specs pin the bound that
+	// turns that into a marked, visible non-delivery while the arm keeps trying.
+	//
+	// ⚠️ The bound is anchored on the card's ANSWER time, so every case below
+	// places AnsweredAt relative to the SAME clock the job reads.
+	boundItem := func(clock libtime.CurrentDateTimeGetter, answeredAgo time.Duration) pkg.Item {
+		item := answeredItem("item-1", "operator", pkg.Decision("allow"))
+		answeredAt := libtime.DateTime(clock.Now().Time().Add(-answeredAgo))
+		item.AnsweredAt = &answeredAt
+		return item
+	}
+
+	It("marks an answer undeliverable once its retry loop passes the bound", func() {
+		clock := libtime.NewCurrentDateTime()
+		job = pkg.NewAttentionWatcherJob(
+			store, carrier, &fakeHeadlessDeliverer{}, time.Hour, clock,
+		)
+		carrier.verdict = pkg.DeliveryRetry
+		store.ReadBoardReturns(pkg.Items{
+			boundItem(clock, pkg.AttentionDeliveryBound+time.Second),
+		}, nil)
+
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+
+		Expect(store.RecordAttemptCallCount()).To(Equal(1))
+		_, _, _, outcome := store.RecordAttemptArgsForCall(0)
+		Expect(outcome).To(Equal(pkg.FailedOutcome))
+	})
+
+	It("does not mark an answer undeliverable before the bound", func() {
+		clock := libtime.NewCurrentDateTime()
+		job = pkg.NewAttentionWatcherJob(
+			store, carrier, &fakeHeadlessDeliverer{}, time.Hour, clock,
+		)
+		carrier.verdict = pkg.DeliveryRetry
+		store.ReadBoardReturns(pkg.Items{
+			boundItem(clock, pkg.AttentionDeliveryBound-time.Second),
+		}, nil)
+
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+
+		// The positive control for the spec above: the same retry verdict inside
+		// the bound writes nothing, so the marker is the bound firing and not the
+		// retry verdict itself.
+		Expect(store.RecordAttemptCallCount()).To(Equal(0))
+	})
+
+	It("writes the undeliverable marker exactly once across retries", func() {
+		clock := libtime.NewCurrentDateTime()
+		job = pkg.NewAttentionWatcherJob(
+			store, carrier, &fakeHeadlessDeliverer{}, time.Hour, clock,
+		)
+		carrier.verdict = pkg.DeliveryRetry
+		item := boundItem(clock, 10*time.Minute)
+		// An earlier tick already marked THIS answer: the record is after the
+		// answer and past the backoff, so the arm is due to try again but must not
+		// re-write the marker.
+		markedAt := libtime.DateTime(clock.Now().Time().Add(-6 * time.Minute))
+		store.DeliveryReportsReturns(map[pkg.ItemID]*pkg.DeliveryReport{
+			"item-1": {
+				ItemID:      pkg.ItemID("item-1"),
+				Status:      pkg.FailedStatus,
+				AttemptedAt: &markedAt,
+			},
+		}, nil)
+		store.ReadBoardReturns(pkg.Items{item}, nil)
+
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+
+		Expect(carrier.calls).To(ConsistOf("item-1=allow"))
+		Expect(store.RecordAttemptCallCount()).To(Equal(0))
+	})
+
+	It("keeps retrying after the marker so a later delivery settles delivered", func() {
+		clock := libtime.NewCurrentDateTime()
+		job = pkg.NewAttentionWatcherJob(
+			store, carrier, &fakeHeadlessDeliverer{}, time.Hour, clock,
+		)
+		carrier.verdict = pkg.DeliveryRetry
+		store.ReadBoardReturns(pkg.Items{
+			boundItem(clock, pkg.AttentionDeliveryBound+time.Second),
+		}, nil)
+
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+		Expect(store.RecordAttemptCallCount()).To(Equal(1))
+
+		// The store now carries the marker; the arm retries once the backoff has
+		// passed, and a successful attempt settles the record as delivered. The
+		// bound must never be satisfied by dropping the answer.
+		markedAt := libtime.DateTime(clock.Now().Time())
+		store.DeliveryReportsReturns(map[pkg.ItemID]*pkg.DeliveryReport{
+			"item-1": {
+				ItemID:      pkg.ItemID("item-1"),
+				Status:      pkg.FailedStatus,
+				AttemptedAt: &markedAt,
+			},
+		}, nil)
+		clock.SetNow(
+			clock.Now().Add(libtime.Duration(pkg.AttentionDeliveryRetryBackoff + time.Second)),
+		)
+		carrier.verdict = pkg.DeliveryOK
+
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+
+		Expect(store.RecordAttemptCallCount()).To(Equal(2))
+		_, _, _, outcome := store.RecordAttemptArgsForCall(1)
+		Expect(outcome).To(Equal(pkg.DeliveredOutcome))
+	})
+
+	// SC3's pin, adapted to the port: the Python watcher had a booked and an
+	// unbooked arm and this constant bounded only one of them. The port unified
+	// both into a single arm, so one constant governs every retry. The literal
+	// scan is the discriminating half — a constant assertion alone would pass on a
+	// value re-typed at a call site, which is exactly how one path drifts
+	// unbounded while the constant still reads five minutes.
+	It("pins the single delivery bound and forbids a second five-minute literal", func() {
+		Expect(pkg.AttentionDeliveryBound).To(Equal(5 * time.Minute))
+
+		src, err := os.ReadFile("attention-watcher-job.go")
+		Expect(err).NotTo(HaveOccurred())
+		// One literal, in AttentionDeliveryRetryBackoff, from which the bound is
+		// derived. A second 5-minute literal in the arm is a duplicated bound.
+		Expect(strings.Count(string(src), "5 * time.Minute")).To(Equal(1),
+			"the delivery arm carries a second five-minute literal")
+		Expect(string(src)).To(ContainSubstring("answeredAt.Add(AttentionDeliveryBound)"),
+			"the bound must be read by name, never re-typed at the call site")
 	})
 })
