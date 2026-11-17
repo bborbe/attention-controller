@@ -541,6 +541,13 @@ func (j *attentionWatcherJob) clearPark(ctx context.Context, item Item) {
 // that was refused once and then looped (measured 2026-11-17 on f1b46ed9…:
 // 1216 s of retries, zero markers). Without the per-answer guard the marker
 // would be re-written every backoff window for the life of the card.
+//
+// ⚠️ The attempt bucket holds ONE record per item, so this marker's carrier
+// survives only until another arm writes that record (a refuse, a headless
+// settle). A card that alternates refuse/retry after the bound therefore writes
+// one extra marker per alternation — bounded, not a loop, and the same property
+// the pre-fix code had. The retry loop alone never writes the record, which is
+// what makes the carrier a reliable "already marked" for the loop it bounds.
 func (j *attentionWatcherJob) markUndeliverableIfOverdue(
 	ctx context.Context,
 	item Item,
