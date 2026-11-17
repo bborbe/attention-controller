@@ -26,6 +26,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	bolt "go.etcd.io/bbolt"
 
 	"github.com/bborbe/attention-controller/pkg"
 	"github.com/bborbe/attention-controller/pkg/boardmetrics"
@@ -176,10 +177,32 @@ type application struct {
 	BuildDate       *libtime.DateTime `required:"false" arg:"build-date"             env:"BUILD_DATE"             usage:"Build timestamp (RFC3339)"`
 }
 
+// boltOpenLockTimeout bounds how long a fresh process waits for the BoltDB file
+// lock before failing the open.
+//
+// ⚠️ bbolt's DefaultOptions carries `Timeout: 0`, which waits FOREVER for the
+// lock and ignores ctx. When a second process holds the file — a probe opened
+// against the datadir, or a predecessor that has not finished exiting — the new
+// instance parks in bbolt's 50 ms `flock` retry loop: it logs `application
+// started`, never binds the listener, never logs an error, and launchd restarts
+// it into the same hang. Proven 2026-11-16 by a copy-based reproduction; the
+// SIGQUIT goroutine dump showed `main.(*application).Run → boltkv.OpenDir →
+// OpenFile → bbolt.Open → bbolt.flock → time.Sleep(50ms)`. A bounded timeout
+// turns that silent, unbounded hang into a logged `open db failed` error that
+// KeepAlive can retry, instead of a process that looks alive and serves nothing.
+const boltOpenLockTimeout = 15 * time.Second
+
+// boltOpenOptions returns the BoltDB open options that bound the lock wait.
+func boltOpenOptions() libboltkv.ChangeOptions {
+	return func(opts *bolt.Options) {
+		opts.Timeout = boltOpenLockTimeout
+	}
+}
+
 func (a *application) Run(ctx context.Context, sentryClient libsentry.Client) error {
 	libmetrics.NewBuildInfoMetrics().SetBuildInfo(a.BuildGitVersion, a.BuildGitCommit, a.BuildDate)
 
-	db, err := libboltkv.OpenDir(ctx, a.DataDir)
+	db, err := libboltkv.OpenDir(ctx, a.DataDir, boltOpenOptions())
 	if err != nil {
 		return errors.Wrap(ctx, err, "open db failed")
 	}
