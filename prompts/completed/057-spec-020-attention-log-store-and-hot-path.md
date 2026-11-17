@@ -1,9 +1,10 @@
 ---
-status: approved
+status: completed
 spec: [020-attention-log-go-writer]
 summary: Add cmd/attention-log-event and pkg/attnlog implementing the attention-log store layer, redaction, item_id and the per-tool-call hot path (PreToolUse/PostToolUse/PostToolUseFailure/SessionEnd), with a semantic parity harness against the Python writer.
 created: "2026-11-17T22:58:33Z"
 queued: "2026-11-17T22:58:33Z"
+completed: "2026-11-17T23:55:58Z"
 branch: dark-factory/embedded-board-assets
 ---
 
