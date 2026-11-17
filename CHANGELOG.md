@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- fix: **an answered card whose session exited is delivered through the headless resume path instead of being refused forever.** When the pane carrier refused with `no live process with a tty`, the watcher recorded `failed` and re-attempted every 5 minutes without ever reaching the headless arm (measured 2026-11-17: card `e22c44b0…`, session `b9d109fb`). The delivery arm now asks the wrapper whether the session can be resumed (the same gate the menu arm uses) and, if so, hands the card to `DeliverHeadless`. A session that cannot be resumed keeps its refusal, now with the distinct reason `… and the session cannot be resumed through the headless path`, and the existing backoff and park bound it.
+
 ## v0.93.5
 
 - fix: **a completed miss-guard check is logged positively, so `action=miss 0` can be told apart from "the guard never ran".** `checkMiss` returned silently on the agreeing `rc=0` verdict and emitted only `action=guard_error` and `action=miss`, so the guard's own probe (`grep -c 'action=miss'` against the changed-tick count) could not distinguish a guard that checked twenty times and agreed from one that never executed — it was unprovable even when it worked perfectly. The agreeing branch now emits `action=guard_ok subject=<name> rc=0`, so a reader pairs the two counts and the miss rate is a real rate. Log-only: the guard stays opt-in behind `.miss-guard-enabled` and nothing else changes.

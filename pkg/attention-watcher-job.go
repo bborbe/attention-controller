@@ -354,8 +354,7 @@ func (j *attentionWatcherJob) deliver(
 		// Delivered: any park is over, and the count it took is moot.
 		j.clearPark(ctx, item)
 	case DeliveryRefuse:
-		j.recordAttempt(ctx, item, FailedOutcome)
-		j.maybePark(ctx, item, count, verdict, reason)
+		j.refuse(ctx, item, sessionID, count, reason)
 	case DeliveryNoPane:
 		// ⚠️ A pane-less session is not a failing carrier — it is the normal
 		// shape for every headless `sdk-cli` worker, which has no pane by
@@ -376,6 +375,42 @@ func (j *attentionWatcherJob) deliver(
 		// never resolves is the same hot loop under another name.
 		j.maybePark(ctx, item, count, verdict, reason)
 	}
+}
+
+// refuse handles a pane refusal.
+//
+// ⚠️ A refusal is not always undeliverable. When the session is gone the pane
+// carrier reports "no live process with a tty" and the answer used to be
+// refused for good, although the wrapper keeps an exited session's record and
+// can resume it — the menu arm already takes that route. Only a session the
+// wrapper reports as headless is resumed; anything else keeps its refusal, now
+// with a reason that names the missing fallback so the log tells the two apart.
+//
+// The retry bound is unchanged: the attempt was counted before this call, so a
+// card that stays undeliverable backs off and parks like any other refusal.
+func (j *attentionWatcherJob) refuse(
+	ctx context.Context,
+	item Item,
+	sessionID string,
+	count int,
+	reason string,
+) {
+	if j.headless != nil && j.headless.CanResume(ctx, sessionID) {
+		if !j.headless.DeliverHeadless(ctx, item) {
+			// Still pending: the headless arm logged why. The attempt is already
+			// counted, so the park bound applies here too.
+			j.maybePark(ctx, item, count, DeliveryRetry, "headless resume pending: "+reason)
+		}
+		return
+	}
+	reason += " — and the session cannot be resumed through the headless path"
+	glog.V(2).Infof(
+		"job=attention-watcher action=refuse_unresumable item=%s reason=%q",
+		item.ItemID,
+		reason,
+	)
+	j.recordAttempt(ctx, item, FailedOutcome)
+	j.maybePark(ctx, item, count, DeliveryRefuse, reason)
 }
 
 // recordAttemptCount bumps how many times this item's answer has been tried and
