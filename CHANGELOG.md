@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.94.2
 
 - fix: **an answered card whose session exited is delivered through the headless resume path instead of being refused forever.** When the pane carrier refused with `no live process with a tty`, the watcher recorded `failed` and re-attempted every 5 minutes without ever reaching the headless arm (measured 2026-11-17: card `e22c44b0…`, session `b9d109fb`). The delivery arm now asks the wrapper whether the session can be resumed (the same gate the menu arm uses) and, if so, hands the card to `DeliverHeadless`. A session that cannot be resumed keeps its refusal, now with the distinct reason `… and the session cannot be resumed through the headless path`, and the existing backoff and park bound it.
 
