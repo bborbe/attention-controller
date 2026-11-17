@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.93.0
 
 - feat: add `GET /api/1.0/who-needs-me`: who-needs-me's answer as joined JSON data (open items + provenance + session registry + pane listing), with a store-down event-log fallback and a per-source status block, so managers read it here instead of spawning the per-tick Python script
 
