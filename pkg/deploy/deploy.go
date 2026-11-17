@@ -82,6 +82,13 @@ const (
 	// Exited is a process that is gone, with launchd's last exit code if it
 	// recorded one.
 	Exited FailureClass = "exited"
+
+	// StopFailed is a job launchd never let go of, so no new process was ever
+	// started. It is its own class because the two observables above would both
+	// lie here: launchd still reports the OLD pid, so `alive-no-listener` would
+	// send the operator to a consent pane for what is a launchctl problem, and
+	// `exited` would claim a crash that never happened.
+	StopFailed FailureClass = "stop-failed"
 )
 
 // Mode is which entry point drove the deploy. It reaches the log lines only —
@@ -113,6 +120,12 @@ const (
 	// RollbackFailed is a start that failed and left the board dark, either
 	// because no previous binary was retained or because that one failed too.
 	RollbackFailed
+
+	// Aborted is a deploy refused BEFORE anything was restarted, so the board is
+	// exactly as it was. It is a separate outcome because the exit code is the
+	// alerting signal: reporting `RollbackFailed` for it would fire a
+	// dark-board alarm for a deploy that never touched the running process.
+	Aborted
 )
 
 // ProcessStatus is what launchd says about the job right now.

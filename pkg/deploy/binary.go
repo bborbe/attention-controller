@@ -7,6 +7,7 @@ package deploy
 import (
 	"context"
 	"debug/buildinfo"
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -64,7 +65,10 @@ func (b *FileBinary) RestorePrev(ctx context.Context) error {
 	// deploy's own flag rather than anything an attacker supplies — the same
 	// false positive and the same suppression the repo already carries in
 	// cmd/import-spawn-ledger.
-	tmp := filepath.Clean(b.Bin + ".restore")
+	// ⚠️ Unique per process, not a fixed `<bin>.restore`: two failed deploys
+	// running at once would otherwise rename each other's partial file over the
+	// installed binary — the same collision `install-bin`'s staging path fixed.
+	tmp := filepath.Clean(fmt.Sprintf("%s.restore.%d", b.Bin, os.Getpid()))
 	//nolint:gosec // G703 is a false positive here: b.Bin is the deploy's own -bin flag
 	if err := os.WriteFile(tmp, data, binaryMode); err != nil {
 		return errors.Wrapf(ctx, err, "write %s failed", tmp)

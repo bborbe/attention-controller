@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -36,11 +37,12 @@ type fakeSupervisor struct {
 	stops      int
 	status     deploy.ProcessStatus
 	bootstrap  error
+	stopErr    error
 }
 
 func (s *fakeSupervisor) Stop(ctx context.Context) error {
 	s.stops++
-	return nil
+	return s.stopErr
 }
 
 func (s *fakeSupervisor) Bootstrap(ctx context.Context) error {
@@ -324,14 +326,54 @@ var _ = Describe("Driver", func() {
 			h.binary.installed = buildidentity.Identity{}
 		})
 
-		It("refuses to start it at all", func() {
+		It("refuses to start it at all, and reports the board untouched", func() {
+			outcome, err := h.driver.Run(context.Background())
+
+			Expect(err).NotTo(BeNil())
+			// Aborted, not RollbackFailed: nothing was restarted, so the board is
+			// exactly as it was and a dark-board alarm would be false.
+			Expect(outcome).To(Equal(deploy.Aborted))
+			Expect(err.Error()).To(ContainSubstring(deploy.UnstampedCommit))
+			Expect(h.supervisor.bootstraps).To(Equal(0))
+			Expect(h.board.posted()).To(BeEmpty())
+		})
+	})
+
+	Context("a previous binary that carries no build identity", func() {
+		BeforeEach(func() {
+			h.binary.previous = buildidentity.Identity{}
+		})
+
+		It("refuses the rollback instead of claiming an unnamed build serves", func() {
 			outcome, err := h.driver.Run(context.Background())
 
 			Expect(err).NotTo(BeNil())
 			Expect(outcome).To(Equal(deploy.RollbackFailed))
-			Expect(err.Error()).To(ContainSubstring(deploy.UnstampedCommit))
-			Expect(h.supervisor.bootstraps).To(Equal(0))
+			Expect(err.Error()).To(ContainSubstring("prev has no build identity"))
+			Expect(restored).To(BeFalse(), "an unprovable prev must not be swapped in")
 			Expect(h.board.posted()).To(BeEmpty())
+		})
+	})
+
+	Context("a job launchd never releases", func() {
+		BeforeEach(func() {
+			h.supervisor.stopErr = errors.New("bootout did not finish")
+		})
+
+		It("aborts without reverting and posts no consent literal", func() {
+			outcome, err := h.driver.Run(context.Background())
+
+			Expect(err).NotTo(BeNil())
+			Expect(outcome).To(Equal(deploy.Aborted))
+			Expect(deploy.OutcomeOf(err)).To(Equal(deploy.Aborted))
+			Expect(h.supervisor.bootstraps).To(Equal(0), "nothing was started")
+			Expect(restored).To(BeFalse(), "nothing was replaced, so nothing is reverted")
+
+			cards := h.board.posted()
+			Expect(cards).To(HaveLen(1))
+			Expect(cards[0].Payload.String()).NotTo(ContainSubstring(deploy.ConsentAction))
+			Expect(cards[0].Payload.String()).To(ContainSubstring("did not stop the running job"))
+			Expect(cards[0].Context.String()).To(ContainSubstring("Nothing was rolled back"))
 		})
 	})
 

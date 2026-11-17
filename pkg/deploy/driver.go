@@ -29,12 +29,12 @@ func (d *Driver) Run(ctx context.Context) (Outcome, error) {
 	d.applyDefaults()
 	installed, err := d.Binary.Identity(ctx)
 	if err != nil {
-		return RollbackFailed, errors.Wrap(ctx, err, "read installed binary identity failed")
+		return Aborted, errors.Wrap(ctx, err, "read installed binary identity failed")
 	}
 	if !installed.Known() {
 		d.logf("deploy aborted %s binary=%s", UnstampedCommit, d.Binary.Path())
-		return RollbackFailed, errors.Errorf(
-			ctx,
+		return Aborted, newOutcomeError(
+			Aborted,
 			"deploy aborted: %s; binary=%s cannot be proven to serve",
 			UnstampedCommit,
 			d.Binary.Path(),
@@ -45,7 +45,14 @@ func (d *Driver) Run(ctx context.Context) (Outcome, error) {
 		"deploy start t_deploy_start=%s mode=%s commit=%s version=%s binary=%s",
 		formatTime(t0), d.Mode, installed.Commit, installed.Version, d.Binary.Path(),
 	)
-	probe := d.startAndWait(ctx, t0.Add(d.ReadinessTimeout), installed.Commit)
+	probe, startErr := d.startAndWait(ctx, t0.Add(d.ReadinessTimeout), installed.Commit)
+	if startErr != nil {
+		// The job was never stopped, so nothing was replaced: the old process is
+		// still serving and the new binary is only on disk. Reverting would be a
+		// silent no-op dressed as a rollback, and classifying it from launchd
+		// would read the OLD pid as an alive-no-listener start.
+		return d.stopFailed(ctx, installed, startErr)
+	}
 	if probe.Ready {
 		d.logf(
 			"deploy ready commit=%s serving_commit=%s elapsed_s=%.1f",
@@ -86,6 +93,14 @@ func (d *Driver) rollback(ctx context.Context, failure Failure, t0 time.Time) (O
 	if err != nil {
 		return d.dark(failure, buildidentity.Identity{}, "prev unreadable: "+err.Error())
 	}
+	// ⚠️ A retained copy with no VCS stamp cannot say which build it is, and an
+	// empty expected commit makes the prober skip the footer check entirely —
+	// so the rollback would report "rolled back to , board serving" while a
+	// stale process from the FAILED build could still be the one answering.
+	// Refusing here is the only answer that cannot be a false success.
+	if !prev.Known() {
+		return d.dark(failure, buildidentity.Identity{}, "prev has no build identity")
+	}
 	failure.Prev = prev
 	if err := d.Binary.RestorePrev(ctx); err != nil {
 		return d.dark(failure, prev, "restore failed: "+err.Error())
@@ -93,7 +108,10 @@ func (d *Driver) rollback(ctx context.Context, failure Failure, t0 time.Time) (O
 	// The rollback's own deadline is absolute: whatever the failed start spent
 	// of the budget is already gone, so readiness plus rollback can never sum
 	// past the two minutes however long the first phase ran.
-	probe := d.startAndWait(ctx, t0.Add(d.ReadinessTimeout+d.RollbackBudget), prev.Commit)
+	probe, startErr := d.startAndWait(ctx, t0.Add(d.ReadinessTimeout+d.RollbackBudget), prev.Commit)
+	if startErr != nil {
+		return d.dark(failure, prev, "restart for rollback failed: "+startErr.Error())
+	}
 	if !probe.Ready {
 		return d.dark(failure, prev, "prev did not serve: "+probe.Detail)
 	}
@@ -119,6 +137,39 @@ func (d *Driver) rollback(ctx context.Context, failure Failure, t0 time.Time) (O
 		RolledBack,
 		"deploy failed: commit %s did not serve (%s); rolled back to %s, board serving",
 		failure.Failed.Commit, failure.Class, prev.Commit,
+	)
+}
+
+// stopFailed reports a deploy that never restarted the job.
+//
+// ⚠️ Nothing is reverted and nothing is classified from launchd. The old process
+// is still the one serving, so a "rollback" would copy an identical binary over
+// itself, and reading launchd would report the OLD pid as an alive-no-listener
+// start and send the operator to a consent pane for a launchctl problem.
+func (d *Driver) stopFailed(
+	ctx context.Context,
+	installed buildidentity.Identity,
+	stopErr error,
+) (Outcome, error) {
+	d.logf(
+		"deploy aborted t_aborted=%s class=%s commit=%s reason=%q",
+		formatTime(d.Now()), StopFailed, installed.Commit, stopErr.Error(),
+	)
+	failure := Failure{
+		Failed:     installed,
+		Prev:       installed,
+		Class:      StopFailed,
+		Mode:       d.Mode,
+		BinaryPath: d.Binary.Path(),
+	}
+	if err := d.Board.Post(ctx, failure.Card()); err != nil {
+		d.logf("deploy card failed error=%q", err.Error())
+	}
+	return Aborted, newOutcomeError(
+		Aborted,
+		"deploy aborted: launchctl did not release the job (%v); commit %s is on disk "+
+			"but the running build is untouched",
+		stopErr, installed.Commit,
 	)
 }
 
@@ -156,18 +207,25 @@ func (d *Driver) dark(
 
 // startAndWait restarts the job and polls until the board serves the expected
 // commit or the deadline passes.
+// startAndWait restarts the job and polls until the board serves the expected
+// commit or the deadline passes.
+//
+// A non-nil error means the job was never stopped: the caller must abort rather
+// than roll back, because nothing was replaced. A failed BOOTSTRAP is not that
+// case — the old process is gone and the board is dark — so it comes back as a
+// not-ready result and takes the ordinary rollback path.
 func (d *Driver) startAndWait(
 	ctx context.Context,
 	deadline time.Time,
 	expectedCommit string,
-) ProbeResult {
+) (ProbeResult, error) {
 	if err := d.Supervisor.Stop(ctx); err != nil {
-		return ProbeResult{Detail: "stop failed: " + err.Error()}
+		return ProbeResult{}, err
 	}
 	if err := d.Supervisor.Bootstrap(ctx); err != nil {
-		return ProbeResult{Detail: "bootstrap failed: " + err.Error()}
+		return ProbeResult{Detail: "bootstrap failed: " + err.Error()}, nil
 	}
-	return d.waitUntil(ctx, deadline, expectedCommit)
+	return d.waitUntil(ctx, deadline, expectedCommit), nil
 }
 
 // waitUntil polls the board every PollInterval until it is ready or the

@@ -66,6 +66,16 @@ func (f Failure) payload() string {
 			f.Failed.Version, ConsentAction,
 		)
 	}
+	if f.Class == StopFailed {
+		// ⚠️ No consent literal here: the board never went down, and the job
+		// launchd would not release is a launchctl problem, not a TCC grant.
+		return fmt.Sprintf(
+			"attention-controller deploy aborted: %s was built but not started, "+
+				"because launchd did not stop the running job. The board still serves "+
+				"the previous build.",
+			f.Failed.Version,
+		)
+	}
 	return fmt.Sprintf(
 		"attention-controller deploy failed: %s exited%s before opening the board port.",
 		f.Failed.Version, exitClause(f.Status.LastExit),
@@ -74,6 +84,14 @@ func (f Failure) payload() string {
 
 // context is the background: which build failed, which one serves now.
 func (f Failure) context() string {
+	if f.Class == StopFailed {
+		return fmt.Sprintf(
+			"The build is commit %s. Nothing was rolled back — the running process was "+
+				"never stopped, so the board still serves what it served before. "+
+				"Deploy mode: %s.",
+			f.Failed.Commit, f.Mode,
+		)
+	}
 	return fmt.Sprintf(
 		"The failed build is commit %s. The board rolled back to %s and is serving again. "+
 			"Deploy mode: %s.",
