@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.93.4
 
 - fix: **a busy-composer delivery retry is marked undeliverable once it passes five minutes, instead of retrying unmarked until the card is swept.** A `retry` verdict — the pane's composer busy or unreadable — recorded nothing, so `deliverable` stayed true and the arm re-attempted the card for as long as it lived, with the board showing `never_attempted` throughout. Measured 2026-11-17 from the controller's own stderr (`~/Library/Logs/attention-controller/stderr.log`): 148 distinct ids entered this loop, the longest spans 3771 s / 3651 s / 3647 s, and two of the longest were swept closed at 60 min still reading `never_attempted` — the answer was lost with no marker at all. `AttentionDeliveryBound` is anchored on the card's **answer** time, never on the first retry, so a card that enters the loop late cannot widen the promise. Past the bound the arm writes exactly one `failed` attempt record and one `action=undeliverable` log line, then keeps retrying on the existing backoff — a later `ok` settles the record as `delivered` (first-write-wins), so the bound surfaces the wait and never drops the answer. The Python watcher carried this bound on the booked arm only; the port unified both arms into one, so this constant now governs every retry.
 
