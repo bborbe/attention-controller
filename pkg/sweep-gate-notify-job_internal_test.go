@@ -356,6 +356,8 @@ var _ = Describe("sweep gate notify job", func() {
 		Expect(missed).To(BeFalse())
 		_, failed := capture.find("job=sweep-gate-notify action=guard_error")
 		Expect(failed).To(BeTrue())
+		_, ok := capture.find("job=sweep-gate-notify action=guard_ok")
+		Expect(ok).To(BeFalse())
 	})
 
 	It("reports a guard error when the check itself errored", func() {
@@ -367,6 +369,8 @@ var _ = Describe("sweep gate notify job", func() {
 
 		_, failed := capture.find("job=sweep-gate-notify action=guard_error")
 		Expect(failed).To(BeTrue())
+		_, ok := capture.find("job=sweep-gate-notify action=guard_ok")
+		Expect(ok).To(BeFalse())
 	})
 
 	It("does not report a MISS when the re-read still says unchanged", func() {
