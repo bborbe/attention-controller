@@ -78,25 +78,31 @@ func NewUnforwardedClosersJob(
 }
 
 // RunOnce performs one scan, writes its cycle line, and re-presents each lost
-// gate on the board when a store is configured.
+// gate on the board when a store is configured. It then reconciles this
+// producer's open cards against session liveness.
 //
 // ⚠️ The error branch is the in-process replacement for the launchd job's exit
 // code 2: it writes `action=error` and NEVER falls through to a zero count, so
 // a read failure can never read as "nothing lost".
+//
+// ⚠️ `reconcile` runs whether or not the scan succeeded. The two read different
+// sources — the scan reads the events state dir, the reconcile reads the store —
+// so a broken state dir must not also strand the cards the reconcile would
+// clear. The scan's error still prints and still suppresses the cycle line.
 func (j *UnforwardedClosersJob) RunOnce(ctx context.Context) UnforwardedScan {
 	result := j.scanner.Scan(ctx)
 	if result.Err != nil {
 		j.logf("job=%s action=error %v", UnforwardedClosersJobName, result.Err)
-		return result
-	}
-	j.logf(
-		"job=%s action=scan scanned=%d unforwarded=%d",
-		UnforwardedClosersJobName,
-		result.Scanned,
-		len(result.Findings),
-	)
-	for _, finding := range result.Findings {
-		j.post(ctx, finding)
+	} else {
+		j.logf(
+			"job=%s action=scan scanned=%d unforwarded=%d",
+			UnforwardedClosersJobName,
+			result.Scanned,
+			len(result.Findings),
+		)
+		for _, finding := range result.Findings {
+			j.post(ctx, finding)
+		}
 	}
 	j.reconcile(ctx)
 	return result
