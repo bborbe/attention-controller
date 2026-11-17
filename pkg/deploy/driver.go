@@ -80,22 +80,22 @@ func (d *Driver) Run(ctx context.Context) (Outcome, error) {
 // rollback-failure path below claims no card at all.
 func (d *Driver) rollback(ctx context.Context, failure Failure, t0 time.Time) (Outcome, error) {
 	if !d.Binary.HasPrev() {
-		return d.dark(ctx, failure, buildidentity.Identity{}, PrevUnknown)
+		return d.dark(failure, buildidentity.Identity{}, PrevUnknown)
 	}
 	prev, err := d.Binary.PrevIdentity(ctx)
 	if err != nil {
-		return d.dark(ctx, failure, buildidentity.Identity{}, "prev unreadable: "+err.Error())
+		return d.dark(failure, buildidentity.Identity{}, "prev unreadable: "+err.Error())
 	}
 	failure.Prev = prev
 	if err := d.Binary.RestorePrev(ctx); err != nil {
-		return d.dark(ctx, failure, prev, "restore failed: "+err.Error())
+		return d.dark(failure, prev, "restore failed: "+err.Error())
 	}
 	// The rollback's own deadline is absolute: whatever the failed start spent
 	// of the budget is already gone, so readiness plus rollback can never sum
 	// past the two minutes however long the first phase ran.
 	probe := d.startAndWait(ctx, t0.Add(d.ReadinessTimeout+d.RollbackBudget), prev.Commit)
 	if !probe.Ready {
-		return d.dark(ctx, failure, prev, "prev did not serve: "+probe.Detail)
+		return d.dark(failure, prev, "prev did not serve: "+probe.Detail)
 	}
 	tReady := d.Now()
 	d.logf(
@@ -128,7 +128,6 @@ func (d *Driver) rollback(ctx context.Context, failure Failure, t0 time.Time) (O
 // store exists to post a card to, so claiming one would be a lie the operator
 // could not check.
 func (d *Driver) dark(
-	ctx context.Context,
 	failure Failure,
 	prev buildidentity.Identity,
 	reason string,
