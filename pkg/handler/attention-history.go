@@ -6,6 +6,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strconv"
 
@@ -113,14 +114,18 @@ func NewAttentionHistoryHandler(store pkg.AttentionStore) http.Handler {
 						http.StatusInternalServerError,
 					)
 				}
-				// ⚠️ The body is written as-is, not re-encoded from Items: the
-				// cache holds this exact byte slice, and encoding it again on every
-				// hit would put back the 156 MB-per-page decode the cache exists to
-				// avoid. The headers are what SendJSONResponse would have set.
-				resp.Header().Set(libhttp.ContentTypeHeaderName, libhttp.ApplicationJsonContentType)
-				resp.WriteHeader(http.StatusOK)
-				if _, err := resp.Write(body); err != nil {
-					return errors.Wrap(ctx, err, "write response failed")
+				// ⚠️ The body is served as json.RawMessage through the shared JSON
+				// helper rather than written to the ResponseWriter directly. The
+				// cache holds this exact byte slice, and re-encoding it from Items
+				// would put back the decode the cache exists to avoid; RawMessage is
+				// encoded verbatim, so the bytes on the wire are the cached ones.
+				if err := libhttp.SendJSONResponse(
+					ctx,
+					resp,
+					json.RawMessage(body),
+					http.StatusOK,
+				); err != nil {
+					return errors.Wrap(ctx, err, "send response failed")
 				}
 				return nil
 			},

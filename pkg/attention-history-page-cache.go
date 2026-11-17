@@ -275,7 +275,15 @@ func (c *historyPageCache) storeLocked(
 		if oldest == nil {
 			break
 		}
-		c.removeLocked(oldest.Value.(*historyPageEntry))
+		entry, ok := oldest.Value.(*historyPageEntry)
+		if !ok {
+			// Unreachable: the list holds only historyPageEntry values. Drop the
+			// node rather than spin, so a future non-entry insertion cannot make
+			// this loop run forever.
+			c.order.Remove(oldest)
+			continue
+		}
+		c.removeLocked(entry)
 	}
 }
 
