@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.94.0
 
 - feat: **the board listener binds before initialization and serves a starting screen until the process is ready, so a launchd restart no longer reads as a dead port.** The listener used to bind only after the BoltDB open (which can wait its whole 15 s lock timeout) and the task index's boot build (a walk of the whole vault), so for the length of a restart the port refused connections — indistinguishable from a crash. It now binds first, behind a startup gate: `GET /` renders an HTML page naming the pending init step (meta refresh 2 s), every other route answers HTTP 503 `{"status":"starting","step":"<name>"}` with `Retry-After: 2`, `/readiness` is 503 and `/healthz` and `/metrics` answer normally until the gate opens. The first log line (`starting attention-controller version=… listen=…`) is written before any blocking step, and each init step (`open-db`, `create-store`, `build-task-index`, `start-jobs`) logs `action=start` / `action=done duration=…`, so a hang is attributable from the stderr log. A failed step logs `action=failed` with its error and exits the process non-zero instead of serving "starting" forever; on shutdown the gate closes before the db does.
 
