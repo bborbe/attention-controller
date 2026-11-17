@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.94.1
 
 - fix: **SIGTERM exits promptly again with board streams open.** Since v0.94.0 the board listener's graceful drain waited for every in-flight request, but `http.Server.Shutdown` never cancels a request context and the `/api/1.0/attention/stream` handler ends only when its context does, so every open board tab or `answered-watch` stream ran the drain into its 5 s timeout and the process then hung without logging `application finished` until launchd killed it (board down ~91 s). The stream route now also ends when the process context does, so the drain finishes at once; a drain that still times out force-closes the remaining connections (`server.Close`); and the db close after the listener stops is bounded to 1.5 s, so a transaction a stuck handler holds can no longer keep the process alive.
 
