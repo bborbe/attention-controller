@@ -81,6 +81,11 @@ func (a *attentionStore) History(
 // and concurrent misses for DISTINCT pages are capped (historyPageDecodeLimit), so
 // a burst cannot multiply the walk cost by the number of callers.
 //
+// ⚠️ The returned slice is the CACHED body, not a copy: a caller must treat it as
+// read-only, because another reader holds the same backing array. Every in-repo
+// caller only writes it to a response or decodes it, and `json.RawMessage` encodes
+// it without mutating. A caller that needs to modify the page must copy it first.
+//
 // ⚠️ The body carries no trailing newline: the endpoint serves it through
 // `json.RawMessage`, and `json.Encoder` supplies the newline the endpoint has
 // always carried.
@@ -102,11 +107,36 @@ func (a *attentionStore) HistoryJSON(
 	}
 	flight, joined := a.historyPage.begin(key)
 	if joined {
-		<-flight.done
-		return flight.body, flight.err
+		// ⚠️ A joiner waits on ITS OWN context as well as the flight. Without the
+		// ctx arm a caller whose request was cancelled inherits the owner's
+		// lifetime and stays blocked on a build it no longer wants.
+		select {
+		case <-flight.done:
+			return flight.body, flight.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
+	// ⚠️ The flight must be closed on EVERY path. A panic in the walk would
+	// otherwise leave it wedged and every joiner would wait forever on a channel
+	// nothing closes; the flag makes the deferred completion a no-op when the
+	// normal path already ran.
+	completed := false
+	defer func() {
+		if completed {
+			return
+		}
+		a.historyPage.complete(
+			key,
+			flight,
+			nil,
+			libtime.DateTime{},
+			errors.New(ctx, "history page build aborted"),
+		)
+	}()
 	body, validUntil, err := a.buildHistoryPage(ctx, limit, offset, filters)
 	a.historyPage.complete(key, flight, body, validUntil, err)
+	completed = true
 	if err != nil {
 		return nil, err
 	}

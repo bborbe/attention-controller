@@ -85,6 +85,9 @@ type AttentionStore interface {
 	// no decode; one that needs the structs calls History, which decodes this
 	// body.
 	//
+	// ⚠️ The returned slice is the cached body, not a copy: a caller must treat it
+	// as read-only, because another reader holds the same backing array.
+	//
 	// The bounds, filters and narrowing are History's exactly — this is that
 	// read, encoded — and the body carries no trailing newline: the endpoint
 	// serves it through `json.RawMessage`, whose encoder supplies one.

@@ -142,35 +142,41 @@ var _ = Describe("history page cache", func() {
 
 	// ⚠️ The cache key cannot carry time, but the walk drops an OPEN item once it
 	// expires. An expiry is not a write, so no invalidate arrives — the entry
-	// carries the earliest deadline among its OPEN items instead, and past that
-	// instant it is dropped and the read re-walks. The page therefore loses the
-	// expired row without ever being decoded on a hit.
+	// carries the EARLIEST deadline among its OPEN items instead, and past that
+	// instant it is dropped and the read re-walks. Two items with different
+	// deadlines pin that it is the earliest and not the last.
 	It("drops an item that expires while its page is cached", func() {
-		expiresAt := now.Add(libtime.Duration(60 * 1e9))
-		_, err := store.Push(ctx, PushRequest{
-			ProducerID:      ProducerID("session-a"),
-			ProducerKind:    SessionProducerKind,
-			LivenessRef:     LivenessRef("session:session-a"),
-			DedupKey:        DedupKey("gate-expiring"),
-			InterruptClass:  "approve",
-			Payload:         Payload("still needed?"),
-			AnswerMechanism: MessageAnswerMechanism,
-			ExpiresAt:       &expiresAt,
-		})
-		Expect(err).To(BeNil())
+		pushExpiring := func(dedupKey string, in libtime.Duration) {
+			expiresAt := now.Add(in)
+			_, err := store.Push(ctx, PushRequest{
+				ProducerID:      ProducerID("session-a"),
+				ProducerKind:    SessionProducerKind,
+				LivenessRef:     LivenessRef("session:session-a"),
+				DedupKey:        DedupKey(dedupKey),
+				InterruptClass:  "approve",
+				Payload:         Payload("still needed?"),
+				AnswerMechanism: MessageAnswerMechanism,
+				ExpiresAt:       &expiresAt,
+			})
+			Expect(err).To(BeNil())
+		}
+		pushExpiring("gate-expiring-soon", libtime.Duration(60*1e9))
+		pushExpiring("gate-expiring-later", libtime.Duration(120*1e9))
 
 		first, err := store.History(ctx, 10, 0)
 		Expect(err).To(BeNil())
-		Expect(first).To(HaveLen(1))
+		Expect(first).To(HaveLen(2))
 		Expect(walks).To(Equal(1))
 
-		now = now.Add(libtime.Duration(120 * 1e9))
+		// Past the FIRST deadline but not the second: the horizon must have fired.
+		now = now.Add(libtime.Duration(90 * 1e9))
 
 		second, err := store.History(ctx, 10, 0)
 		Expect(err).To(BeNil())
 		Expect(walks).To(Equal(2), "the expiry horizon has passed, so the page is re-walked")
-		Expect(second).To(BeEmpty(),
-			"an item that expired while cached must not be served from it")
+		Expect(second).To(HaveLen(1),
+			"only the item whose deadline passed may drop; the later one must remain")
+		Expect(second[0].DedupKey).To(Equal(DedupKey("gate-expiring-later")))
 	})
 
 	It("re-walks after an answer, so the new state is visible", func() {
@@ -302,7 +308,7 @@ var _ = Describe("history page cache", func() {
 		push("session-a", "gate-1")
 		push("session-a", "gate-2")
 
-		arrived := make(chan struct{}, 1)
+		arrived := make(chan struct{}, 12)
 		release := make(chan struct{})
 		originalCollector := historyPageCollector
 		DeferCleanup(func() { historyPageCollector = originalCollector })
@@ -339,6 +345,48 @@ var _ = Describe("history page cache", func() {
 			Expect(bodies[i]).To(Equal(bodies[0]))
 		}
 		Expect(walks).To(Equal(1), "concurrent callers for one page must share one walk")
+	})
+
+	// ⚠️ A joiner must be releasable by its OWN cancellation. Without that arm it
+	// inherits the owner's lifetime, so a client that gave up stays parked on a
+	// build it no longer wants — and the request that would have served it never
+	// returns.
+	It("lets a joiner whose request was cancelled stop waiting", func() {
+		push("session-a", "gate-1")
+
+		arrived := make(chan struct{}, 1)
+		release := make(chan struct{})
+		originalCollector := historyPageCollector
+		DeferCleanup(func() { historyPageCollector = originalCollector })
+		historyPageCollector = func(
+			a *attentionStore,
+			ctx context.Context,
+			limit int,
+			offset int,
+			filter historyMatcher,
+		) ([]byte, libtime.DateTime, error) {
+			walks++
+			arrived <- struct{}{}
+			<-release
+			return a.collectHistoryPageJSON(ctx, limit, offset, filter)
+		}
+
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = store.HistoryJSON(ctx, 10, 0)
+		}()
+		<-arrived
+
+		cancelled, cancel := context.WithCancel(ctx)
+		cancel()
+		_, err := store.HistoryJSON(cancelled, 10, 0)
+		Expect(err).To(MatchError(ContainSubstring("context canceled")))
+
+		close(release)
+		wg.Wait()
+		Expect(walks).To(Equal(1), "the cancelled joiner must not start its own walk")
 	})
 
 	// ⚠️ The budget bounds what is retained; this bounds what is in flight. A

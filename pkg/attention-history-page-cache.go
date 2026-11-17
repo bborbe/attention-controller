@@ -244,6 +244,11 @@ func (c *historyPageCache) releaseDecode() {
 
 // storeLocked caches a page only when no write landed since it was read, and
 // evicts least-recently-used pages until the total is back inside the budget.
+//
+// ⚠️ It accounts `cap`, not `len`. The body comes from a `bytes.Buffer` that grew
+// by doubling, so the backing array can be up to twice the body and it is the
+// ARRAY that stays on the heap. Budgeting on len would let the cache retain twice
+// what the budget names.
 func (c *historyPageCache) storeLocked(
 	gen uint64,
 	key historyPageKey,
@@ -253,14 +258,14 @@ func (c *historyPageCache) storeLocked(
 	if c.gen != gen {
 		return
 	}
-	if len(body) > historyPageCacheBudget {
+	if cap(body) > historyPageCacheBudget {
 		if entry, ok := c.entries[key]; ok {
 			c.removeLocked(entry)
 		}
 		return
 	}
 	if entry, ok := c.entries[key]; ok {
-		c.total += len(body) - len(entry.body)
+		c.total += cap(body) - cap(entry.body)
 		entry.body = body
 		entry.validUntil = validUntil
 		c.order.MoveToFront(entry.elem)
@@ -268,7 +273,7 @@ func (c *historyPageCache) storeLocked(
 		entry := &historyPageEntry{key: key, body: body, validUntil: validUntil}
 		entry.elem = c.order.PushFront(entry)
 		c.entries[key] = entry
-		c.total += len(body)
+		c.total += cap(body)
 	}
 	for c.total > historyPageCacheBudget {
 		oldest := c.order.Back()
@@ -312,7 +317,7 @@ func (c *historyPageCache) size() int {
 func (c *historyPageCache) removeLocked(entry *historyPageEntry) {
 	c.order.Remove(entry.elem)
 	delete(c.entries, entry.key)
-	c.total -= len(entry.body)
+	c.total -= cap(entry.body)
 }
 
 // historyPageCollector runs one index walk for History and returns the encoded
