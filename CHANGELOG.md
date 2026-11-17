@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.94.4
 
 - fix: **a `sweep-gate` card now names the subject's goal manager as its producer, so the owner filter routes it to the manager who can act on it instead of to the Fleet Manager.** Every card was posted with the constant `producer_id: sweep-gate` and no goal and no spawner, so `gate-owner-filter.py`'s `evaluate()` resolved no owner and `route_unowned()` sent the whole class to the Fleet Manager — measured 2026-11-16 at 2476 re-delivered rows, while all 26 sampled cards named a subject with a live manager registration. The job now reads the subject page's `claude_session_id` (`sweepGateOwnerSession`, from `24 Goals/` or `23 Topics/`) and passes it as `--producer-id`; `verdict()`'s `self` branch then emits to that manager and every other manager excludes it as `foreign-goal`. A subject that resolves no owner still posts under the constant `sweep-gate` and reads `unowned-fleet`, so the degrade stays visible rather than becoming a silence.
 
