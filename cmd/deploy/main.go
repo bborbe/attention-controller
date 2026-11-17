@@ -23,8 +23,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/bborbe/errors"
@@ -36,7 +38,21 @@ import (
 const defaultLabel = "com.bborbe.attention-controller"
 
 func main() {
-	outcome, err := run(context.Background(), os.Args[1:])
+	// ⚠️ A signal must reach the driver, not kill it. An interrupt between
+	// `launchctl bootout` and the readiness proof would otherwise leave the job
+	// booted out with no rollback and no verdict — the board dark and nobody
+	// told. The driver's own cancel path then stops polling and returns.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	// ⚠️ A SECOND interrupt must kill the process. NotifyContext keeps swallowing
+	// the signal for as long as its handler is installed, so restoring the
+	// default as soon as the first one lands is what leaves the operator an
+	// escape hatch when the rollback is the thing that is stuck.
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
+	outcome, err := run(ctx, os.Args[1:])
 	if err != nil {
 		// ⚠️ Exactly one line: for a dark board this line plus the exit code is
 		// the whole signal, because no store exists to post a card to.
@@ -46,12 +62,18 @@ func main() {
 }
 
 // exitCode maps an outcome to the process exit code.
+//
+// ⚠️ 2 means the board is DARK and 3 means nothing was touched. Collapsing the
+// two would fire a dark-board alarm for a deploy refused before it restarted
+// anything (an unstamped build, an unreadable identity, a flag error).
 func exitCode(outcome deploy.Outcome) int {
 	switch outcome {
 	case deploy.Healthy:
 		return 0
 	case deploy.RolledBack:
 		return 1
+	case deploy.Aborted:
+		return 3
 	default:
 		return 2
 	}
@@ -61,7 +83,7 @@ func exitCode(outcome deploy.Outcome) int {
 func run(ctx context.Context, args []string) (deploy.Outcome, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return deploy.RollbackFailed, errors.Wrap(ctx, err, "resolve home directory failed")
+		return deploy.Aborted, errors.Wrap(ctx, err, "resolve home directory failed")
 	}
 	flags := flag.NewFlagSet("deploy", flag.ContinueOnError)
 	mode := flags.String("mode", string(deploy.InstallMode), "entry point: install or reload")
@@ -84,7 +106,7 @@ func run(ctx context.Context, args []string) (deploy.Outcome, error) {
 	)
 	poll := flags.Duration("poll", deploy.PollInterval, "how often the board is probed")
 	if err := flags.Parse(args); err != nil {
-		return deploy.RollbackFailed, err
+		return deploy.Aborted, err
 	}
 	if *prev == "" {
 		*prev = *bin + ".prev"
@@ -108,11 +130,10 @@ func run(ctx context.Context, args []string) (deploy.Outcome, error) {
 		Sleep:            time.Sleep,
 		Log:              os.Stdout,
 	}
-	outcome, err := driver.Run(ctx)
-	if err != nil {
-		return deploy.OutcomeOf(err), err
-	}
-	return outcome, nil
+	// ⚠️ The outcome comes from Run's own return value, never from classifying
+	// the error: a plain wrapped error carries no class, so deriving it would
+	// collapse every abort back to "board dark".
+	return driver.Run(ctx)
 }
 
 // newProber builds the board prober for a base URL.
