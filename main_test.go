@@ -22,6 +22,7 @@ import (
 	"github.com/bborbe/run"
 	libtime "github.com/bborbe/time"
 	"github.com/gorilla/mux"
+	bolt "go.etcd.io/bbolt"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -643,5 +644,21 @@ var _ = Describe("sessionLivenessChecker", func() {
 		_, err := app.sessionLivenessChecker(ctx)
 		Expect(err).NotTo(BeNil())
 		Expect(err.Error()).To(ContainSubstring("unknown session-liveness 'offf'"))
+	})
+})
+
+// ⚠️ The assertion is that Timeout is NON-ZERO, not its exact value: bbolt's
+// DefaultOptions carries Timeout 0, which waits forever for the file lock and
+// ignores ctx. A contended open then leaves the process parked in a 50 ms flock
+// retry loop — logged `application started`, never bound, never errored — which
+// is the 2026-11-16 restart-loop symptom. This spec fails if the timeout is
+// dropped back to the default, the one regression that reintroduces the hang.
+var _ = Describe("boltOpenOptions", func() {
+	It("bounds the lock wait so a contended open fails instead of hanging forever", func() {
+		opts := *bolt.DefaultOptions
+		Expect(opts.Timeout).To(Equal(time.Duration(0)), "precondition: bbolt waits forever by default")
+		boltOpenOptions()(&opts)
+		Expect(opts.Timeout).To(Equal(boltOpenLockTimeout))
+		Expect(opts.Timeout).To(BeNumerically(">", 0))
 	})
 })
