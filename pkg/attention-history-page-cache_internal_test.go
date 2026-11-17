@@ -389,6 +389,33 @@ var _ = Describe("history page cache", func() {
 		Expect(walks).To(Equal(1), "the cancelled joiner must not start its own walk")
 	})
 
+	// ⚠️ A flight started before a write answers the store as it stood BEFORE that
+	// write. A reader arriving afterwards must not join it, or the cache serves
+	// pre-write data — exactly the stale answer its generation contract forbids.
+	// This is asserted on the cache seam rather than through a live store: a real
+	// write cannot land while a build holds its read transaction, so the store
+	// path cannot express "write during a build".
+	It("does not let a reader join a flight that predates a write", func() {
+		cache := newHistoryPageCache()
+		key := newHistoryPageKey(10, 0, nil)
+
+		first, joined := cache.begin(key)
+		Expect(joined).To(BeFalse())
+
+		cache.invalidate()
+
+		second, joined := cache.begin(key)
+		Expect(joined).To(BeFalse(), "a flight from before the write must not be joinable")
+		Expect(second).ToNot(BeIdenticalTo(first))
+
+		// The stale owner must not evict the current flight when it completes.
+		cache.complete(key, first, []byte("stale"), libtime.DateTime{}, nil)
+
+		third, joined := cache.begin(key)
+		Expect(joined).To(BeTrue(), "the current flight must still be joinable")
+		Expect(third).To(BeIdenticalTo(second))
+	})
+
 	// ⚠️ The budget bounds what is retained; this bounds what is in flight. A
 	// burst of DISTINCT pages is the case the budget alone cannot cover — each
 	// miss holds its own buffer until it is stored.

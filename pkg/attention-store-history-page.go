@@ -193,8 +193,13 @@ func (a *attentionStore) buildHistoryPage(
 // miss the body alone.
 //
 // It also returns the instant the page stops matching a fresh walk: the earliest
-// deadline among its OPEN items, or the zero instant when the page holds none.
-// See historyPageCache for why the cache needs it.
+// deadline among the OPEN items the walk EXAMINED, or the zero instant when there
+// are none. See historyPageCache for why the cache needs it.
+//
+// ⚠️ The horizon is the walk's, not the emitted page's. An OPEN row that the
+// offset skipped still shifts every later row one place when it expires, so a
+// horizon computed only over emitted rows would keep serving a page whose
+// contents a fresh walk would no longer produce.
 func (a *attentionStore) collectHistoryPageJSON(
 	ctx context.Context,
 	limit int,
@@ -203,27 +208,30 @@ func (a *attentionStore) collectHistoryPageJSON(
 ) ([]byte, libtime.DateTime, error) {
 	var body bytes.Buffer
 	body.WriteByte('[')
-	var validUntil libtime.DateTime
 	wrote := 0
+	var validUntil libtime.DateTime
 	err := a.db.View(ctx, func(ctx context.Context, tx libkv.Tx) error {
-		return a.walkHistoryPage(ctx, tx, limit, offset, filter, func(item Item) error {
-			if wrote > 0 {
-				body.WriteByte(',')
-			}
-			encoded, err := json.Marshal(item)
-			if err != nil {
-				return errors.Wrap(ctx, err, "marshal history item failed")
-			}
-			body.Write(encoded)
-			wrote++
-			if item.State == OpenState {
-				deadline := effectiveExpiresAt(&item)
-				if validUntil.Time().IsZero() || deadline.Time().Before(validUntil.Time()) {
-					validUntil = deadline
+		var walkErr error
+		validUntil, walkErr = a.walkHistoryPage(
+			ctx,
+			tx,
+			limit,
+			offset,
+			filter,
+			func(item Item) error {
+				if wrote > 0 {
+					body.WriteByte(',')
 				}
-			}
-			return nil
-		})
+				encoded, err := json.Marshal(item)
+				if err != nil {
+					return errors.Wrap(ctx, err, "marshal history item failed")
+				}
+				body.Write(encoded)
+				wrote++
+				return nil
+			},
+		)
+		return walkErr
 	})
 	if err != nil {
 		return nil, libtime.DateTime{}, err
@@ -236,6 +244,10 @@ func (a *attentionStore) collectHistoryPageJSON(
 
 // walkHistoryPage walks the history index in reverse and hands each page row to
 // visit.
+//
+// It returns the earliest deadline among the OPEN rows it examined — including the
+// ones the offset skipped, because their expiry shifts the rows that follow into
+// the page — or the zero instant when it examined none.
 //
 // ⚠️ It is a separate function because the cursor loop, the marker skip and the
 // two bound checks together exceed the complexity budget the linter allows the
@@ -253,13 +265,13 @@ func (a *attentionStore) walkHistoryPage(
 	offset int,
 	filter historyMatcher,
 	visit func(Item) error,
-) error {
+) (libtime.DateTime, error) {
 	bucket, err := tx.Bucket(ctx, attentionHistoryIndexBucketName)
 	if err != nil {
 		if errors.Is(err, libkv.BucketNotFoundError) {
-			return nil
+			return libtime.DateTime{}, nil
 		}
-		return errors.Wrap(ctx, err, "get history index bucket failed")
+		return libtime.DateTime{}, errors.Wrap(ctx, err, "get history index bucket failed")
 	}
 	it := bucket.IteratorReverse()
 	defer it.Close()
@@ -268,12 +280,13 @@ func (a *attentionStore) walkHistoryPage(
 	// stated purpose is a stable count — a deadline crossed mid-walk would drop a
 	// row from a set the caller is counting.
 	now := a.currentDateTimeGetter.Now()
+	var horizon libtime.DateTime
 	skipped := 0
 	kept := 0
 	for it.Rewind(); it.Valid(); it.Next() {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return libtime.DateTime{}, ctx.Err()
 		default:
 		}
 		// ⚠️ Skipped by NAME, never by position. The marker sorts below every real
@@ -286,7 +299,7 @@ func (a *attentionStore) walkHistoryPage(
 		}
 		item, keep, err := filter.decode(ctx, it.Item())
 		if err != nil {
-			return err
+			return libtime.DateTime{}, err
 		}
 		if !keep {
 			continue
@@ -303,6 +316,11 @@ func (a *attentionStore) walkHistoryPage(
 		if historyPageRowExpired(&item, now) {
 			continue
 		}
+		// ⚠️ The horizon is updated BEFORE the offset skip: a row the offset drops
+		// still occupies a place in the walk, and when it expires every later row
+		// shifts one slot earlier — so the page changes even though the row was
+		// never emitted.
+		horizon = historyPageHorizon(horizon, item)
 		if skipped < offset {
 			skipped++
 			continue
@@ -311,11 +329,11 @@ func (a *attentionStore) walkHistoryPage(
 			break
 		}
 		if err := visit(item); err != nil {
-			return err
+			return libtime.DateTime{}, err
 		}
 		kept++
 	}
-	return nil
+	return horizon, nil
 }
 
 // historyPageRowExpired reports whether the row is History's one narrowing: an
@@ -326,6 +344,22 @@ func (a *attentionStore) walkHistoryPage(
 // one rule, not two branches.
 func historyPageRowExpired(item *Item, now libtime.DateTime) bool {
 	return item.State == OpenState && isExpired(item, now)
+}
+
+// historyPageHorizon folds one live row's deadline into the running horizon.
+//
+// It is a function for the same reason historyPageRowExpired is: the walk's
+// cognitive budget is spent on the cursor, and "keep the earliest OPEN deadline"
+// is one rule that belongs in its own name.
+func historyPageHorizon(horizon libtime.DateTime, item Item) libtime.DateTime {
+	if item.State != OpenState {
+		return horizon
+	}
+	deadline := effectiveExpiresAt(&item)
+	if horizon.Time().IsZero() || deadline.Time().Before(horizon.Time()) {
+		return deadline
+	}
+	return horizon
 }
 
 // historyPageFull reports whether the page has reached its limit. A limit of zero

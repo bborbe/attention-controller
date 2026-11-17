@@ -196,10 +196,17 @@ func (c *historyPageCache) load(key historyPageKey, now libtime.DateTime) ([]byt
 //
 // The second result is true when the caller joined an existing flight and must
 // wait on its done channel instead of walking the index itself.
+//
+// ⚠️ **A flight is only joinable while its generation is current.** A build that
+// started before a write answers the store as it stood BEFORE that write, so a
+// reader arriving afterwards must not be handed its body — joining it would serve
+// pre-write data and break the cache's "a racing write costs one cache miss, never
+// a stale answer" contract. A stale flight is replaced here; its own waiters keep
+// the pointer they already hold and still receive the page they asked for.
 func (c *historyPageCache) begin(key historyPageKey) (*historyPageFlight, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if flight, ok := c.flights[key]; ok {
+	if flight, ok := c.flights[key]; ok && flight.gen == c.gen {
 		return flight, true
 	}
 	flight := &historyPageFlight{gen: c.gen, done: make(chan struct{})}
@@ -220,7 +227,12 @@ func (c *historyPageCache) complete(
 	if err == nil {
 		c.storeLocked(flight.gen, key, body, validUntil)
 	}
-	delete(c.flights, key)
+	// ⚠️ Only remove the map entry when it is still THIS flight: a stale flight
+	// may have been replaced by begin, and deleting the replacement would let a
+	// third caller start a second concurrent build for the same page.
+	if current, ok := c.flights[key]; ok && current == flight {
+		delete(c.flights, key)
+	}
 	flight.body = body
 	flight.err = err
 	close(flight.done)
