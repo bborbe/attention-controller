@@ -104,16 +104,19 @@ func (d *Driver) rollback(ctx context.Context, failure Failure, t0 time.Time) (O
 	)
 	card := failure.Card()
 	if err := d.Board.Post(ctx, card); err != nil {
-		return RolledBack, errors.Wrapf(
-			ctx,
-			err,
-			"deploy failed: commit %s did not serve (%s); rolled back to %s but the card could not be posted",
-			failure.Failed.Commit, failure.Class, prev.Commit,
+		// The board serves but the operator was not told. That is a failure of
+		// the deploy's own report, and never a reason to claim the board is
+		// dark: the outcome stays RolledBack.
+		return RolledBack, newOutcomeError(
+			RolledBack,
+			"deploy failed: commit %s did not serve (%s); rolled back to %s "+
+				"but the card could not be posted: %v",
+			failure.Failed.Commit, failure.Class, prev.Commit, err,
 		)
 	}
 	d.logf("deploy card posted dedup_key=%s", card.DedupKey)
-	return RolledBack, errors.Errorf(
-		ctx,
+	return RolledBack, newOutcomeError(
+		RolledBack,
 		"deploy failed: commit %s did not serve (%s); rolled back to %s, board serving",
 		failure.Failed.Commit, failure.Class, prev.Commit,
 	)
@@ -135,14 +138,18 @@ func (d *Driver) dark(
 		formatTime(d.Now()), failure.Failed.Commit, prev.Commit, reason,
 	)
 	if prev.Known() {
-		return RollbackFailed, errors.Errorf(
-			ctx,
-			"deploy failed: commit %s did not serve (%s); rollback to %s also failed (%s); board is dark",
-			failure.Failed.Commit, failure.Class, prev.Commit, reason,
+		return RollbackFailed, newOutcomeError(
+			RollbackFailed,
+			"deploy failed: commit %s did not serve (%s); rollback to %s also failed (%s); "+
+				"board is dark",
+			failure.Failed.Commit,
+			failure.Class,
+			prev.Commit,
+			reason,
 		)
 	}
-	return RollbackFailed, errors.Errorf(
-		ctx,
+	return RollbackFailed, newOutcomeError(
+		RollbackFailed,
 		"deploy failed: commit %s did not serve (%s); %s; board is dark",
 		failure.Failed.Commit, failure.Class, reason,
 	)

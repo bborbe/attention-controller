@@ -98,11 +98,12 @@ launchd-baseline:
 # ⚠️ A restart with no rebuild runs the same gate. That is deliberate: the
 # 2026-11-17 outage was a start that never bound the port, and `launchd-reload`
 # alone can strand the board exactly the same way.
+DEPLOY_MODE ?= reload
 .PHONY: launchd-reload
 launchd-reload:
 	@test -f "$(LAUNCHD_PLIST)" || { echo "plist not installed: $(LAUNCHD_PLIST)" >&2; exit 1; }
 	go run -mod=mod ./cmd/deploy \
-		-mode=reload \
+		-mode=$(DEPLOY_MODE) \
 		-bin="$(INSTALL_BIN)" \
 		-label="$(LAUNCHD_LABEL)" \
 		-plist="$(LAUNCHD_PLIST)"
@@ -136,7 +137,7 @@ install-bin:
 .PHONY: install
 install: install-bin
 	$(MAKE) launchd-baseline
-	$(MAKE) launchd-reload
+	$(MAKE) launchd-reload DEPLOY_MODE=install
 
 deps:
 	go install github.com/bborbe/teamvault-utils/cmd/teamvault-config-parser@latest

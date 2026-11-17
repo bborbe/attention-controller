@@ -116,15 +116,17 @@ type cardBoard struct {
 
 func newCardBoard() *cardBoard {
 	board := &cardBoard{status: http.StatusCreated}
-	board.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var request pkg.PushRequest
-		Expect(json.NewDecoder(r.Body).Decode(&request)).To(Succeed())
-		board.mu.Lock()
-		board.cards = append(board.cards, request)
-		board.mu.Unlock()
-		w.WriteHeader(board.status)
-		_, _ = w.Write([]byte(`{"item_id":"test"}`))
-	}))
+	board.server = httptest.NewServer(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var request pkg.PushRequest
+			Expect(json.NewDecoder(r.Body).Decode(&request)).To(Succeed())
+			board.mu.Lock()
+			board.cards = append(board.cards, request)
+			board.mu.Unlock()
+			w.WriteHeader(board.status)
+			_, _ = w.Write([]byte(`{"item_id":"test"}`))
+		}),
+	)
 	return board
 }
 
@@ -330,6 +332,32 @@ var _ = Describe("Driver", func() {
 			Expect(err.Error()).To(ContainSubstring(deploy.UnstampedCommit))
 			Expect(h.supervisor.bootstraps).To(Equal(0))
 			Expect(h.board.posted()).To(BeEmpty())
+		})
+	})
+
+	// The exit code is derived from the error, not from the returned Outcome,
+	// so the two must agree or a successful rollback reports itself as a dark
+	// board. Measured live 2026-11-17: the first staged deploy exited 2 while
+	// the board was serving, because the driver's errors carried no class.
+	Context("the returned outcome and the error's class", func() {
+		It("agree on a successful rollback", func() {
+			h.prober.afterRestore = &deploy.ProbeResult{Ready: true}
+
+			outcome, err := h.driver.Run(context.Background())
+
+			Expect(err).NotTo(BeNil())
+			Expect(outcome).To(Equal(deploy.RolledBack))
+			Expect(deploy.OutcomeOf(err)).To(Equal(deploy.RolledBack))
+		})
+
+		It("agree on a dark board", func() {
+			h.binary.hasPrev = false
+
+			outcome, err := h.driver.Run(context.Background())
+
+			Expect(err).NotTo(BeNil())
+			Expect(outcome).To(Equal(deploy.RollbackFailed))
+			Expect(deploy.OutcomeOf(err)).To(Equal(deploy.RollbackFailed))
 		})
 	})
 })

@@ -75,7 +75,12 @@ func (b *FileBinary) RestorePrev(ctx context.Context) error {
 func readBinaryIdentity(ctx context.Context, path string) (buildidentity.Identity, error) {
 	info, err := buildinfo.ReadFile(path)
 	if err != nil {
-		return buildidentity.Identity{}, errors.Wrapf(ctx, err, "read build info of %s failed", path)
+		return buildidentity.Identity{}, errors.Wrapf(
+			ctx,
+			err,
+			"read build info of %s failed",
+			path,
+		)
 	}
 	return buildidentity.FromSettings(info.Settings), nil
 }

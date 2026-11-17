@@ -90,11 +90,17 @@ func run(ctx context.Context, args []string) (deploy.Outcome, error) {
 		*prev = *bin + ".prev"
 	}
 	driver := &deploy.Driver{
-		Mode:             deploy.Mode(*mode),
-		Supervisor:       &deploy.LaunchctlSupervisor{Label: *label, Plist: *plist, UID: os.Getuid()},
-		Prober:           newProber(*board),
-		Binary:           &deploy.FileBinary{Bin: *bin, Prev: *prev},
-		Board:            &deploy.HTTPCardPoster{URL: strings.TrimSuffix(*board, "/") + "/api/1.0/attention"},
+		Mode: deploy.Mode(*mode),
+		Supervisor: &deploy.LaunchctlSupervisor{
+			Label: *label,
+			Plist: *plist,
+			UID:   os.Getuid(),
+		},
+		Prober: newProber(*board),
+		Binary: &deploy.FileBinary{Bin: *bin, Prev: *prev},
+		Board: &deploy.HTTPCardPoster{
+			URL: strings.TrimSuffix(*board, "/") + "/api/1.0/attention",
+		},
 		ReadinessTimeout: *readinessTimeout,
 		RollbackBudget:   *rollbackBudget,
 		PollInterval:     *poll,

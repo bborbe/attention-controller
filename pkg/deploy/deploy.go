@@ -22,6 +22,7 @@ package deploy
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"time"
 
@@ -221,6 +222,13 @@ func (e *outcomeError) Error() string {
 // Outcome returns the deploy's outcome.
 func (e *outcomeError) Outcome() Outcome {
 	return e.outcome
+}
+
+// newOutcomeError builds a classified error. Every failure the driver returns
+// after it has decided what happened goes through here, so the outcome and the
+// message can never disagree.
+func newOutcomeError(outcome Outcome, format string, args ...any) error {
+	return &outcomeError{outcome: outcome, message: fmt.Sprintf(format, args...)}
 }
 
 // OutcomeOf reads the Outcome an error carries, defaulting to RollbackFailed
