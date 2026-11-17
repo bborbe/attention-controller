@@ -9,7 +9,9 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bborbe/errors"
@@ -31,6 +33,32 @@ const EventPruneRetain = 30 * 24 * time.Hour
 // generous: the retention horizon is measured in days, so the only cost of a
 // later pass is that the log carries a few more aged lines for a while.
 const EventPruneInterval = time.Hour
+
+// eventPrunePassBudget bounds one prune pass — the second of the two non-arm
+// phases the Python watcher's PHASE_BUDGET_S bounded (the other is the
+// vault-index walk).
+//
+// ⚠️ The value is pinned by derivation, not chosen freely. The pass interval is
+// EventPruneInterval (1 h) and the budget must be at most 10 % of it, so at most
+// 5 min.
+//
+// ⚠️ It is NOT sized above a whole pass, and that is deliberate. Measured on the
+// live state directory 2026-11-17: 7,673 event logs / 165 MB, and one whole pass
+// costs 138 s. A budget 5x above that would be ~11 min, i.e. 19 % of the hourly
+// interval — so the two rules cannot both hold at this corpus size. The pass
+// therefore covers ONE SLICE and rotates (eventPruneSliceDivisor), which keeps
+// the 10 % ceiling and gives the ordered scan a guaranteed tail reach.
+const eventPrunePassBudget = time.Minute
+
+// eventPruneSliceDivisor is how many passes one full sweep of the state
+// directory takes: each pass prunes at most 1/divisor of the logs and resumes
+// from a cursor next time.
+//
+// ⚠️ A divisor rather than a count, because the corpus grows. At the measured
+// whole-pass cost of 138 s, one pass over a twelfth is ~11.5 s against a 60 s
+// budget — five times inside it, so an ordinary pass never cuts, and full
+// coverage arrives every 12 hourly passes (12 h) while retention is 30 days.
+const eventPruneSliceDivisor = 12
 
 // EventPruneJob keeps the attention event logs bounded by dropping lines older
 // than the retention horizon.
@@ -66,10 +94,11 @@ func NewEventPruneJob(
 	now libtime.CurrentDateTimeGetter,
 ) EventPruneJob {
 	return &eventPruneJob{
-		stateDir: stateDir,
-		retain:   retain,
-		interval: interval,
-		now:      now,
+		stateDir:   stateDir,
+		retain:     retain,
+		interval:   interval,
+		now:        now,
+		passBudget: eventPrunePassBudget,
 	}
 }
 
@@ -78,6 +107,21 @@ type eventPruneJob struct {
 	retain   time.Duration
 	interval time.Duration
 	now      libtime.CurrentDateTimeGetter
+	// passBudget bounds one pass. It defaults to eventPrunePassBudget and exists
+	// as a field so a spec can drive a cut deterministically instead of waiting
+	// out the real minute. A zero value falls back to the constant.
+	passBudget time.Duration
+	// rotateFrom is the log name the next pass resumes AFTER, so consecutive
+	// passes cover disjoint slices rather than rescanning the same prefix — the
+	// starvation a budget-cut ordered scan would otherwise produce. Guarded by
+	// rotateMu.
+	rotateFrom string
+	// rotateMu guards rotateFrom: the ticker and a manual PruneOnce can overlap.
+	rotateMu sync.Mutex
+	// sliceOverride forces the number of logs one pass covers. Zero in
+	// production; a spec sets it to observe rotation on a small corpus without
+	// writing minSliceSize logs.
+	sliceOverride int
 }
 
 // Run prunes until the context is cancelled.
@@ -106,24 +150,61 @@ func (j *eventPruneJob) Run(ctx context.Context) error {
 // would move its mtime for no reason, and a reader watching for "the log moved"
 // would see activity that is not there.
 func (j *eventPruneJob) PruneOnce(ctx context.Context) error {
+	_, err := j.prunePassUnderBudget(ctx)
+	return err
+}
+
+// prunePassUnderBudget runs one pass under the pass budget and reports whether
+// it completed.
+//
+// ⚠️ The budget is issued HERE, at the pass's own call site, and it is the only
+// thing that bounds a pass: the job runs on a ticker whose context is the
+// long-lived process context, which carries no deadline. A cut pass must not
+// claim a completed pass — see prunePass.
+//
+// It is the seam the budget spec drives: returning completion lets a spec assert
+// a cut pass never reached the completed-pass summary, which is the property a
+// bare `PruneOnce(ctx) error` cannot expose.
+func (j *eventPruneJob) prunePassUnderBudget(ctx context.Context) (bool, error) {
+	passCtx, cancel := context.WithTimeout(ctx, j.budget())
+	defer cancel()
+	completed, err := j.prunePass(passCtx)
+	if err != nil {
+		return false, err
+	}
+	if !completed {
+		// ⚠️ The cut is logged, not silent: a budget that fires every round would
+		// otherwise look like a pass that found nothing to drop.
+		glog.V(2).Infof("job=attention-watcher action=prune_cut budget=%s", j.budget())
+	}
+	return completed, nil
+}
+
+// prunePass runs one pass and reports whether it COMPLETED.
+//
+// ⚠️ A pass cut by the budget returns false and never reaches the
+// `action=prune files=… dropped=…` summary, so the log never says "done" about a
+// pass that stopped. The summary is the completed-pass claim, and it is emitted
+// only on the one path that reached the end of the file list.
+func (j *eventPruneJob) prunePass(ctx context.Context) (bool, error) {
 	if j.stateDir == "" {
 		// No state directory is the ordinary case for a deployment with no
 		// Claude Code beside it, not an error worth reporting.
-		return nil
+		return true, nil
 	}
 	if j.retain <= 0 {
-		return errors.Errorf(ctx, "event prune retention must be positive")
+		return false, errors.Errorf(ctx, "event prune retention must be positive")
 	}
 	paths, err := eventLogNames(ctx, j.stateDir)
 	if err != nil {
-		return errors.Wrap(ctx, err, "list event logs failed")
+		return false, errors.Wrap(ctx, err, "list event logs failed")
 	}
 	if len(paths) == 0 {
 		// An absent state directory, or one with no event logs, is the ordinary
 		// case for a deployment with no Claude Code beside it. Nothing to prune
 		// and nothing to open.
 		glog.V(3).Infof("job=attention-watcher action=prune files=0 dropped=0")
-		return nil
+		return true, nil
 	}
 	// Confined through an os.Root, the same way every other event-log read in
 	// this package is: the names come from the directory listing, but a
@@ -131,20 +212,46 @@ func (j *eventPruneJob) PruneOnce(ctx context.Context) error {
 	// it is what keeps the lint from having to trust the listing.
 	root, err := os.OpenRoot(j.stateDir)
 	if err != nil {
-		return errors.Wrap(ctx, err, "open attention state dir failed")
+		return false, errors.Wrap(ctx, err, "open attention state dir failed")
 	}
 	defer root.Close()
 	cutoff := j.now.Now().Time().Add(-j.retain)
+
+	// ⚠️ This pass covers ONE SLICE, starting where the last one stopped. A pass
+	// over the whole list is cut by the budget at this corpus size (7,673 logs
+	// cost 138 s against a 60 s budget), and a cut that always stops at the same
+	// point never reaches the tail — the starvation the Python `rotate_from`
+	// helper existed to prevent. The cursor is what makes a cut safe: the work
+	// already done is not redone, and the tail is reached on a later pass.
+	sort.Strings(paths)
+	ordered := rotateFrom(paths, j.cursor())
+	// ⚠️ The slice is sized from the WHOLE list, never from what is left after
+	// the cursor: sizing it from the remainder shrinks the last passes to one
+	// file each and the cycle never completes on schedule.
+	slice := sliceSize(len(paths), eventPruneSliceDivisor, minSliceSize)
+	if j.sliceOverride > 0 {
+		slice = j.sliceOverride
+	}
+
 	scanned, dropped := 0, 0
-	for _, name := range paths {
+	last := j.cursor()
+	for _, name := range ordered {
+		// ⚠️ The budget is checked BEFORE the slice bound: a file whose prune
+		// blocked until the deadline must end the pass, not let the slice bound
+		// end it as if the work had finished.
 		if err := ctx.Err(); err != nil {
-			return nil
+			j.setCursor(last)
+			return false, nil
+		}
+		if scanned >= slice {
+			break
 		}
 		scanned++
-		count, err := j.pruneFile(ctx, root, name, cutoff)
+		last = name
+		count, err := pruneOneFile(j, ctx, root, name, cutoff)
 		if err != nil {
 			// One unreadable file must not stop the pass: the remaining files
-			// are independent, and the failure is retried on the next tick.
+			// are independent, and the failure is retried on a later pass.
 			glog.Warningf(
 				"job=attention-watcher action=prune_file_error file=%s error=%v",
 				name,
@@ -154,14 +261,65 @@ func (j *eventPruneJob) PruneOnce(ctx context.Context) error {
 		}
 		dropped += count
 	}
+	// A pass whose slice reached the LAST log has finished the sweep, so the next
+	// one starts from the top; otherwise the cursor moves to where this one
+	// stopped. ⚠️ The test is the last name, not "the list was exhausted":
+	// rotateFrom wraps, so `ordered` is always the whole list and never runs out —
+	// the wrap point is what marks the end of a sweep.
+	if len(paths) == 0 || last == paths[len(paths)-1] {
+		j.setCursor("")
+	} else {
+		j.setCursor(last)
+	}
 	// Logged whether or not anything was dropped: a pass that fired only on a
-	// drop left no trace at all, which made "the prune ran" unprovable.
+	// drop left no trace at all, which made "the prune ran" unprovable. The
+	// cursor and total make the slice visible, so "one pass" is never mistaken
+	// for "the whole directory".
 	glog.Infof(
-		"job=attention-watcher action=prune files=%d dropped=%d",
+		"job=attention-watcher action=prune files=%d dropped=%d cursor=%q total=%d",
 		scanned,
 		dropped,
+		j.cursor(),
+		len(paths),
 	)
-	return nil
+	return true, nil
+}
+
+// cursor returns the log the next pass resumes after, empty meaning the top.
+func (j *eventPruneJob) cursor() string {
+	j.rotateMu.Lock()
+	defer j.rotateMu.Unlock()
+	return j.rotateFrom
+}
+
+// setCursor records where the next pass resumes from.
+func (j *eventPruneJob) setCursor(name string) {
+	j.rotateMu.Lock()
+	defer j.rotateMu.Unlock()
+	j.rotateFrom = name
+}
+
+// pruneOneFile prunes one event log. It is a package variable rather than a
+// direct method call so a spec can make one file's prune block until the pass
+// budget fires, which is how the in-loop cut is exercised deterministically
+// instead of raced against a real file read. Same seam pattern as taskFileReader.
+var pruneOneFile = func(
+	j *eventPruneJob,
+	ctx context.Context,
+	root *os.Root,
+	name string,
+	cutoff time.Time,
+) (int, error) {
+	return j.pruneFile(ctx, root, name, cutoff)
+}
+
+// budget returns the pass budget, defaulting to the constant when the field is
+// unset so every construction path is bounded.
+func (j *eventPruneJob) budget() time.Duration {
+	if j.passBudget > 0 {
+		return j.passBudget
+	}
+	return eventPrunePassBudget
 }
 
 // pruneFile drops the aged lines of one event log and returns how many went.
