@@ -175,6 +175,20 @@ func (f *unforwardedFixture) writePosted(session string, closer string) {
 	Expect(os.WriteFile(path, data, 0o600)).To(Succeed())
 }
 
+// writeForwardedLedger appends one delivery mark, the way the ingest does after a
+// successful push. `at` is the row's own ts, which is what the reader bounds on.
+func (f *unforwardedFixture) writeForwardedLedger(item string, at int64) {
+	record := map[string]any{"item": item, "ts": float64(at)}
+	data, err := json.Marshal(record)
+	Expect(err).To(BeNil())
+	path := filepath.Join(f.stateDir, "forwarded.jsonl")
+	fh, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	Expect(err).To(BeNil())
+	defer fh.Close()
+	_, err = fh.Write(append(data, '\n'))
+	Expect(err).To(BeNil())
+}
+
 // unforwardedLogRecorder captures the job's cycle lines.
 type unforwardedLogRecorder struct {
 	mu    sync.Mutex
@@ -267,7 +281,7 @@ var _ = Describe("UnforwardedClosers", func() {
 	})
 
 	It(
-		"UnforwardedClosers exempts an idle row suppressed within one second before the open",
+		"UnforwardedClosers exempts an idle row suppressed within the window before the open",
 		func() {
 			at := unforwardedNow - 600
 			transcript := fixture.writeTranscript(
@@ -282,6 +296,54 @@ var _ = Describe("UnforwardedClosers", func() {
 
 			Expect(result.Outcome()).To(Equal(pkg.UnforwardedOutcomeNone))
 			Expect(result.Findings).To(BeEmpty())
+		},
+	)
+
+	// ⚠️ The 5 s case. The hook writes the suppression and then opens the idle row
+	// in the same turn, and on a loaded host that gap measured 5.006 s — three of
+	// the 2026-11-17 findings. The one-second window this replaced read all three
+	// as losses. The exemption must cover the real write-to-open gap, not an
+	// idealised sub-second one.
+	It(
+		"UnforwardedClosers exempts an idle row suppressed 5.006 s before the open",
+		func() {
+			at := unforwardedNow - 600
+			transcript := fixture.writeTranscript(
+				"t3b",
+				"Done.\n🔵 READY · nothing running · you decide\n👤 You: pick — 1. A · 2. B",
+				at-1,
+			)
+			fixture.openRow("s3b", "cccccccd", "idle", transcript, at, "Stop")
+			fixture.writeSuppressed("s3b", float64(at)-5.006)
+
+			result := fixture.scanner().Scan(context.Background())
+
+			Expect(result.Outcome()).To(Equal(pkg.UnforwardedOutcomeNone))
+			Expect(result.Findings).To(BeEmpty())
+		},
+	)
+
+	// The paired control for the widened window: a suppression far enough before
+	// the open that it cannot be the same turn's write must NOT exempt the row.
+	// Without this, widening to 6 s could be widened to anything. 30 s is the
+	// bound the criterion names — comfortably outside the 5.006 s measured gap,
+	// still inside a plausible later turn.
+	It(
+		"UnforwardedClosers still reports an idle row whose suppression is well before the window",
+		func() {
+			at := unforwardedNow - 600
+			transcript := fixture.writeTranscript(
+				"t3c",
+				"Done.\n🔵 READY · nothing running · you decide\n👤 You: pick — 1. A · 2. B",
+				at-1,
+			)
+			fixture.openRow("s3c", "ccccccce", "idle", transcript, at, "Stop")
+			fixture.writeSuppressed("s3c", float64(at)-30)
+
+			result := fixture.scanner().Scan(context.Background())
+
+			Expect(result.Outcome()).To(Equal(pkg.UnforwardedOutcomeFound))
+			Expect(result.Findings).To(HaveLen(1))
 		},
 	)
 
@@ -371,6 +433,63 @@ var _ = Describe("UnforwardedOutcome", func() {
 		fixture := newUnforwardedFixture()
 		fixture.openRow("s7", "gggggggg", "question", "", unforwardedNow-600, "Stop")
 		fixture.forward("s7", "gggggggg", "question")
+
+		result := fixture.scanner().Scan(context.Background())
+
+		Expect(result.Err).To(BeNil())
+		Expect(result.Outcome()).To(Equal(pkg.UnforwardedOutcomeNone))
+		Expect(result.Findings).To(BeEmpty())
+	})
+
+	// ⚠️ The delivered-then-pruned case. The store prunes an open item at
+	// `expires_at`, so a gate that DID reach the board disappears from the store
+	// and would otherwise read as lost — 25 of the 26 question/permission findings
+	// on 2026-11-17. The ingest's delivery ledger is what proves it landed.
+	It("reports no finding for a row whose delivery the ledger records after the item was pruned", func() {
+		fixture := newUnforwardedFixture()
+		fixture.openRow("s7b", "ggggggge", "question", "", unforwardedNow-600, "Stop")
+		// No store item: the prune already removed it. Only the ledger knows.
+		fixture.writeForwardedLedger("ggggggge", unforwardedNow-600)
+
+		result := fixture.scanner().Scan(context.Background())
+
+		Expect(result.Err).To(BeNil())
+		Expect(result.Outcome()).To(Equal(pkg.UnforwardedOutcomeNone))
+		Expect(result.Findings).To(BeEmpty())
+	})
+
+	// The paired control for the ledger: a mark for a DIFFERENT item must not
+	// excuse this row. Without it, a reader that returned every marked id
+	// regardless of the row would pass the spec above.
+	It("still reports a row the ledger does not mark", func() {
+		fixture := newUnforwardedFixture()
+		fixture.openRow("s7c", "gggggggf", "question", "", unforwardedNow-600, "Stop")
+		fixture.writeForwardedLedger("ffffffff", unforwardedNow-600)
+
+		result := fixture.scanner().Scan(context.Background())
+
+		Expect(result.Err).To(BeNil())
+		Expect(result.Findings).To(HaveLen(1))
+		Expect(result.Findings[0].Item).To(Equal("gggggggf"))
+	})
+
+	// ⚠️ The arm's own recovery must stop the row counting as lost. It re-presents
+	// a lost gate as an `unforwarded:<item>` card; once that card is on the board
+	// the gate HAS been delivered, and counting it again would make the check
+	// report its own recovery as a loss forever.
+	It("reports no finding for a row the job already re-presented as a card", func() {
+		fixture := newUnforwardedFixture()
+		fixture.openRow("s7d", "gggggggg", "question", "", unforwardedNow-600, "Stop")
+		_, err := fixture.store.Push(context.Background(), pkg.PushRequest{
+			ProducerID:      pkg.UnforwardedClosersProducerID,
+			ProducerKind:    pkg.CronProducerKind,
+			LivenessRef:     pkg.LivenessRef("owner:attention-unforwarded-closers"),
+			DedupKey:        pkg.DedupKey("unforwarded:gggggggg"),
+			InterruptClass:  "pick",
+			Payload:         pkg.Payload("ask for gggggggg"),
+			AnswerMechanism: pkg.MessageAnswerMechanism,
+		})
+		Expect(err).To(BeNil())
 
 		result := fixture.scanner().Scan(context.Background())
 
