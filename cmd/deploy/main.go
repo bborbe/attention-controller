@@ -44,6 +44,14 @@ func main() {
 	// told. The driver's own cancel path then stops polling and returns.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// ⚠️ A SECOND interrupt must kill the process. NotifyContext keeps swallowing
+	// the signal for as long as its handler is installed, so restoring the
+	// default as soon as the first one lands is what leaves the operator an
+	// escape hatch when the rollback is the thing that is stuck.
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
 	outcome, err := run(ctx, os.Args[1:])
 	if err != nil {
 		// ⚠️ Exactly one line: for a dark board this line plus the exit code is
@@ -122,11 +130,10 @@ func run(ctx context.Context, args []string) (deploy.Outcome, error) {
 		Sleep:            time.Sleep,
 		Log:              os.Stdout,
 	}
-	outcome, err := driver.Run(ctx)
-	if err != nil {
-		return deploy.OutcomeOf(err), err
-	}
-	return outcome, nil
+	// ⚠️ The outcome comes from Run's own return value, never from classifying
+	// the error: a plain wrapped error carries no class, so deriving it would
+	// collapse every abort back to "board dark".
+	return driver.Run(ctx)
 }
 
 // newProber builds the board prober for a base URL.

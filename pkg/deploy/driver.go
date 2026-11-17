@@ -19,6 +19,12 @@ import (
 // real bound; this only stops a frozen or injected clock from spinning forever.
 const maxPolls = 1000
 
+// stopProbeTimeout bounds the one board probe taken after a failed stop. It is
+// short and independent of the caller's context on purpose: the stop failed
+// precisely because that context was cancelled, and the question — is anything
+// still serving? — must still get an answer.
+const stopProbeTimeout = 10 * time.Second
+
 // Run gates the deploy and returns its outcome.
 //
 // The order is load-bearing. The identity of the INSTALLED binary is read
@@ -33,8 +39,8 @@ func (d *Driver) Run(ctx context.Context) (Outcome, error) {
 	}
 	if !installed.Known() {
 		d.logf("deploy aborted %s binary=%s", UnstampedCommit, d.Binary.Path())
-		return Aborted, newOutcomeError(
-			Aborted,
+		return Aborted, errors.Errorf(
+			ctx,
 			"deploy aborted: %s; binary=%s cannot be proven to serve",
 			UnstampedCommit,
 			d.Binary.Path(),
@@ -87,11 +93,11 @@ func (d *Driver) Run(ctx context.Context) (Outcome, error) {
 // rollback-failure path below claims no card at all.
 func (d *Driver) rollback(ctx context.Context, failure Failure, t0 time.Time) (Outcome, error) {
 	if !d.Binary.HasPrev() {
-		return d.dark(failure, buildidentity.Identity{}, PrevUnknown)
+		return d.dark(ctx, failure, buildidentity.Identity{}, PrevUnknown)
 	}
 	prev, err := d.Binary.PrevIdentity(ctx)
 	if err != nil {
-		return d.dark(failure, buildidentity.Identity{}, "prev unreadable: "+err.Error())
+		return d.dark(ctx, failure, buildidentity.Identity{}, "prev unreadable: "+err.Error())
 	}
 	// ⚠️ A retained copy with no VCS stamp cannot say which build it is, and an
 	// empty expected commit makes the prober skip the footer check entirely —
@@ -99,21 +105,21 @@ func (d *Driver) rollback(ctx context.Context, failure Failure, t0 time.Time) (O
 	// stale process from the FAILED build could still be the one answering.
 	// Refusing here is the only answer that cannot be a false success.
 	if !prev.Known() {
-		return d.dark(failure, buildidentity.Identity{}, "prev has no build identity")
+		return d.dark(ctx, failure, buildidentity.Identity{}, "prev has no build identity")
 	}
 	failure.Prev = prev
 	if err := d.Binary.RestorePrev(ctx); err != nil {
-		return d.dark(failure, prev, "restore failed: "+err.Error())
+		return d.dark(ctx, failure, prev, "restore failed: "+err.Error())
 	}
 	// The rollback's own deadline is absolute: whatever the failed start spent
 	// of the budget is already gone, so readiness plus rollback can never sum
 	// past the two minutes however long the first phase ran.
 	probe, startErr := d.startAndWait(ctx, t0.Add(d.ReadinessTimeout+d.RollbackBudget), prev.Commit)
 	if startErr != nil {
-		return d.dark(failure, prev, "restart for rollback failed: "+startErr.Error())
+		return d.dark(ctx, failure, prev, "restart for rollback failed: "+startErr.Error())
 	}
 	if !probe.Ready {
-		return d.dark(failure, prev, "prev did not serve: "+probe.Detail)
+		return d.dark(ctx, failure, prev, "prev did not serve: "+probe.Detail)
 	}
 	tReady := d.Now()
 	d.logf(
@@ -125,16 +131,16 @@ func (d *Driver) rollback(ctx context.Context, failure Failure, t0 time.Time) (O
 		// The board serves but the operator was not told. That is a failure of
 		// the deploy's own report, and never a reason to claim the board is
 		// dark: the outcome stays RolledBack.
-		return RolledBack, newOutcomeError(
-			RolledBack,
+		return RolledBack, errors.Errorf(
+			ctx,
 			"deploy failed: commit %s did not serve (%s); rolled back to %s "+
 				"but the card could not be posted: %v",
 			failure.Failed.Commit, failure.Class, prev.Commit, err,
 		)
 	}
 	d.logf("deploy card posted dedup_key=%s", card.DedupKey)
-	return RolledBack, newOutcomeError(
-		RolledBack,
+	return RolledBack, errors.Errorf(
+		ctx,
 		"deploy failed: commit %s did not serve (%s); rolled back to %s, board serving",
 		failure.Failed.Commit, failure.Class, prev.Commit,
 	)
@@ -155,6 +161,26 @@ func (d *Driver) stopFailed(
 		"deploy aborted t_aborted=%s class=%s commit=%s reason=%q",
 		formatTime(d.Now()), StopFailed, installed.Commit, stopErr.Error(),
 	)
+	// ⚠️ Probe before claiming the board is untouched. A cancellation inside the
+	// bootout wait lands AFTER launchd may already have let the job go, so "the
+	// stop did not return cleanly" does not imply "the process still serves".
+	// Asking the board — with no expected commit, since whatever runs is the OLD
+	// build — is the only way to tell a no-op abort from a dark board.
+	probeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), stopProbeTimeout)
+	defer cancel()
+	if !d.Prober.Probe(probeCtx, "").Ready {
+		return d.dark(
+			ctx,
+			Failure{
+				Failed:     installed,
+				Class:      StopFailed,
+				Mode:       d.Mode,
+				BinaryPath: d.Binary.Path(),
+			},
+			buildidentity.Identity{},
+			"the job was stopped but the board does not answer",
+		)
+	}
 	failure := Failure{
 		Failed:     installed,
 		Prev:       installed,
@@ -165,8 +191,8 @@ func (d *Driver) stopFailed(
 	if err := d.Board.Post(ctx, failure.Card()); err != nil {
 		d.logf("deploy card failed error=%q", err.Error())
 	}
-	return Aborted, newOutcomeError(
-		Aborted,
+	return Aborted, errors.Errorf(
+		ctx,
 		"deploy aborted: launchctl did not release the job (%v); commit %s is on disk "+
 			"but the running build is untouched",
 		stopErr, installed.Commit,
@@ -179,6 +205,7 @@ func (d *Driver) stopFailed(
 // store exists to post a card to, so claiming one would be a lie the operator
 // could not check.
 func (d *Driver) dark(
+	ctx context.Context,
 	failure Failure,
 	prev buildidentity.Identity,
 	reason string,
@@ -188,8 +215,8 @@ func (d *Driver) dark(
 		formatTime(d.Now()), failure.Failed.Commit, prev.Commit, reason,
 	)
 	if prev.Known() {
-		return RollbackFailed, newOutcomeError(
-			RollbackFailed,
+		return RollbackFailed, errors.Errorf(
+			ctx,
 			"deploy failed: commit %s did not serve (%s); rollback to %s also failed (%s); "+
 				"board is dark",
 			failure.Failed.Commit,
@@ -198,15 +225,13 @@ func (d *Driver) dark(
 			reason,
 		)
 	}
-	return RollbackFailed, newOutcomeError(
-		RollbackFailed,
+	return RollbackFailed, errors.Errorf(
+		ctx,
 		"deploy failed: commit %s did not serve (%s); %s; board is dark",
 		failure.Failed.Commit, failure.Class, reason,
 	)
 }
 
-// startAndWait restarts the job and polls until the board serves the expected
-// commit or the deadline passes.
 // startAndWait restarts the job and polls until the board serves the expected
 // commit or the deadline passes.
 //
