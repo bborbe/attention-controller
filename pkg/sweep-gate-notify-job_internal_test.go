@@ -142,12 +142,18 @@ func (n *stubSweepGateNotifier) Publish(_ context.Context, message string) error
 // stubSweepGatePoster records every card it is handed.
 type stubSweepGatePoster struct {
 	cards    []SweepGateCard
+	owners   []string
 	failures []error
 }
 
-func (p *stubSweepGatePoster) Post(_ context.Context, card SweepGateCard) (string, error) {
+func (p *stubSweepGatePoster) Post(
+	_ context.Context,
+	card SweepGateCard,
+	ownerSessionID string,
+) (string, error) {
 	index := len(p.cards)
 	p.cards = append(p.cards, card)
+	p.owners = append(p.owners, ownerSessionID)
 	if index < len(p.failures) {
 		return "", p.failures[index]
 	}
@@ -731,6 +737,65 @@ var _ = Describe("sweep gate notify job", func() {
 		Eventually(func() int { return int(gate.calls.Load()) }).Should(BeNumerically(">", 0))
 		cancel()
 		Expect(awaitJobDone(done)).To(BeNil())
+	})
+})
+
+var _ = Describe("sweepGateOwnerSession", func() {
+	var vault string
+
+	BeforeEach(func() {
+		vault = GinkgoT().TempDir()
+	})
+
+	writePage := func(dir, name, frontmatter string) {
+		Expect(os.MkdirAll(filepath.Join(vault, dir), 0o750)).To(Succeed())
+		Expect(os.WriteFile(
+			filepath.Join(vault, dir, name+".md"),
+			[]byte("---\n"+frontmatter+"---\n\nbody\n"),
+			0o600,
+		)).To(Succeed())
+	}
+
+	It("returns the goal page's claude_session_id", func() {
+		writePage(goalDirName, "Owned Goal", "claude_session_id: aaaa1111\n")
+		Expect(sweepGateOwnerSession(SweepGateSubject{
+			Name: "Owned Goal", Vault: vault, Branch: "goal",
+		})).To(Equal("aaaa1111"))
+	})
+
+	It("strips surrounding quotes from the value", func() {
+		writePage(goalDirName, "Quoted Goal", "claude_session_id: \"bbbb2222\"\n")
+		Expect(sweepGateOwnerSession(SweepGateSubject{
+			Name: "Quoted Goal", Vault: vault,
+		})).To(Equal("bbbb2222"))
+	})
+
+	It("resolves a topic page too", func() {
+		writePage(topicDirName, "Some Topic", "claude_session_id: cccc3333\n")
+		Expect(sweepGateOwnerSession(SweepGateSubject{
+			Name: "Some Topic", Vault: vault, Branch: "topic",
+		})).To(Equal("cccc3333"))
+	})
+
+	It("prefers the goal page when both folders hold the title", func() {
+		writePage(goalDirName, "Shared", "claude_session_id: goal1111\n")
+		writePage(topicDirName, "Shared", "claude_session_id: topic2222\n")
+		Expect(sweepGateOwnerSession(SweepGateSubject{
+			Name: "Shared", Vault: vault,
+		})).To(Equal("goal1111"))
+	})
+
+	It("returns empty for a page carrying no claude_session_id", func() {
+		writePage(goalDirName, "Unmanaged Goal", "status: in_progress\n")
+		Expect(sweepGateOwnerSession(SweepGateSubject{
+			Name: "Unmanaged Goal", Vault: vault,
+		})).To(BeEmpty())
+	})
+
+	It("returns empty when no page exists", func() {
+		Expect(sweepGateOwnerSession(SweepGateSubject{
+			Name: "Missing", Vault: vault,
+		})).To(BeEmpty())
 	})
 })
 
