@@ -549,19 +549,23 @@ func (a *application) createWhoNeedsMeReader(
 ) pkg.WhoNeedsMeReader {
 	stateDir := a.AttentionStateDir
 	if stateDir == "" {
-		if resolved, err := defaultAttentionStateDir(ctx); err == nil {
-			stateDir = resolved
+		resolved, err := defaultAttentionStateDir(ctx)
+		if err != nil {
+			glog.Warningf("who-needs-me: resolve attention state dir failed: %v", err)
 		}
+		stateDir = resolved
 	}
 	sessionsDir := a.SessionsDir
 	if sessionsDir == "" {
-		if resolved, err := defaultSessionsDir(ctx); err == nil {
-			sessionsDir = resolved
+		resolved, err := defaultSessionsDir(ctx)
+		if err != nil {
+			glog.Warningf("who-needs-me: resolve sessions dir failed: %v", err)
 		}
+		sessionsDir = resolved
 	}
-	transcriptsRoot := ""
-	if resolved, err := defaultTranscriptRoot(ctx); err == nil {
-		transcriptsRoot = resolved
+	transcriptsRoot, err := defaultTranscriptRoot(ctx)
+	if err != nil {
+		glog.Warningf("who-needs-me: resolve transcript root failed: %v", err)
 	}
 	return pkg.NewWhoNeedsMeReader(
 		store,

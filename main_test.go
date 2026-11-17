@@ -656,7 +656,9 @@ var _ = Describe("sessionLivenessChecker", func() {
 var _ = Describe("boltOpenOptions", func() {
 	It("bounds the lock wait so a contended open fails instead of hanging forever", func() {
 		opts := *bolt.DefaultOptions
-		Expect(opts.Timeout).To(Equal(time.Duration(0)), "precondition: bbolt waits forever by default")
+		Expect(
+			opts.Timeout,
+		).To(Equal(time.Duration(0)), "precondition: bbolt waits forever by default")
 		boltOpenOptions()(&opts)
 		Expect(opts.Timeout).To(Equal(boltOpenLockTimeout))
 		Expect(opts.Timeout).To(BeNumerically(">", 0))

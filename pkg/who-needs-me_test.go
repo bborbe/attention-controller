@@ -6,6 +6,7 @@ package pkg_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	stdtime "time"
@@ -52,17 +53,15 @@ var _ = Describe("WhoNeedsMeReader", func() {
 		}
 	}
 
-	It("joins item fields to provenance, with a real resolver answer (AC1, AC2)", func() {
+	It("joins item fields to a resolver answer of generated values (AC1, AC2)", func() {
+		// Generated, not constant: a hardcoded literal in the reader cannot match.
+		name := fmt.Sprintf("worker-%d", stdtime.Now().UnixNano())
+		task := fmt.Sprintf("task-%d", stdtime.Now().UnixNano())
 		store := &mocks.AttentionStore{}
 		store.ReadReturns(pkg.Items{permissionItem()}, nil)
 		provenance := &mocks.ProvenanceResolver{}
 		provenance.ResolveReturns(pkg.Provenances{
-			"store-1": {
-				Pane:        "3",
-				Routable:    true,
-				SessionName: "worker-7",
-				TaskName:    "Fix the board",
-			},
+			"store-1": {Pane: "3", Routable: true, SessionName: name, TaskName: task},
 		})
 		panes := &mocks.PaneLister{}
 		panes.ListReturns(map[int]pkg.Pane{}, nil)
@@ -77,9 +76,9 @@ var _ = Describe("WhoNeedsMeReader", func() {
 		Expect(row.DedupKey).To(Equal("dedup-1"))
 		Expect(row.SessionID).To(Equal("session-abc"))
 		Expect(row.Kind).To(Equal("permission"))
-		Expect(row.SessionName).To(Equal("worker-7"))
+		Expect(row.SessionName).To(Equal(name))
+		Expect(row.Task).To(Equal(task))
 		Expect(row.Pane).To(Equal("3"))
-		Expect(row.Task).To(Equal("Fix the board"))
 		Expect(row.AgeSeconds).To(BeNumerically(">=", 89))
 		// AC7: the reader reaches the store through Read only.
 		Expect(store.ReadCallCount()).To(Equal(1))
@@ -140,14 +139,19 @@ var _ = Describe("WhoNeedsMeReader", func() {
 		Expect(feed.Sessions).To(BeEmpty())
 	})
 
-	It("falls back to the event log when the store is down (AC4)", func() {
+	It("falls back to the event log, keeping a closed-then-reopened key (AC4)", func() {
 		store := &mocks.AttentionStore{}
 		store.ReadReturns(nil, errors.New(ctx, "store down"))
 		prov := &mocks.ProvenanceResolver{}
 		panes := &mocks.PaneLister{}
+		panes.ListReturns(map[int]pkg.Pane{}, nil)
 
 		stateDir := GinkgoT().TempDir()
+		// `a` is opened, closed, then RE-opened — its last record is open, so it
+		// must stay; `b` is open on a second session; `c` is opened then closed.
 		lines := `{"type":"open","item_id":"a","session_id":"s1","kind":"permission","detail":"Approve?","ts":1000000000}
+{"type":"close","item_id":"a"}
+{"type":"open","item_id":"a","session_id":"s1","kind":"permission","detail":"Approve again?","ts":1000000500}
 {"type":"open","item_id":"b","session_id":"s2","kind":"question","detail":"Which?","ts":1000000100}
 {"type":"open","item_id":"c","session_id":"s2","kind":"question","detail":"Closed?","ts":1000000200}
 {"type":"close","item_id":"c"}
@@ -159,11 +163,19 @@ var _ = Describe("WhoNeedsMeReader", func() {
 		Expect(err).To(BeNil())
 		Expect(feed.Source).To(Equal("event-log"))
 		Expect(feed.Sources.Store).To(Equal("failed"))
-		Expect(feed.Items).To(HaveLen(2))
+		Expect(feed.Items).To(HaveLen(2)) // a (reopened) and b; c stays closed
+		ids := map[string]string{}
 		for _, row := range feed.Items {
 			Expect(row.Replayed).To(BeTrue())
 			Expect(row.ItemID).To(Equal(row.DedupKey))
 			Expect(row.Source).To(Equal("event-log"))
+			ids[row.ItemID] = row.Text
 		}
+		Expect(ids).To(HaveKey("a"))
+		Expect(ids["a"]).To(Equal("Approve again?")) // the reopened record wins
+		Expect(ids).To(HaveKey("b"))
+		// AC1 on the fallback path: the arrays are present (non-nil), not null.
+		Expect(feed.Sessions).ToNot(BeNil())
+		Expect(feed.Panes).ToNot(BeNil())
 	})
 })

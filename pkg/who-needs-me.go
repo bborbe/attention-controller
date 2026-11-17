@@ -135,6 +135,8 @@ type WhoNeedsMeFeed struct {
 	Panes []WhoNeedsMePane `json:"panes"`
 }
 
+//counterfeiter:generate -o ../mocks/who-needs-me-reader.go --fake-name WhoNeedsMeReader . WhoNeedsMeReader
+
 // WhoNeedsMeReader answers the who-needs-me data feed.
 type WhoNeedsMeReader interface {
 	// Read returns the joined feed. It never fails on a store outage: it falls
@@ -371,11 +373,21 @@ func (r *whoNeedsMeReader) fallback(ctx context.Context) (WhoNeedsMeFeed, error)
 		rows = append(rows, row)
 	}
 	sort.SliceStable(rows, func(i, j int) bool { return rows[i].CreatedAt < rows[j].CreatedAt })
+	// ⚠️ The host snapshot is still readable when only the store is down, so the
+	// fallback populates sessions/panes and their source status too — AC1's
+	// arrays and per-source block must hold on this path, not only the store path.
+	sessions, panes, hostSources := r.hostSnapshot(ctx, now)
 	return WhoNeedsMeFeed{
-		Source:      "event-log",
-		Sources:     WhoNeedsMeSources{Store: sourceFailed},
+		Source: "event-log",
+		Sources: WhoNeedsMeSources{
+			Store:    sourceFailed,
+			Registry: hostSources.Registry,
+			Panes:    hostSources.Panes,
+		},
 		GeneratedAt: now.Format(whoNeedsMeTimeFormat),
 		Items:       rows,
+		Sessions:    sessions,
+		Panes:       panes,
 	}, nil
 }
 
@@ -407,25 +419,23 @@ func foldEventFile(path string) []EventIngestRecord {
 	if err != nil {
 		return nil
 	}
-	opened := map[string]EventIngestRecord{}
-	closed := map[string]bool{}
+	// ⚠️ The LAST record per item id decides: a key opened, closed, then
+	// RE-opened has its last record Open and must stay open. Tracking separate
+	// opened/closed sets dropped it, which the spec's "last record per dedup key
+	// has Open: true" rule forbids.
+	last := map[string]EventIngestRecord{}
 	for _, raw := range strings.Split(string(content), "\n") {
 		record, ok := decodeEventRecord([]byte(raw))
 		if !ok {
 			continue
 		}
-		if record.Open {
-			opened[record.ItemID] = record
-		} else {
-			closed[record.ItemID] = true
-		}
+		last[record.ItemID] = record
 	}
-	open := make([]EventIngestRecord, 0, len(opened))
-	for itemID, record := range opened {
-		if closed[itemID] {
-			continue
+	open := make([]EventIngestRecord, 0, len(last))
+	for _, record := range last {
+		if record.Open {
+			open = append(open, record)
 		}
-		open = append(open, record)
 	}
 	return open
 }

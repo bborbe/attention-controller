@@ -10,7 +10,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 
 ## Unreleased
 
-- add `GET /api/1.0/who-needs-me`: who-needs-me's answer as joined JSON data (open items + provenance + session registry + pane listing), with a store-down event-log fallback and a per-source status block, so managers read it here instead of spawning the per-tick Python script
+- feat: add `GET /api/1.0/who-needs-me`: who-needs-me's answer as joined JSON data (open items + provenance + session registry + pane listing), with a store-down event-log fallback and a per-source status block, so managers read it here instead of spawning the per-tick Python script
 
 ## v0.92.6
 
