@@ -107,6 +107,37 @@ type Task struct {
 // the exception rather than the mechanism.
 const taskIndexBackstopWindow = libtime.Duration(5 * time.Minute)
 
+// taskIndexReconcileBudget bounds one reconcile pass — the Go counterpart of the
+// Python watcher's PHASE_BUDGET_S, which bounded exactly the two phases that are
+// not delivery arms: this vault-index walk and the event-prune pass.
+//
+// ⚠️ The value is pinned by derivation, not chosen freely. The walk interval is
+// taskIndexBackstopWindow (5 min), and the budget must be at most 10 % of it, so
+// at most 30 s.
+//
+// ⚠️ It is NOT sized above a whole walk, and that is deliberate rather than a
+// gap. Measured on the live vault 2026-11-17: `25 Tasks/` holds 12,191 `.md`
+// files and one whole walk costs 25.7 s first / 27.2 s warm. A budget that sits
+// 5x above a whole walk would have to be ~135 s, i.e. 45 % of the 5-minute
+// window — so the two rules ("at most 10 % of the interval" and "5x above the
+// ordinary cost") cannot both hold once the corpus is this size. The pass
+// therefore covers ONE SLICE and rotates (taskIndexReconcileSliceDivisor), which
+// keeps the 10 % ceiling AND gives the ordered scan a guaranteed tail reach — the
+// property the Python `rotate_from` helper existed to provide. Sizing the budget
+// to a whole walk would be a permanent partial scan that looks bounded.
+const taskIndexReconcileBudget = 30 * time.Second
+
+// taskIndexReconcileSliceDivisor is how many passes one full sweep of
+// `25 Tasks/` takes: each pass re-stamps at most 1/divisor of the corpus and
+// carries the rest forward from the serving index.
+//
+// ⚠️ A divisor rather than a count, because the corpus grows. At the measured
+// whole-walk cost of 25.7 s, one pass over a twelfth is ~2.1 s against a 30 s
+// budget — an order of magnitude inside it, so an ordinary pass never cuts, and
+// full coverage arrives every 12 backstop windows (60 min) while the watcher
+// keeps the index current between sweeps.
+const taskIndexReconcileSliceDivisor = 12
+
 // NewTaskIndex builds the session -> task index from vaultDir's task files.
 //
 // It fails soft in every direction: an empty vaultDir, a vault that does not
@@ -133,6 +164,7 @@ func NewTaskIndex(
 		ctx:                   ctx,
 		vaultDir:              vaultDir,
 		currentDateTimeGetter: currentDateTimeGetter,
+		reconcileBudget:       taskIndexReconcileBudget,
 	}
 	// The boot build is installed unconditionally, even when ctx is already
 	// cancelled or the task walk read nothing: there is no previous index to
@@ -156,6 +188,12 @@ type taskIndex struct {
 	// vaultDir is the vault the index reads. It is fixed for the process's life;
 	// a rebuild re-reads the same directory rather than being re-pointed.
 	vaultDir string
+	// reconcileBudget bounds one reconcile walk. It defaults to
+	// taskIndexReconcileBudget and exists as a field so a spec can drive a cut
+	// deterministically instead of waiting out the real thirty seconds. A zero
+	// value falls back to the constant, so an index built by any path that does
+	// not set it is still bounded.
+	reconcileBudget time.Duration
 	// currentDateTimeGetter stamps each published index and measures the refresh
 	// window. Injected, never time.Now(), so the bound is testable.
 	currentDateTimeGetter libtime.CurrentDateTimeGetter
@@ -216,6 +254,17 @@ type taskIndex struct {
 	// topics is the set of titles the vault holds as topic pages under
 	// `23 Topics/`. A nil or empty set holds no topic.
 	topics map[string]struct{}
+	// rotateFrom is the file name the next reconcile resumes AFTER, so a pass
+	// that covers one slice of the corpus continues where the last one stopped
+	// instead of rescanning the same prefix forever. Guarded by rotateMu.
+	rotateFrom string
+	// rotateMu guards rotateFrom: a reconcile is driven by the watcher's
+	// goroutine and by a Lookup-triggered backstop, and the two can overlap.
+	rotateMu sync.Mutex
+	// sliceOverride forces the number of entries one pass covers. It is zero in
+	// production and exists so a spec can observe rotation on a small corpus
+	// without writing 1,536 task files to get past minSliceSize.
+	sliceOverride int
 }
 
 // taskEntry is one indexed task file: the task itself plus the only other
@@ -513,10 +562,31 @@ func (t *taskIndex) reconcileAndInstall(ctx context.Context, token chan struct{}
 	// never be replaced.
 	defer t.finishRefresh(token)
 
-	fresh, tasksRead := t.reconcile(ctx)
-	if ctx.Err() != nil {
+	// ⚠️ The budget is issued HERE, at the walk's own call site, and it is the
+	// only thing that bounds a reconcile: the caller's context is routinely a
+	// long-lived process context with no deadline. A walk cut by the budget must
+	// keep the previous index — a partial walk that installed itself would drop
+	// every task file it had not yet reached.
+	walkCtx, cancel := context.WithTimeout(ctx, t.walkBudget())
+	fresh, tasksRead := t.reconcile(walkCtx)
+	parentCancelled := ctx.Err() != nil
+	budgetExhausted := walkCtx.Err() != nil && !parentCancelled
+	cancel()
+	if parentCancelled {
 		glog.V(3).Infof("task index reconcile cancelled, keeping previous index")
 		return
+	}
+	if budgetExhausted {
+		// ⚠️ A budget-exhausted pass STILL installs. It is not a partial walk:
+		// reconcile re-stamps one slice and carries every file it did not reach
+		// forward from the serving index, so what it returns is complete. Refusing
+		// to install here is what made the backstop permanently dead at this
+		// corpus size — every pass cut, nothing installed, the safety net never
+		// converged.
+		glog.V(2).Infof(
+			"task index reconcile budget %s exhausted, installing the refreshed slice",
+			t.walkBudget(),
+		)
 	}
 	if !tasksRead {
 		glog.V(2).Infof(
@@ -531,6 +601,72 @@ func (t *taskIndex) reconcileAndInstall(ctx context.Context, token chan struct{}
 		)
 	}
 }
+
+// walkBudget returns the reconcile walk budget, defaulting to the constant when
+// the field is unset so every construction path is bounded.
+func (t *taskIndex) walkBudget() time.Duration {
+	if t.reconcileBudget > 0 {
+		return t.reconcileBudget
+	}
+	return taskIndexReconcileBudget
+}
+
+// cursor returns the name the next pass resumes after, empty meaning the top of
+// the list.
+func (t *taskIndex) cursor() string {
+	t.rotateMu.Lock()
+	defer t.rotateMu.Unlock()
+	return t.rotateFrom
+}
+
+// setCursor records where the next pass resumes from.
+func (t *taskIndex) setCursor(name string) {
+	t.rotateMu.Lock()
+	defer t.rotateMu.Unlock()
+	t.rotateFrom = name
+}
+
+// rotateFrom orders names to begin immediately AFTER after, wrapping once, so
+// consecutive passes cover disjoint slices instead of rescanning the same
+// prefix. It assumes names is sorted, which os.ReadDir guarantees.
+func rotateFrom(names []string, after string) []string {
+	if after == "" || len(names) == 0 {
+		return names
+	}
+	idx := sort.SearchStrings(names, after)
+	if idx < len(names) && names[idx] == after {
+		idx++
+	}
+	if idx >= len(names) {
+		return names
+	}
+	rotated := make([]string, 0, len(names))
+	rotated = append(rotated, names[idx:]...)
+	rotated = append(rotated, names[:idx]...)
+	return rotated
+}
+
+// sliceSize is how many entries one pass covers: an equal share of the list, but
+// never fewer than minimum, so a small corpus is fully swept by one pass instead
+// of crawling through twelve of them.
+func sliceSize(total, divisor, minimum int) int {
+	if divisor < 1 {
+		divisor = 1
+	}
+	size := (total + divisor - 1) / divisor
+	if size < minimum {
+		return minimum
+	}
+	return size
+}
+
+// minSliceSize is the floor under one pass's slice, shared by the walk and the
+// prune. It is what keeps a small corpus converging in one pass: at the measured
+// per-entry costs (walk ~2 ms, prune ~18 ms) 128 entries is ~0.26 s and ~2.3 s,
+// an order of magnitude inside both budgets, so the floor costs nothing on a
+// large corpus (the share is already far above it) and removes a twelve-pass
+// sweep on a small one.
+const minSliceSize = 128
 
 // reconcile builds a fresh index from the task directory's listing, reusing the
 // serving entry for every file whose size and modification time are unchanged.
@@ -588,14 +724,82 @@ func (t *taskIndex) reconcile(ctx context.Context) (*taskIndex, bool) {
 	fresh.baseSeq = t.appliedSeq
 	t.mu.RUnlock()
 
+	// ⚠️ This pass re-stamps ONE SLICE of the corpus, starting where the last
+	// pass stopped, and carries the rest forward from the serving index. A pass
+	// that walked everything would be cut by the budget at this corpus size (see
+	// taskIndexReconcileBudget), and a cut that installed nothing would leave the
+	// backstop permanently dead; a cut that installed a partial walk would drop
+	// every file it had not reached. The slice makes both impossible: every pass
+	// completes, and the cursor guarantees the tail is reached.
+	names, byName := markdownTaskNames(entries)
+	ordered := rotateFrom(names, t.cursor())
+	slice := t.sliceSize(len(names))
+
+	reached, last := t.refreshSlice(
+		ctx,
+		fresh,
+		root,
+		ordered,
+		slice,
+		byName,
+		previous,
+		previousStamps,
+	)
+	t.carryForward(fresh, previous, previousStamps, reached, names)
+	t.advanceCursor(names, last)
+	return fresh, true
+}
+
+// markdownTaskNames splits the listing into the `.md` file names, in listing
+// order, plus a name to entry map for the slice to look up.
+func markdownTaskNames(entries []os.DirEntry) ([]string, map[string]os.DirEntry) {
+	names := make([]string, 0, len(entries))
+	byName := make(map[string]os.DirEntry, len(entries))
 	for _, entry := range entries {
-		if ctx.Err() != nil {
-			return fresh, false
-		}
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
 			continue
 		}
-		path := filepath.Join(taskDirName, entry.Name())
+		names = append(names, entry.Name())
+		byName[entry.Name()] = entry
+	}
+	return names, byName
+}
+
+// sliceSize is how many entries this pass covers.
+//
+// ⚠️ The share is sized from the WHOLE corpus, never from what is left after the
+// cursor: sizing it from the remainder shrinks the last passes to a single file
+// each, so a sweep takes far more passes than the divisor and never completes on
+// schedule.
+func (t *taskIndex) sliceSize(total int) int {
+	if t.sliceOverride > 0 {
+		return t.sliceOverride
+	}
+	return sliceSize(total, taskIndexReconcileSliceDivisor, minSliceSize)
+}
+
+// refreshSlice re-stamps this pass's slice and reports the paths it reached plus
+// the last name it handled.
+func (t *taskIndex) refreshSlice(
+	ctx context.Context,
+	fresh *taskIndex,
+	root *os.Root,
+	ordered []string,
+	slice int,
+	byName map[string]os.DirEntry,
+	previous map[string]taskCandidate,
+	previousStamps map[string]fileStamp,
+) (map[string]struct{}, string) {
+	reached := make(map[string]struct{}, slice)
+	last := t.cursor()
+	for i, name := range ordered {
+		if i >= slice || ctx.Err() != nil {
+			break
+		}
+		entry := byName[name]
+		path := filepath.Join(taskDirName, name)
+		reached[path] = struct{}{}
+		last = name
 		stamp, ok := stampOf(entry)
 		if !ok {
 			// Unstampable, so it cannot be proven unchanged: re-read it rather
@@ -614,7 +818,54 @@ func (t *taskIndex) reconcile(ctx context.Context) (*taskIndex, bool) {
 		// the rungs, which were just re-read, not on the task file's bytes.
 		fresh.addCandidate(path, held.sessionID, fresh.reresolve(held.entry))
 	}
-	return fresh, true
+	return reached, last
+}
+
+// carryForward installs every file this pass did not reach.
+//
+// ⚠️ Without it a slice-based pass would install an index holding only the slice
+// — the partial index the whole-walk rule existed to prevent, one slice at a
+// time.
+//
+// ⚠️ Only files still ON DISK are carried. A deleted task file never appears in
+// any slice (the slice is built from the listing), so carrying it blindly would
+// keep it in the index forever — a stale entry no pass could ever remove. The
+// listing is what proves it is gone.
+func (t *taskIndex) carryForward(
+	fresh *taskIndex,
+	previous map[string]taskCandidate,
+	previousStamps map[string]fileStamp,
+	reached map[string]struct{},
+	names []string,
+) {
+	onDisk := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		onDisk[filepath.Join(taskDirName, name)] = struct{}{}
+	}
+	for path, held := range previous {
+		if _, done := reached[path]; done {
+			continue
+		}
+		if _, exists := onDisk[path]; !exists {
+			continue
+		}
+		fresh.fileStamps[path] = previousStamps[path]
+		fresh.addCandidate(path, held.sessionID, fresh.reresolve(held.entry))
+	}
+}
+
+// advanceCursor records where the next pass resumes.
+//
+// ⚠️ A pass whose slice reached the LAST name has finished the sweep, so the next
+// one starts from the top. The test is the last name, not "the list was
+// exhausted": rotateFrom wraps, so `ordered` is always the whole corpus and never
+// runs out — the wrap point is what marks the end of a sweep.
+func (t *taskIndex) advanceCursor(names []string, last string) {
+	if len(names) == 0 || last == names[len(names)-1] {
+		t.setCursor("")
+		return
+	}
+	t.setCursor(last)
 }
 
 // reresolve returns entry with its goal and topic re-derived from the index's

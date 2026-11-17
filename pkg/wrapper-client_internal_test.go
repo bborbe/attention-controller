@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -125,6 +126,39 @@ var _ = Describe("claude wrapper client", func() {
 			AnswerViaWrapper(ctx, sessionID, "allow", nil)
 		Expect(verdict).To(Equal(DeliveryRefuse))
 		Expect(reason).To(ContainSubstring("no wrapper configured"))
+	})
+
+	// ⚠️ This is the only spec that pins wrapperRequestTimeout's call-site
+	// wiring. A spec asserting the constant's value would pass on a constant
+	// wired to nothing, so this drives a wrapper that never answers and requires
+	// the client's own Timeout to end the call.
+	It("bounds a wrapper request with wrapperRequestTimeout", func() {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			select {
+			case <-r.Context().Done():
+				// The client's Timeout cancels the request; returning here lets the
+				// server close without waiting out the fallback.
+				return
+			case <-time.After(30 * time.Second):
+				w.WriteHeader(http.StatusOK)
+			}
+		}))
+		defer server.Close()
+
+		start := time.Now()
+		state, _ := NewClaudeWrapperClient(server.URL).Probe(ctx, sessionID)
+		elapsed := time.Since(start)
+
+		// An unresponsive wrapper degrades to "unreachable", never to a parked arm.
+		Expect(state).To(Equal(WrapperProbeUnreachable))
+		// The lower bound is the positive control: a seam that stopped reaching the
+		// server would return in ~1 ms and pass both ceilings with the Timeout gone.
+		Expect(elapsed).To(BeNumerically(">=", 8*time.Second),
+			"the wrapper request never blocked, so nothing was bounded")
+		// The bound is 10 s, so anything approaching the 30 s fallback means the
+		// declared bound is not the one in force.
+		Expect(elapsed).To(BeNumerically("<=", 14*time.Second),
+			"wrapperRequestTimeout is not applied to the client")
 	})
 
 	Describe("DeliverMessage", func() {

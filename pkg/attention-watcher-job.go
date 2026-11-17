@@ -32,6 +32,24 @@ const AttentionWatcherDeliveryInterval = 2 * time.Second
 // its answer promptly.
 const AttentionDeliveryRetryBackoff = 5 * time.Minute
 
+// storeReadTimeout bounds the delivery arm's board read.
+//
+// ⚠️ The store is in-process bbolt, so there is no HTTP hop to bound and no
+// outside-arm/delivery-arm split to preserve: ONE bound covers both reads this
+// arm makes. The Python watcher's 10 s / 2 s split bounded a loopback round
+// trip that does not exist here, which is why it is deliberately not ported.
+//
+// ⚠️ Without it a store call that never returns wedges the arm for good: the
+// two-second ticker stops firing, ctx.Done() is unreachable while the call is
+// in flight, and the whole delivery path is silently dead. The bound turns that
+// into a log line instead.
+//
+// ⚠️ It cannot pre-empt a bbolt transaction that has already stopped honouring
+// its context — bbolt checks the context as it starts, not mid-commit — so for
+// that one case a log is all that can honestly be offered. Same contract as
+// answeredSweepTimeout.
+const storeReadTimeout = 2 * time.Second
+
 // attentionWatcherCarrier names the arm in the delivery trail. It is the same
 // value the Python watcher wrote, so a card's attempt history stays continuous
 // across the port.
@@ -121,18 +139,9 @@ func (j *attentionWatcherJob) Run(ctx context.Context) error {
 
 // DeliverOnce delivers every answered card that has not yet been delivered.
 func (j *attentionWatcherJob) DeliverOnce(ctx context.Context) error {
-	items, err := j.store.ReadBoard(ctx)
+	items, reports, err := j.readBoard(ctx)
 	if err != nil {
-		return errors.Wrap(ctx, err, "read board failed")
-	}
-	// ⚠️ The reports for THESE items, not DeliveryAttempts. That read scans the
-	// whole attempts bucket, which has no delete path and so grows with every card
-	// the store has ever held — an unbounded scan on a two-second tick. Measured
-	// 2026-11-16 after the other arms were fixed: it was the largest single CPU
-	// consumer left in the process, 24 % of a 25 s profile.
-	reports, err := j.store.DeliveryReports(ctx, items)
-	if err != nil {
-		return errors.Wrap(ctx, err, "read delivery reports failed")
+		return err
 	}
 	for _, item := range items {
 		if err := ctx.Err(); err != nil {
@@ -144,6 +153,36 @@ func (j *attentionWatcherJob) DeliverOnce(ctx context.Context) error {
 		j.deliver(ctx, item)
 	}
 	return nil
+}
+
+// readBoard reads the board and its delivery reports under storeReadTimeout.
+//
+// ⚠️ The bound is scoped to the READS, not to the whole cycle: the delivery loop
+// below types into panes, which has its own per-call bound, and wrapping that in
+// a shared two-second deadline would cut a legitimate delivery.
+//
+// ⚠️ On a bound the read fails into a log line rather than wedging the arm: the
+// error returns to DeliverOnce's caller, whose Run loop logs it and continues on
+// the next tick.
+func (j *attentionWatcherJob) readBoard(
+	ctx context.Context,
+) (Items, map[ItemID]*DeliveryReport, error) {
+	readCtx, cancel := context.WithTimeout(ctx, storeReadTimeout)
+	defer cancel()
+	items, err := j.store.ReadBoard(readCtx)
+	if err != nil {
+		return nil, nil, errors.Wrap(ctx, err, "read board failed")
+	}
+	// ⚠️ The reports for THESE items, not DeliveryAttempts. That read scans the
+	// whole attempts bucket, which has no delete path and so grows with every card
+	// the store has ever held — an unbounded scan on a two-second tick. Measured
+	// 2026-11-16 after the other arms were fixed: it was the largest single CPU
+	// consumer left in the process, 24 % of a 25 s profile.
+	reports, err := j.store.DeliveryReports(readCtx, items)
+	if err != nil {
+		return nil, nil, errors.Wrap(ctx, err, "read delivery reports failed")
+	}
+	return items, reports, nil
 }
 
 // deliverable reports whether the item is an answered card this arm should carry.
