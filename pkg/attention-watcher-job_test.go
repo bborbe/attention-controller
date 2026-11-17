@@ -258,4 +258,38 @@ var _ = Describe("attention watcher delivery job", func() {
 		Expect(job.DeliverOnce(context.Background())).To(Succeed())
 		Expect(carrier.calls).To(ConsistOf("item-1=allow"))
 	})
+
+	// ⚠️ This is the only spec that pins storeReadTimeout, and it is the store
+	// read's discriminating half: a spec that only asserted the constant's value
+	// would pass on a constant wired to nothing. The fake's ReadBoard blocks until
+	// the bound fires, so removing the WithTimeout leaves the call parked on the
+	// fallback timer and the ceiling below fails.
+	It("bounds the board read so a wedged store cannot stop the arm", func() {
+		store.ReadBoardCalls(func(ctx context.Context) (pkg.Items, error) {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(8 * time.Second):
+				// The fallback is what makes an unbounded call fail the ceiling
+				// instead of hanging the suite: with no deadline the arm parks here.
+				return nil, nil
+			}
+		})
+
+		start := time.Now()
+		err := job.DeliverOnce(context.Background())
+		elapsed := time.Since(start)
+
+		// The read is bounded, so the failure surfaces as an error rather than a
+		// wedged arm — that is the behaviour, not merely the elapsed time.
+		Expect(err).To(HaveOccurred())
+		// The lower bound is the positive control: if the read never ran, this
+		// spec would pass vacuously on a store that returned immediately.
+		Expect(elapsed).To(BeNumerically(">=", 1*time.Second),
+			"the board read never blocked, so nothing was bounded")
+		// The bound is 2 s, so anything approaching the 8 s fallback means the
+		// declared bound is not the one in force.
+		Expect(elapsed).To(BeNumerically("<=", 6*time.Second),
+			"storeReadTimeout is not applied at the delivery arm's board read")
+	})
 })
