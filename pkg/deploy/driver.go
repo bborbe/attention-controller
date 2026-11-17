@@ -179,6 +179,14 @@ func (d *Driver) waitUntil(
 ) ProbeResult {
 	var result ProbeResult
 	for i := 0; i < maxPolls; i++ {
+		// A cancelled deploy stops polling rather than running the deadline out:
+		// the caller has gone, and continuing would restart nothing but would
+		// keep a request stream open against a board that may be the thing that
+		// failed.
+		if err := ctx.Err(); err != nil {
+			result.Detail = "cancelled: " + err.Error()
+			return result
+		}
 		result = d.Prober.Probe(ctx, expectedCommit)
 		if result.Ready {
 			return result

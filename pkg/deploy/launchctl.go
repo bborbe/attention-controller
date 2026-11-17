@@ -53,6 +53,9 @@ type LaunchctlSupervisor struct {
 func (s *LaunchctlSupervisor) Stop(ctx context.Context) error {
 	_, _ = s.run(ctx, "bootout", s.domain()+"/"+s.Label)
 	for i := 0; i < stopAttempts; i++ {
+		if err := ctx.Err(); err != nil {
+			return errors.Wrap(ctx, err, "waiting for bootout of "+s.Label+" cancelled")
+		}
 		if !s.loaded(ctx) {
 			return nil
 		}
