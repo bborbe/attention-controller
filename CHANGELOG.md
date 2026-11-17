@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.94.3
 
 - fix: **the unforwarded-closers check stops reporting a delivered gate as lost.** Three false-positive classes were inflating `unforwarded` (37 and 33 on 2026-11-17 against a ceiling of 0), so a non-zero reading was not evidence of a real loss and a zero was unreachable. (1) The suppression exemption widens from 1 s to 6 s — the hook writes the suppression then opens the idle row in the same turn, and that gap measured 5.005–5.006 s on 3 of the day's suppression→open pairs. (2) A delivered-then-pruned item no longer reads as unforwarded: the ingest writes an append-only `forwarded.jsonl` delivery mark on every successful push, and the check unions it with the store, so delivery survives the store's `expires_at` prune (25 of the 26 question/permission findings were exactly this). (3) The arm's own `unforwarded:<item>` re-presentation counts as delivery, so the check stops counting its own recovery as a loss. Each fix carries its paired control — a suppression outside the window, an unmarked row, and a failed push that must leave no mark — so the count cannot be zeroed by making the check blind.
 
