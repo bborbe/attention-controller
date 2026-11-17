@@ -219,7 +219,9 @@ func boltOpenOptions() libboltkv.ChangeOptions {
 // listener is a sibling of init, not a child, so a db closed by init's own
 // defer would close under requests the listener is still draining. service.Run
 // waits for both halves, and runBoardListener returns only once Shutdown has
-// drained every in-flight request.
+// drained every in-flight request — or, past its timeout, closed the
+// connections it could not drain. The close itself is bounded (closeDBBounded),
+// so a transaction a stuck handler still holds cannot keep the process alive.
 func (a *application) Run(ctx context.Context, sentryClient libsentry.Client) error {
 	// The first line this process writes, before any step that can block, so a
 	// hang is attributable from the stderr log rather than read as no start.
@@ -244,9 +246,7 @@ func (a *application) Run(ctx context.Context, sentryClient libsentry.Client) er
 		a.initAndServe(sentryClient, gate, func(opened libkv.DB) { db = opened }),
 	)
 	if db != nil {
-		if err := db.Close(); err != nil {
-			glog.Warningf("close db failed: %v", err)
-		}
+		closeDBBounded(db, dbCloseTimeout)
 	}
 	return runErr
 }
@@ -268,8 +268,9 @@ func (a *application) runBoardListener(listener net.Listener, gate http.Handler)
 // serveUntilDone serves on listener until ctx ends, then shuts the server down.
 //
 // ⚠️ Unlike libhttp.NewServer, it returns only AFTER Shutdown has drained the
-// in-flight requests (or hit its timeout) — the caller closes the db next, so
-// returning at the start of Shutdown would close it under a running handler.
+// in-flight requests (or hit its timeout and closed the rest) — the caller
+// closes the db next, so returning at the start of Shutdown would close it under
+// a running handler.
 func serveUntilDone(
 	ctx context.Context,
 	server *http.Server,
@@ -286,9 +287,43 @@ func serveUntilDone(
 	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)
 	defer cancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		glog.Warningf("board listener shutdown failed: %v", err)
+		// ⚠️ A drain that timed out leaves its handlers running on open
+		// connections — Shutdown never cancels a request context — and the
+		// caller closes the db next. Close drops every remaining connection,
+		// which cancels each handler's request context, so nothing waits on a
+		// client that will never hang up.
+		glog.Warningf("board listener shutdown failed: %v; closing remaining connections", err)
+		if err := server.Close(); err != nil {
+			glog.Warningf("board listener close failed: %v", err)
+		}
 	}
 	return nil
+}
+
+// dbCloseTimeout bounds how long Run waits for the db to close on shutdown.
+const dbCloseTimeout = 1500 * time.Millisecond
+
+// closeDBBounded closes db, giving up after timeout.
+//
+// ⚠️ bbolt's Close waits for every open transaction, and a handler the drain
+// could not stop may still hold one. Waiting without a bound turned a stuck
+// handler into a process that ignored SIGTERM until launchd killed it, so the
+// wait is bounded: on timeout the process exits anyway and the OS releases the
+// file lock. A committed transaction is already on disk, so nothing that was
+// acknowledged is lost.
+func closeDBBounded(db libkv.DB, timeout time.Duration) {
+	closed := make(chan error, 1)
+	go func() { closed <- db.Close() }()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case err := <-closed:
+		if err != nil {
+			glog.Warningf("close db failed: %v", err)
+		}
+	case <-timer.C:
+		glog.Warningf("close db did not finish within %s; exiting without it", timeout)
+	}
 }
 
 // runInitStep runs one init step under its name: the gate names it as pending,
@@ -1038,16 +1073,20 @@ func (a *application) createHTTPServer(
 		// `/api/1.0/attention/{itemID}` route below, because gorilla mux matches
 		// in registration order: registered after it, this path would resolve as
 		// an item whose id is literally `stream`.
+		//
+		// ⚠️ Wrapped so each stream ends when this process's context does:
+		// Shutdown never cancels a request context, so an open stream would
+		// otherwise outlive the graceful drain and hold SIGTERM up.
 		router.Path("/api/1.0/attention/stream").
 			Methods(http.MethodGet).
-			Handler(factory.CreateAttentionStreamHandler(
+			Handler(handler.NewShutdownAwareHandler(ctx.Done(), factory.CreateAttentionStreamHandler(
 				store,
 				notifier,
 				provenance,
 				a.TTSURL != "",
 				a.VaultDir,
 				boardMetrics,
-			))
+			)))
 
 		// Business routes live under /api/1.0/, never in the admin block above.
 		registerAttentionAPIRoutes(router, store, a.TTSURL)
