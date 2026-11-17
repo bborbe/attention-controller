@@ -494,6 +494,35 @@ var _ = Describe("sweep gate notify job", func() {
 		Expect(exists(pathIn(sweepGateSlugOfSubject + sweepGateStreakSuffix))).To(BeTrue())
 	})
 
+	It("posts under the subject's goal manager when the page resolves one", func() {
+		vault := GinkgoT().TempDir()
+		Expect(os.MkdirAll(filepath.Join(vault, goalDirName), 0o750)).To(Succeed())
+		Expect(os.WriteFile(
+			filepath.Join(vault, goalDirName, "My Topic.md"),
+			[]byte("---\nclaude_session_id: aaaa1111\n---\n"),
+			0o600,
+		)).To(Succeed())
+		subjects.subjects = []SweepGateSubject{{
+			Name: "My Topic", Vault: vault, Branch: "goal",
+		}}
+
+		gate.results = []SweepGateTickResult{{ExitCode: 10, Output: "digest moved"}}
+		gate.onTick = func(stateDir string) {
+			Expect(os.WriteFile(
+				filepath.Join(stateDir, sweepGateSlugOfSubject+sweepGateCardSuffix),
+				[]byte(`{"dedup_key": "open-card-invariant:my-topic", "payload": "p"}`),
+				0o600,
+			)).To(Succeed())
+		}
+		classifier.results = []SweepGateClassifyResult{{ExitCode: 0}}
+
+		job.cycle(ctx)
+
+		// The wiring is the fix: a resolved owner must reach the poster, and the
+		// poster must post under it rather than the constant.
+		Expect(poster.owners).To(Equal([]string{"aaaa1111"}))
+	})
+
 	It("clears the card before the gate runs and posts the one the gate writes", func() {
 		staleCard := pathIn(sweepGateSlugOfSubject + sweepGateCardSuffix)
 		writeFile(staleCard, `{"dedup_key": "stale", "payload": "stale"}`)
@@ -523,6 +552,9 @@ var _ = Describe("sweep gate notify job", func() {
 		Expect(poster.cards[0].DedupKey).To(Equal("open-card-invariant:my-topic"))
 		Expect(poster.cards[0].Options).To(Equal([]string{"Look now", "Leave it"}))
 		Expect(poster.cards[0].Recommend).To(Equal("Look now"))
+		// The subject's vault does not exist here, so it resolves no owner and the
+		// card must post under the constant rather than a made-up session.
+		Expect(poster.owners).To(Equal([]string{""}))
 		_, created := capture.find(
 			"job=sweep-gate-notify action=create card=open-card-invariant:my-topic",
 		)
@@ -804,6 +836,27 @@ var _ = Describe("sweepGateOwnerSession", func() {
 		})).To(BeEmpty())
 	})
 })
+
+var _ = DescribeTable("sweepGateProducerID",
+	func(owner, expected string) {
+		Expect(sweepGateProducerID(owner)).To(Equal(expected))
+	},
+	Entry("resolved owner is used as-is", "aaaa1111", "aaaa1111"),
+	Entry("unresolved falls back to the constant", "", sweepGateCardProducerID),
+)
+
+var _ = DescribeTable("sweepGateOwnerID",
+	func(value, expected string) {
+		Expect(sweepGateOwnerID(value)).To(Equal(expected))
+	},
+	Entry("plain id", "aaaa1111", "aaaa1111"),
+	Entry("quoted id", `"aaaa1111"`, "aaaa1111"),
+	Entry("explicit yaml null", "null", ""),
+	Entry("tilde", "~", ""),
+	Entry("empty", "", ""),
+	Entry("leading dash would read as a flag", "-flag", ""),
+	Entry("embedded space", "aa bb", ""),
+)
 
 var _ = DescribeTable("sweepGateWakeField",
 	func(output string, expected string) {
