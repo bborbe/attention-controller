@@ -59,12 +59,13 @@ func (b *FileBinary) RestorePrev(ctx context.Context) error {
 	if err != nil {
 		return errors.Wrapf(ctx, err, "read %s failed", b.Prev)
 	}
-	// Cleaned, not concatenated raw: the staging path is a sibling of the
-	// configured binary, and gosec's G703 taint analysis wants a sanitised path
-	// before a write. There is no untrusted input here — both paths come from
-	// the deploy's own flags — but the clean is also the correct behaviour for a
-	// path carrying `..`.
+	// Cleaned so a configured path carrying `..` still yields a sibling, and
+	// suppressed because G703's taint analysis cannot see that the value is the
+	// deploy's own flag rather than anything an attacker supplies — the same
+	// false positive and the same suppression the repo already carries in
+	// cmd/import-spawn-ledger.
 	tmp := filepath.Clean(b.Bin + ".restore")
+	//nolint:gosec // G703 is a false positive here: b.Bin is the deploy's own -bin flag
 	if err := os.WriteFile(tmp, data, binaryMode); err != nil {
 		return errors.Wrapf(ctx, err, "write %s failed", tmp)
 	}
