@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.92.5
 
 - fix: **bound the five timing budgets, and rotate the two phase passes so the bounds actually hold at the live corpus size.** `paneTextTimeout` (2 s) and `wrapperRequestTimeout` (10 s) existed but nothing asserted them; `storeReadTimeout` (2 s), `taskIndexReconcileBudget` (30 s) and `eventPrunePassBudget` (1 min) are new, each issued at its call site, each with a spec that was seen to fail when its wiring was removed. Measured 2026-11-17: `25 Tasks/` holds 12,191 files and a whole reconcile walk costs 25.7 s, so a 30 s budget cut it every round — and a cut walk returned without installing, leaving the backstop permanently dead. The state directory holds 7,673 event logs / 165 MB and a whole prune costs 138 s, so a 60 s budget cut that every round too, and a pass that always stops at the same point never reaches the tail. Each pass now covers one twelfth of its corpus and resumes from a cursor (2.1 s and 11.5 s measured per slice, 14× and 5× inside the budgets), with full coverage across twelve passes pinned by spec. The walk carries forward every file it did not re-stamp, so a cut pass installs a complete index rather than a partial one or nothing at all.
 
