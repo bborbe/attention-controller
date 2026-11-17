@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/bborbe/errors"
 	"github.com/golang/glog"
 )
 
@@ -28,20 +29,33 @@ import (
 // both callers treat an absent session as unprovable rather than as a negative
 // answer.
 func readSessionNames(ctx context.Context, sessionsDir string) map[string]sessionName {
+	names, _ := readSessionNamesWithError(ctx, sessionsDir)
+	return names
+}
+
+// readSessionNamesWithError is readSessionNames plus the error the fail-open
+// callers discard. The who-needs-me feed reports a failed registry read as a
+// per-source status, which needs the error; the provenance resolver keeps its
+// fail-open rendering and calls readSessionNames. One implementation, so the
+// two cannot disagree about which entries exist.
+func readSessionNamesWithError(
+	ctx context.Context,
+	sessionsDir string,
+) (map[string]sessionName, error) {
 	names := map[string]sessionName{}
 	if sessionsDir == "" {
-		return names
+		return names, nil
 	}
 	entries, err := os.ReadDir(sessionsDir)
 	if err != nil {
 		glog.V(2).Infof("read session registry %s failed: %v", sessionsDir, err)
-		return names
+		return names, errors.Wrap(ctx, err, "read session registry failed")
 	}
 	for _, entry := range entries {
 		select {
 		case <-ctx.Done():
 			glog.V(3).Infof("session registry scan cancelled")
-			return names
+			return names, nil
 		default:
 		}
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
@@ -64,5 +78,5 @@ func readSessionNames(ctx context.Context, sessionsDir string) map[string]sessio
 			}
 		}
 	}
-	return names
+	return names, nil
 }

@@ -513,6 +513,63 @@ func (a *application) createProvenanceResolver(
 	)
 }
 
+// createWhoNeedsMeReader builds the reader behind GET /api/1.0/who-needs-me.
+//
+// It reuses the process's own store, provenance resolver and pane lister, and
+// resolves the same state/sessions/transcripts directories the provenance
+// resolver uses, so the feed and the board cannot disagree about the host.
+func (a *application) createWhoNeedsMeReader(
+	ctx context.Context,
+	store pkg.AttentionStore,
+	provenance pkg.ProvenanceResolver,
+	panes pkg.PaneLister,
+) pkg.WhoNeedsMeReader {
+	stateDir := a.AttentionStateDir
+	if stateDir == "" {
+		if resolved, err := defaultAttentionStateDir(ctx); err == nil {
+			stateDir = resolved
+		}
+	}
+	sessionsDir := a.SessionsDir
+	if sessionsDir == "" {
+		if resolved, err := defaultSessionsDir(ctx); err == nil {
+			sessionsDir = resolved
+		}
+	}
+	transcriptsRoot := ""
+	if resolved, err := defaultTranscriptRoot(ctx); err == nil {
+		transcriptsRoot = resolved
+	}
+	return pkg.NewWhoNeedsMeReader(
+		store,
+		provenance,
+		panes,
+		pkg.NewTranscriptReader(transcriptsRoot),
+		sessionsDir,
+		stateDir,
+		libtime.NewCurrentDateTime(),
+	)
+}
+
+// registerWhoNeedsMeRoute wires GET /api/1.0/who-needs-me on the board router.
+//
+// ⚠️ Board-only, never inside registerAttentionAPIRoutes: that function is
+// shared with the cluster-reachable listener, which has no WezTerm, registry or
+// vault to join against, so the route would answer every field absent there.
+func (a *application) registerWhoNeedsMeRoute(
+	ctx context.Context,
+	router *mux.Router,
+	store pkg.AttentionStore,
+	provenance pkg.ProvenanceResolver,
+	panes pkg.PaneLister,
+) {
+	router.Path("/api/1.0/who-needs-me").
+		Methods(http.MethodGet).
+		Handler(factory.CreateWhoNeedsMeHandler(
+			a.createWhoNeedsMeReader(ctx, store, provenance, panes),
+		))
+}
+
 // defaultAttentionStateDir resolves ~/.claude/state/attention, the directory
 // holding each producer's event log.
 func defaultAttentionStateDir(ctx context.Context) (string, error) {
@@ -688,7 +745,6 @@ func (a *application) createHTTPServer(
 	return func(ctx context.Context) error {
 		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()
-
 		// Hoisted rather than inlined into the handler call below, matching how
 		// the store is built once in Run and passed down. Two constructors
 		// nested at a call site read as wiring that happened by accident.
@@ -786,6 +842,7 @@ func (a *application) createHTTPServer(
 
 		// Business routes live under /api/1.0/, never in the admin block above.
 		registerAttentionAPIRoutes(router, store, a.TTSURL)
+		a.registerWhoNeedsMeRoute(ctx, router, store, provenance, panes)
 
 		// The watcher's cycle-duration ingest.
 		//

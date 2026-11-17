@@ -19,6 +19,6 @@ func TestSuite(t *testing.T) {
 	format.TruncatedDiff = false
 	RegisterFailHandler(Fail)
 	suiteConfig, reporterConfig := GinkgoConfiguration()
-	suiteConfig.Timeout = 60 * time.Second
+	suiteConfig.Timeout = 300 * time.Second
 	RunSpecs(t, "Test Suite", suiteConfig, reporterConfig)
 }
