@@ -117,6 +117,49 @@ var _ = Describe("EventIngestJob", func() {
 		Expect(sink.closed).To(BeEmpty())
 	})
 
+	// The durable delivery mark. The store prunes an open item at its deadline, so
+	// without this line a delivered gate reads as lost once the item is gone. It is
+	// written ONLY after a push returns nil, which is why the paired control below
+	// matters as much as this spec.
+	It("records a durable delivery mark for a forwarded open", func() {
+		writeLog("s1.events.jsonl", record("a", "permission", true, 100))
+
+		Expect(job().IngestOnce(ctx)).To(Succeed())
+
+		data, err := os.ReadFile(filepath.Join(stateDir, "forwarded.jsonl"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(data)).To(ContainSubstring(`"item":"a"`))
+	})
+
+	// The paired control: a push that failed must leave no delivery mark, or the
+	// check would treat a never-delivered gate as delivered. The mark appears only
+	// once the retried push succeeds, which is what makes it delivery evidence and
+	// not intent.
+	It("records no delivery mark when the push fails, and one after it succeeds", func() {
+		writeLog("s1.events.jsonl", record("a", "permission", true, 100))
+		sink.err = fmt.Errorf("store down")
+
+		Expect(job().IngestOnce(ctx)).To(Succeed())
+		_, err := os.Stat(filepath.Join(stateDir, "forwarded.jsonl"))
+		Expect(os.IsNotExist(err)).To(BeTrue())
+
+		sink.err = nil
+		Expect(job().IngestOnce(ctx)).To(Succeed())
+		data, err := os.ReadFile(filepath.Join(stateDir, "forwarded.jsonl"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(data)).To(ContainSubstring(`"item":"a"`))
+	})
+
+	// A non-gate kind is consumed but never forwarded, so it earns no mark.
+	It("records no delivery mark for a non-gate kind", func() {
+		writeLog("s1.events.jsonl", record("a", "idle", true, 100))
+
+		Expect(job().IngestOnce(ctx)).To(Succeed())
+
+		_, err := os.Stat(filepath.Join(stateDir, "forwarded.jsonl"))
+		Expect(os.IsNotExist(err)).To(BeTrue())
+	})
+
 	It("forwards a close record", func() {
 		writeLog("s1.events.jsonl", record("a", "permission", false, 100))
 
