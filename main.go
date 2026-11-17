@@ -32,6 +32,7 @@ import (
 	"github.com/bborbe/attention-controller/pkg/boardmetrics"
 	"github.com/bborbe/attention-controller/pkg/buildidentity"
 	"github.com/bborbe/attention-controller/pkg/factory"
+	"github.com/bborbe/attention-controller/pkg/handler"
 )
 
 func main() {
@@ -199,22 +200,197 @@ func boltOpenOptions() libboltkv.ChangeOptions {
 	}
 }
 
+// Run binds the board listener FIRST and initializes behind a startup gate.
+//
+// ⚠️ The ordering is the point. The BoltDB open can wait its whole lock timeout
+// and the task index's boot build walks the vault, so a process that bound its
+// port only after both read as a dead port for the length of a launchd restart
+// — indistinguishable from a crash. The listener now answers within its bind:
+// `/` renders a starting page naming the pending step, every API route answers
+// 503 `{"status":"starting","step":…}`, `/readiness` is 503 and `/healthz` 200
+// until init finishes and the gate hands the listener to the real router.
+//
+// ⚠️ The two halves run under service.Run, which cancels both when either
+// returns: a failed init step is logged by step name and exits the process
+// non-zero rather than leaving it serving "starting" forever, and a listener
+// that cannot serve takes init down with it, as before.
+//
+// ⚠️ The db is closed HERE, after service.Run returns, never inside init: the
+// listener is a sibling of init, not a child, so a db closed by init's own
+// defer would close under requests the listener is still draining. service.Run
+// waits for both halves, and runBoardListener returns only once Shutdown has
+// drained every in-flight request.
 func (a *application) Run(ctx context.Context, sentryClient libsentry.Client) error {
+	// The first line this process writes, before any step that can block, so a
+	// hang is attributable from the stderr log rather than read as no start.
+	glog.V(0).Infof(
+		"starting attention-controller version=%s commit=%s listen=%s datadir=%s",
+		a.BuildGitVersion, a.BuildGitCommit, a.Listen, a.DataDir,
+	)
 	libmetrics.NewBuildInfoMetrics().SetBuildInfo(a.BuildGitVersion, a.BuildGitCommit, a.BuildDate)
 
-	db, err := libboltkv.OpenDir(ctx, a.DataDir, boltOpenOptions())
+	// Bound synchronously, before any init step: a port that cannot be bound
+	// fails the process at once rather than racing init.
+	listener, err := net.Listen("tcp", a.Listen)
 	if err != nil {
-		return errors.Wrap(ctx, err, "open db failed")
+		return errors.Wrapf(ctx, err, "listen on %s failed", a.Listen)
 	}
-	defer db.Close()
+	gate := factory.CreateStartupGate(factory.CreateHealthzHandler(), promhttp.Handler())
+	// Written by the init half, read only after service.Run has waited for it.
+	var db libkv.DB
+	runErr := service.Run(
+		ctx,
+		a.runBoardListener(listener, gate),
+		a.initAndServe(sentryClient, gate, func(opened libkv.DB) { db = opened }),
+	)
+	if db != nil {
+		if err := db.Close(); err != nil {
+			glog.Warningf("close db failed: %v", err)
+		}
+	}
+	return runErr
+}
 
+// runBoardListener serves the board listener through the startup gate on the
+// already-bound listener.
+func (a *application) runBoardListener(listener net.Listener, gate http.Handler) run.Func {
+	return func(ctx context.Context) error {
+		glog.V(0).Infof(
+			"starting http server listen on %s (starting screen until init completes)",
+			listener.Addr(),
+		)
+		options := libhttp.CreateServerOptions()
+		server := libhttp.CreateHTTPServer(a.Listen, gate, options)
+		return serveUntilDone(ctx, server, listener, options.ShutdownTimeout)
+	}
+}
+
+// serveUntilDone serves on listener until ctx ends, then shuts the server down.
+//
+// ⚠️ Unlike libhttp.NewServer, it returns only AFTER Shutdown has drained the
+// in-flight requests (or hit its timeout) — the caller closes the db next, so
+// returning at the start of Shutdown would close it under a running handler.
+func serveUntilDone(
+	ctx context.Context,
+	server *http.Server,
+	listener net.Listener,
+	shutdownTimeout time.Duration,
+) error {
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- server.Serve(listener) }()
+	select {
+	case err := <-serveErr:
+		return errors.Wrap(ctx, err, "board listener failed")
+	case <-ctx.Done():
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)
+	defer cancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		glog.Warningf("board listener shutdown failed: %v", err)
+	}
+	return nil
+}
+
+// runInitStep runs one init step under its name: the gate names it as pending,
+// and its start, finish and duration are logged at default verbosity so a step
+// that hangs is the last `action=start` line in the stderr log.
+func runInitStep(
+	ctx context.Context,
+	gate handler.StartupGate,
+	now libtime.CurrentDateTimeGetter,
+	name string,
+	fn func(ctx context.Context) error,
+) error {
+	gate.Step(name)
+	glog.V(0).Infof("init step=%s action=start", name)
+	start := now.Now()
+	if err := fn(ctx); err != nil {
+		glog.Errorf(
+			"init step=%s action=failed duration=%s error=%v",
+			name, time.Duration(now.Now().Sub(start)), err,
+		)
+		return errors.Wrapf(ctx, err, "init step %s failed", name)
+	}
+	glog.V(0).Infof(
+		"init step=%s action=done duration=%s",
+		name, time.Duration(now.Now().Sub(start)),
+	)
+	return nil
+}
+
+// beginStartJobs marks the last init step, which registers the runner's jobs.
+// Unlike the other steps it is not wrapped in runInitStep: its end is the gate
+// opening, logged by openGate.
+func beginStartJobs(gate handler.StartupGate) {
+	gate.Step("start-jobs")
+	glog.V(0).Infof("init step=start-jobs action=start")
+}
+
+// openGate hands the board listener to the real router: the process is ready.
+func (a *application) openGate(gate handler.StartupGate, router http.Handler) {
+	gate.Open(router)
+	glog.V(0).Infof("init step=start-jobs action=done; ready, serving board on %s", a.Listen)
+}
+
+// initAndServe runs the init steps behind the gate, then serves until ctx ends.
+// onOpen receives the opened db; the caller owns closing it (see Run).
+func (a *application) initAndServe(
+	sentryClient libsentry.Client,
+	gate handler.StartupGate,
+	onOpen func(db libkv.DB),
+) run.Func {
+	return func(ctx context.Context) error {
+		now := libtime.NewCurrentDateTime()
+		var db libkv.DB
+		err := runInitStep(ctx, gate, now, "open-db", func(ctx context.Context) error {
+			opened, err := libboltkv.OpenDir(ctx, a.DataDir, boltOpenOptions())
+			if err != nil {
+				return errors.Wrap(ctx, err, "open db failed")
+			}
+			db = opened
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		onOpen(db)
+		// A shutting-down process stops routing new requests to the real router;
+		// the db itself is closed by Run once the listener has drained.
+		defer gate.Close("shutting-down")
+
+		var deps storeDeps
+		err = runInitStep(ctx, gate, now, "create-store", func(ctx context.Context) error {
+			created, err := a.createStoreDeps(ctx, db)
+			if err != nil {
+				return err
+			}
+			deps = created
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		return a.createHTTPServer(sentryClient, db, deps, gate)(ctx)
+	}
+}
+
+// storeDeps is what the store step builds and the server consumes.
+type storeDeps struct {
+	store           pkg.AttentionStore
+	notifier        pkg.AttentionChangeNotifier
+	boardMetrics    pkg.Metrics
+	livenessChecker pkg.SessionLivenessChecker
+}
+
+// createStoreDeps builds the liveness checker, the board metrics and the store.
+func (a *application) createStoreDeps(ctx context.Context, db libkv.DB) (storeDeps, error) {
 	// ⚠️ One liveness checker, two consumers: the store prunes items whose
 	// producer it reads as gone, and the provenance resolver counts the live
 	// managers that cover a worker. Two checkers would be two caches that could
 	// disagree about whether the same manager is alive.
 	livenessChecker, err := a.sessionLivenessChecker(ctx)
 	if err != nil {
-		return err
+		return storeDeps{}, err
 	}
 	// Built once per process and injected, so every counter is registered on the
 	// default registry — the one /metrics serves — exactly once. A second
@@ -224,7 +400,7 @@ func (a *application) Run(ctx context.Context, sentryClient libsentry.Client) er
 
 	rawStore, err := a.createAttentionStore(ctx, db, livenessChecker, boardMetrics)
 	if err != nil {
-		return err
+		return storeDeps{}, err
 	}
 
 	// One notifier, passed both ways: wrapped into the store so a successful
@@ -244,12 +420,12 @@ func (a *application) Run(ctx context.Context, sentryClient libsentry.Client) er
 		store,
 		libtime.NewCurrentDateTime(),
 	)
-
-	return service.Run(
-		ctx,
-		a.createHTTPServer(sentryClient, db, store, notifier, boardMetrics, livenessChecker),
-	)
-
+	return storeDeps{
+		store:           store,
+		notifier:        notifier,
+		boardMetrics:    boardMetrics,
+		livenessChecker: livenessChecker,
+	}, nil
 }
 
 // createAttentionStore builds the attention store.
@@ -764,11 +940,11 @@ func registerPprofIfLoopback(router *mux.Router, listen string) bool {
 func (a *application) createHTTPServer(
 	sentryClient libsentry.Client,
 	db libkv.DB,
-	store pkg.AttentionStore,
-	notifier pkg.AttentionChangeNotifier,
-	boardMetrics pkg.Metrics,
-	livenessChecker pkg.SessionLivenessChecker,
+	deps storeDeps,
+	gate handler.StartupGate,
 ) run.Func {
+	store, notifier := deps.store, deps.notifier
+	boardMetrics, livenessChecker := deps.boardMetrics, deps.livenessChecker
 	return func(ctx context.Context) error {
 		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()
@@ -787,7 +963,13 @@ func (a *application) createHTTPServer(
 		// inside createProvenanceResolver so the watcher below can be handed the
 		// same instance — two indexes would be two independent maps that could
 		// disagree about the same session.
-		tasks := pkg.NewTaskIndex(ctx, a.VaultDir, libtime.NewCurrentDateTime())
+		//
+		// ⚠️ The boot build walks the whole vault, so it runs as its own named
+		// init step: on a slow disk it is the step the starting screen names.
+		tasks, err := a.buildTaskIndex(ctx, gate)
+		if err != nil {
+			return err
+		}
 		watcher := pkg.NewTaskIndexWatcher(tasks, a.VaultDir)
 		// ⚠️ One ledger store, two consumers: the /api/1.0/session-ledger
 		// endpoints read and write it, and the provenance resolver reads it to
@@ -919,7 +1101,10 @@ func (a *application) createHTTPServer(
 		// job an eleventh, the unforwarded-closers check a twelfth, and the seven
 		// attention-watcher jobs (prune, ingest, answer delivery, menu answers, the
 		// routine-gate settle arm, expired manager holds and the context crossing
-		// scan) the remaining seven — nineteen in total.
+		// scan) the remaining seven — nineteen in total. The board listener itself
+		// left the runner when it moved ahead of init (runBoardListener); it still
+		// shares the process context through service.Run, so a failure in either
+		// half still takes the whole process down.
 		//
 		// ⚠️ It does NOT share the listeners' failure semantics, and saying so here
 		// matters because the difference is deliberate: the sweep returns nil on
@@ -949,8 +1134,9 @@ func (a *application) createHTTPServer(
 		runner := run.NewConcurrentRunner(20)
 		defer runner.Close()
 
-		glog.V(2).Infof("starting http server listen on %s", a.Listen)
-		runner.Add(ctx, libhttp.NewServer(a.Listen, router).Run)
+		// The board listener itself is NOT a runner slot: it was bound before
+		// init by runBoardListener, and the gate hands it this router below.
+		beginStartJobs(gate)
 		if err := a.addLegacyJumpListener(ctx, runner, jumpTokens, activator); err != nil {
 			return err
 		}
@@ -963,15 +1149,54 @@ func (a *application) createHTTPServer(
 		// cannot make a liveness read serialise behind 1,600 file reads.
 		runner.Add(ctx, sessionHeartbeatStore.Run)
 
-		if err := a.addAnsweredSweep(ctx, runner, store); err != nil {
-			return err
-		}
-		if err := a.addInProcessJobs(ctx, runner, store, panes, livenessChecker, provenance); err != nil {
+		if err := a.addMaintenanceJobs(ctx, runner, store, panes, livenessChecker, provenance); err != nil {
 			return err
 		}
 
+		a.openGate(gate, router)
 		return runner.Run(ctx)
 	}
+}
+
+// buildTaskIndex runs the task index's boot build as the `build-task-index`
+// init step.
+//
+// ⚠️ The boot build walks the whole vault, so it is its own named step: on a
+// slow disk it is the step the starting screen names and the stderr log ends on.
+func (a *application) buildTaskIndex(
+	ctx context.Context,
+	gate handler.StartupGate,
+) (pkg.TaskIndex, error) {
+	var tasks pkg.TaskIndex
+	err := runInitStep(
+		ctx,
+		gate,
+		libtime.NewCurrentDateTime(),
+		"build-task-index",
+		func(ctx context.Context) error {
+			tasks = pkg.NewTaskIndex(ctx, a.VaultDir, libtime.NewCurrentDateTime())
+			return nil
+		},
+	)
+	return tasks, err
+}
+
+// addMaintenanceJobs registers the answered sweep and the in-process jobs.
+//
+// It exists for length alone: createHTTPServer sits at the linter's bound, and
+// the two registrations it groups keep their own rationale on their own methods.
+func (a *application) addMaintenanceJobs(
+	ctx context.Context,
+	runner run.ConcurrentRunner,
+	store pkg.AttentionStore,
+	panes pkg.PaneLister,
+	liveness pkg.SessionLivenessChecker,
+	provenance pkg.ProvenanceResolver,
+) error {
+	if err := a.addAnsweredSweep(ctx, runner, store); err != nil {
+		return err
+	}
+	return a.addInProcessJobs(ctx, runner, store, panes, liveness, provenance)
 }
 
 // addAnsweredSweep registers the sweep that closes answered items past their
