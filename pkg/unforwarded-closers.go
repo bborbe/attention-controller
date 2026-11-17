@@ -271,19 +271,44 @@ type unforwardedTranscriptMessage struct {
 	Text string
 }
 
-// readForwarded collects the item ids the store already holds, keyed by the
-// same eight-character prefix the scan compares against.
+// unforwardedForwardedLedger is the append-only delivery ledger the ingest writes
+// on every successful push, inside the same state dir the scan reads.
 //
-// ⚠️ A row is forwarded when the store holds an item whose `dedup_key` is that
-// row's item id, in ANY state — an answered or closed item is still proof the
-// ingest carried it. The previous implementation read the watcher's log instead,
-// and when that log stopped being written the lookup silently matched nothing:
-// every row read as unforwarded and the count climbed without plateau.
+// ⚠️ It exists because the store is NOT a durable delivery record. An open item
+// is removed once its `expires_at` passes (the store's 24 h default), and the
+// retired pre-v0.90 liveness prune removed items regardless of expiry.
+// `readForwarded` reads that same store, so a gate that WAS delivered and whose
+// item was later pruned read as lost — 25 of the 26 question/permission findings
+// on 2026-11-17 were exactly this. The ledger is written at push success and is
+// never pruned, so the delivery evidence outlives the item it describes.
+const unforwardedForwardedLedger = "forwarded.jsonl"
+
+// unforwardedRepresentationPrefix is the dedup-key prefix the job itself uses when
+// it re-presents a lost gate as a card. The suffix is the row's own item id.
+const unforwardedRepresentationPrefix = "unforwarded:"
+
+// readForwarded collects the item ids that are known delivered, keyed by the same
+// eight-character prefix the scan compares against.
+//
+// Three sources, unioned, because each covers a case the others cannot:
+//   - the STORE — an item whose `dedup_key` is the row's item id, in ANY state.
+//     This is the independent proof the ingest carried the row. The previous
+//     implementation read the watcher's log instead, and when that log stopped
+//     being written the lookup silently matched nothing: every row read as
+//     unforwarded and the count climbed without plateau.
+//   - the LEDGER — a row the ingest delivered whose store item has since been
+//     pruned. The store can no longer speak for it, so the delivery mark does.
+//   - the JOB'S OWN re-presentation — a row this arm already put on the board as
+//     an `unforwarded:<item>` card. Carding IS delivery, so counting the row
+//     afterwards would make the check count its own recovery as a loss forever.
 //
 // ⚠️ A nil store is an error, not an empty set. An empty set is exactly what the
 // retired log produced, so returning one here would restore the defect this
 // check exists to fix — and it would do it silently, because an empty forwarded
-// set looks the same as a store with nothing in it.
+// set looks the same as a store with nothing in it. The ledger is the opposite:
+// a missing ledger is an empty set, because every deployment predates it and a
+// scan that errored until the first push would report a read-error on a healthy
+// board.
 func (s *UnforwardedClosersScanner) readForwarded(
 	ctx context.Context,
 	since libtime.DateTime,
@@ -297,12 +322,69 @@ func (s *UnforwardedClosersScanner) readForwarded(
 	}
 	forwarded := make(map[string]struct{}, len(items))
 	for _, item := range items {
-		if item.DedupKey == "" {
+		key := string(item.DedupKey)
+		if key == "" {
 			continue
 		}
-		forwarded[firstEight(string(item.DedupKey))] = struct{}{}
+		if rest, ok := strings.CutPrefix(key, unforwardedRepresentationPrefix); ok {
+			forwarded[firstEight(rest)] = struct{}{}
+			continue
+		}
+		forwarded[firstEight(key)] = struct{}{}
+	}
+	delivered, err := s.readForwardedLedger(ctx, unixSeconds(since))
+	if err != nil {
+		return nil, err
+	}
+	for item := range delivered {
+		forwarded[item] = struct{}{}
 	}
 	return forwarded, nil
+}
+
+// readForwardedLedger collects the item ids the ingest recorded as delivered at
+// or after `since`, keyed by the same eight-character prefix the scan compares.
+//
+// A malformed line is skipped for the same reason readSuppressed skips one: the
+// ledger is best-effort evidence, and a single unparseable line must not turn the
+// whole scan into a read error.
+func (s *UnforwardedClosersScanner) readForwardedLedger(
+	ctx context.Context,
+	since float64,
+) (map[string]struct{}, error) {
+	path := filepath.Join(s.stateDir, unforwardedForwardedLedger)
+	fh, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string]struct{}{}, nil
+		}
+		return nil, errors.Wrapf(ctx, err, "read forwarded ledger %s", path)
+	}
+	defer fh.Close()
+	delivered := make(map[string]struct{})
+	scanner := newLineScanner(fh)
+	for scanner.Scan() {
+		if err := checkCanceled(ctx); err != nil {
+			return nil, err
+		}
+		var record map[string]any
+		if json.Unmarshal(scanner.Bytes(), &record) != nil {
+			continue
+		}
+		item, ok := record["item"].(string)
+		if !ok || item == "" {
+			continue
+		}
+		at, ok := asFloat(record["ts"])
+		if !ok || at < since {
+			continue
+		}
+		delivered[firstEight(item)] = struct{}{}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, errors.Wrapf(ctx, err, "read forwarded ledger %s", path)
+	}
+	return delivered, nil
 }
 
 // readSuppressed collects the hook's own suppression records, keyed by session.
@@ -786,11 +868,26 @@ func unixSecondsFromTime(value time.Time) float64 {
 	return float64(value.UnixNano()) / float64(time.Second)
 }
 
-// suppressedWithin reports whether a suppression record falls in the one second
-// before the open.
+// unforwardedSuppressionWindow is how far before an open row a suppression
+// record still explains it.
+//
+// ⚠️ 6 s, not the one second this replaced. The hook writes the suppression and
+// then opens the idle row in the SAME turn, and the gap between the two writes
+// is the mint attempt's own I/O. Measured 2026-11-17 over the suppression→open
+// pairs on disk: 45 fell within 1 s and 3 at 5.005–5.006 s. The 1 s window read
+// all three slow pairs as losses — three of the findings behind the
+// `unforwarded=37` reading that filed this repair. 6 s covers the measured
+// maximum with ~1 s headroom and stays bounded: a 30 s-old suppression is NOT
+// exempted (pinned by a spec), so a real closer minted in a later turn is still
+// counted.
+const unforwardedSuppressionWindow = 6 * time.Second
+
+// suppressedWithin reports whether a suppression record falls in the window
+// before the open that its own turn's mint wrote.
 func suppressedWithin(timestamps []float64, at float64) bool {
+	lower := at - unforwardedSuppressionWindow.Seconds()
 	for _, candidate := range timestamps {
-		if at-1 <= candidate && candidate <= at {
+		if lower <= candidate && candidate <= at {
 			return true
 		}
 	}

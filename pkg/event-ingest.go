@@ -308,6 +308,54 @@ func (j *eventIngestJob) ingestFile(
 	return counts, nil
 }
 
+// recordForwarded appends one delivery mark to the durable ledger.
+//
+// ⚠️ Written only for an `open` whose push RETURNED NIL — `forwarded` is that
+// success. It is the delivery evidence that survives the store pruning the item
+// it describes; the unforwarded-closers check unions it with the store so a
+// delivered-then-pruned gate does not read as lost.
+//
+// A write failure is logged and never fails the pass: the record's effect
+// landed, and losing the mark costs at most a false positive later, while
+// failing here would re-push a gate already on the board.
+//
+// The file is append-only and the reader bounds it by time, so its growth is one
+// short line per delivered gate and its read cost is one window's worth.
+func (j *eventIngestJob) recordForwarded(root *os.Root, record EventIngestRecord) {
+	ts := 0.0
+	if record.TS != nil {
+		ts = *record.TS
+	}
+	line, err := json.Marshal(map[string]any{
+		"item": record.ItemID,
+		"ts":   ts,
+	})
+	if err != nil {
+		return
+	}
+	fh, err := root.OpenFile(
+		unforwardedForwardedLedger,
+		os.O_CREATE|os.O_APPEND|os.O_WRONLY,
+		0o600,
+	)
+	if err != nil {
+		glog.Warningf(
+			"job=attention-watcher action=ledger_error item=%s error=%v",
+			record.ItemID,
+			err,
+		)
+		return
+	}
+	defer fh.Close()
+	if _, err := fh.Write(append(line, '\n')); err != nil {
+		glog.Warningf(
+			"job=attention-watcher action=ledger_error item=%s error=%v",
+			record.ItemID,
+			err,
+		)
+	}
+}
+
 // ingestRecord forwards one record and records what happened to it.
 //
 // It is split out of ingestFile so the permanent-skip decision and the
@@ -370,6 +418,11 @@ func (j *eventIngestJob) ingestRecord(
 		counts.skipped++
 	} else if entry.record.Open {
 		counts.opened++
+		// The push returned nil, so this gate reached the board. Record that
+		// durably: the store prunes its item at `expires_at`, and the
+		// unforwarded-closers check reads the store for delivery — without
+		// this mark a delivered-then-pruned row reads as lost.
+		j.recordForwarded(root, entry.record)
 	} else {
 		counts.closed++
 	}
