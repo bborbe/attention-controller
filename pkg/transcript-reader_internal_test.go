@@ -7,6 +7,7 @@ package pkg
 import (
 	"os"
 	"path/filepath"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -105,6 +106,122 @@ var _ = Describe("transcript reader", func() {
 		It("reports false when the transcript is absent", func() {
 			Expect(reader.HoldsLine("99999999-9999-9999-9999-999999999999", "anything", nil)).
 				To(BeFalse())
+		})
+	})
+
+	Describe("negative cache", func() {
+		// countingWindow wraps the real read and records how many scans the
+		// reader actually performed, so a spec can prove an unchanged
+		// transcript is not re-read on every call.
+		countScans := func(concrete *transcriptReader, scans *int) {
+			real := concrete.readWindow
+			concrete.readWindow = func(path string, since *int64) ([]byte, bool) {
+				*scans++
+				return real(path, since)
+			}
+		}
+
+		It("scans an unchanged transcript once across repeated misses", func() {
+			writeTranscript(root, sessionID,
+				`{"type":"user","message":{"content":"something else"}}`+"\n")
+			concrete, ok := reader.(*transcriptReader)
+			Expect(ok).To(BeTrue())
+			scans := 0
+			countScans(concrete, &scans)
+
+			for i := 0; i < 5; i++ {
+				Expect(
+					reader.HoldsLine(
+						sessionID,
+						"Operator answer, via attention board: allow [abc]",
+						nil,
+					),
+				).
+					To(BeFalse())
+			}
+			Expect(scans).To(Equal(1))
+		})
+
+		It("keeps one line's proof without evicting a sibling line's", func() {
+			writeTranscript(root, sessionID,
+				`{"type":"user","message":{"content":"something else"}}`+"\n")
+			concrete, ok := reader.(*transcriptReader)
+			Expect(ok).To(BeTrue())
+			scans := 0
+			countScans(concrete, &scans)
+
+			Expect(reader.HoldsLine(sessionID, "allow [aaa]", nil)).To(BeFalse())
+			Expect(reader.HoldsLine(sessionID, "deny [bbb]", nil)).To(BeFalse())
+			Expect(scans).To(Equal(2))
+
+			// Both proofs survive: two cards on one session must not thrash.
+			Expect(reader.HoldsLine(sessionID, "allow [aaa]", nil)).To(BeFalse())
+			Expect(reader.HoldsLine(sessionID, "deny [bbb]", nil)).To(BeFalse())
+			Expect(scans).To(Equal(2))
+		})
+
+		It("does not mask a line appended after the miss", func() {
+			path := writeTranscript(root, sessionID,
+				`{"type":"user","message":{"content":"something else"}}`+"\n")
+			Expect(
+				reader.HoldsLine(
+					sessionID,
+					"Operator answer, via attention board: allow [abc]",
+					nil,
+				),
+			).
+				To(BeFalse())
+
+			// Append the delivered line: the size changes, so the earlier miss
+			// must not answer for the new file state.
+			file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+			Expect(err).NotTo(HaveOccurred())
+			_, err = file.WriteString(
+				`{"type":"user","message":{"content":"Operator answer, via attention board: allow [abc]"}}` + "\n",
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(file.Close()).To(Succeed())
+
+			Expect(
+				reader.HoldsLine(
+					sessionID,
+					"Operator answer, via attention board: allow [abc]",
+					nil,
+				),
+			).
+				To(BeTrue())
+		})
+
+		It("drops a proof when the transcript disappears", func() {
+			path := writeTranscript(root, sessionID,
+				`{"type":"user","message":{"content":"something else"}}`+"\n")
+			Expect(reader.HoldsLine(sessionID, "allow [abc]", nil)).To(BeFalse())
+			concrete, ok := reader.(*transcriptReader)
+			Expect(ok).To(BeTrue())
+			Expect(concrete.cache).To(HaveLen(1))
+			Expect(os.Remove(path)).To(Succeed())
+			Expect(reader.HoldsLine(sessionID, "allow [abc]", nil)).To(BeFalse())
+			Expect(concrete.cache).To(BeEmpty())
+		})
+	})
+
+	Describe("readTranscriptWindow", func() {
+		It("reads the tail window, not the 16 MiB scan cap", func() {
+			padding := strings.Repeat(`{"type":"user","message":{"content":"pad"}}`+"\n", 20000)
+			path := writeTranscript(root, sessionID, padding)
+			raw, ok := readTranscriptWindow(path, nil)
+			Expect(ok).To(BeTrue())
+			Expect(len(raw)).To(Equal(transcriptReaderTailBytes))
+		})
+
+		It("still finds a line that sits inside the tail", func() {
+			padding := strings.Repeat(`{"type":"user","message":{"content":"pad"}}`+"\n", 20000)
+			path := writeTranscript(root, sessionID,
+				padding+`{"type":"user","message":{"content":"allow [abc]"}}`+"\n")
+			Expect(reader.HoldsLine(sessionID, "allow [abc]", nil)).To(BeTrue())
+			raw, ok := readTranscriptWindow(path, nil)
+			Expect(ok).To(BeTrue())
+			Expect(len(raw)).To(Equal(transcriptReaderTailBytes))
 		})
 	})
 
