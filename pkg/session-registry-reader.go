@@ -55,7 +55,9 @@ func readSessionNamesWithError(
 		select {
 		case <-ctx.Done():
 			glog.V(3).Infof("session registry scan cancelled")
-			return names, nil
+			// A partial read is not a clean one: report the cancellation so the
+			// feed does not stamp sources.registry = "ok" over an incomplete scan.
+			return names, errors.Wrap(ctx, ctx.Err(), "session registry scan cancelled")
 		default:
 		}
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {

@@ -232,7 +232,7 @@ func rowFromItem(item Item, provenance Provenance, now time.Time) (WhoNeedsMeRow
 		DedupKey:              string(item.DedupKey),
 		SessionID:             sessionIDFromItem(item),
 		Kind:                  kind,
-		Text:                  string(item.Payload),
+		Text:                  singleLine(string(item.Payload)),
 		State:                 string(item.State),
 		CreatedAt:             item.CreatedAt.Time().UTC().Format(whoNeedsMeTimeFormat),
 		AgeSeconds:            int64(now.Sub(item.CreatedAt.Time()).Seconds()),
@@ -240,17 +240,23 @@ func rowFromItem(item Item, provenance Provenance, now time.Time) (WhoNeedsMeRow
 		PaneListingUnreadable: provenance.PaneListingUnreadable,
 		RecordedPane:          provenance.RecordedPane,
 		Routable:              provenance.Routable,
-		SessionName:           provenance.SessionName,
-		Host:                  provenance.Host,
-		Cwd:                   provenance.Cwd,
-		Tool:                  provenance.Tool,
-		Task:                  provenance.TaskName,
-		Goal:                  provenance.GoalName,
-		Topic:                 provenance.TopicName,
+		SessionName:           singleLine(provenance.SessionName),
+		Host:                  singleLine(provenance.Host),
+		Cwd:                   singleLine(provenance.Cwd),
+		Tool:                  singleLine(provenance.Tool),
+		Task:                  singleLine(provenance.TaskName),
+		Goal:                  singleLine(provenance.GoalName),
+		Topic:                 singleLine(provenance.TopicName),
 		Options:               optionsOf(item),
 		Headless:              provenance.Headless,
 		Source:                "store",
 	}, true
+}
+
+// singleLine collapses a value's whitespace runs — including newlines — to
+// single spaces, so no data field carries a multi-line preformatted feed (AC1).
+func singleLine(text string) string {
+	return strings.Join(strings.Fields(text), " ")
 }
 
 // kindFromMechanism maps the store's mechanism enum to the reader's kind
@@ -455,7 +461,7 @@ func rowFromEvent(record EventIngestRecord, now time.Time) (WhoNeedsMeRow, bool)
 		DedupKey:   record.ItemID,
 		SessionID:  record.SessionID,
 		Kind:       record.Kind,
-		Text:       record.Detail,
+		Text:       singleLine(record.Detail),
 		State:      "open",
 		CreatedAt:  created.Format(whoNeedsMeTimeFormat),
 		AgeSeconds: int64(now.Sub(created).Seconds()),

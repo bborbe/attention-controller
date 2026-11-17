@@ -53,12 +53,14 @@ var _ = Describe("WhoNeedsMeReader", func() {
 		}
 	}
 
-	It("joins item fields to a resolver answer of generated values (AC1, AC2)", func() {
+	It("joins item fields to a resolver answer of generated values, single-line (AC1, AC2)", func() {
 		// Generated, not constant: a hardcoded literal in the reader cannot match.
 		name := fmt.Sprintf("worker-%d", stdtime.Now().UnixNano())
 		task := fmt.Sprintf("task-%d", stdtime.Now().UnixNano())
+		item := permissionItem()
+		item.Payload = "Approve the\ndeploy?\n\nYes/no" // multi-line must collapse
 		store := &mocks.AttentionStore{}
-		store.ReadReturns(pkg.Items{permissionItem()}, nil)
+		store.ReadReturns(pkg.Items{item}, nil)
 		provenance := &mocks.ProvenanceResolver{}
 		provenance.ResolveReturns(pkg.Provenances{
 			"store-1": {Pane: "3", Routable: true, SessionName: name, TaskName: task},
@@ -80,15 +82,30 @@ var _ = Describe("WhoNeedsMeReader", func() {
 		Expect(row.Task).To(Equal(task))
 		Expect(row.Pane).To(Equal("3"))
 		Expect(row.AgeSeconds).To(BeNumerically(">=", 89))
+		// AC1: no field carries a multi-line preformatted feed.
+		Expect(row.Text).ToNot(ContainSubstring("\n"))
 		// AC7: the reader reaches the store through Read only.
 		Expect(store.ReadCallCount()).To(Equal(1))
 	})
 
-	It("omits an ack item and marks an unreadable pane listing (AC2 negative, AC5)", func() {
+	It("omits an ack item — it is not a gate (AC1)", func() {
 		store := &mocks.AttentionStore{}
 		ack := permissionItem()
 		ack.AnswerMechanism = pkg.AckAnswerMechanism
 		store.ReadReturns(pkg.Items{ack}, nil)
+		provenance := &mocks.ProvenanceResolver{}
+		provenance.ResolveReturns(pkg.Provenances{})
+		panes := &mocks.PaneLister{}
+		panes.ListReturns(map[int]pkg.Pane{}, nil)
+
+		feed, err := newReader(store, provenance, panes, "", "").Read(ctx)
+		Expect(err).To(BeNil())
+		Expect(feed.Items).To(BeEmpty())
+	})
+
+	It("marks a recorded pane unreadable when the listing fails (AC2 negative, AC5)", func() {
+		store := &mocks.AttentionStore{}
+		store.ReadReturns(pkg.Items{permissionItem()}, nil)
 		provenance := &mocks.ProvenanceResolver{}
 		provenance.ResolveReturns(pkg.Provenances{
 			"store-1": {PaneListingUnreadable: true, RecordedPane: "3"},
@@ -98,8 +115,10 @@ var _ = Describe("WhoNeedsMeReader", func() {
 
 		feed, err := newReader(store, provenance, panes, "", "").Read(ctx)
 		Expect(err).To(BeNil())
-		Expect(feed.Items).To(BeEmpty())
 		Expect(feed.Sources.Panes).To(Equal("failed"))
+		Expect(feed.Items).To(HaveLen(1))
+		Expect(feed.Items[0].Pane).To(Equal("")) // no fabricated pane
+		Expect(feed.Items[0].PaneListingUnreadable).To(BeTrue())
 	})
 
 	It("answers differently for a populated and an empty store (AC3)", func() {
@@ -129,11 +148,11 @@ var _ = Describe("WhoNeedsMeReader", func() {
 		panes := &mocks.PaneLister{}
 		panes.ListReturns(map[int]pkg.Pane{}, nil)
 
-		file, err := os.CreateTemp(GinkgoT().TempDir(), "not-a-dir")
-		Expect(err).To(BeNil())
-		Expect(file.Close()).To(BeNil())
+		// A regular file where a directory is expected makes ReadDir return ENOTDIR.
+		notADir := filepath.Join(GinkgoT().TempDir(), "regular-file")
+		Expect(os.WriteFile(notADir, []byte("x"), 0o600)).To(BeNil())
 
-		feed, err := newReader(store, prov, panes, file.Name(), "").Read(ctx)
+		feed, err := newReader(store, prov, panes, notADir, "").Read(ctx)
 		Expect(err).To(BeNil())
 		Expect(feed.Sources.Registry).To(Equal("failed"))
 		Expect(feed.Sessions).To(BeEmpty())
@@ -165,15 +184,20 @@ var _ = Describe("WhoNeedsMeReader", func() {
 		Expect(feed.Sources.Store).To(Equal("failed"))
 		Expect(feed.Items).To(HaveLen(2)) // a (reopened) and b; c stays closed
 		ids := map[string]string{}
+		sessions := map[string]bool{}
 		for _, row := range feed.Items {
 			Expect(row.Replayed).To(BeTrue())
 			Expect(row.ItemID).To(Equal(row.DedupKey))
 			Expect(row.Source).To(Equal("event-log"))
 			ids[row.ItemID] = row.Text
+			sessions[row.SessionID] = true
 		}
 		Expect(ids).To(HaveKey("a"))
 		Expect(ids["a"]).To(Equal("Approve again?")) // the reopened record wins
 		Expect(ids).To(HaveKey("b"))
+		// AC4: two sessions with differing states both appear.
+		Expect(sessions).To(HaveKey("s1"))
+		Expect(sessions).To(HaveKey("s2"))
 		// AC1 on the fallback path: the arrays are present (non-nil), not null.
 		Expect(feed.Sessions).ToNot(BeNil())
 		Expect(feed.Panes).ToNot(BeNil())
