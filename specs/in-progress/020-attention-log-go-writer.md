@@ -1,6 +1,6 @@
 ---
 status: approved
-approved: "2026-11-17T21:43:04Z"
+approved: "2026-11-17T22:53:43Z"
 branch: dark-factory/attention-log-go-writer
 ---
 
@@ -116,3 +116,4 @@ Keep the Python hook. Rejected by measurement: interpreter startup plus imports 
 | 2 | Gate path: `open_item`, `slot_blocks_new_gate`, `permission_context`, `questions`/`options`, `Notification`/`PermissionRequest` | 7 | AC1 (gate events), AC6a/b | 1 |
 | 3 | `Stop` fence walker + `UserPromptSubmit` envelope branch | 3, 8, 9 | AC1 (Stop/UserPromptSubmit), AC6c | 1 |
 | 4 | Randomized differential + e2e completion + CHANGELOG | all | AC1, AC7 | 1, 2, 3 |
+
