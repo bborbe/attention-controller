@@ -22,9 +22,9 @@ import (
 	"github.com/bborbe/run"
 	libtime "github.com/bborbe/time"
 	"github.com/gorilla/mux"
-	bolt "go.etcd.io/bbolt"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	bolt "go.etcd.io/bbolt"
 
 	"github.com/bborbe/attention-controller/mocks"
 	"github.com/bborbe/attention-controller/pkg"
@@ -656,7 +656,9 @@ var _ = Describe("sessionLivenessChecker", func() {
 var _ = Describe("boltOpenOptions", func() {
 	It("bounds the lock wait so a contended open fails instead of hanging forever", func() {
 		opts := *bolt.DefaultOptions
-		Expect(opts.Timeout).To(Equal(time.Duration(0)), "precondition: bbolt waits forever by default")
+		Expect(
+			opts.Timeout,
+		).To(Equal(time.Duration(0)), "precondition: bbolt waits forever by default")
 		boltOpenOptions()(&opts)
 		Expect(opts.Timeout).To(Equal(boltOpenLockTimeout))
 		Expect(opts.Timeout).To(BeNumerically(">", 0))

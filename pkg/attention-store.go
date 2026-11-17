@@ -91,7 +91,12 @@ type AttentionStore interface {
 	// The bounds, filters and narrowing are History's exactly — this is that
 	// read, encoded — and the body carries no trailing newline: the endpoint
 	// serves it through `json.RawMessage`, whose encoder supplies one.
-	HistoryJSON(ctx context.Context, limit int, offset int, filters ...HistoryFilter) ([]byte, error)
+	HistoryJSON(
+		ctx context.Context,
+		limit int,
+		offset int,
+		filters ...HistoryFilter,
+	) ([]byte, error)
 
 	// HistoryCreatedSince returns every item whose CreatedAt is at or after
 	// since, in ANY state, newest-first.
