@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- fix: **a completed miss-guard check is logged positively, so `action=miss 0` can be told apart from "the guard never ran".** `checkMiss` returned silently on the agreeing `rc=0` verdict and emitted only `action=guard_error` and `action=miss`, so the guard's own probe (`grep -c 'action=miss'` against the changed-tick count) could not distinguish a guard that checked twenty times and agreed from one that never executed — it was unprovable even when it worked perfectly. The agreeing branch now emits `action=guard_ok subject=<name> rc=0`, so a reader pairs the two counts and the miss rate is a real rate. Log-only: the guard stays opt-in behind `.miss-guard-enabled` and nothing else changes.
+
 ## v0.93.2
 
 - fix: **an unforwarded-closer card no longer outlives the session it points at.** The arm stamped `owner:attention-unforwarded-closers` on every re-presented card, and the `owner:` liveness model probes nothing by design — so a card minted while its session was live survived that session's exit, and only its 24 h `expires_at` cleared it. The operator held an unanswerable card for up to a day (measured 2026-11-17: 2 of 10 open cards belonged to an `ABSENT` session, dead ~8 h). Two changes. The card now carries `session:<id>` (`UnforwardedPushRequest` / `unforwardedLivenessRef`), so the session is machine-readable on the stored item and renewal stops on exit. And a new `UnforwardedClosersJob.reconcile` pass, run after each scan, closes every open card this producer owns whose `session:` subject no longer resolves live — bounding the stale card to one scan cycle (900 s). It closes only on a positive absence: `IsLive` fails open on an unreadable registry and a nil checker disables the pass, so an UNKNOWN verdict keeps the card, and an `owner:` card or another producer's card is never touched.

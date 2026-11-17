@@ -378,6 +378,8 @@ var _ = Describe("sweep gate notify job", func() {
 
 		_, missed := capture.find("job=sweep-gate-notify action=miss")
 		Expect(missed).To(BeFalse())
+		_, ok := capture.find("job=sweep-gate-notify action=guard_ok")
+		Expect(ok).To(BeTrue())
 		Expect(checker.calls.Load()).To(BeNumerically("==", 1))
 	})
 
