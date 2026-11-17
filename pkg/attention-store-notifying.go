@@ -81,6 +81,16 @@ func (n *notifyingAttentionStore) History(
 	return n.store.History(ctx, limit, offset, filters...)
 }
 
+// HistoryJSON delegates and never signals: it is the same counting read, encoded.
+func (n *notifyingAttentionStore) HistoryJSON(
+	ctx context.Context,
+	limit int,
+	offset int,
+	filters ...HistoryFilter,
+) ([]byte, error) {
+	return n.store.HistoryJSON(ctx, limit, offset, filters...)
+}
+
 // HistoryCreatedSince delegates and never signals: it is a counting read.
 func (n *notifyingAttentionStore) HistoryCreatedSince(
 	ctx context.Context,

@@ -162,6 +162,22 @@ type AttentionStore struct {
 		result1 pkg.Items
 		result2 error
 	}
+	HistoryJSONStub        func(context.Context, int, int, ...pkg.HistoryFilter) ([]byte, error)
+	historyJSONMutex       sync.RWMutex
+	historyJSONArgsForCall []struct {
+		arg1 context.Context
+		arg2 int
+		arg3 int
+		arg4 []pkg.HistoryFilter
+	}
+	historyJSONReturns struct {
+		result1 []byte
+		result2 error
+	}
+	historyJSONReturnsOnCall map[int]struct {
+		result1 []byte
+		result2 error
+	}
 	MarkSeenStub        func(context.Context, pkg.ItemID) (*pkg.Item, error)
 	markSeenMutex       sync.RWMutex
 	markSeenArgsForCall []struct {
@@ -950,6 +966,73 @@ func (fake *AttentionStore) HistoryCreatedSinceReturnsOnCall(i int, result1 pkg.
 	}
 	fake.historyCreatedSinceReturnsOnCall[i] = struct {
 		result1 pkg.Items
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *AttentionStore) HistoryJSON(arg1 context.Context, arg2 int, arg3 int, arg4 ...pkg.HistoryFilter) ([]byte, error) {
+	fake.historyJSONMutex.Lock()
+	ret, specificReturn := fake.historyJSONReturnsOnCall[len(fake.historyJSONArgsForCall)]
+	fake.historyJSONArgsForCall = append(fake.historyJSONArgsForCall, struct {
+		arg1 context.Context
+		arg2 int
+		arg3 int
+		arg4 []pkg.HistoryFilter
+	}{arg1, arg2, arg3, arg4})
+	stub := fake.HistoryJSONStub
+	fakeReturns := fake.historyJSONReturns
+	fake.recordInvocation("HistoryJSON", []interface{}{arg1, arg2, arg3, arg4})
+	fake.historyJSONMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2, arg3, arg4...)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *AttentionStore) HistoryJSONCallCount() int {
+	fake.historyJSONMutex.RLock()
+	defer fake.historyJSONMutex.RUnlock()
+	return len(fake.historyJSONArgsForCall)
+}
+
+func (fake *AttentionStore) HistoryJSONCalls(stub func(context.Context, int, int, ...pkg.HistoryFilter) ([]byte, error)) {
+	fake.historyJSONMutex.Lock()
+	defer fake.historyJSONMutex.Unlock()
+	fake.HistoryJSONStub = stub
+}
+
+func (fake *AttentionStore) HistoryJSONArgsForCall(i int) (context.Context, int, int, []pkg.HistoryFilter) {
+	fake.historyJSONMutex.RLock()
+	defer fake.historyJSONMutex.RUnlock()
+	argsForCall := fake.historyJSONArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3, argsForCall.arg4
+}
+
+func (fake *AttentionStore) HistoryJSONReturns(result1 []byte, result2 error) {
+	fake.historyJSONMutex.Lock()
+	defer fake.historyJSONMutex.Unlock()
+	fake.HistoryJSONStub = nil
+	fake.historyJSONReturns = struct {
+		result1 []byte
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *AttentionStore) HistoryJSONReturnsOnCall(i int, result1 []byte, result2 error) {
+	fake.historyJSONMutex.Lock()
+	defer fake.historyJSONMutex.Unlock()
+	fake.HistoryJSONStub = nil
+	if fake.historyJSONReturnsOnCall == nil {
+		fake.historyJSONReturnsOnCall = make(map[int]struct {
+			result1 []byte
+			result2 error
+		})
+	}
+	fake.historyJSONReturnsOnCall[i] = struct {
+		result1 []byte
 		result2 error
 	}{result1, result2}
 }
