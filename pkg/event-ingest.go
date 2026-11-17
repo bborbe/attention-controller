@@ -387,6 +387,17 @@ func (j *eventIngestJob) forward(
 	record EventIngestRecord,
 ) (bool, error) {
 	if !record.Open {
+		if !record.Forward {
+			// The hook marked this close local-only: the local feed clears
+			// while the board item stays open. Consumed, never forwarded —
+			// the same convention as `idle` and the class-3 filter.
+			glog.V(2).Infof(
+				"job=attention-watcher action=local-close item=%s kind=%s",
+				record.ItemID,
+				record.Kind,
+			)
+			return false, nil
+		}
 		return true, j.sink.Close(ctx, record)
 	}
 	if !eventIngestKinds[record.Kind] {

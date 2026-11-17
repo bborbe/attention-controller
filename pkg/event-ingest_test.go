@@ -67,6 +67,28 @@ var _ = Describe("EventIngestJob", func() {
 		)
 	}
 
+	// forwardRecord renders one event-log line carrying the hook's `forward`
+	// flag. A nil value omits the key entirely — the shape of every record
+	// written before the flag existed.
+	forwardRecord := func(id string, open bool, forward *bool) string {
+		openField := "close"
+		if open {
+			openField = "open"
+		}
+		forwardField := ""
+		if forward != nil {
+			forwardField = fmt.Sprintf(`,"forward":%t`, *forward)
+		}
+		return fmt.Sprintf(
+			`{"item_id":%q,"session_id":"s1","type":%q,"ts":100,"kind":"question"%s}`,
+			id,
+			openField,
+			forwardField,
+		)
+	}
+
+	boolPtr := func(v bool) *bool { return &v }
+
 	writeLog := func(name string, lines ...string) {
 		path := filepath.Join(stateDir, name)
 		Expect(os.WriteFile(path, []byte(joinLines(lines)), 0o600)).To(Succeed())
@@ -99,6 +121,39 @@ var _ = Describe("EventIngestJob", func() {
 
 	It("forwards a close record", func() {
 		writeLog("s1.events.jsonl", record("a", "permission", false, 100))
+
+		Expect(job().IngestOnce(ctx)).To(Succeed())
+
+		Expect(sink.closed).To(Equal([]string{"a"}))
+	})
+
+	It("does not close a record the hook marked forward: false", func() {
+		// A second record that MUST forward rides in the same log, so a pass
+		// that silently decoded nothing cannot satisfy this spec.
+		writeLog(
+			"s1.events.jsonl",
+			forwardRecord("a", false, boolPtr(false)),
+			record("b", "permission", true, 101),
+		)
+
+		Expect(job().IngestOnce(ctx)).To(Succeed())
+
+		Expect(sink.closed).To(BeEmpty())
+		Expect(sink.opened).To(Equal([]string{"b"}))
+	})
+
+	It("closes a record carrying forward: true", func() {
+		writeLog("s1.events.jsonl", forwardRecord("a", false, boolPtr(true)))
+
+		Expect(job().IngestOnce(ctx)).To(Succeed())
+
+		Expect(sink.closed).To(Equal([]string{"a"}))
+	})
+
+	It("closes a record with no forward key", func() {
+		// Every record written before the flag existed omits the key. The
+		// decoder defaults it to true, so the filter must not drop them.
+		writeLog("s1.events.jsonl", forwardRecord("a", false, nil))
 
 		Expect(job().IngestOnce(ctx)).To(Succeed())
 
