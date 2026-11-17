@@ -409,23 +409,65 @@ var _ = Describe("attention watcher delivery job", func() {
 		)
 		carrier.verdict = pkg.DeliveryRetry
 		item := boundItem(clock, 10*time.Minute)
-		// An earlier tick already marked THIS answer: the record is after the
-		// answer and past the backoff, so the arm is due to try again but must not
-		// re-write the marker.
-		markedAt := libtime.DateTime(clock.Now().Time().Add(-6 * time.Minute))
+		store.ReadBoardReturns(pkg.Items{item}, nil)
+
+		// First tick past the bound writes the marker.
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+		Expect(store.RecordAttemptCallCount()).To(Equal(1))
+		_, _, markerCarrier, outcome := store.RecordAttemptArgsForCall(0)
+		Expect(outcome).To(Equal(pkg.FailedOutcome))
+
+		// A later tick, once the backoff has passed, must not re-write it. The
+		// record carries the marker's own carrier, so it IS this answer's marker —
+		// that, and not the mere presence of an attempt, is what suppresses.
+		markedAt := libtime.DateTime(clock.Now().Time())
 		store.DeliveryReportsReturns(map[pkg.ItemID]*pkg.DeliveryReport{
 			"item-1": {
 				ItemID:      pkg.ItemID("item-1"),
 				Status:      pkg.FailedStatus,
+				Carrier:     markerCarrier,
 				AttemptedAt: &markedAt,
+			},
+		}, nil)
+		clock.SetNow(
+			clock.Now().Add(libtime.Duration(pkg.AttentionDeliveryRetryBackoff + time.Second)),
+		)
+
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+		Expect(store.RecordAttemptCallCount()).To(Equal(1))
+	})
+
+	// The regression this bound shipped without: card f1b46ed9… (2026-11-17) was
+	// refused 0.4 s after its answer, then retried for 1216 s with no marker at
+	// all. The guard treated that earlier refuse — an attempt at/after the answer
+	// but BEFORE the retry loop — as proof the loop was already marked.
+	It("marks the loop even when an earlier refuse was recorded after the answer", func() {
+		clock := libtime.NewCurrentDateTime()
+		job = pkg.NewAttentionWatcherJob(
+			store, carrier, &fakeHeadlessDeliverer{}, time.Hour, clock,
+		)
+		carrier.verdict = pkg.DeliveryRetry
+		item := boundItem(clock, 10*time.Minute)
+		// A refuse written after the answer but before the loop began: exactly the
+		// shape the old guard mistook for a marker.
+		refusedAt := libtime.DateTime(clock.Now().Time().Add(-9 * time.Minute))
+		store.DeliveryReportsReturns(map[pkg.ItemID]*pkg.DeliveryReport{
+			"item-1": {
+				ItemID:      pkg.ItemID("item-1"),
+				Status:      pkg.FailedStatus,
+				Carrier:     "watcher:attention-watcher",
+				AttemptedAt: &refusedAt,
 			},
 		}, nil)
 		store.ReadBoardReturns(pkg.Items{item}, nil)
 
 		Expect(job.DeliverOnce(context.Background())).To(Succeed())
 
-		Expect(carrier.calls).To(ConsistOf("item-1=allow"))
-		Expect(store.RecordAttemptCallCount()).To(Equal(0))
+		Expect(store.RecordAttemptCallCount()).To(Equal(1))
+		_, _, writtenCarrier, outcome := store.RecordAttemptArgsForCall(0)
+		Expect(outcome).To(Equal(pkg.FailedOutcome))
+		Expect(writtenCarrier).NotTo(Equal("watcher:attention-watcher"),
+			"the marker must be distinguishable from an ordinary attempt")
 	})
 
 	It("keeps retrying after the marker so a later delivery settles delivered", func() {
