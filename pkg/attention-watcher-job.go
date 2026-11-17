@@ -48,7 +48,14 @@ const AttentionDeliveryRetryBackoff = 5 * time.Minute
 // arm only and never on the unbooked one — measured 2026-11-14, an unbooked
 // answer retried 34 minutes unmarked. The port unified both arms into this one,
 // so this constant now governs every retry.
-const AttentionDeliveryBound = 5 * time.Minute
+//
+// It is defined from AttentionDeliveryRetryBackoff rather than repeating the
+// literal, so the tree carries exactly ONE five-minute value and a spec can fail
+// on a second one. The bound is one backoff window: an answer that has not been
+// carried by the time a failed delivery would be retried has waited a full
+// retry cycle. The value itself is pinned by a spec, so widening the backoff
+// cannot silently widen the operator's promise.
+const AttentionDeliveryBound = AttentionDeliveryRetryBackoff
 
 // storeReadTimeout bounds the delivery arm's board read.
 //

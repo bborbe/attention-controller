@@ -6,6 +6,8 @@ package pkg_test
 
 import (
 	"context"
+	"os"
+	"strings"
 	"time"
 
 	libtime "github.com/bborbe/time"
@@ -409,10 +411,20 @@ var _ = Describe("attention watcher delivery job", func() {
 
 	// SC3's pin, adapted to the port: the Python watcher had a booked and an
 	// unbooked arm and this constant bounded only one of them. The port unified
-	// both into a single arm, so one constant governs every retry — and this spec
-	// fails if the bound drifts off five minutes without the retry path being
-	// changed with it.
-	It("pins the single delivery bound the retry loop is measured against", func() {
+	// both into a single arm, so one constant governs every retry. The literal
+	// scan is the discriminating half — a constant assertion alone would pass on a
+	// value re-typed at a call site, which is exactly how one path drifts
+	// unbounded while the constant still reads five minutes.
+	It("pins the single delivery bound and forbids a second five-minute literal", func() {
 		Expect(pkg.AttentionDeliveryBound).To(Equal(5 * time.Minute))
+
+		src, err := os.ReadFile("attention-watcher-job.go")
+		Expect(err).NotTo(HaveOccurred())
+		// One literal, in AttentionDeliveryRetryBackoff, from which the bound is
+		// derived. A second 5-minute literal in the arm is a duplicated bound.
+		Expect(strings.Count(string(src), "5 * time.Minute")).To(Equal(1),
+			"the delivery arm carries a second five-minute literal")
+		Expect(string(src)).To(ContainSubstring("answeredAt.Add(AttentionDeliveryBound)"),
+			"the bound must be read by name, never re-typed at the call site")
 	})
 })
