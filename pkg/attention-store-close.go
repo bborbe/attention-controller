@@ -84,9 +84,9 @@ func (a *attentionStore) closeItem(ctx context.Context, tx libkv.Tx, item *Item)
 //
 // ⚠️ It lives in closeItem, not in each caller, for the same reason
 // countLostAnswer does: every close site already funnels through this helper, so
-// a fourth close path added later cannot silently skip the record. The task that
-// commissioned this named two paths; enumerating them found three — the explicit
-// close route, the event-ingest sink's close, and the answered sweep.
+// a fourth close path added later cannot silently skip the record. There are
+// three today — the explicit close route, the event-ingest sink's close, and the
+// answered sweep.
 //
 // ⚠️ An existing record is NEVER overwritten. A `delivered` must not be
 // downgraded to `held` by the sweep retiring a card an hour after a successful
