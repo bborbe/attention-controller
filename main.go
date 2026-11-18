@@ -1441,6 +1441,10 @@ func (a *application) addAttentionWatcherJobs(
 	// over the same base URL — two clients would be two timeout policies and two
 	// places for the URL to be read differently.
 	wrapper := pkg.NewClaudeWrapperClient(a.AttentionWrapperURL)
+	// The ANSWERED line goes to the process's own stdout because that is where
+	// the Python watcher's `ANSWERED <id>` line came from. ONE signaller serves
+	// all four arms, so the vocabulary and the in-process dedupe map are shared.
+	signaller := pkg.NewAnsweredSignaller(pkg.NewAnsweredSignalRecorder(os.Stdout))
 	// The headless delivery arm carries an answer into a session with no pane,
 	// which is the normal shape for every `sdk-cli` worker. Its cwd and task come
 	// from the item's own provenance, resolved through the SAME resolver the board
@@ -1450,6 +1454,7 @@ func (a *application) addAttentionWatcherJobs(
 		wrapper,
 		pkg.NewProvenanceAnswerContext(provenance),
 		libtime.NewCurrentDateTime(),
+		pkg.WithHeadlessAnswerSignaller(signaller),
 	)
 	runner.Add(ctx, pkg.NewAttentionWatcherJob(
 		store,
@@ -1457,6 +1462,7 @@ func (a *application) addAttentionWatcherJobs(
 		headless,
 		pkg.AttentionWatcherDeliveryInterval,
 		libtime.NewCurrentDateTime(),
+		pkg.WithAttentionWatcherSignaller(signaller),
 	).Run)
 	runner.Add(ctx, pkg.NewMenuAnswerJob(
 		store,
@@ -1464,6 +1470,7 @@ func (a *application) addAttentionWatcherJobs(
 		writer,
 		pkg.MenuAnswerInterval,
 		pkg.WithMenuAnswerHeadlessDelivery(headless),
+		pkg.WithMenuAnswerSignaller(signaller),
 	).Run)
 	// ⚠️ An empty wrapper URL leaves the arm unregistered rather than failing
 	// startup: a host with no claude-wrapper has no routine gates to settle, and
@@ -1477,6 +1484,7 @@ func (a *application) addAttentionWatcherJobs(
 			writer,
 			pkg.RoutineGateSettleInterval,
 			libtime.NewCurrentDateTime(),
+			pkg.WithRoutineGateSettleSignaller(signaller),
 		).Run)
 	}
 	// ⚠️ The release-expired-holds arm is deliberately NOT registered: its book
