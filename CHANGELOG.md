@@ -10,6 +10,8 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 
 ## v0.96.1
 
+- fix: a `done`-class answer parks the item in `awaiting_evidence` until the pull request or path it names is observed, and reopens it on the board after 30 minutes unverified
+
 - test: pin the turn-end split in `paneCarrier.noPaneVerdict`. A reaped non-headless session whose transcript ends its turn is refused with "ended its turn and its process exited — answer not delivered", while a session that died mid-turn keeps "has no live process with a tty". Both directions are asserted, so neither a permanent turn-end reason nor a dropped one passes. Ported from `test_attention_watcher_turn_ended.py` cases (b) and (c); the `turnEnded` fixture was never set in any spec before this.
 
 ## v0.96.0
