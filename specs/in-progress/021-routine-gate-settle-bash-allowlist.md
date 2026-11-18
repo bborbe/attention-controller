@@ -129,3 +129,17 @@ Rationale: prompt 1 delivers a tested exec client and its setting, inert until u
 ## Do-Nothing Option
 
 Every headless `ls`/`grep`/`cat` keeps becoming an operator card. On 2026-11-18 that was 1,492 operator answers, and none of the 141,546 settle decisions to date was an allow. This directly contradicts "only things that really deserve my attention". The manager-tier layer would still have to absorb allowlist-tier gates that a 34 ms deterministic check can settle.
+
+## Addendum 2026-11-18: Go-side guards (PR #276 review round 1)
+
+The live classifier rates `cat ~/.claude/.credentials.json`, `head ~/.teamvault.json` and `ls ~/Library/Keychains` as `allowlist`, because its allowlist is a command-prefix match that does not look at paths. The Bash rule therefore adds guards that run before the classifier. A gate held by one of them never starts a classifier process.
+
+- **`bash-denied-path`.** Every word of the command is tried as a path: `$HOME` / `${HOME}` and `~` are expanded, a relative word is joined with the cwd, and a glob word is expanded. A word that resolves through the Read rule's `deniedPath` holds the gate. The shared denylist is extended:
+  - basenames in any directory: `.credentials.json`, `.teamvault.json` (alongside `.netrc`, `.git-credentials`, `.npmrc`, `.pypirc`)
+  - patterns: `.env*`, `id_[^.]*`, `*.pem`, `*.key`
+  - home prefixes: `~/Library/Keychains` (alongside `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.config`)
+  - The guard over-matches on purpose: a false hold costs one card.
+- **`bash-sandbox-disabled`.** A Bash gate whose input carries `dangerouslyDisableSandbox` with any value other than `false` is held.
+- **`bash-cwd-not-workspace` is widened.** The cwd is refused when it is under a credential prefix (for example `~/.ssh/…`), exactly `/tmp` or `/var/tmp` (a per-job directory under them is still a workspace), or `/etc` at any depth.
+- **The classifier runs as `python3 -I`** (isolated mode).
+- **The verdict cache.** A `tier-error` verdict stands for 10 s, not the hold interval, so a repaired classifier is retried promptly. When the classifier exits, its process group is killed, so a backgrounded grandchild cannot outlive the call.

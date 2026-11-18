@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	libtime "github.com/bborbe/time"
@@ -100,7 +101,7 @@ var _ = Describe("routine gate settle job Bash rule", func() {
 
 	newJob := func(script string) pkg.RoutineGateSettleJob {
 		policy := pkg.NewRoutinePolicy(nil, pkg.WithRoutineBashClassifier(
-			pkg.NewRoutineBashClassifier("/bin/sh", script, timeout),
+			pkg.NewRoutineBashClassifier("/bin/sh", nil, script, timeout),
 			clock,
 		))
 		return pkg.NewRoutineGateSettleJob(store, wrapper, policy, sessions, time.Hour, clock)
@@ -351,7 +352,7 @@ var _ = Describe("routine gate settle job Bash rule", func() {
 			marker,
 			`case "$(cat)" in *'$('*) echo '{"tier":"operator"}';; *) echo '{"tier":"allowlist"}';; esac`,
 		))
-		setCommand("req-1", "ls $(cat ~/.netrc) && rm -rf /")
+		setCommand("req-1", "ls $(cat README.md) && rm -rf build")
 		Expect(job.SettleOnce(ctx)).To(Succeed())
 		Expect(wrapper.answered).To(BeEmpty())
 		Expect(heldCarrier()).To(Equal("tier-operator"))
@@ -383,6 +384,152 @@ var _ = Describe("routine gate settle job Bash rule", func() {
 			Expect(strings.Count(carrier, commandMarker)).To(Equal(0))
 		}
 	})
+
+	// Review round 1: credential paths are held before the classifier runs.
+	DescribeTable("holds a command naming a credential path without running the classifier",
+		func(command string) {
+			job := newJob(writeFakeClassifier(dir, marker,
+				`cat >/dev/null; echo '{"tier":"allowlist"}'`))
+			setCommand("req-1", command)
+			Expect(job.SettleOnce(ctx)).To(Succeed())
+			Expect(marker).NotTo(BeAnExistingFile())
+			Expect(wrapper.answered).To(BeEmpty())
+			Expect(heldCarrier()).To(Equal("bash-denied-path"))
+		},
+		Entry("claude credentials", "cat ~/.claude/.credentials.json"),
+		Entry("teamvault config", "head ~/.teamvault.json"),
+		Entry("keychains", "ls ~/Library/Keychains"),
+		Entry("netrc in any dir", "cat ./sub/.netrc"),
+		Entry("git-credentials", "cat .git-credentials"),
+		Entry("npmrc", "cat ~/.npmrc"),
+		Entry("pypirc", "cat ~/.pypirc"),
+		Entry("ssh key", "cat ~/.ssh/id_ed25519"),
+		Entry("id_ glob", "cat keys/id_*"),
+		Entry("pem", "cat server.pem"),
+		Entry("key", "cat tls/server.key"),
+		Entry("ssh dir", "ls ~/.ssh"),
+		Entry("aws dir", "ls ~/.aws/"),
+		Entry("gnupg", "ls ~/.gnupg"),
+		Entry("kube", "cat ~/.kube/config"),
+		Entry("gh config", "cat ~/.config/gh/hosts.yml"),
+		Entry("env file", "cat .env"),
+		Entry("env variant", "grep KEY .env.production"),
+		Entry("envrc", "cat .envrc"),
+		Entry("HOME variable", "ls $HOME/Library/Keychains"),
+		Entry("braced HOME variable", "ls ${HOME}/.ssh"),
+		Entry("quoted", `cat "$HOME/.teamvault.json"`),
+		Entry("flag value", "jq . --rawfile=~/.claude/.credentials.json"),
+		Entry("after a pipe", "ls | grep x;cat ~/.netrc"),
+		Entry("absolute", "cat /Users/someone/.ssh/id_rsa"),
+	)
+
+	It("holds a home glob that reaches a credential directory", func() {
+		home, err := os.UserHomeDir()
+		Expect(err).NotTo(HaveOccurred())
+		if _, statErr := os.Stat(filepath.Join(home, ".ssh")); statErr != nil {
+			Skip("no ~/.ssh on this host")
+		}
+		job := newJob(writeFakeClassifier(dir, marker,
+			`cat >/dev/null; echo '{"tier":"allowlist"}'`))
+		setCommand("req-1", "ls ~/.ss*")
+		Expect(job.SettleOnce(ctx)).To(Succeed())
+		Expect(marker).NotTo(BeAnExistingFile())
+		Expect(heldCarrier()).To(Equal("bash-denied-path"))
+	})
+
+	It("still classifies a command with no credential path", func() {
+		job := newJob(writeFakeClassifier(dir, marker,
+			`cat >/dev/null; echo '{"tier":"allowlist"}'`))
+		setCommand("req-1", "grep -rn identity ./pkg/id_test.go README.md")
+		Expect(job.SettleOnce(ctx)).To(Succeed())
+		Expect(markerLines(marker)).To(Equal(1))
+		Expect(wrapper.answered).To(Equal([]string{bashSessionID + ":allow"}))
+	})
+
+	DescribeTable("holds a gate that disables the sandbox without running the classifier",
+		func(value any) {
+			job := newJob(writeFakeClassifier(dir, marker,
+				`cat >/dev/null; echo '{"tier":"allowlist"}'`))
+			raw, err := json.Marshal(map[string]any{
+				"request_id": "req-1",
+				"input": map[string]any{"arguments": map[string]any{
+					"tool_name": "Bash",
+					"input": map[string]any{
+						"command":                   "ls -la",
+						"dangerouslyDisableSandbox": value,
+					},
+				}},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			wrapper.session.Question.Raw = raw
+			Expect(job.SettleOnce(ctx)).To(Succeed())
+			Expect(marker).NotTo(BeAnExistingFile())
+			Expect(heldCarrier()).To(Equal("bash-sandbox-disabled"))
+		},
+		Entry("true", true),
+		Entry("a non-boolean", "yes"),
+	)
+
+	DescribeTable("holds a cwd that is a system or credential directory",
+		func(cwd func() string) {
+			sessions.entry.CWD = cwd()
+			job := newJob(writeFakeClassifier(dir, marker,
+				`cat >/dev/null; echo '{"tier":"allowlist"}'`))
+			Expect(job.SettleOnce(ctx)).To(Succeed())
+			Expect(marker).NotTo(BeAnExistingFile())
+			Expect(heldCarrier()).To(Equal("bash-cwd-not-workspace"))
+		},
+		Entry("/tmp", func() string { return "/tmp" }),
+		Entry("/etc", func() string { return "/etc" }),
+		Entry("under /etc", func() string { return "/etc/ssh" }),
+		Entry("/var/tmp", func() string { return "/var/tmp" }),
+		Entry("under ~/.ssh", func() string {
+			home, err := os.UserHomeDir()
+			Expect(err).NotTo(HaveOccurred())
+			return filepath.Join(home, ".ssh", "keys")
+		}),
+	)
+
+	It("kills a grandchild that holds stdout open, within the deadline", func() {
+		timeout = 500 * time.Millisecond
+		pidFile := filepath.Join(dir, "grandchild.pid")
+		job := newJob(writeFakeClassifier(dir, marker, fmt.Sprintf(
+			`cat >/dev/null; sleep 30 & echo $! > '%s'; wait`, pidFile)))
+		started := time.Now()
+		Expect(job.SettleOnce(ctx)).To(Succeed())
+		Expect(time.Since(started)).To(BeNumerically("<", timeout+time.Second))
+		Expect(heldCarrier()).To(Equal("tier-error"))
+		content, err := os.ReadFile(pidFile)
+		Expect(err).NotTo(HaveOccurred())
+		var pid int
+		_, err = fmt.Sscanf(strings.TrimSpace(string(content)), "%d", &pid)
+		Expect(err).NotTo(HaveOccurred())
+		Eventually(func() error {
+			return syscall.Kill(pid, 0)
+		}).WithTimeout(2 * time.Second).Should(HaveOccurred())
+	})
+
+	It(
+		"returns within the deadline when the classifier exits but a grandchild keeps stdout",
+		func() {
+			timeout = 500 * time.Millisecond
+			job := newJob(writeFakeClassifier(dir, marker,
+				`cat >/dev/null; sleep 30 & echo '{"tier":"allowlist"}'`))
+			started := time.Now()
+			Expect(job.SettleOnce(ctx)).To(Succeed())
+			Expect(time.Since(started)).To(BeNumerically("<", timeout+time.Second))
+		},
+	)
+
+	It("retries a tier-error after at most ten seconds, not the hold interval", func() {
+		job := newJob(writeFakeClassifier(dir, marker, `cat >/dev/null; exit 3`))
+		Expect(job.SettleOnce(ctx)).To(Succeed())
+		Expect(job.SettleOnce(ctx)).To(Succeed())
+		Expect(markerLines(marker)).To(Equal(1))
+		clock.SetNow(clock.Now().Add(libtime.Duration(11 * time.Second)))
+		Expect(job.SettleOnce(ctx)).To(Succeed())
+		Expect(markerLines(marker)).To(Equal(2))
+	})
 })
 
 var _ = Describe("default routine policy", func() {
@@ -397,6 +544,7 @@ var _ = Describe("default routine policy", func() {
 		clock     libtime.CurrentDateTime
 	)
 
+	isolatedFile := func() string { return marker + ".isolated" }
 	defaultPath := func() string {
 		return filepath.Join(
 			home,
@@ -413,8 +561,10 @@ var _ = Describe("default routine policy", func() {
 	writeDefaultClassifier := func(tier string) {
 		Expect(os.MkdirAll(filepath.Dir(defaultPath()), 0o700)).To(Succeed())
 		content := fmt.Sprintf(
-			"import sys\nsys.stdin.read()\nopen(%q, 'a').write('run\\n')\nprint('{\"tier\":\"%s\"}')\n",
+			"import sys\nsys.stdin.read()\nopen(%q, 'a').write('run\\n')\n"+
+				"open(%q, 'w').write(str(sys.flags.isolated))\nprint('{\"tier\":\"%s\"}')\n",
 			marker,
+			isolatedFile(),
 			tier,
 		)
 		Expect(os.WriteFile(defaultPath(), []byte(content), 0o600)).To(Succeed())
@@ -486,6 +636,12 @@ var _ = Describe("default routine policy", func() {
 		Expect(wrapper.answered).To(Equal([]string{bashSessionID + ":allow"}))
 		_, _, _, outcome := store.RecordAttemptArgsForCall(0)
 		Expect(outcome).To(Equal(pkg.DeliveredOutcome))
+	})
+
+	It("runs the classifier with python's isolated mode", func() {
+		writeDefaultClassifier("allowlist")
+		settle(pkg.NewDefaultRoutinePolicy("", clock))
+		Expect(os.ReadFile(isolatedFile())).To(Equal([]byte("1")))
 	})
 
 	// AC5

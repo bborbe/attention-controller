@@ -46,13 +46,18 @@ var routinePathArgs = []string{"file_path", "path", "notebook_path"}
 // legitimately contain a `.env`.
 var routineDenyBasenames = map[string]struct{}{
 	".netrc": {}, ".npmrc": {}, ".pypirc": {}, ".git-credentials": {}, "kubeconfig": {},
+	".credentials.json": {}, ".teamvault.json": {},
 }
 
 // routineDenyBasenamePattern matches credential shapes by SHAPE rather than by
 // a name list that is always one entry short: `.env` alone misses `.env.local`
 // and `.env.production`, and `credentials` alone misses `credentials.json`.
+//
+// `.env.*` covers every `.env` variant (`.envrc` included) and `id_[^.]*` every
+// SSH key name (`id_rsa`, `id_ed25519`, a glob `id_*`) without catching a source
+// file such as `id_test.go`.
 var routineDenyBasenamePattern = regexp.MustCompile(
-	`^(\.env(\..+)?|secrets(\..+)?|credentials(\..+)?|id_[a-z0-9]+` +
+	`^(\.env.*|secrets(\..+)?|credentials(\..+)?|id_[^.]*` +
 		`|.*\.(pem|key|p12|pfx|tfstate))$`,
 )
 
@@ -60,8 +65,29 @@ var routineDenyBasenamePattern = regexp.MustCompile(
 // these are never a workspace.
 var routineDenyHomePrefixes = []string{
 	"/.ssh", "/.aws", "/.gnupg", "/.config", "/.kube",
-	"/.docker", "/.azure", "/.password-store",
+	"/.docker", "/.azure", "/.password-store", "/Library/Keychains",
 }
+
+// routineBashSystemCWDs are never a Bash workspace: a child whose cwd is a
+// shared scratch root or the system configuration tree is not working in a
+// directory it owns. The scratch roots are refused only as the cwd itself — a
+// per-job directory under them is a workspace — while the configuration tree is
+// refused at any depth.
+var (
+	routineBashScratchCWDs = []string{"/tmp", "/private/tmp", "/var/tmp", "/private/var/tmp"}
+	routineBashConfigCWDs  = []string{"/etc", "/private/etc"}
+)
+
+// routineBashTokenSeparators split a command into the words a path can hide in.
+// Quotes, `=` and `:` split too, so `--file=~/.netrc`, `"$HOME/.netrc"` and a
+// `PATH`-style list each yield the path as its own word.
+var routineBashTokenSeparators = regexp.MustCompile("[\\s;|&<>()`'\"=:,{}]+")
+
+// routineBashHomeVariable matches the two spellings of `$HOME`.
+var routineBashHomeVariable = regexp.MustCompile(`\$\{HOME\}|\$HOME\b`)
+
+// routineBashGlobChars are the glob metacharacters a word may carry.
+const routineBashGlobChars = "*?["
 
 // routineTokenPattern reduces a gate-supplied tool name to a token safe for a
 // store field and a log line.
@@ -80,6 +106,8 @@ type RoutinePolicy interface {
 	// distinguishes "a policy decided" from "a constant was stamped".
 	RoutineRule(question json.RawMessage, cwd string) (string, bool)
 }
+
+//counterfeiter:generate -o ../mocks/routine-item-policy.go --fake-name RoutineItemPolicy . RoutineItemPolicy
 
 // RoutineItemPolicy is the policy shape the settle arm prefers when the policy
 // offers it: it knows which item a gate belongs to and receives the cycle's
@@ -160,8 +188,13 @@ type routineBashVerdict struct {
 	command    string
 	rule       string
 	allowed    bool
-	recordedAt time.Time
+	recordedAt libtime.DateTime
 }
+
+// routineBashErrorTTL is how long a `tier-error` verdict stands. ⚠️ Short, not
+// the hold interval: a classifier that failed mid `make update` is fixed within
+// seconds, and the gate it held should not wait five minutes to be retried.
+const routineBashErrorTTL = 10 * time.Second
 
 // RoutineRuleForItem returns the rule name and whether the watcher may answer
 // item's gate.
@@ -177,7 +210,10 @@ func (p *routinePolicy) RoutineRuleForItem(
 	cwd string,
 ) (string, bool) {
 	if p.classifier != nil {
-		if command, ok := routineBashCommand(question); ok {
+		if command, sandboxDisabled, ok := routineBashCommand(question); ok {
+			if sandboxDisabled {
+				return "bash-sandbox-disabled", false
+			}
 			return p.bashRule(ctx, item, command, cwd)
 		}
 	}
@@ -197,23 +233,25 @@ func (p *routinePolicy) RetainItems(open map[ItemID]struct{}) {
 
 // bashRule decides a Bash gate by the classifier's tier.
 //
-// ⚠️ The cwd boundary is checked BEFORE the classifier: a child spawned in `/`
-// or the home tree is not a workspace, and nothing it asks to run is routine
-// there whatever its tier.
+// ⚠️ The cwd boundary and the credential-path guard are checked BEFORE the
+// classifier: a child spawned in `/` or the home tree is not a workspace, and a
+// command naming a credential location is never routine whatever its tier — the
+// classifier's own allowlist rates `cat ~/.claude/.credentials.json` as a plain
+// `cat`.
 func (p *routinePolicy) bashRule(
 	ctx context.Context,
 	item ItemID,
 	command string,
 	cwd string,
 ) (string, bool) {
-	if !absoluteCWD(cwd) {
+	root, ok := bashWorkspace(cwd)
+	if !ok {
 		return "bash-cwd-not-workspace", false
 	}
-	root, ok := resolveRealPath(cwd, cwd)
-	if !ok || !isBoundary(root) {
-		return "bash-cwd-not-workspace", false
+	if bashNamesDeniedPath(command, root) {
+		return "bash-denied-path", false
 	}
-	now := p.currentDateTimeGetter.Now().Time()
+	now := p.currentDateTimeGetter.Now()
 	if rule, allowed, hit := p.cachedVerdict(item, command, now); hit {
 		return rule, allowed
 	}
@@ -230,11 +268,12 @@ func (p *routinePolicy) bashRule(
 }
 
 // cachedVerdict returns item's verdict when it is for the same command and
-// younger than RoutineGateHoldRepeatInterval.
+// younger than RoutineGateHoldRepeatInterval (routineBashErrorTTL for a
+// `tier-error`).
 func (p *routinePolicy) cachedVerdict(
 	item ItemID,
 	command string,
-	now time.Time,
+	now libtime.DateTime,
 ) (string, bool, bool) {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
@@ -242,7 +281,11 @@ func (p *routinePolicy) cachedVerdict(
 	if !ok || verdict.command != command {
 		return "", false, false
 	}
-	if !now.Before(verdict.recordedAt.Add(RoutineGateHoldRepeatInterval)) {
+	ttl := RoutineGateHoldRepeatInterval
+	if verdict.rule == "tier-error" {
+		ttl = routineBashErrorTTL
+	}
+	if !now.Before(verdict.recordedAt.Add(libtime.Duration(ttl))) {
 		return "", false, false
 	}
 	return verdict.rule, verdict.allowed, true
@@ -268,24 +311,109 @@ func (p *routinePolicy) classify(ctx context.Context, command string) (string, b
 	}
 }
 
-// routineBashCommand returns a Bash gate's non-empty command.
-func routineBashCommand(question json.RawMessage) (string, bool) {
+// routineBashCommand returns a Bash gate's non-empty command and whether the
+// gate asks to run outside the sandbox.
+//
+// ⚠️ Any `dangerouslyDisableSandbox` other than an explicit false counts as
+// disabled: a non-boolean is not a value this arm can prove harmless.
+func routineBashCommand(question json.RawMessage) (string, bool, bool) {
 	args, ok := routineArguments(question)
 	if !ok {
-		return "", false
+		return "", false, false
 	}
 	if tool, ok := args["tool_name"].(string); !ok || tool != "Bash" {
-		return "", false
+		return "", false, false
 	}
 	call, ok := args["input"].(map[string]any)
 	if !ok {
-		return "", false
+		return "", false, false
 	}
 	command, ok := call["command"].(string)
 	if !ok || command == "" {
+		return "", false, false
+	}
+	sandboxDisabled := false
+	if value, present := call["dangerouslyDisableSandbox"]; present {
+		if flag, isBool := value.(bool); !isBool || flag {
+			sandboxDisabled = true
+		}
+	}
+	return command, sandboxDisabled, true
+}
+
+// bashWorkspace returns the resolved cwd when it is a Bash workspace: absolute,
+// a boundary, outside every credential location, and not a system directory.
+func bashWorkspace(cwd string) (string, bool) {
+	if !absoluteCWD(cwd) {
 		return "", false
 	}
-	return command, true
+	root, ok := resolveRealPath(cwd, cwd)
+	if !ok || !isBoundary(root) {
+		return "", false
+	}
+	if deniedPath(root) {
+		return "", false
+	}
+	for _, scratch := range routineBashScratchCWDs {
+		if root == scratch {
+			return "", false
+		}
+	}
+	for _, config := range routineBashConfigCWDs {
+		if root == config || strings.HasPrefix(root, config+string(os.PathSeparator)) {
+			return "", false
+		}
+	}
+	return root, true
+}
+
+// bashNamesDeniedPath reports whether any word of command resolves to a
+// credential location under the Read rule's own denylist.
+//
+// ⚠️ Deliberately over-inclusive: every word is tried as a path, `$HOME` is
+// expanded, a relative word is joined with the cwd, and a glob word is expanded
+// so `~/.ss*` is judged by what it reaches. A false hold costs one operator
+// card; a false allow hands a credential to a headless child.
+func bashNamesDeniedPath(command string, cwd string) bool {
+	home, _ := os.UserHomeDir()
+	if home != "" {
+		command = routineBashHomeVariable.ReplaceAllString(command, home)
+	}
+	for _, word := range routineBashTokenSeparators.Split(command, -1) {
+		if word != "" && bashWordDenied(word, cwd) {
+			return true
+		}
+	}
+	return false
+}
+
+// bashWordDenied reports whether one command word, read as a path, reaches a
+// credential location — literally, through a symlink, or through a glob.
+func bashWordDenied(word string, cwd string) bool {
+	path := expandHome(word)
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(cwd, path)
+	}
+	path = filepath.Clean(path)
+	if deniedPath(path) {
+		return true
+	}
+	if real, ok := resolveRealPath(path, cwd); ok && deniedPath(real) {
+		return true
+	}
+	if !strings.ContainsAny(word, routineBashGlobChars) {
+		return false
+	}
+	matches, err := filepath.Glob(path)
+	if err != nil {
+		return true
+	}
+	for _, match := range matches {
+		if deniedPath(match) {
+			return true
+		}
+	}
+	return false
 }
 
 // RoutineRule returns the rule name and whether the watcher may answer.

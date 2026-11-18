@@ -35,6 +35,10 @@ const (
 	// executable, so it is run through the interpreter the sibling jobs use.
 	RoutineBashClassifierInterpreter = "/usr/bin/python3"
 
+	// routineBashClassifierIsolated runs python in isolated mode: no PYTHON*
+	// environment, no user site-packages, and no script directory on sys.path.
+	routineBashClassifierIsolated = "-I"
+
 	// RoutineBashClassifierTimeout is the most one gate can delay a settle cycle.
 	RoutineBashClassifierTimeout = 5 * time.Second
 
@@ -54,6 +58,8 @@ const (
 	RoutineBashTierOperator  = "operator"
 )
 
+//counterfeiter:generate -o ../mocks/routine-bash-classifier.go --fake-name RoutineBashClassifier . RoutineBashClassifier
+
 // RoutineBashClassifier rates a Bash command with claude-supervisor's
 // permission classifier.
 type RoutineBashClassifier interface {
@@ -67,24 +73,27 @@ type RoutineBashClassifier interface {
 
 // NewRoutineBashClassifier creates the exec client.
 //
-// The interpreter and the script are injected so a spec can drive the real exec
-// path against a fake classifier.
+// The interpreter, its own flags and the script are injected so a spec can
+// drive the real exec path against a fake classifier.
 func NewRoutineBashClassifier(
 	interpreter string,
+	interpreterArgs []string,
 	script string,
 	timeout time.Duration,
 ) RoutineBashClassifier {
 	return &routineBashClassifier{
-		interpreter: interpreter,
-		script:      script,
-		timeout:     timeout,
+		interpreter:     interpreter,
+		interpreterArgs: append([]string(nil), interpreterArgs...),
+		script:          script,
+		timeout:         timeout,
 	}
 }
 
 type routineBashClassifier struct {
-	interpreter string
-	script      string
-	timeout     time.Duration
+	interpreter     string
+	interpreterArgs []string
+	script          string
+	timeout         time.Duration
 }
 
 // Classify runs `<interpreter> <script> --tool Bash --input -` with the command
@@ -95,17 +104,12 @@ type routineBashClassifier struct {
 func (c *routineBashClassifier) Classify(ctx context.Context, command string) (string, error) {
 	commandCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
+	argv := make([]string, 0, len(c.interpreterArgs)+5)
+	argv = append(argv, c.interpreterArgs...)
+	argv = append(argv, c.script, "--tool", "Bash", "--input", "-")
 	// #nosec G204 -- the interpreter and the script are operator configuration;
 	// the gate-supplied command is stdin, never an argv word.
-	cmd := exec.CommandContext(
-		commandCtx,
-		c.interpreter,
-		c.script,
-		"--tool",
-		"Bash",
-		"--input",
-		"-",
-	)
+	cmd := exec.CommandContext(commandCtx, c.interpreter, argv...)
 	cmd.Env = childEnv()
 	cmd.Stdin = strings.NewReader(command)
 	stdout := &cappedBuffer{limit: routineBashClassifierOutputCap}
@@ -120,7 +124,13 @@ func (c *routineBashClassifier) Classify(ctx context.Context, command string) (s
 		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
 	cmd.WaitDelay = routineBashClassifierWaitDelay
-	if err := cmd.Run(); err != nil {
+	err := cmd.Run()
+	// ⚠️ A classifier that exited while a backgrounded grandchild still holds
+	// its group alive leaves that grandchild running; kill the group either way.
+	if cmd.Process != nil {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	if err != nil {
 		// ⚠️ A process killed by the deadline is NOT a verdict.
 		if commandCtx.Err() != nil {
 			return "", errors.Errorf(ctx, "classifier class=timeout did not complete")
@@ -227,6 +237,7 @@ func NewDefaultRoutinePolicy(
 		WithRoutineBashClassifier(
 			NewRoutineBashClassifier(
 				RoutineBashClassifierInterpreter,
+				[]string{routineBashClassifierIsolated},
 				path,
 				RoutineBashClassifierTimeout,
 			),
