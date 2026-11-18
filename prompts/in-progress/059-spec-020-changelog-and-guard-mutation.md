@@ -1,7 +1,8 @@
 ---
-spec: ["020-answered-signal-folded-into-delivery-arm"]
-status: draft
+status: approved
+spec: [020-answered-signal-folded-into-delivery-arm]
 created: "2026-11-18T07:36:43Z"
+queued: "2026-11-18T08:54:12Z"
 ---
 
 # Record the change and prove every guard fails when deleted
