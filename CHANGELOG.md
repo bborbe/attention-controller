@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.98.0
 
 - feat: Port the answer-attribution ladder to Go as `pkg.ClassifyAnswerAttribution` and `pkg.RenderedAnswerSignal`, with a committed ten-row vector fixture in `pkg/testdata/answer-attribution-vectors.json` and the contract documented in `docs/answer-attribution.md`.
 
