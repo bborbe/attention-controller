@@ -85,6 +85,18 @@ const attentionWatcherCarrier = "watcher:attention-watcher"
 // try to carry it into a session that has already moved on.
 const attentionWatcherAnsweredBy = "attention-watcher"
 
+// attentionWatcherUndeliverableCarrier names the bound's own marker in the
+// delivery trail. It is deliberately distinct from attentionWatcherCarrier.
+//
+// ⚠️ A `refuse` writes a FailedOutcome under the plain carrier BEFORE a retry
+// loop begins, so an earlier attempt must never be mistaken for the marker.
+// Measured 2026-11-17 on card f1b46ed9…: refused 0.4 s after its answer, then
+// retried for 1216 s with no marker at all — the guard compared every retry
+// against that refuse and suppressed all of them. Naming the marker makes
+// "already marked" answerable from the trail itself, instead of inferring it
+// from the presence of any attempt.
+const attentionWatcherUndeliverableCarrier = attentionWatcherCarrier + ":undeliverable"
+
 // AttentionWatcherJob carries a board answer into the session that asked.
 //
 // ⚠️ It is the one arm that actually carries an answer INTO a session for a tab
@@ -108,6 +120,17 @@ type AttentionWatcherJob interface {
 	DeliverOnce(ctx context.Context) error
 }
 
+// AttentionWatcherOption customises the delivery arm at construction.
+type AttentionWatcherOption func(*attentionWatcherJob)
+
+// WithAttentionWatcherSignaller sets the helper that emits the ANSWERED signal
+// after a card is delivered.
+func WithAttentionWatcherSignaller(signaller AnsweredSignaller) AttentionWatcherOption {
+	return func(job *attentionWatcherJob) {
+		job.signaller = signaller
+	}
+}
+
 // NewAttentionWatcherJob creates the delivery arm.
 //
 // The headless arm is a constructor parameter rather than an option because a
@@ -123,14 +146,19 @@ func NewAttentionWatcherJob(
 	headless HeadlessAnswerDeliverer,
 	interval time.Duration,
 	currentDateTimeGetter libtime.CurrentDateTimeGetter,
+	options ...AttentionWatcherOption,
 ) AttentionWatcherJob {
-	return &attentionWatcherJob{
+	job := &attentionWatcherJob{
 		store:                 store,
 		carrier:               carrier,
 		headless:              headless,
 		interval:              interval,
 		currentDateTimeGetter: currentDateTimeGetter,
 	}
+	for _, option := range options {
+		option(job)
+	}
+	return job
 }
 
 type attentionWatcherJob struct {
@@ -139,6 +167,7 @@ type attentionWatcherJob struct {
 	headless              HeadlessAnswerDeliverer
 	interval              time.Duration
 	currentDateTimeGetter libtime.CurrentDateTimeGetter
+	signaller             AnsweredSignaller
 }
 
 // Run delivers answered cards until the context is cancelled.
@@ -351,6 +380,11 @@ func (j *attentionWatcherJob) deliver(
 	switch verdict {
 	case DeliveryOK:
 		j.recordAttempt(ctx, item, DeliveredOutcome)
+		// Signal only after the delivered outcome is on record: the durable
+		// DeliveryReport is the dedupe state the next tick reads.
+		if j.signaller != nil {
+			j.signaller.Signal(ctx, sessionID, item)
+		}
 		// Delivered: any park is over, and the count it took is moot.
 		j.clearPark(ctx, item)
 	case DeliveryRefuse:
@@ -522,10 +556,20 @@ func (j *attentionWatcherJob) clearPark(ctx context.Context, item Item) {
 // would lose the answer while its gate stays open — the 2026-10-04 age-gate
 // lesson.
 //
-// ⚠️ Exactly ONE marker per answer. Any attempt recorded at or after the item's
-// AnsweredAt already marks this answer, so a later tick past the bound writes
-// nothing. Without this the marker would be re-written every backoff window for
-// the life of the card.
+// ⚠️ Exactly ONE marker per answer, and "already marked" is answered by the
+// marker's OWN carrier — not by the presence of any attempt at or after the
+// answer. A `refuse` records a FailedOutcome under the plain carrier before a
+// retry loop starts, so the earlier rule suppressed the marker for every card
+// that was refused once and then looped (measured 2026-11-17 on f1b46ed9…:
+// 1216 s of retries, zero markers). Without the per-answer guard the marker
+// would be re-written every backoff window for the life of the card.
+//
+// ⚠️ The attempt bucket holds ONE record per item, so this marker's carrier
+// survives only until another arm writes that record (a refuse, a headless
+// settle). A card that alternates refuse/retry after the bound therefore writes
+// one extra marker per alternation — bounded, not a loop, and the same property
+// the pre-fix code had. The retry loop alone never writes the record, which is
+// what makes the carrier a reliable "already marked" for the loop it bounds.
 func (j *attentionWatcherJob) markUndeliverableIfOverdue(
 	ctx context.Context,
 	item Item,
@@ -539,7 +583,8 @@ func (j *attentionWatcherJob) markUndeliverableIfOverdue(
 	if j.currentDateTimeGetter.Now().Time().Before(answeredAt.Add(AttentionDeliveryBound)) {
 		return
 	}
-	if report != nil && report.AttemptedAt != nil &&
+	if report != nil && report.Carrier == attentionWatcherUndeliverableCarrier &&
+		report.AttemptedAt != nil &&
 		!report.AttemptedAt.Time().Before(answeredAt) {
 		return
 	}
@@ -549,7 +594,7 @@ func (j *attentionWatcherJob) markUndeliverableIfOverdue(
 		AttentionDeliveryBound,
 		reason,
 	)
-	j.recordAttempt(ctx, item, FailedOutcome)
+	j.recordAttemptAs(ctx, item, attentionWatcherUndeliverableCarrier, FailedOutcome)
 }
 
 // recordAttempt writes the trail entry, logging rather than failing: the
@@ -560,7 +605,22 @@ func (j *attentionWatcherJob) recordAttempt(
 	item Item,
 	outcome DeliveryOutcome,
 ) {
-	if _, err := j.store.RecordAttempt(ctx, item.ItemID, attentionWatcherCarrier, outcome); err != nil {
+	j.recordAttemptAs(ctx, item, attentionWatcherCarrier, outcome)
+}
+
+// recordAttemptAs writes the trail entry under a named carrier, logging rather
+// than failing for the same reason recordAttempt does.
+//
+// The carrier is a parameter because the undeliverable marker must be
+// distinguishable from an ordinary attempt: see
+// attentionWatcherUndeliverableCarrier.
+func (j *attentionWatcherJob) recordAttemptAs(
+	ctx context.Context,
+	item Item,
+	carrier string,
+	outcome DeliveryOutcome,
+) {
+	if _, err := j.store.RecordAttempt(ctx, item.ItemID, carrier, outcome); err != nil {
 		glog.Warningf(
 			"job=attention-watcher action=attempt_error item=%s outcome=%s error=%v",
 			item.ItemID,

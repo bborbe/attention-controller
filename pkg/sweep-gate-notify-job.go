@@ -128,6 +128,20 @@ const (
 	sweepGateManagersEnv  = "SWEEP_GATE_MANAGERS"
 	sweepGatePythonBinary = "/usr/bin/python3"
 
+	// sweepGateGoBinaryRel is the daemon that carries the ported gate, relative to
+	// $HOME.
+	//
+	// ⚠️ Two of the commands wired in NewDefaultSweepGateNotifyJob — the gate
+	// (`--tick`) and the checker (`--check`) — run this binary's one-shot modes
+	// instead of a Python script. The other five run *different* scripts and stay
+	// Python; the vault-side gate script is no longer spawned from here at all.
+	//
+	// ⚠️ Resolved to an absolute path at the wiring, never left bare: the launchd
+	// job carries the user's local bin directory on PATH today, and a bare name
+	// would break silently the day that plist changes — the defect the port
+	// already fixed once for its python binary.
+	sweepGateGoBinaryRel = ".local/bin/claude-wrapper"
+
 	// sweepGateAdhocStateEnv is the ad-hoc pass's dedup ledger. ⚠️ It must sit
 	// under the tick's state dir like every other piece of tick state, or a
 	// SWEEP_GATE_BASE-isolated run (the induced-failure E2E, or any probe) would
@@ -1477,14 +1491,60 @@ func sweepGateRunScript(
 	return 0, output.String(), errors.Wrapf(ctx, err, "run '%s' failed", script)
 }
 
-// NewSweepGateCommandGate builds the gate over its script.
-func NewSweepGateCommandGate(python, script string) SweepGateGate {
-	return &sweepGateCommandGate{python: python, script: script}
+// sweepGateRunBinary runs one no-script subprocess with the gate's state dir in
+// its environment, returning its exit code and combined output.
+//
+// ⚠️ The ported gate is a daemon binary with one-shot modes, not a script, so
+// there is no operand to prepend: the mode flags are the whole argv. Every other
+// command in this file still goes through sweepGateRunScript.
+//
+// ⚠️ A non-zero exit is a RESULT, never an error, exactly as sweepGateRunScript
+// treats it: `-sweep-gate-mode tick` answers 10 for a changed digest. Only a
+// launch failure — no binary on PATH — is an error.
+func sweepGateRunBinary(
+	ctx context.Context,
+	binary string,
+	args []string,
+	stateDir string,
+	timeout time.Duration,
+) (int, string, error) {
+	commandCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	// #nosec G204 -- the binary is a compile-time constant and every argument is
+	// an argv word, never a shell word.
+	cmd := exec.CommandContext(commandCtx, binary, args...)
+	cmd.Env = childEnv(sweepGateStateDirEnv + "=" + stateDir)
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	err := cmd.Run()
+	if err == nil {
+		return sweepGateTickEmptyCode, output.String(), nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		// ⚠️ A process killed by the deadline is NOT a verdict: its exit code says
+		// nothing about the digest, so it must never reach a caller as one.
+		if commandCtx.Err() != nil {
+			return 0, output.String(), errors.Wrapf(
+				ctx,
+				commandCtx.Err(),
+				"'%s' did not complete",
+				binary,
+			)
+		}
+		return exitErr.ExitCode(), output.String(), nil
+	}
+	return 0, output.String(), errors.Wrapf(ctx, err, "run '%s' failed", binary)
+}
+
+// NewSweepGateCommandGate builds the gate over the daemon's one-shot mode.
+func NewSweepGateCommandGate(binary string) SweepGateGate {
+	return &sweepGateCommandGate{binary: binary}
 }
 
 type sweepGateCommandGate struct {
-	python string
-	script string
+	binary string
 }
 
 // Tick runs `--tick` for one subject and returns its verdict.
@@ -1499,11 +1559,14 @@ func (g *sweepGateCommandGate) Tick(
 	vault string,
 	stateDir string,
 ) (SweepGateTickResult, error) {
-	code, output, err := sweepGateRunScript(
+	code, output, err := sweepGateRunBinary(
 		ctx,
-		g.python,
-		g.script,
-		[]string{"--topic", subject, "--vault", vault, "--tick"},
+		g.binary,
+		[]string{
+			"-sweep-gate-mode", "tick",
+			"-sweep-gate-topic", subject,
+			"-sweep-gate-vault", vault,
+		},
 		stateDir,
 		sweepGateTickTimeout,
 	)
@@ -1513,14 +1576,14 @@ func (g *sweepGateCommandGate) Tick(
 	return SweepGateTickResult{ExitCode: code, Output: output}, nil
 }
 
-// NewSweepGateCommandChecker builds the verdict-only gate over its script.
-func NewSweepGateCommandChecker(python, script string) SweepGateChecker {
-	return &sweepGateCommandChecker{python: python, script: script}
+// NewSweepGateCommandChecker builds the verdict-only gate over the daemon's
+// one-shot mode.
+func NewSweepGateCommandChecker(binary string) SweepGateChecker {
+	return &sweepGateCommandChecker{binary: binary}
 }
 
 type sweepGateCommandChecker struct {
-	python string
-	script string
+	binary string
 }
 
 // Check runs `--check` for one subject and returns its verdict.
@@ -1533,11 +1596,14 @@ func (c *sweepGateCommandChecker) Check(
 	vault string,
 	stateDir string,
 ) (SweepGateCheckResult, error) {
-	code, output, err := sweepGateRunScript(
+	code, output, err := sweepGateRunBinary(
 		ctx,
-		c.python,
-		c.script,
-		[]string{"--topic", subject, "--vault", vault, "--check"},
+		c.binary,
+		[]string{
+			"-sweep-gate-mode", "check",
+			"-sweep-gate-topic", subject,
+			"-sweep-gate-vault", vault,
+		},
 		stateDir,
 		sweepGateClassifyTimeout,
 	)
@@ -1829,20 +1895,18 @@ func NewDefaultSweepGateNotifyJob(ctx context.Context) (run.Func, error) {
 	}
 	personal := filepath.Join(home, "Documents", "Obsidian", "private-personal")
 	scripts := filepath.Join(home, ".claude", "scripts")
+	goBinary := filepath.Join(home, sweepGateGoBinaryRel)
 	return NewSweepGateNotifyJob(
 		NewSweepGateCommandSubjectLister(
 			sweepGatePythonBinary,
 			filepath.Join(scripts, "sweep-gate-subjects.py"),
 			filepath.Join(home, ".claude", "state", "worker-manager"),
 		),
-		NewSweepGateCommandGate(
-			sweepGatePythonBinary,
-			filepath.Join(personal, ".claude", "scripts", "sweep-gate.py"),
-		),
-		NewSweepGateCommandChecker(
-			sweepGatePythonBinary,
-			filepath.Join(personal, ".claude", "scripts", "sweep-gate.py"),
-		),
+		// ⚠️ The gate and the checker run the ported daemon binary, not a script.
+		// The vault-side gate script stays on disk until this repoint is deployed
+		// and verified, so this is a repoint, not a deletion.
+		NewSweepGateCommandGate(goBinary),
+		NewSweepGateCommandChecker(goBinary),
 		NewSweepGateCommandClassifier(
 			sweepGatePythonBinary,
 			filepath.Join(scripts, "sweep-gate-classify.py"),
