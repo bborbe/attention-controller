@@ -358,8 +358,6 @@ var _ = Describe("Handle", func() {
 				Expect(lines).To(HaveLen(1))
 				Expect(lines[0]["closed_by"]).To(Equal(eventName))
 			},
-			Entry("PermissionRequest", "PermissionRequest"),
-			Entry("Notification", "Notification"),
 			Entry("Stop", "Stop"),
 			Entry("UserPromptSubmit", "UserPromptSubmit"),
 		)

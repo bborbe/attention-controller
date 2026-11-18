@@ -7,10 +7,10 @@
 // store: `<sid>.events.jsonl`, `<sid>.open.json` and `<sid>.tool.json`.
 //
 // ⚠️ Behaviour parity with `~/.claude/hooks/attention-log.py` is the contract.
-// This package implements the store layer, redaction, the dedup key and the
-// per-tool-call hot path; the gate path (`PermissionRequest`, `Notification`)
-// and the `Stop`/`UserPromptSubmit` branches land in later prompts and return
-// ErrUnsupportedEvent until they do.
+// This package implements the store layer, redaction, the dedup key, the
+// per-tool-call hot path and the gate path (`PermissionRequest`,
+// `Notification`, and `AskUserQuestion`); the `Stop`/`UserPromptSubmit`
+// branches land in a later prompt and return ErrUnsupportedEvent until they do.
 package attnlog
 
 import (
@@ -37,13 +37,20 @@ const (
 	answererEpoch = 1764000000.0
 )
 
-// App is the hook. Both dependencies are injectable so a spec can freeze the
-// clock and point the writer at a temp state directory.
+// App is the hook. Its dependencies are injectable so a spec can freeze the
+// clock, point the writer at a temp state directory and stub the pane listing.
 type App struct {
 	// Now returns the wall clock in epoch seconds.
 	Now func() float64
 	// Getenv reads the process environment.
 	Getenv func(string) string
+	// Panes lists the live WezTerm panes for the owned-pane check. It is
+	// consulted only on an item-opening event; nil leaves ownership unprovable
+	// and keeps the recorded pane.
+	Panes PaneLister
+	// Hostname returns the machine name the open item records. It defaults to
+	// os.Hostname.
+	Hostname func() string
 }
 
 // NewApp creates the hook with the process clock and environment.
@@ -74,14 +81,16 @@ func (a *App) getenv(key string) string {
 
 // payload is the subset of a Claude Code hook payload the hot path reads.
 type payload struct {
-	SessionID      string          `json:"session_id"`
-	HookEventName  string          `json:"hook_event_name"`
-	TranscriptPath string          `json:"transcript_path"`
-	Cwd            string          `json:"cwd"`
-	ToolName       string          `json:"tool_name"`
-	ToolInput      json.RawMessage `json:"tool_input"`
-	AgentID        string          `json:"agent_id"`
-	Pane           json.RawMessage `json:"pane"`
+	SessionID        string          `json:"session_id"`
+	HookEventName    string          `json:"hook_event_name"`
+	TranscriptPath   string          `json:"transcript_path"`
+	Cwd              string          `json:"cwd"`
+	ToolName         string          `json:"tool_name"`
+	ToolInput        json.RawMessage `json:"tool_input"`
+	AgentID          string          `json:"agent_id"`
+	Pane             json.RawMessage `json:"pane"`
+	NotificationType string          `json:"notification_type"`
+	Message          string          `json:"message"`
 }
 
 // Handle reads one payload and writes the store.
@@ -89,7 +98,7 @@ type payload struct {
 // ⚠️ It never returns an error for malformed or absent input: the hook always
 // exits 0 so a bad payload can never block a tool call. The one error it does
 // return is ErrUnsupportedEvent, which the binary turns into a loud non-zero
-// exit while the gate and Stop branches are not yet implemented.
+// exit while the Stop and UserPromptSubmit branches are not yet implemented.
 func (a *App) Handle(reader io.Reader) error {
 	raw, err := io.ReadAll(reader)
 	if err != nil {
@@ -125,8 +134,14 @@ func (a *App) Handle(reader io.Reader) error {
 	case "SessionEnd":
 		a.clearToolMarker(stateDir, event)
 		return nil
-	case "PermissionRequest", "Notification", "Stop", "UserPromptSubmit":
-		// Gate path and Stop fence walker land in later prompts.
+	case "PermissionRequest":
+		a.permissionRequest(stateDir, event)
+		return nil
+	case "Notification":
+		a.notification(stateDir, event)
+		return nil
+	case "Stop", "UserPromptSubmit":
+		// The Stop fence walker and the envelope branch land in a later prompt.
 		return ErrUnsupportedEvent
 	default:
 		// Unknown or absent hook_event_name: closeOpen already ran, nothing
@@ -135,10 +150,8 @@ func (a *App) Handle(reader io.Reader) error {
 	}
 }
 
-// preToolUse writes the tool marker for the running tool.
-//
-// ⚠️ The AskUserQuestion branch that opens a question item is the gate path and
-// belongs to a later prompt; this writes the marker only.
+// preToolUse writes the tool marker for the running tool, then opens the
+// question item an AskUserQuestion call represents.
 func (a *App) preToolUse(stateDir string, event payload) {
 	detail := truncateRunes(
 		scrubDetail(event.ToolName+": "+toolDetail(event.ToolInput)),
@@ -158,6 +171,9 @@ func (a *App) preToolUse(stateDir string, event payload) {
 		ClearedBy:  nil,
 	}
 	writeJSONAtomic(stateDir, toolPath(event.SessionID), marker)
+	if event.ToolName == "AskUserQuestion" {
+		a.openQuestionGate(stateDir, event)
+	}
 }
 
 // clearToolMarker removes the tool marker when it belongs to the finishing tool.

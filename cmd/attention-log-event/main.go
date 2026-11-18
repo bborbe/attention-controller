@@ -17,6 +17,7 @@ import (
 	"os"
 
 	"github.com/bborbe/attention-controller/pkg/attnlog"
+	"github.com/bborbe/attention-controller/pkg/attnlogpanes"
 )
 
 func main() {
@@ -27,5 +28,7 @@ func main() {
 }
 
 func run() error {
-	return attnlog.NewApp().Handle(os.Stdin)
+	app := attnlog.NewApp()
+	app.Panes = attnlogpanes.New()
+	return app.Handle(os.Stdin)
 }

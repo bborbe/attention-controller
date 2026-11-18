@@ -1,7 +1,11 @@
 ---
-status: draft
+status: completed
 spec: [020-attention-log-go-writer]
 summary: Port the attention-log gate path into pkg/attnlog — open_item, slot_blocks_new_gate, permission_context, questions/options, the Notification and PermissionRequest branches, and supersede — with parity against the Python writer.
+created: "2026-11-18T00:22:58Z"
+queued: "2026-11-18T00:22:58Z"
+completed: "2026-11-18T00:32:15Z"
+pr-url: https://github.com/bborbe/attention-controller/pull/258
 ---
 
 # Attention-log Go writer — gate path

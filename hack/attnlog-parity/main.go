@@ -200,7 +200,81 @@ func describe(files map[string]any) string {
 
 func fixtures() []fixture {
 	items := hotPathFixtures()
-	return append(items, closeFixtures()...)
+	items = append(items, closeFixtures()...)
+	return append(items, gateFixtures()...)
+}
+
+func gateFixtures() []fixture {
+	return []fixture{
+		{
+			name: "permission-request",
+			payload: `{"session_id":"s1","hook_event_name":"PermissionRequest","tool_name":"Bash",` +
+				`"tool_input":{"command":"rm -rf build"},"cwd":"/w","transcript_path":"/t.jsonl","pane":42}`,
+		},
+		{
+			name: "permission-request-read",
+			payload: `{"session_id":"s1","hook_event_name":"PermissionRequest","tool_name":"Read",` +
+				`"tool_input":{"file_path":"/etc/hosts"}}`,
+		},
+		{
+			name: "permission-request-ask-user-question",
+			payload: `{"session_id":"s1","hook_event_name":"PermissionRequest",` +
+				`"tool_name":"AskUserQuestion","tool_input":{"questions":[` +
+				`{"header":"Pick one","question":"Which database?","multiSelect":false,` +
+				`"options":[{"label":"(Recommended) Postgres","description":"managed"},` +
+				`{"label":"SQLite"}]}]}}`,
+		},
+		{
+			name: "pre-tool-use-ask-user-question",
+			payload: `{"session_id":"s1","hook_event_name":"PreToolUse",` +
+				`"tool_name":"AskUserQuestion","tool_input":{"questions":[` +
+				`{"header":"A","question":"First?","multiSelect":true,` +
+				`"options":[{"label":"(Recommended) One"},{"label":"(Recommended) Two"}]},` +
+				`{"header":"B","question":"Second?","options":[{"label":"Yes"}]}]}}`,
+		},
+		{
+			name: "notification-permission",
+			payload: `{"session_id":"s1","hook_event_name":"Notification",` +
+				`"notification_type":"permission_prompt","message":"Claude needs permission to run Bash"}`,
+		},
+		{
+			name: "notification-question",
+			payload: `{"session_id":"s1","hook_event_name":"Notification",` +
+				`"notification_type":"elicitation_dialog","message":"Claude is asking a question"}`,
+		},
+		{
+			name: "notification-idle",
+			payload: `{"session_id":"s1","hook_event_name":"Notification",` +
+				`"notification_type":"idle_prompt","message":"Claude is idle"}`,
+		},
+		{
+			name: "notification-blocks-open-gate",
+			payload: `{"session_id":"s1","hook_event_name":"Notification",` +
+				`"notification_type":"permission_prompt","message":"Claude needs permission"}`,
+			seed: map[string]string{
+				"s1.open.json": `{"item_id":"i1","session_id":"s1","kind":"question",` +
+					`"cleared_by":{"event":"Stop"}}`,
+			},
+		},
+		{
+			name: "supersede",
+			payload: `{"session_id":"s1","hook_event_name":"PermissionRequest","tool_name":"Read",` +
+				`"tool_input":{"file_path":"/tmp/a"}}`,
+			seed: map[string]string{
+				"s1.open.json": `{"item_id":"i1","session_id":"s1","kind":"permission",` +
+					`"cleared_by":{"event":"Stop"}}`,
+			},
+		},
+		{
+			name: "permission-request-closed-by-pre-tool-use",
+			payload: `{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"Bash",` +
+				`"tool_input":{"command":"ls"}}`,
+			seed: map[string]string{
+				"s1.open.json": `{"item_id":"i1","session_id":"s1","kind":"permission",` +
+					`"tool_name":"Bash","cleared_by":{"event":["PreToolUse"],"tool":"Bash"}}`,
+			},
+		},
+	}
 }
 
 func hotPathFixtures() []fixture {
