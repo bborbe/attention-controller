@@ -179,6 +179,54 @@ var _ = Describe("attention watcher delivery job", func() {
 		Expect(carrier.calls).To(BeEmpty())
 	})
 
+	It("delivers a skip answer as a decline, not silence", func() {
+		// The board's ✕ Dismiss writes `answer.kind: skip`. Reading it as no
+		// content left the card `answered` while the asking session was told
+		// nothing and no attempt was recorded — the measured 2026-10-17 defect
+		// on three compact cards.
+		item := answeredItem("item-1", "operator", pkg.Decision(""))
+		item.AnswerMechanism = pkg.MessageAnswerMechanism
+		item.Answer = &pkg.Answer{Kind: pkg.SkipAnswerKind}
+		store.ReadBoardReturns(pkg.Items{item}, nil)
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+
+		Expect(carrier.calls).To(ConsistOf("item-1=declined (no answer given)"))
+		Expect(store.RecordAttemptCallCount()).To(Equal(1))
+		_, _, _, outcome := store.RecordAttemptArgsForCall(0)
+		Expect(outcome).To(Equal(pkg.DeliveredOutcome))
+	})
+
+	It("delivers a dismissed compact card as prose, never the approve label", func() {
+		// A compact card's approve signal is its recommended option label, so a
+		// decline must carry prose that matches none of the options — anything
+		// else runs the trio against the operator's own decline.
+		item := answeredItem("item-1", "operator", pkg.Decision(""))
+		item.AnswerMechanism = pkg.AckAnswerMechanism
+		item.Options = pkg.AnswerOptions{{Label: "Compact now", Recommended: true}}
+		item.Answer = &pkg.Answer{Kind: pkg.SkipAnswerKind}
+		store.ReadBoardReturns(pkg.Items{item}, nil)
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+
+		Expect(carrier.calls).To(HaveLen(1))
+		Expect(carrier.calls[0]).NotTo(ContainSubstring("Compact now"))
+		Expect(carrier.calls[0]).To(Equal("item-1=declined (no answer given)"))
+	})
+
+	It("delivers nothing for a hidden answer, and records no refusal", func() {
+		// A corner-X `hidden` close means the operator answered elsewhere and only
+		// wanted the card off the board. Delivering a decline would assert the
+		// reverse of what happened, and recording a refusal would report a
+		// failure that never occurred.
+		item := answeredItem("item-1", "operator", pkg.Decision(""))
+		item.AnswerMechanism = pkg.MessageAnswerMechanism
+		item.Answer = &pkg.Answer{Kind: pkg.HiddenAnswerKind}
+		store.ReadBoardReturns(pkg.Items{item}, nil)
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+
+		Expect(carrier.calls).To(BeEmpty())
+		Expect(store.RecordAttemptCallCount()).To(Equal(0))
+	})
+
 	It("hands a pane-less card to the headless arm instead of dropping it", func() {
 		// A `sdk-cli` worker has no pane by construction. The prose carrier
 		// reports `no-pane`, and before the headless arm existed that answer was

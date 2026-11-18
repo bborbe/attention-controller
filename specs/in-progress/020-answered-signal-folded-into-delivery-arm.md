@@ -1,6 +1,8 @@
 ---
-status: approved
+status: prompted
 approved: "2026-11-18T06:39:34Z"
+generating: "2026-11-18T20:14:00Z"
+prompted: "2026-11-18T20:14:00Z"
 branch: dark-factory/answered-signal-folded-into-delivery-arm
 ---
 

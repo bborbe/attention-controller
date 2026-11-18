@@ -1221,12 +1221,9 @@ func (a *application) createHTTPServer(
 			return err
 		}
 		runner.Add(ctx, watcher.Run)
-		// ⚠️ The heartbeat store's watcher is the read path's whole point: it
-		// keeps the snapshot current OFF the request path, so a loaded host
-		// cannot make a liveness read serialise behind 1,600 file reads.
-		runner.Add(ctx, sessionHeartbeatStore.Run)
 
-		if err := a.addMaintenanceJobs(ctx, runner, store, panes, livenessChecker, provenance); err != nil {
+		if err := a.addMaintenanceJobs(ctx, runner, store, panes, livenessChecker, provenance,
+			sessionLedger, notifier, sessionHeartbeatStore); err != nil {
 			return err
 		}
 
@@ -1269,11 +1266,23 @@ func (a *application) addMaintenanceJobs(
 	panes pkg.PaneLister,
 	liveness pkg.SessionLivenessChecker,
 	provenance pkg.ProvenanceResolver,
+	sessionLedger pkg.SessionLedgerStore,
+	notifier pkg.AttentionChangeNotifier,
+	sessionHeartbeatStore pkg.SessionHeartbeatService,
 ) error {
 	if err := a.addAnsweredSweep(ctx, runner, store); err != nil {
 		return err
 	}
-	return a.addInProcessJobs(ctx, runner, store, panes, liveness, provenance)
+	// ⚠️ The heartbeat store's watcher registers from here rather than from
+	// createHTTPServer: it is an in-process job like the rest, and
+	// createHTTPServer sits at the linter's length bound — the same reason this
+	// method exists. It is the read path's whole point: it keeps the snapshot
+	// current OFF the request path, so a loaded host cannot make a liveness read
+	// serialise behind 1,600 file reads.
+	runner.Add(ctx, sessionHeartbeatStore.Run)
+	return a.addInProcessJobs(
+		ctx, runner, store, panes, liveness, provenance, sessionLedger, notifier,
+	)
 }
 
 // addAnsweredSweep registers the sweep that closes answered items past their
@@ -1328,6 +1337,8 @@ func (a *application) addInProcessJobs(
 	panes pkg.PaneLister,
 	liveness pkg.SessionLivenessChecker,
 	provenance pkg.ProvenanceResolver,
+	sessionLedger pkg.SessionLedgerStore,
+	notifier pkg.AttentionChangeNotifier,
 ) error {
 	runner.Add(ctx, pkg.NewMetricsPushJob(
 		prometheus.DefaultGatherer,
@@ -1389,13 +1400,15 @@ func (a *application) addInProcessJobs(
 	// ⚠️ The attention-watcher jobs register from here rather than from the caller
 	// for the same reason this method exists at all: createHTTPServer sits at the
 	// linter's length bound, and each job's rationale belongs beside the job.
-	return a.addAttentionWatcherJobs(ctx, runner, store, panes, liveness, provenance)
+	return a.addAttentionWatcherJobs(
+		ctx, runner, store, panes, liveness, provenance, sessionLedger, notifier,
+	)
 }
 
-// addAttentionWatcherJobs registers the seven jobs ported from the Python
+// addAttentionWatcherJobs registers the jobs ported from the Python
 // attention-watcher: event ingest, event prune, answer delivery, menu answers,
-// the routine-gate settle arm, expired manager holds and the context crossing
-// scan.
+// the routine-gate settle arm, expired manager holds, the context crossing scan
+// and the manager wake.
 //
 // ⚠️ They are registered TOGETHER, and that is the point of the port: each
 // replaced a phase of one long-running Python process, and wiring a subset
@@ -1410,6 +1423,8 @@ func (a *application) addAttentionWatcherJobs(
 	panes pkg.PaneLister,
 	liveness pkg.SessionLivenessChecker,
 	provenance pkg.ProvenanceResolver,
+	sessionLedger pkg.SessionLedgerStore,
+	notifier pkg.AttentionChangeNotifier,
 ) error {
 	stateDir, contextDir, transcriptRoot, err := a.attentionWatcherDirs(ctx)
 	if err != nil {
@@ -1510,6 +1525,11 @@ func (a *application) addAttentionWatcherJobs(
 		pkg.ContextCrossingTokens,
 		pkg.ContextCrossingInterval,
 	).Run)
+	// The wake job is the second writer on the same books (the pane carrier the
+	// delivery arm already types through), so it is registered HERE and not on the
+	// cluster listener, where panes, the registry and the ledger do not exist.
+	runner.Add(ctx, pkg.NewManagerWakeJob(store, sessionLedger, provenance, carrier, notifier,
+		libtime.NewCurrentDateTime(), pkg.NewManagerWakeEmissionLog()).Run)
 
 	a.logAttentionWatcherRegistration()
 	return nil
@@ -1524,7 +1544,7 @@ func (a *application) addAttentionWatcherJobs(
 // items and panes.
 func (a *application) logAttentionWatcherRegistration() {
 	glog.V(2).Infof(
-		"job=attention-watcher action=registered arms=prune,ingest,deliver,menu,headless,crossing settle=%t",
+		"job=attention-watcher action=registered arms=prune,ingest,deliver,menu,headless,crossing,wake settle=%t",
 		a.AttentionWrapperURL != "",
 	)
 }
