@@ -121,6 +121,7 @@ func NewHeadlessAnswerDelivery(
 		delivered: map[ItemID]bool{},
 		attempts:  map[ItemID]int{},
 		inFlight:  map[ItemID]bool{},
+		retried:   map[ItemID]bool{},
 	}
 	for _, option := range options {
 		option(delivery)
@@ -149,6 +150,14 @@ type headlessAnswerDelivery struct {
 	// inFlight marks a card a concurrent cycle already works on, so two racing
 	// jobs deliver it once rather than twice.
 	inFlight map[ItemID]bool
+	// retried marks a card whose retry this arm has already written to the
+	// trail, so the record is written once per card rather than once per cycle.
+	//
+	// ⚠️ The loop this bounds is the hot one: measured 2026-11-18, a card whose
+	// wrapper kept answering 409 was retried ~1800 times in an hour. One durable
+	// write per retry is the write amplification AttentionDeliveryRetryBackoff
+	// exists to stop, so the first retry writes and the rest are log lines.
+	retried map[ItemID]bool
 }
 
 // begin reserves a card for this cycle: terminal=true when it is already
@@ -214,7 +223,7 @@ func (d *headlessAnswerDelivery) DeliverHeadless(ctx context.Context, item Item)
 		// unconfigured wrapper is a configuration defect the item's deadline
 		// bounds, and recording `failed` here would report a delivery attempt
 		// that never happened.
-		d.retry(item, "no wrapper configured")
+		d.retry(ctx, item, "no wrapper configured")
 		return false
 	}
 	sessionID, ok := deliverySessionID(ctx, item)
@@ -241,7 +250,7 @@ func (d *headlessAnswerDelivery) DeliverHeadless(ctx context.Context, item Item)
 		d.settle(ctx, item, FailedOutcome, reason)
 		return true
 	default:
-		d.retry(item, reason)
+		d.retry(ctx, item, reason)
 		return false
 	}
 }
@@ -296,15 +305,28 @@ func (d *headlessAnswerDelivery) settle(
 	}
 }
 
-// retry logs a cycle that delivered nothing and leaves the answer pending.
+// retry logs a cycle that delivered nothing, records that this arm looked, and
+// leaves the answer pending.
 //
-// ⚠️ The line IS the record: nothing is written to the attempt trail, because a
-// retry is not a failure yet. Without it, a delivery that keeps failing looks
-// exactly like one that is quietly not attempted — how this defect stayed hidden.
-func (d *headlessAnswerDelivery) retry(item Item, reason string) {
+// ⚠️ The record is the durable half and the log line is the transient one. A
+// retry used to write NOTHING, so a card an arm had tried and failed to carry
+// closed reading `never_attempted` — *no arm ever looked* — and the lost-answer
+// counter counted it. Measured 2026-11-18: four of the fourteen retry losses in
+// the counter's 12.7 h window were this arm answering 409 for a pane-less
+// session, one of them ~1800 times in an hour.
+//
+// ⚠️ The outcome is `retried`, not `failed`: a 409 or a busy composer has not
+// failed yet, and the answer is still pending for the next cycle. The record is
+// written once per card — see `retried` — because this loop has no backoff of its
+// own.
+func (d *headlessAnswerDelivery) retry(ctx context.Context, item Item, reason string) {
 	d.mu.Lock()
 	d.attempts[item.ItemID]++
 	attempts := d.attempts[item.ItemID]
+	record := !d.retried[item.ItemID]
+	if record {
+		d.retried[item.ItemID] = true
+	}
 	d.mu.Unlock()
 	glog.V(2).Infof(
 		"job=attention-watcher action=headless_retry item=%s session=%s attempts=%d reason=%q",
@@ -313,6 +335,27 @@ func (d *headlessAnswerDelivery) retry(item Item, reason string) {
 		attempts,
 		reason,
 	)
+	if !record {
+		return
+	}
+	if _, err := d.store.RecordAttempt(
+		ctx,
+		item.ItemID,
+		attentionWatcherCarrier,
+		RetriedOutcome,
+	); err != nil {
+		// ⚠️ Cleared on failure so the next cycle writes it: a record that never
+		// landed leaves the card reading `never_attempted`, which is the whole
+		// defect this write exists to remove.
+		d.mu.Lock()
+		delete(d.retried, item.ItemID)
+		d.mu.Unlock()
+		glog.Warningf(
+			"job=attention-watcher action=headless_retry_record_error item=%s error=%v",
+			item.ItemID,
+			err,
+		)
+	}
 }
 
 // attemptsOf renders the retry count for an expiry reason.

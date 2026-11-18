@@ -16,8 +16,9 @@ import (
 )
 
 // DeliveryOutcome is what an attempting arm observed about one answer. It holds
-// three values, and each is a distinct thing an arm can report: it delivered the
-// answer, it tried and failed to, or it saw the gate and declined to answer it.
+// four values, and each is a distinct thing an arm can report: it delivered the
+// answer, it tried and failed to, it saw the gate and declined to answer it, or
+// it looked and could not reach the session YET and is still trying.
 //
 // ⚠️ The other two states a reader needs — `never_attempted` and
 // `pre_trail_unknown` — are NOT outcomes and are never stored. Nobody is
@@ -41,13 +42,35 @@ const (
 	// rule that held it is named in the carrier, because this record carries no
 	// free-text field of its own.
 	HeldOutcome DeliveryOutcome = "held"
+	// RetriedOutcome is an arm that RAN and could not reach the session yet —
+	// the pane's composer was busy or unreadable, the menu had not drawn, the
+	// wrapper was mid-turn. It is still trying.
+	//
+	// ⚠️ It exists because the other three cannot carry it and silence was
+	// strictly worse. A retry used to write nothing at all, so a card an arm had
+	// tried and failed to carry closed reading `never_attempted` — *no arm ever
+	// looked* — which is the opposite of what happened, and it is exactly the
+	// absence the lost-answer counter counts. Measured 2026-11-18: 14 of the 24
+	// closes in the counter's 12.7 h window were retries that wrote no record.
+	//
+	// ⚠️ It is NOT `failed`. `failed` is the operator's cue that the answer did
+	// not arrive and someone should look; a busy composer is a transient the arm
+	// itself retries, and recording it failed would paint the undeliverable
+	// marker on a card that delivers a moment later. It is not `held` either:
+	// nothing was declined on purpose.
+	RetriedOutcome DeliveryOutcome = "retried"
 )
 
 // DeliveryOutcomes is a collection of DeliveryOutcome.
 type DeliveryOutcomes []DeliveryOutcome
 
 // AvailableDeliveryOutcomes holds every legal outcome.
-var AvailableDeliveryOutcomes = DeliveryOutcomes{DeliveredOutcome, FailedOutcome, HeldOutcome}
+var AvailableDeliveryOutcomes = DeliveryOutcomes{
+	DeliveredOutcome,
+	FailedOutcome,
+	HeldOutcome,
+	RetriedOutcome,
+}
 
 // String returns the outcome as a string.
 func (o DeliveryOutcome) String() string {
@@ -69,10 +92,10 @@ func (o DeliveryOutcomes) Contains(outcome DeliveryOutcome) bool {
 }
 
 // DeliveryStatus is the reader-visible answer to "did my answer reach the
-// session?" — the five values the read surface may return.
+// session?" — the six values the read surface may return.
 //
-// ⚠️ DeliveredStatus, FailedStatus and HeldStatus are STORED, one per outcome an
-// arm can write. The other two are
+// ⚠️ DeliveredStatus, FailedStatus, HeldStatus and RetryingStatus are STORED,
+// one per outcome an arm can write. The other two are
 // derived by the store from the item's own CreatedAt against
 // DeliveryTrailEpoch, because an absent record is otherwise the only encoding
 // available for both of them — and that is precisely what the operator could
@@ -101,6 +124,17 @@ const (
 	// still needs the operator, and telling them the delivery failed would send
 	// them looking for a fault that is not there.
 	HeldStatus DeliveryStatus = "held"
+	// RetryingStatus is an attempt record whose arm ran and could not reach the
+	// session YET. Stored, like the other three, because it is a fact an arm
+	// observed rather than one derived from absence.
+	//
+	// ⚠️ It is NOT NeverAttemptedStatus, and that is the whole point: before this
+	// value existed, an arm that retried wrote no record at all, so the read
+	// surface said *no arm ever picked this answer up* about an answer an arm was
+	// actively retrying. It is not FailedStatus either — the retry is still
+	// running, and the undeliverable marker must not fire on a busy composer that
+	// clears a moment later.
+	RetryingStatus DeliveryStatus = "retrying"
 )
 
 // DeliveryTrailEpoch is the instant the delivery-attempt record first shipped.
