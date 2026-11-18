@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.99.4
 
 - test: **the delivery loop's never-fatal contract is pinned, so a failed cycle can no longer be quietly made fatal.** The retired Python watcher pinned this on its cycle-duration report (`scripts/test_attention_watcher_cycle_report.py`): the report ran from the loop's `finally`, so an escaping error terminated the watcher rather than costing one interval. The Go port has no outbound report to fail — the duration is observed locally — so the contract belongs to `AttentionWatcherJob.Run`, which logs a failed `DeliverOnce` and ticks again. Nothing pinned that: every existing delivery spec drives `DeliverOnce` directly and so cannot see the loop, which is the only place the process would actually die. Two cases pin it — a loop whose every cycle fails keeps ticking and returns nil on cancellation rather than the cycle error, and a loop whose first cycle fails still delivers on a later one. Verified by mutation: returning the cycle error from `Run` fails both.
 
