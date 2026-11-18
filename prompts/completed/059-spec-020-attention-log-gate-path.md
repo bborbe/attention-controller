@@ -1,7 +1,13 @@
 ---
-status: draft
+status: completed
 spec: [020-attention-log-go-writer]
-summary: Port the attention-log gate path into pkg/attnlog — open_item, slot_blocks_new_gate, permission_context, questions/options, the Notification and PermissionRequest branches, and supersede — with parity against the Python writer.
+summary: Added the attention-log gate path to pkg/attnlog (PermissionRequest, Notification, AskUserQuestion, supersede/fold, permission context, questions/options, owned-pane via an injected PaneLister in pkg/attnlogpanes), extended the parity reference and gate fixtures, and passed make precommit with exit 0.
+execution_id: attention-controller-attention-log-impl-exec-059-spec-020-attention-log-gate-path
+dark-factory-version: v0.198.17
+created: "2026-11-18T00:22:58Z"
+queued: "2026-11-18T00:22:58Z"
+started: "2026-11-18T00:24:49Z"
+completed: "2026-11-18T00:32:14Z"
 ---
 
 # Attention-log Go writer — gate path
