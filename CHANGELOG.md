@@ -12,6 +12,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 
 - fix: Repoint the sweep-gate notify job's gate and checker at the `claude-wrapper` daemon's one-shot modes (`-sweep-gate-mode tick` / `check`) instead of spawning the vault-side Python script, resolving the binary by absolute path rather than from `PATH`.
 
+## v0.99.0
+
+- feat: **the `ANSWERED` signal is carried by the delivery arms themselves, so a session learns its card was answered without a second poller.** The signal fires from each arm that carries an answered card — the pane arm, the headless arm and the menu arm — through one shared recorder, read from the item's own state and `producer_id` and gated by the ported attribution ladder, so a scripted click is never reported as the operator's answer. It replaces the per-manager `answered-watch.py` process, which consumed the same store write and reconnected every 900 s. Dedupe is the existing durable `DeliveryReport`, and the signal is emitted after the delivered outcome is recorded.
+
 ## v0.98.0
 
 - feat: Port the answer-attribution ladder to Go as `pkg.ClassifyAnswerAttribution` and `pkg.RenderedAnswerSignal`, with a committed ten-row vector fixture in `pkg/testdata/answer-attribution-vectors.json` and the contract documented in `docs/answer-attribution.md`.
