@@ -125,15 +125,22 @@ func (c *routineBashClassifier) Classify(ctx context.Context, command string) (s
 	}
 	cmd.WaitDelay = routineBashClassifierWaitDelay
 	err := cmd.Run()
-	// ⚠️ A classifier that exited while a backgrounded grandchild still holds
-	// its group alive leaves that grandchild running; kill the group either way.
-	if cmd.Process != nil {
+	// ⚠️ The group is killed only when Run hit the deadline or the WaitDelay:
+	// then a member still holds the group (and so its id) alive. After a clean
+	// exit the id may already belong to an unrelated group.
+	deadlineHit := commandCtx.Err() != nil
+	waitDelayHit := errors.Is(err, exec.ErrWaitDelay)
+	if cmd.Process != nil && (deadlineHit || waitDelayHit) {
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
 	if err != nil {
 		// ⚠️ A process killed by the deadline is NOT a verdict.
-		if commandCtx.Err() != nil {
+		if deadlineHit {
 			return "", errors.Errorf(ctx, "classifier class=timeout did not complete")
+		}
+		// ⚠️ Nor is one whose output a leftover child still held open.
+		if waitDelayHit {
+			return "", errors.Errorf(ctx, "classifier class=waitdelay output held open")
 		}
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {

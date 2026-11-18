@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	libtime "github.com/bborbe/time"
 	"github.com/golang/glog"
@@ -46,7 +47,7 @@ var routinePathArgs = []string{"file_path", "path", "notebook_path"}
 // legitimately contain a `.env`.
 var routineDenyBasenames = map[string]struct{}{
 	".netrc": {}, ".npmrc": {}, ".pypirc": {}, ".git-credentials": {}, "kubeconfig": {},
-	".credentials.json": {}, ".teamvault.json": {},
+	".credentials.json": {}, ".teamvault.json": {}, ".claude.json": {},
 }
 
 // routineDenyBasenamePattern matches credential shapes by SHAPE rather than by
@@ -65,7 +66,7 @@ var routineDenyBasenamePattern = regexp.MustCompile(
 // these are never a workspace.
 var routineDenyHomePrefixes = []string{
 	"/.ssh", "/.aws", "/.gnupg", "/.config", "/.kube",
-	"/.docker", "/.azure", "/.password-store", "/Library/Keychains",
+	"/.docker", "/.azure", "/.password-store", "/Library/Keychains", "/.claude",
 }
 
 // routineBashSystemCWDs are never a Bash workspace: a child whose cwd is a
@@ -78,16 +79,29 @@ var (
 	routineBashConfigCWDs  = []string{"/etc", "/private/etc"}
 )
 
-// routineBashTokenSeparators split a command into the words a path can hide in.
-// Quotes, `=` and `:` split too, so `--file=~/.netrc`, `"$HOME/.netrc"` and a
-// `PATH`-style list each yield the path as its own word.
-var routineBashTokenSeparators = regexp.MustCompile("[\\s;|&<>()`'\"=:,{}]+")
+// routineBashPieceSeparators split a rebuilt shell word into the pieces a path
+// can hide in: `--file=~/.netrc`, a `PATH`-style list, a brace list.
+var routineBashPieceSeparators = regexp.MustCompile(`[=:,{}]+`)
 
-// routineBashHomeVariable matches the two spellings of `$HOME`.
-var routineBashHomeVariable = regexp.MustCompile(`\$\{HOME\}|\$HOME\b`)
+// routineBashWordBreaks end a shell word outside quotes.
+const routineBashWordBreaks = ";|&<>()`"
 
 // routineBashGlobChars are the glob metacharacters a word may carry.
 const routineBashGlobChars = "*?["
+
+// The guard's bounds. ⚠️ Every one fails CLOSED: the patterns are a headless
+// child's text and the guard runs on the settle cycle, so a pattern that would
+// cost more than these is held rather than walked.
+const (
+	// routineBashWordCap is the most words the guard checks in one command.
+	routineBashWordCap = 4096
+	// routineBashGlobSegmentCap is the most wildcard segments one glob may have.
+	routineBashGlobSegmentCap = 4
+	// routineBashGlobMatchCap is the most paths one glob may reach.
+	routineBashGlobMatchCap = 256
+	// routineBashGlobScanCap is the most directory entries one glob may read.
+	routineBashGlobScanCap = 4096
+)
 
 // routineTokenPattern reduces a gate-supplied tool name to a token safe for a
 // store field and a log line.
@@ -248,14 +262,16 @@ func (p *routinePolicy) bashRule(
 	if !ok {
 		return "bash-cwd-not-workspace", false
 	}
-	if bashNamesDeniedPath(command, root) {
-		return "bash-denied-path", false
-	}
 	now := p.currentDateTimeGetter.Now()
 	if rule, allowed, hit := p.cachedVerdict(item, command, now); hit {
 		return rule, allowed
 	}
-	rule, allowed := p.classify(ctx, command)
+	// ⚠️ The guard's verdict is cached beside the classifier's: the guard reads
+	// the disk for a glob, and the settle cycle asks again every two seconds.
+	rule, allowed := "bash-denied-path", false
+	if !bashNamesDeniedPath(command, root) {
+		rule, allowed = p.classify(ctx, command)
+	}
 	p.mutex.Lock()
 	p.verdicts[item] = routineBashVerdict{
 		command:    command,
@@ -376,44 +392,258 @@ func bashWorkspace(cwd string) (string, bool) {
 // card; a false allow hands a credential to a headless child.
 func bashNamesDeniedPath(command string, cwd string) bool {
 	home, _ := os.UserHomeDir()
-	if home != "" {
-		command = routineBashHomeVariable.ReplaceAllString(command, home)
+	words, ok := bashWords(command, home)
+	if !ok || len(words) > routineBashWordCap {
+		return true
 	}
-	for _, word := range routineBashTokenSeparators.Split(command, -1) {
-		if word != "" && bashWordDenied(word, cwd) {
+	for _, word := range words {
+		if bashWordDenied(word, cwd, home) {
+			return true
+		}
+		for _, piece := range routineBashPieceSeparators.Split(word, -1) {
+			if piece != "" && piece != word && bashWordDenied(piece, cwd, home) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// bashWords rebuilds command's shell words: adjacent quoted and unquoted pieces
+// are joined, backslash escapes are removed, and `$HOME` / `${HOME}` outside
+// single quotes is expanded. It returns false for an unterminated quote.
+//
+// ⚠️ It is the guard's own reading of the command, so the guard does not lean
+// on the classifier refusing quotes and `$`: `.e"nv"` is the word `.env`.
+func bashWords(command string, home string) ([]string, bool) {
+	runes := []rune(command)
+	words := make([]string, 0, 8)
+	var word strings.Builder
+	inWord := false
+	flush := func() {
+		if inWord {
+			words = append(words, word.String())
+			word.Reset()
+			inWord = false
+		}
+	}
+	for index := 0; index < len(runes); index++ {
+		r := runes[index]
+		switch {
+		case r == '\\':
+			if index+1 < len(runes) {
+				index++
+				word.WriteRune(runes[index])
+			}
+			inWord = true
+		case r == '\'':
+			end := index + 1
+			for end < len(runes) && runes[end] != '\'' {
+				end++
+			}
+			if end >= len(runes) {
+				return nil, false
+			}
+			word.WriteString(string(runes[index+1 : end]))
+			index = end
+			inWord = true
+		case r == '"':
+			end, ok := bashDoubleQuoted(runes, index+1, home, &word)
+			if !ok {
+				return nil, false
+			}
+			index = end
+			inWord = true
+		case r == '$':
+			index += bashHomeVariable(runes[index:], home, &word) - 1
+			inWord = true
+		case unicode.IsSpace(r) || strings.ContainsRune(routineBashWordBreaks, r):
+			flush()
+		default:
+			word.WriteRune(r)
+			inWord = true
+		}
+	}
+	flush()
+	return words, true
+}
+
+// bashDoubleQuoted copies a double-quoted span starting at start into word and
+// returns the index of its closing quote.
+func bashDoubleQuoted(runes []rune, start int, home string, word *strings.Builder) (int, bool) {
+	for index := start; index < len(runes); index++ {
+		switch runes[index] {
+		case '"':
+			return index, true
+		case '\\':
+			if index+1 < len(runes) && strings.ContainsRune("\"\\$`", runes[index+1]) {
+				index++
+			}
+			word.WriteRune(runes[index])
+		case '$':
+			index += bashHomeVariable(runes[index:], home, word) - 1
+		default:
+			word.WriteRune(runes[index])
+		}
+	}
+	return 0, false
+}
+
+// bashHomeVariable writes `$HOME` / `${HOME}` at the start of runes as home and
+// returns how many runes it consumed; any other `$` is copied as itself.
+func bashHomeVariable(runes []rune, home string, word *strings.Builder) int {
+	if consumed := bashHomeVariableLength(runes); home != "" && consumed > 0 {
+		word.WriteString(home)
+		return consumed
+	}
+	word.WriteRune('$')
+	return 1
+}
+
+// bashHomeVariableLength returns the length of a `${HOME}` or `$HOME` at the
+// start of runes, or 0 — `$HOMEDIR` is a different variable.
+func bashHomeVariableLength(runes []rune) int {
+	text := string(runes)
+	if strings.HasPrefix(text, "${HOME}") {
+		return len("${HOME}")
+	}
+	if !strings.HasPrefix(text, "$HOME") {
+		return 0
+	}
+	rest := runes[len("$HOME"):]
+	if len(rest) > 0 && (unicode.IsLetter(rest[0]) || unicode.IsDigit(rest[0]) || rest[0] == '_') {
+		return 0
+	}
+	return len("$HOME")
+}
+
+// bashWordDenied reports whether one command word, read as a path, reaches a
+// credential location — literally, through a symlink, as a directory above
+// one, or through a glob.
+func bashWordDenied(word string, cwd string, home string) bool {
+	path := expandHome(word)
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(cwd, path)
+	}
+	path = filepath.Clean(path)
+	if deniedPath(path) || coversDeniedLocation(path, home) {
+		return true
+	}
+	if real, ok := resolveRealPath(path, cwd); ok &&
+		(deniedPath(real) || coversDeniedLocation(real, home)) {
+		return true
+	}
+	if !strings.ContainsAny(word, routineBashGlobChars) {
+		return false
+	}
+	matches, ok := boundedGlob(path)
+	if !ok {
+		return true
+	}
+	for _, match := range matches {
+		if deniedPath(match) || coversDeniedLocation(match, home) {
 			return true
 		}
 	}
 	return false
 }
 
-// bashWordDenied reports whether one command word, read as a path, reaches a
-// credential location — literally, through a symlink, or through a glob.
-func bashWordDenied(word string, cwd string) bool {
-	path := expandHome(word)
-	if !filepath.IsAbs(path) {
-		path = filepath.Join(cwd, path)
-	}
-	path = filepath.Clean(path)
-	if deniedPath(path) {
+// coversDeniedLocation reports whether path is the home tree, an ancestor of
+// it, or a directory with a credential location beneath it — a word a
+// recursive `grep` or `find` reads every credential through.
+func coversDeniedLocation(path string, home string) bool {
+	if path == string(os.PathSeparator) {
 		return true
 	}
-	if real, ok := resolveRealPath(path, cwd); ok && deniedPath(real) {
-		return true
-	}
-	if !strings.ContainsAny(word, routineBashGlobChars) {
+	if home == "" {
 		return false
 	}
-	matches, err := filepath.Glob(path)
-	if err != nil {
+	under := path + string(os.PathSeparator)
+	if path == home || strings.HasPrefix(home, under) {
 		return true
 	}
-	for _, match := range matches {
-		if deniedPath(match) {
+	for _, prefix := range routineDenyHomePrefixes {
+		if strings.HasPrefix(home+prefix, under) {
 			return true
 		}
 	}
 	return false
+}
+
+// boundedGlob expands an absolute, clean pattern segment by segment, or reports
+// false when it exceeds a guard bound or is malformed.
+//
+// ⚠️ Not filepath.Glob: that walks a child-supplied pattern with no bound, and
+// `/*/*/*/*/*/*/*/*` walks the whole disk on every settle cycle.
+func boundedGlob(pattern string) ([]string, bool) {
+	segments := strings.Split(
+		strings.TrimPrefix(pattern, string(os.PathSeparator)),
+		string(os.PathSeparator),
+	)
+	wildcards := 0
+	for _, segment := range segments {
+		if strings.ContainsAny(segment, routineBashGlobChars) {
+			if _, err := filepath.Match(segment, ""); err != nil {
+				return nil, false
+			}
+			wildcards++
+		}
+	}
+	if wildcards > routineBashGlobSegmentCap {
+		return nil, false
+	}
+	current := []string{string(os.PathSeparator)}
+	scanned := 0
+	for _, segment := range segments {
+		if segment == "" {
+			continue
+		}
+		next := make([]string, 0, len(current))
+		for _, dir := range current {
+			if !strings.ContainsAny(segment, routineBashGlobChars) {
+				next = append(next, filepath.Join(dir, segment))
+				continue
+			}
+			matched, read, ok := globDirectory(dir, segment, routineBashGlobScanCap-scanned)
+			scanned += read
+			if !ok {
+				return nil, false
+			}
+			next = append(next, matched...)
+		}
+		if len(next) > routineBashGlobMatchCap {
+			return nil, false
+		}
+		current = next
+	}
+	return current, true
+}
+
+// globDirectory returns dir's entries matching segment, reading at most budget
+// entries; it reports false when the budget runs out.
+func globDirectory(dir string, segment string, budget int) ([]string, int, bool) {
+	handle, err := os.Open(dir) // #nosec G304 -- read for names only, never content
+	if err != nil {
+		return nil, 0, true
+	}
+	defer handle.Close()
+	matched := make([]string, 0, 8)
+	read := 0
+	for {
+		entries, err := handle.ReadDir(256)
+		for _, entry := range entries {
+			read++
+			if read > budget {
+				return nil, read, false
+			}
+			if ok, _ := filepath.Match(segment, entry.Name()); ok {
+				matched = append(matched, filepath.Join(dir, entry.Name()))
+			}
+		}
+		if err != nil || len(entries) == 0 {
+			return matched, read, true
+		}
+	}
 }
 
 // RoutineRule returns the rule name and whether the watcher may answer.

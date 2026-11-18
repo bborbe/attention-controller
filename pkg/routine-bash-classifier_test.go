@@ -332,7 +332,7 @@ var _ = Describe("routine gate settle job Bash rule", func() {
 			Entry("a 200 KiB heredoc", func() string {
 				return "cat <<'EOF'\n" + strings.Repeat("x", 200*1024) + "\nEOF"
 			}),
-			Entry("a substitution", func() string { return "ls $(echo /) && rm -rf x" }),
+			Entry("a substitution", func() string { return "ls $(echo src) && rm -rf x" }),
 		)
 
 		It("does not hand the child the service's credentials", func() {
@@ -421,6 +421,23 @@ var _ = Describe("routine gate settle job Bash rule", func() {
 		Entry("flag value", "jq . --rawfile=~/.claude/.credentials.json"),
 		Entry("after a pipe", "ls | grep x;cat ~/.netrc"),
 		Entry("absolute", "cat /Users/someone/.ssh/id_rsa"),
+		// Review round 2: a directory above a credential reads it recursively.
+		Entry("home itself", "grep -rh token ~"),
+		Entry("home with a slash", "grep -rh token ~/"),
+		Entry("HOME variable alone", "grep -r token $HOME"),
+		Entry("claude dir", "grep -r accessToken ~/.claude"),
+		Entry("an ancestor of home", "grep -r token /Users"),
+		Entry("root", "grep -r token /"),
+		Entry("a relative climb to home", "grep -r token ../../../../../../../../.."),
+		Entry("claude.json", "jq . ~/.claude.json"),
+		Entry("claude.json in any dir", "jq . backup/.claude.json"),
+		// Review round 2: shell words are rebuilt before the check.
+		Entry("split quoting", `cat "$HOME"/.claude/.creden"tials.json"`),
+		Entry("double-quoted piece", `cat .e"nv"`),
+		Entry("single-quoted piece", `cat ~/.n'et'rc`),
+		Entry("backslash", `cat .\env`),
+		Entry("escaped dollar in double quotes", `cat "\$HOME/.netrc"`),
+		Entry("unterminated quote", `cat "README.md`),
 	)
 
 	It("holds a home glob that reaches a credential directory", func() {
@@ -518,8 +535,69 @@ var _ = Describe("routine gate settle job Bash rule", func() {
 			started := time.Now()
 			Expect(job.SettleOnce(ctx)).To(Succeed())
 			Expect(time.Since(started)).To(BeNumerically("<", timeout+time.Second))
+			Expect(wrapper.answered).To(BeEmpty())
+			Expect(heldCarrier()).To(Equal("tier-error"))
 		},
 	)
+
+	It("holds a glob with too many wildcard segments without walking the disk", func() {
+		job := newJob(writeFakeClassifier(dir, marker,
+			`cat >/dev/null; echo '{"tier":"allowlist"}'`))
+		setCommand("req-1", "ls /*/*/*/*/*/*/*/*")
+		started := time.Now()
+		Expect(job.SettleOnce(ctx)).To(Succeed())
+		Expect(time.Since(started)).To(BeNumerically("<", 500*time.Millisecond))
+		Expect(marker).NotTo(BeAnExistingFile())
+		Expect(heldCarrier()).To(Equal("bash-denied-path"))
+	})
+
+	It("holds a glob that matches more than 256 entries", func() {
+		for index := range 300 {
+			name := filepath.Join(workspace, fmt.Sprintf("f%03d.txt", index))
+			Expect(os.WriteFile(name, nil, 0o600)).To(Succeed())
+		}
+		job := newJob(writeFakeClassifier(dir, marker,
+			`cat >/dev/null; echo '{"tier":"allowlist"}'`))
+		setCommand("req-1", "ls f*")
+		Expect(job.SettleOnce(ctx)).To(Succeed())
+		Expect(marker).NotTo(BeAnExistingFile())
+		Expect(heldCarrier()).To(Equal("bash-denied-path"))
+	})
+
+	It("classifies a bounded glob that reaches no credential", func() {
+		for index := range 3 {
+			name := filepath.Join(workspace, fmt.Sprintf("f%d.txt", index))
+			Expect(os.WriteFile(name, nil, 0o600)).To(Succeed())
+		}
+		job := newJob(writeFakeClassifier(dir, marker,
+			`cat >/dev/null; echo '{"tier":"allowlist"}'`))
+		setCommand("req-1", "ls f*")
+		Expect(job.SettleOnce(ctx)).To(Succeed())
+		Expect(markerLines(marker)).To(Equal(1))
+		Expect(wrapper.answered).To(Equal([]string{bashSessionID + ":allow"}))
+	})
+
+	It("caches the guard verdict per item and command for the hold interval", func() {
+		secret := filepath.Join(workspace, "server.pem")
+		Expect(os.WriteFile(secret, nil, 0o600)).To(Succeed())
+		job := newJob(writeFakeClassifier(dir, marker,
+			`cat >/dev/null; echo '{"tier":"allowlist"}'`))
+		setCommand("req-1", "cat server.p*")
+		Expect(job.SettleOnce(ctx)).To(Succeed())
+		Expect(heldCarrier()).To(Equal("bash-denied-path"))
+
+		// The glob would now match nothing; a re-run guard would pass it on.
+		Expect(os.Remove(secret)).To(Succeed())
+		Expect(job.SettleOnce(ctx)).To(Succeed())
+		Expect(marker).NotTo(BeAnExistingFile())
+		Expect(wrapper.answered).To(BeEmpty())
+
+		clock.SetNow(
+			clock.Now().Add(libtime.Duration(pkg.RoutineGateHoldRepeatInterval + time.Second)),
+		)
+		Expect(job.SettleOnce(ctx)).To(Succeed())
+		Expect(markerLines(marker)).To(Equal(1))
+	})
 
 	It("retries a tier-error after at most ten seconds, not the hold interval", func() {
 		job := newJob(writeFakeClassifier(dir, marker, `cat >/dev/null; exit 3`))

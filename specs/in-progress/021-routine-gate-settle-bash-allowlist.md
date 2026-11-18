@@ -143,3 +143,19 @@ The live classifier rates `cat ~/.claude/.credentials.json`, `head ~/.teamvault.
 - **`bash-cwd-not-workspace` is widened.** The cwd is refused when it is under a credential prefix (for example `~/.ssh/…`), exactly `/tmp` or `/var/tmp` (a per-job directory under them is still a workspace), or `/etc` at any depth.
 - **The classifier runs as `python3 -I`** (isolated mode).
 - **The verdict cache.** A `tier-error` verdict stands for 10 s, not the hold interval, so a repaired classifier is retried promptly. When the classifier exits, its process group is killed, so a backgrounded grandchild cannot outlive the call.
+
+## Addendum 2026-11-18: guard hardening (PR #276 review round 2)
+
+- **Shell words are rebuilt before the path check.** Adjacent quoted and unquoted pieces are joined, backslash escapes are removed, and `$HOME` / `${HOME}` is expanded outside single quotes. So `"$HOME"/.claude/.creden"tials.json"` is the single word `~/.claude/.credentials.json`. An unterminated quote, or more than 4096 words, is held. Each word is also split on `= : , { }`, and every piece is checked.
+- **Directories above a credential are held.** These words are now held as `bash-denied-path`:
+  - `/` itself
+  - `$HOME` itself, or any ancestor of it (`/Users`)
+  - any directory with a credential prefix beneath it, so `grep -rh token ~` is held
+- **The denylist grows again.** `~/.claude` joins the home prefixes and `.claude.json` joins the basenames. A cwd under `~/.claude` is therefore no longer a Bash workspace.
+- **Globs are bounded and expanded by the arm itself, not by `filepath.Glob`.** Each bound fails closed, as `bash-denied-path`:
+  - at most 4 wildcard segments
+  - at most 256 matched paths
+  - at most 4096 directory entries read
+- **The guard's verdict is cached** per (item, command) next to the classifier's verdict, for the hold interval.
+- **The process group is killed only when `Run` hit the deadline or the `WaitDelay`.** A classifier whose output a leftover child held open is a `tier-error`.
+- **Residual, accepted.** A recursive read of the workspace itself (`grep -r KEY .`) still reaches a `.env` file inside the workspace. This is the same gap the Read rule documents for `Grep`. Holding every directory argument would refuse the common `grep -rn` case outright.
