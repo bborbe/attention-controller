@@ -121,9 +121,9 @@ type attentionPageRow struct {
 	// rendered mark, never this field.
 	Flagged bool
 	// DeliveryStatus is what the store's Delivery report says happened to this
-	// card's answer — `delivered`, `failed`, `never_attempted` or
-	// `pre_trail_unknown` — and is what the template reads to mark an answer
-	// that never reached the asking session.
+	// card's answer — `delivered`, `failed`, `retrying`, `held`,
+	// `never_attempted` or `pre_trail_unknown` — and is what the template reads to
+	// mark an answer that never reached the asking session.
 	//
 	// ⚠️ It is the DERIVED status, never the raw DeliveryAttempt record, for the
 	// reason pkg.DeliveryReport carries the derivation: an absent record means
