@@ -92,6 +92,9 @@ func (a *attentionStore) evaluateParkedEvidence(ctx context.Context) ([]evidence
 	}); err != nil {
 		return nil, errors.Wrap(ctx, err, "read parked evidence set failed")
 	}
+	if len(items) > MaxEvidenceProbesPerSweep {
+		items = items[:MaxEvidenceProbesPerSweep]
+	}
 	verdicts := make([]evidenceVerdict, 0, len(items))
 	for _, item := range items {
 		verdicts = append(verdicts, evidenceVerdict{

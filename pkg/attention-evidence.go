@@ -29,6 +29,15 @@ const EvidenceDeadline = 30 * 60 * 1000 * 1000 * 1000 // 30m in nanoseconds
 // rather than the sweep's whole budget.
 const EvidenceProbeTimeout = 10 * 1000 * 1000 * 1000 // 10s
 
+// MaxEvidenceProbesPerSweep bounds how many parked items one sweep probes.
+//
+// ⚠️ The sweep runs under its caller's deadline (30 s), and a probe can cost
+// EvidenceProbeTimeout, so probing every parked item in one tick can outrun that
+// budget and fail the apply pass — which would strand a parked card with its
+// deadline reopen never firing. A small batch per tick drains a backlog over a
+// few minutes and keeps every tick inside its bound.
+const MaxEvidenceProbesPerSweep = 4
+
 // DoneClassPrefixes are the answer labels that assert the work is finished.
 //
 // ⚠️ The match is a case-insensitive PREFIX, not equality: operators answer
@@ -41,13 +50,12 @@ var DoneClassPrefixes = []string{"done", "merged", "deployed", "shipped", "fixed
 // IsDoneClassAnswer reports whether the operator's answer claims the work is
 // finished.
 //
-// ⚠️ The two answer shapes are matched differently on purpose. Free text is
-// matched by PREFIX, because the answer that motivated this path reads
-// `done — reviewed and flipped both`. An option label is a closed set chosen
-// from the card's own buttons, so it must name the done word as a whole word
-// followed by a separator — otherwise `done for now`, `deployed to staging` or
-// `fixed pending review` would park a card that claims nothing finished, and it
-// would come back to the board 30 minutes later for no reason.
+// ⚠️ ONE rule for every answer shape, and it is the whole-word one: the done
+// word must stand alone or be followed by a separator, or by the artifact the
+// answer names (`done https://…`, `done /srv/app/build.log`). A bare prefix
+// would treat `done for now`, `deployed to staging` and `fixed pending review`
+// as finished claims — such an answer usually names no artifact, so it would
+// park, never verify, and come back to the board 30 minutes later for nothing.
 func IsDoneClassAnswer(answer *Answer) bool {
 	if answer == nil {
 		return false
