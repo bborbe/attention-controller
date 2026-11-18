@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- feat: Port the answer-attribution ladder to Go as `pkg.ClassifyAnswerAttribution` and `pkg.RenderedAnswerSignal`, with a committed ten-row vector fixture in `pkg/testdata/answer-attribution-vectors.json` and the contract documented in `docs/answer-attribution.md`.
+
 ## v0.96.0
 
 - feat: add `pkg/attnlog` and `cmd/attention-log-event`, a compiled replacement for the `attention-log.py` hook that writes the attention event store for `PreToolUse`, `PostToolUse`, `PostToolUseFailure` and `SessionEnd`; it ports `redact`/`scrub_detail` as distinct functions, the `EventItemID` dedup key, the `.events.jsonl`/`.open.json`/`.tool.json` store shapes, `close_open`'s fail-open tool rules and the answer-marker attribution, exits 0 on malformed input, and spawns no Python interpreter. A parity harness in `hack/attnlog-parity` deep-equals its records against a reference writer.
