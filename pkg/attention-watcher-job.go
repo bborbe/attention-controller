@@ -669,16 +669,43 @@ func itemSessionID(ctx context.Context, item Item) (string, bool) {
 	return value, true
 }
 
+// declineText is what the board's ✕ Dismiss delivers into a pane.
+//
+// ⚠️ A `skip` answer is a DECLINE, not a missing answer. `answer-kind.go` names
+// the kind "a declined answer", the headless arm already renders it as prose, and
+// the menu arm cancels the menu on it — but this pane arm read it as no content
+// and dropped it in silence: the card read `answered`, the asking session was
+// told nothing, and no attempt or refusal was recorded. Measured on the Python
+// watcher 2026-10-17 — three compact cards, each logged `answered with no
+// content — refused` — after the operator believed they had declined.
+//
+// It goes through the ordinary prose path so the asking session reads it as the
+// operator's own words, labelled and naming the card. It is deliberately not the
+// empty string: on a compact card the empty string IS the approve signal, and a
+// decline must never run the trio.
+const declineText = "declined (no answer given)"
+
 // answerText returns the operator's answer in the form the session receives.
 //
-// A `permission` item carries Decision; a `message` item carries Answer.Value.
-// An item with neither has no answer to carry, which is what a `skip` reads as.
+// A `permission` item carries Decision; a `message` item carries Answer.Value; a
+// `skip` carries neither and is delivered as declineText. A `hidden` close also
+// carries neither and renders nothing on purpose: it means the operator answered
+// the question elsewhere and only wanted the card off the board, so delivering a
+// decline would assert the reverse of what happened.
 func answerText(item Item) (string, bool) {
 	if item.Decision != "" {
 		return string(item.Decision), true
 	}
-	if item.Answer != nil && item.Answer.Value != "" {
-		return item.Answer.Value, true
+	if item.Answer != nil {
+		switch item.Answer.Kind {
+		case SkipAnswerKind:
+			return declineText, true
+		case HiddenAnswerKind:
+			return "", false
+		}
+		if item.Answer.Value != "" {
+			return item.Answer.Value, true
+		}
 	}
 	return "", false
 }
