@@ -56,6 +56,11 @@ func NewAttentionStore(
 		currentDateTimeGetter:  currentDateTimeGetter,
 		heartbeatWindow:        heartbeatWindow,
 		historyPage:            newHistoryPageCache(),
+		// The evidence probe is a dependency of this store instance, not a
+		// package global: a shared mutable runner is what makes two stores in one
+		// test process interfere, and the rule forbids reaching a service through
+		// one. Production never replaces this value.
+		evidenceRunner: DefaultEvidenceRunner,
 	}
 	for _, option := range options {
 		// A nil option is tolerated, as the previous `...LostAnswerCounter`
@@ -128,6 +133,9 @@ type attentionStore struct {
 	// historyPage caches the last history page, dropped by every write. See
 	// historyPageCache for why the endpoint needs one.
 	historyPage *historyPageCache
+	// evidenceRunner probes the artifact a `done`-class answer claimed. See
+	// attention-evidence.go.
+	evidenceRunner EvidenceRunner
 	// lostAnswers is the in-process counter. It is moved by addLostAnswersTotal
 	// only, after a close transaction commits — closeItem never touches it.
 	// Nil when the store was built without one, which is the spec default.
@@ -1174,6 +1182,10 @@ func (a *attentionStore) Answer(
 			}
 			return errors.Wrap(ctx, err, "get item failed")
 		}
+		// The state the write arrived on, captured before this path stamps
+		// AnsweredState: parkForEvidence needs it to refuse a move the transition
+		// table does not have (see there).
+		priorState := item.State
 		// The compare-and-set itself. It succeeds from open, and from answered
 		// on a `permission` item only when the write is an ARM answer — see the
 		// AnsweredState arm. The failure modes are distinct and a caller can
@@ -1181,6 +1193,12 @@ func (a *attentionStore) Answer(
 		switch item.State {
 		case OpenState:
 			// proceed
+		case AwaitingEvidenceState:
+			// ⚠️ Without this arm the parked state falls to `default`, where
+			// ValidateTransition(awaiting_evidence → answered) now returns nil
+			// because that row exists — so Answer returned (nil, nil) and recorded
+			// NOTHING. A re-answer of a parked card is the operator settling it
+			// directly; it takes the normal answer path.
 		case AnsweredState:
 			// ⚠️ A `permission` item accepts a second answer when that answer is
 			// an ARM answer; no other class does. `resolved_by` is the
@@ -1274,6 +1292,17 @@ func (a *attentionStore) Answer(
 		if err := item.validateAnswers(ctx); err != nil {
 			return errors.Wrap(ctx, err, "validate answers failed")
 		}
+		// ⚠️ A `done`-class answer is a CLAIM, not a fact. The answer is stamped
+		// exactly as above — it arrived, and its content is the operator's — but
+		// the item does not become `answered`, which reads as satisfied. It parks
+		// in `awaiting_evidence` carrying the artifact the answer named, and the
+		// sweep moves it on: closed as answered once that artifact is observed,
+		// reopened on the board when the deadline passes without it.
+		//
+		// Measured 2026-11-13: `done — reviewed and flipped both` closed a card
+		// while both PRs it named were still OPEN drafts with unchanged heads.
+		item.parkForEvidence(priorState, answer, answers, now)
+		item.clearStaleEvidence()
 		if err := a.putItem(ctx, tx, *item); err != nil {
 			return errors.Wrap(ctx, err, "update item failed")
 		}
@@ -1679,6 +1708,18 @@ func (a *attentionStore) SweepAnswered(
 		return 0, errors.Wrap(ctx, err, "sweep answered failed")
 	}
 	a.addLostAnswersTotal(lostAnswers)
+	// ⚠️ The evidence pass runs AFTER the transaction above, not inside it: it
+	// shells out to `gh` per parked item, and bbolt admits one writer, so probing
+	// under the write lock would block every Push/Answer/Close for the duration.
+	// A `done`-class answer parks the item in `awaiting_evidence`; this pass
+	// closes it once the artifact the answer named is observed, and reopens it on
+	// the board when the deadline passes without it — see
+	// attention-store-evidence.go.
+	verified, err := a.sweepAwaitingEvidence(ctx, a.currentDateTimeGetter.Now())
+	if err != nil {
+		return closed, errors.Wrap(ctx, err, "sweep awaiting evidence failed")
+	}
+	closed += verified
 	if closed > 0 {
 		a.historyPage.invalidate()
 	}

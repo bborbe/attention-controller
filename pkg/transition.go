@@ -38,6 +38,21 @@ var AvailableTransitions = Transitions{
 	},
 	{
 		From:    OpenState,
+		To:      AwaitingEvidenceState,
+		Trigger: "a `done`-class answer parks the item until its claimed effect is observed",
+	},
+	{
+		From:    AwaitingEvidenceState,
+		To:      AnsweredState,
+		Trigger: "the sweep observed the artifact the answer claimed",
+	},
+	{
+		From:    AwaitingEvidenceState,
+		To:      OpenState,
+		Trigger: "the evidence deadline passed with the claim unobserved, so the item returns to the board",
+	},
+	{
+		From:    OpenState,
 		To:      ClosedState,
 		Trigger: "the item is resolved without an answer",
 	},
