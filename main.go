@@ -427,11 +427,22 @@ func (a *application) createStoreDeps(ctx context.Context, db libkv.DB) (storeDe
 	if err != nil {
 		return storeDeps{}, err
 	}
+	// ⚠️ The Prometheus counter is in-process and starts at zero on every start,
+	// so it is seeded from the durable total the store persists. Without this the
+	// metric resets on every restart and goal SC3 — zero lost answers per week,
+	// read as a counter — could never be evidenced.
+	initialLostAnswersTotal, err := pkg.LoadLostAnswersTotal(ctx, db)
+	if err != nil {
+		return storeDeps{}, errors.Wrap(ctx, err, "load lost answers total failed")
+	}
 	// Built once per process and injected, so every counter is registered on the
 	// default registry — the one /metrics serves — exactly once. A second
 	// registration of the same collector panics. It is built BEFORE the store so
 	// the store can count a lost answer on its close transition.
-	boardMetrics := boardmetrics.NewMetrics(prometheus.DefaultRegisterer)
+	boardMetrics := boardmetrics.NewMetrics(
+		prometheus.DefaultRegisterer,
+		initialLostAnswersTotal,
+	)
 
 	rawStore, err := a.createAttentionStore(ctx, db, livenessChecker, boardMetrics)
 	if err != nil {

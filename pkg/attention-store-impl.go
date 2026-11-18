@@ -81,7 +81,8 @@ type attentionStore struct {
 	// historyPage caches the last history page, dropped by every write. See
 	// historyPageCache for why the endpoint needs one.
 	historyPage *historyPageCache
-	// lostAnswers is the counter every close site increments through closeItem.
+	// lostAnswers is the in-process counter. It is moved by addLostAnswersTotal
+	// only, after a close transaction commits — closeItem never touches it.
 	// Nil when the store was built without one, which is the spec default.
 	lostAnswers LostAnswerCounter
 }
@@ -1251,6 +1252,9 @@ func (a *attentionStore) Close(
 	// otherwise serve predates this change.
 	defer a.historyPage.invalidate()
 	var result *Item
+	// Counted inside the transaction, applied to the in-process counter only
+	// after it commits — see closeItem.
+	lostAnswers := 0
 	err := a.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
 		item, err := a.store.Get(ctx, tx, itemID.String())
 		if err != nil {
@@ -1294,15 +1298,18 @@ func (a *attentionStore) Close(
 				item.AnsweredClient = answeredClient
 			}
 		}
-		if err := a.closeItem(ctx, tx, item); err != nil {
+		counted, err := a.closeItem(ctx, tx, item)
+		if err != nil {
 			return errors.Wrap(ctx, err, "update item failed")
 		}
+		lostAnswers += counted
 		result = item
 		return nil
 	})
 	if err != nil {
 		return nil, errors.Wrap(ctx, err, "close failed")
 	}
+	a.addLostAnswersTotal(lostAnswers)
 	return result, nil
 }
 
@@ -1511,33 +1518,39 @@ func (a *attentionStore) SweepAnswered(
 	}
 	cutoff := a.currentDateTimeGetter.Now().Add(-maxAge)
 	closed := 0
+	// Counted inside the transaction, applied to the in-process counter only
+	// after it commits — see closeItem.
+	lostAnswers := 0
 	err := a.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
 		due, err := a.dueAnsweredKeys(ctx, tx, cutoff)
 		if err != nil {
 			return err
 		}
 		for _, key := range due {
-			didClose, err := a.closeAnsweredItem(ctx, tx, key)
+			didClose, counted, err := a.closeAnsweredItem(ctx, tx, key)
 			if err != nil {
 				return err
 			}
 			if didClose {
 				closed++
 			}
+			lostAnswers += counted
 		}
 		// ⚠️ Second pass, and it runs AFTER the max-age pass on purpose: see
 		// closeRedundantReraises. A twin closed just above leaves this scan's
 		// set, so its re-raise is correctly left open rather than closed.
-		reraises, err := a.closeRedundantReraises(ctx, tx)
+		reraises, reraisesLostAnswers, err := a.closeRedundantReraises(ctx, tx)
 		if err != nil {
 			return err
 		}
 		closed += reraises
+		lostAnswers += reraisesLostAnswers
 		return nil
 	})
 	if err != nil {
 		return 0, errors.Wrap(ctx, err, "sweep answered failed")
 	}
+	a.addLostAnswersTotal(lostAnswers)
 	if closed > 0 {
 		a.historyPage.invalidate()
 	}
@@ -1578,7 +1591,9 @@ func (a *attentionStore) dueAnsweredKeys(
 	return due, nil
 }
 
-// closeAnsweredItem closes one answered item, reporting whether it closed it.
+// closeAnsweredItem closes one answered item, reporting whether it closed it and
+// how many lost answers that close counted (the caller adds the latter to the
+// in-process counter only after the transaction commits).
 //
 // ⚠️ The state is re-read here rather than trusted from the index snapshot the
 // scan produced: the scan and the close are two steps, and the item can have
@@ -1588,27 +1603,28 @@ func (a *attentionStore) closeAnsweredItem(
 	ctx context.Context,
 	tx libkv.Tx,
 	key string,
-) (bool, error) {
+) (bool, int, error) {
 	item, err := a.store.Get(ctx, tx, key)
 	if err != nil {
 		if isNotFound(err) {
-			return false, nil
+			return false, 0, nil
 		}
-		return false, errors.Wrapf(ctx, err, "get item %s failed", key)
+		return false, 0, errors.Wrapf(ctx, err, "get item %s failed", key)
 	}
 	if item.State != AnsweredState {
-		return false, nil
+		return false, 0, nil
 	}
 	if err := ValidateTransition(ctx, item.State, ClosedState); err != nil {
-		return false, err
+		return false, 0, err
 	}
 	// answeredBy is deliberately NOT written: this is the answered -> closed
 	// row, and that field already names the arm that answered. Overwriting it
 	// here would replace the answerer with the sweeper.
-	if err := a.closeItem(ctx, tx, item); err != nil {
-		return false, errors.Wrapf(ctx, err, "close answered item %s failed", key)
+	counted, err := a.closeItem(ctx, tx, item)
+	if err != nil {
+		return false, 0, errors.Wrapf(ctx, err, "close answered item %s failed", key)
 	}
-	return true, nil
+	return true, counted, nil
 }
 
 // closeRedundantReraises and closeOpenItem live in attention-store-reraises.go.
