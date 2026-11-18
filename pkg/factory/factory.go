@@ -26,6 +26,13 @@ func CreateAttentionReadHandler(store pkg.AttentionStore) http.Handler {
 	return handler.NewAttentionReadHandler(store)
 }
 
+// CreateWhoNeedsMeHandler creates the handler that returns who-needs-me's answer
+// as joined JSON data, so a manager reads it from this service instead of
+// spawning the per-tick Python script.
+func CreateWhoNeedsMeHandler(reader pkg.WhoNeedsMeReader) http.Handler {
+	return handler.NewWhoNeedsMeHandler(reader)
+}
+
 // CreateSessionHeartbeatPostHandler creates the handler a session's MCP timer
 // calls to declare that it is still alive.
 func CreateSessionHeartbeatPostHandler(store pkg.SessionHeartbeatStore) http.Handler {
@@ -324,6 +331,17 @@ func CreateSentryAlertHandler(sentryClient libsentry.Client) http.Handler {
 // Content-Type: application/json).
 func CreateHealthzHandler() http.Handler {
 	return handler.NewHealthzHandler()
+}
+
+// CreateStartupGate creates the board listener's handler while the process
+// initializes: the liveness probe and /metrics answer at once, `/` renders a
+// starting page and every other path answers 503 `{"status":"starting"}`
+// naming the pending init step, until Open hands the listener to the router.
+func CreateStartupGate(liveness http.Handler, metrics http.Handler) handler.StartupGate {
+	return handler.NewStartupGate(map[string]http.Handler{
+		"/healthz": liveness,
+		"/metrics": metrics,
+	})
 }
 
 // CreateBearerTokenHandler wraps next so that every request reaching it must

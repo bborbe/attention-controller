@@ -128,6 +128,20 @@ const (
 	sweepGateManagersEnv  = "SWEEP_GATE_MANAGERS"
 	sweepGatePythonBinary = "/usr/bin/python3"
 
+	// sweepGateGoBinaryRel is the daemon that carries the ported gate, relative to
+	// $HOME.
+	//
+	// ⚠️ Two of the commands wired in NewDefaultSweepGateNotifyJob — the gate
+	// (`--tick`) and the checker (`--check`) — run this binary's one-shot modes
+	// instead of a Python script. The other five run *different* scripts and stay
+	// Python; the vault-side gate script is no longer spawned from here at all.
+	//
+	// ⚠️ Resolved to an absolute path at the wiring, never left bare: the launchd
+	// job carries the user's local bin directory on PATH today, and a bare name
+	// would break silently the day that plist changes — the defect the port
+	// already fixed once for its python binary.
+	sweepGateGoBinaryRel = ".local/bin/claude-wrapper"
+
 	// sweepGateAdhocStateEnv is the ad-hoc pass's dedup ledger. ⚠️ It must sit
 	// under the tick's state dir like every other piece of tick state, or a
 	// SWEEP_GATE_BASE-isolated run (the induced-failure E2E, or any probe) would
@@ -330,7 +344,10 @@ type SweepGateNotifier interface {
 // It returns the poster's own output so the ledger can record what a post said,
 // and an error for a post that did not land.
 type SweepGateCardPoster interface {
-	Post(ctx context.Context, card SweepGateCard) (string, error)
+	// Post posts one card. ownerSessionID names the session the card belongs
+	// to, or is empty when the subject resolves none — see
+	// sweepGateOwnerSession for why it is per-card rather than a constant.
+	Post(ctx context.Context, card SweepGateCard, ownerSessionID string) (string, error)
 }
 
 // SweepGateWaker wakes the subject's manager pane on an actionable tick.
@@ -703,8 +720,10 @@ func sweepGateFirstLine(output string) string {
 // full resolution (~9 s measured), so it runs only where a reader asked for it. The
 // probe is `grep -c 'action=miss'` against the changed-tick count; a check that did
 // not run is `action=guard_error` and deliberately carries no `action=miss`
-// substring, so a failed check cannot inflate the rate. The threshold is 0 misses in
-// >=20 changed ticks.
+// substring, so a failed check cannot inflate the rate. A completed agreeing check
+// is `action=guard_ok`, so `grep -c 'action=guard_ok'` proves the guard actually
+// ran — `action=miss 0` alone cannot. The threshold is 0 misses in >=20 changed
+// ticks.
 //
 // ⚠️ No `//counterfeiter:generate` directive: the six sibling sweep-gate interfaces
 // in this file use the same hand-written stub in the spec, so this one follows that
@@ -731,6 +750,15 @@ func (j *sweepGateNotifyJob) checkMiss(
 		return
 	}
 	if checked.ExitCode == sweepGateTickEmptyCode {
+		// ⚠️ A COMPLETED check is logged positively. Without this line `action=miss 0`
+		// cannot distinguish "checked N times and agreed" from "never ran at all", so
+		// the miss-rate probe would be unprovable even when the guard works perfectly.
+		sweepGateNotifyInfof(
+			"job=%s action=guard_ok subject=%s rc=%d",
+			sweepGateNotifyJobName,
+			subject.Name,
+			checked.ExitCode,
+		)
 		return
 	}
 	// ⚠️ ONLY rc 10 is a MISS. `SweepGateCheckResult`'s contract says anything else
@@ -987,7 +1015,8 @@ func (j *sweepGateNotifyJob) postCard(
 		subject.Name,
 	)
 
-	output, err := j.poster.Post(ctx, card)
+	owner := sweepGateOwnerSession(subject)
+	output, err := j.poster.Post(ctx, card, owner)
 	if err != nil {
 		sweepGateNotifyErrorf(
 			"job=%s action=create_failed card=%s error=%v",
@@ -1002,9 +1031,10 @@ func (j *sweepGateNotifyJob) postCard(
 	// prints its own text, and parsing an id out of it would bind this job to
 	// another script's output format.
 	sweepGateNotifyInfof(
-		"job=%s action=create card=%s",
+		"job=%s action=create card=%s owner=%s",
 		sweepGateNotifyJobName,
 		card.DedupKey,
+		sweepGateOwnerLabel(owner),
 	)
 	if output == "" {
 		output = "(no output)"
@@ -1461,14 +1491,60 @@ func sweepGateRunScript(
 	return 0, output.String(), errors.Wrapf(ctx, err, "run '%s' failed", script)
 }
 
-// NewSweepGateCommandGate builds the gate over its script.
-func NewSweepGateCommandGate(python, script string) SweepGateGate {
-	return &sweepGateCommandGate{python: python, script: script}
+// sweepGateRunBinary runs one no-script subprocess with the gate's state dir in
+// its environment, returning its exit code and combined output.
+//
+// ⚠️ The ported gate is a daemon binary with one-shot modes, not a script, so
+// there is no operand to prepend: the mode flags are the whole argv. Every other
+// command in this file still goes through sweepGateRunScript.
+//
+// ⚠️ A non-zero exit is a RESULT, never an error, exactly as sweepGateRunScript
+// treats it: `-sweep-gate-mode tick` answers 10 for a changed digest. Only a
+// launch failure — no binary on PATH — is an error.
+func sweepGateRunBinary(
+	ctx context.Context,
+	binary string,
+	args []string,
+	stateDir string,
+	timeout time.Duration,
+) (int, string, error) {
+	commandCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	// #nosec G204 -- the binary is a compile-time constant and every argument is
+	// an argv word, never a shell word.
+	cmd := exec.CommandContext(commandCtx, binary, args...)
+	cmd.Env = childEnv(sweepGateStateDirEnv + "=" + stateDir)
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	err := cmd.Run()
+	if err == nil {
+		return sweepGateTickEmptyCode, output.String(), nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		// ⚠️ A process killed by the deadline is NOT a verdict: its exit code says
+		// nothing about the digest, so it must never reach a caller as one.
+		if commandCtx.Err() != nil {
+			return 0, output.String(), errors.Wrapf(
+				ctx,
+				commandCtx.Err(),
+				"'%s' did not complete",
+				binary,
+			)
+		}
+		return exitErr.ExitCode(), output.String(), nil
+	}
+	return 0, output.String(), errors.Wrapf(ctx, err, "run '%s' failed", binary)
+}
+
+// NewSweepGateCommandGate builds the gate over the daemon's one-shot mode.
+func NewSweepGateCommandGate(binary string) SweepGateGate {
+	return &sweepGateCommandGate{binary: binary}
 }
 
 type sweepGateCommandGate struct {
-	python string
-	script string
+	binary string
 }
 
 // Tick runs `--tick` for one subject and returns its verdict.
@@ -1483,11 +1559,14 @@ func (g *sweepGateCommandGate) Tick(
 	vault string,
 	stateDir string,
 ) (SweepGateTickResult, error) {
-	code, output, err := sweepGateRunScript(
+	code, output, err := sweepGateRunBinary(
 		ctx,
-		g.python,
-		g.script,
-		[]string{"--topic", subject, "--vault", vault, "--tick"},
+		g.binary,
+		[]string{
+			"-sweep-gate-mode", "tick",
+			"-sweep-gate-topic", subject,
+			"-sweep-gate-vault", vault,
+		},
 		stateDir,
 		sweepGateTickTimeout,
 	)
@@ -1497,14 +1576,14 @@ func (g *sweepGateCommandGate) Tick(
 	return SweepGateTickResult{ExitCode: code, Output: output}, nil
 }
 
-// NewSweepGateCommandChecker builds the verdict-only gate over its script.
-func NewSweepGateCommandChecker(python, script string) SweepGateChecker {
-	return &sweepGateCommandChecker{python: python, script: script}
+// NewSweepGateCommandChecker builds the verdict-only gate over the daemon's
+// one-shot mode.
+func NewSweepGateCommandChecker(binary string) SweepGateChecker {
+	return &sweepGateCommandChecker{binary: binary}
 }
 
 type sweepGateCommandChecker struct {
-	python string
-	script string
+	binary string
 }
 
 // Check runs `--check` for one subject and returns its verdict.
@@ -1517,11 +1596,14 @@ func (c *sweepGateCommandChecker) Check(
 	vault string,
 	stateDir string,
 ) (SweepGateCheckResult, error) {
-	code, output, err := sweepGateRunScript(
+	code, output, err := sweepGateRunBinary(
 		ctx,
-		c.python,
-		c.script,
-		[]string{"--topic", subject, "--vault", vault, "--check"},
+		c.binary,
+		[]string{
+			"-sweep-gate-mode", "check",
+			"-sweep-gate-topic", subject,
+			"-sweep-gate-vault", vault,
+		},
 		stateDir,
 		sweepGateClassifyTimeout,
 	)
@@ -1617,6 +1699,81 @@ func (p *sweepGateCommandAdhocPass) Run(
 	)
 }
 
+// sweepGateOwnerSession resolves the session that owns `subject`: the
+// `claude_session_id` on the subject's own page.
+//
+// ⚠️ Why it exists. The owner filter routes a card by the session the item
+// names — `evaluate()` calls `session_for_pane()`, then `verdict()` — and a
+// `sweep-gate` card names the cron, which resolves no owner. The class is
+// therefore fixed by the producer's identity: every such card is routed to the
+// Fleet Manager, which can act on none of them, and no property of the subject
+// can change it. Naming the subject's goal manager instead is what puts the
+// card in front of the manager who can act on it.
+//
+// An empty result is a real answer, not a failure: a topic page, or a goal page
+// carrying no `claude_session_id`, resolves no owner, and the card then posts
+// under the constant `sweep-gate` and reads `unowned-fleet` — the degrade the
+// board shows rather than a silence.
+//
+// ⚠️ It reads the id and does not judge it: a stale id left by a manager that
+// has since exited is passed through as-is, and the liveness decision stays
+// where it already lives — the owner filter, which resolves the named session
+// against the ledger. Second-guessing it here would put a second liveness rule
+// in a second language.
+func sweepGateOwnerSession(subject SweepGateSubject) string {
+	// ⚠️ The two page folders, not `subject.Branch`: the enumerator reports the
+	// branch as a KIND (`topic`), which is not a directory name.
+	for _, dir := range []string{goalDirName, topicDirName} {
+		content, err := os.ReadFile(filepath.Join(subject.Vault, dir, subject.Name+".md"))
+		if err != nil {
+			continue
+		}
+		if id := sweepGateOwnerID(frontmatterValue(content, taskSessionKey)); id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
+// sweepGateOwnerID accepts a frontmatter scalar only when it is plausibly a
+// session id.
+//
+// `frontmatterValue` returns the raw scalar, so an explicit YAML null reads as
+// the literal `null` and a tilde as `~`; either would otherwise be posted as a
+// producer id and route the card to a session that never existed. The check is
+// deliberately loose — reject the null spellings, a leading `-` (which an
+// argument parser would read as a flag) and any embedded whitespace — rather
+// than pinning a UUID shape, because the id's shape is the vault's to define.
+func sweepGateOwnerID(value string) string {
+	id := strings.Trim(strings.TrimSpace(value), `"'`)
+	switch strings.ToLower(id) {
+	case "", "null", "~":
+		return ""
+	}
+	if strings.HasPrefix(id, "-") || strings.ContainsAny(id, " \t\r\n") {
+		return ""
+	}
+	return id
+}
+
+// sweepGateProducerID is the producer id a card is posted under: the owner
+// session when the subject resolves one, the constant otherwise.
+func sweepGateProducerID(owner string) string {
+	if owner != "" {
+		return owner
+	}
+	return sweepGateCardProducerID
+}
+
+// sweepGateOwnerLabel renders an owner for the log line, so an unresolved
+// subject is named rather than leaving an empty field that reads as truncation.
+func sweepGateOwnerLabel(owner string) string {
+	if owner == "" {
+		return "unresolved"
+	}
+	return owner
+}
+
 // NewSweepGateCommandCardPoster builds the poster over attention-ask.py.
 func NewSweepGateCommandCardPoster(python, script string) SweepGateCardPoster {
 	return &sweepGateCommandCardPoster{python: python, script: script}
@@ -1629,13 +1786,23 @@ type sweepGateCommandCardPoster struct {
 
 // Post posts one card and returns the poster's own output.
 //
-// ⚠️ The script's path, the producer id and the producer kind are constants;
-// only the card's own fields are variable. That is what keeps a gate's verdict
-// from steering the poster, and it is why the command line is never logged.
+// ⚠️ The script's path and the producer kind are constants; the card's own
+// fields and the owner session are the only variable arguments. That is what
+// keeps a gate's verdict from steering the poster, and it is why the command
+// line is never logged.
+//
+// ⚠️ The producer id is the owner session when the subject resolves one. The
+// owner filter routes an item by the session it names (`session_for_pane()` →
+// `verdict()`), so a card naming the constant `sweep-gate` resolves no owner and
+// lands on the Fleet Manager; naming the subject's goal manager puts it in front
+// of the manager who can act on it. Empty falls back to the constant, which is
+// the unroutable class the board can show.
 func (p *sweepGateCommandCardPoster) Post(
 	ctx context.Context,
 	card SweepGateCard,
+	ownerSessionID string,
 ) (string, error) {
+	producerID := sweepGateProducerID(ownerSessionID)
 	args := make([]string, 0, 14+2*len(card.Options))
 	args = append(args,
 		p.script,
@@ -1644,7 +1811,7 @@ func (p *sweepGateCommandCardPoster) Post(
 		"--payload", card.Payload,
 		"--context", card.Context,
 		"--recommend", card.Recommend,
-		"--producer-id", sweepGateCardProducerID,
+		"--producer-id", producerID,
 		"--producer-kind", sweepGateCardProducerKind,
 	)
 	for _, option := range card.Options {
@@ -1728,20 +1895,18 @@ func NewDefaultSweepGateNotifyJob(ctx context.Context) (run.Func, error) {
 	}
 	personal := filepath.Join(home, "Documents", "Obsidian", "private-personal")
 	scripts := filepath.Join(home, ".claude", "scripts")
+	goBinary := filepath.Join(home, sweepGateGoBinaryRel)
 	return NewSweepGateNotifyJob(
 		NewSweepGateCommandSubjectLister(
 			sweepGatePythonBinary,
 			filepath.Join(scripts, "sweep-gate-subjects.py"),
 			filepath.Join(home, ".claude", "state", "worker-manager"),
 		),
-		NewSweepGateCommandGate(
-			sweepGatePythonBinary,
-			filepath.Join(personal, ".claude", "scripts", "sweep-gate.py"),
-		),
-		NewSweepGateCommandChecker(
-			sweepGatePythonBinary,
-			filepath.Join(personal, ".claude", "scripts", "sweep-gate.py"),
-		),
+		// ⚠️ The gate and the checker run the ported daemon binary, not a script.
+		// The vault-side gate script stays on disk until this repoint is deployed
+		// and verified, so this is a repoint, not a deletion.
+		NewSweepGateCommandGate(goBinary),
+		NewSweepGateCommandChecker(goBinary),
 		NewSweepGateCommandClassifier(
 			sweepGatePythonBinary,
 			filepath.Join(scripts, "sweep-gate-classify.py"),

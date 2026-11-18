@@ -23,8 +23,12 @@ var _ = Describe("AvailableTransitions", func() {
 	// The row count is asserted rather than the single absent row alone, so a row
 	// added anywhere is a failure too — the table is a transcription of the
 	// schema page, and any drift belongs in a review rather than in a diff.
-	It("holds exactly the schema's three rows, with closed terminal", func() {
-		Expect(pkg.AvailableTransitions).To(HaveLen(3))
+	It("holds exactly the schema's rows, with closed terminal", func() {
+		// Six rows since 2026-11-18: the three original ones plus the
+		// awaiting-evidence detour a `done`-class answer takes before it may
+		// count as satisfied. The count is still asserted rather than the absent
+		// row alone, so any further drift is a failure here.
+		Expect(pkg.AvailableTransitions).To(HaveLen(6))
 
 		_, found := pkg.AvailableTransitions.Find(pkg.ClosedState, pkg.AnsweredState)
 		Expect(found).To(BeFalse())

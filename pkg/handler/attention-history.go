@@ -6,6 +6,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strconv"
 
@@ -102,7 +103,7 @@ func NewAttentionHistoryHandler(store pkg.AttentionStore) http.Handler {
 				if err != nil {
 					return err
 				}
-				items, err := store.History(ctx, limit, offset, pkg.HistoryFilter{
+				body, err := store.HistoryJSON(ctx, limit, offset, pkg.HistoryFilter{
 					Producers:      historyProducers(req),
 					DedupKeyPrefix: pkg.DedupKey(req.URL.Query().Get(historyDedupPrefixParam)),
 				})
@@ -113,7 +114,17 @@ func NewAttentionHistoryHandler(store pkg.AttentionStore) http.Handler {
 						http.StatusInternalServerError,
 					)
 				}
-				if err := libhttp.SendJSONResponse(ctx, resp, items, http.StatusOK); err != nil {
+				// ⚠️ The body is served as json.RawMessage through the shared JSON
+				// helper rather than written to the ResponseWriter directly. The
+				// cache holds this exact byte slice, and re-encoding it from Items
+				// would put back the decode the cache exists to avoid; RawMessage is
+				// encoded verbatim, so the bytes on the wire are the cached ones.
+				if err := libhttp.SendJSONResponse(
+					ctx,
+					resp,
+					json.RawMessage(body),
+					http.StatusOK,
+				); err != nil {
 					return errors.Wrap(ctx, err, "send response failed")
 				}
 				return nil

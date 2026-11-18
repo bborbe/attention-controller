@@ -31,3 +31,7 @@ A prompt is complete when ALL of the following are true:
 - [ ] A pre-existing failing spec is named in the pull request body, not silently absorbed
 
 See `docs/release-process.md` for the release path, the red-suite rule and how to read the spec count.
+
+## Boundary
+
+`attention-controller` is the attention stack's **store** — no arms or renderers, no answer-return routing to `producer_id`. Business read routes return JSON **data** with `Content-Type: application/json`; any rendering belongs to the caller, never to this service. A route that assembles a feed, a table or a card is a violation of this boundary.

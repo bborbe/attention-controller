@@ -92,14 +92,28 @@ type HeadlessAnswerDeliverer interface {
 	CanResume(ctx context.Context, sessionID string) bool
 }
 
+// HeadlessAnswerDeliveryOption customises the headless arm at construction.
+type HeadlessAnswerDeliveryOption func(*headlessAnswerDelivery)
+
+// WithHeadlessAnswerSignaller sets the helper that emits the ANSWERED signal
+// after a card is delivered.
+func WithHeadlessAnswerSignaller(
+	signaller AnsweredSignaller,
+) HeadlessAnswerDeliveryOption {
+	return func(delivery *headlessAnswerDelivery) {
+		delivery.signaller = signaller
+	}
+}
+
 // NewHeadlessAnswerDelivery creates the headless delivery arm.
 func NewHeadlessAnswerDelivery(
 	store AttentionStore,
 	wrapper WrapperMessageDeliverer,
 	contexts AnswerContextResolver,
 	now libtime.CurrentDateTimeGetter,
+	options ...HeadlessAnswerDeliveryOption,
 ) HeadlessAnswerDeliverer {
-	return &headlessAnswerDelivery{
+	delivery := &headlessAnswerDelivery{
 		store:     store,
 		wrapper:   wrapper,
 		contexts:  contexts,
@@ -108,13 +122,18 @@ func NewHeadlessAnswerDelivery(
 		attempts:  map[ItemID]int{},
 		inFlight:  map[ItemID]bool{},
 	}
+	for _, option := range options {
+		option(delivery)
+	}
+	return delivery
 }
 
 type headlessAnswerDelivery struct {
-	store    AttentionStore
-	wrapper  WrapperMessageDeliverer
-	contexts AnswerContextResolver
-	now      libtime.CurrentDateTimeGetter
+	store     AttentionStore
+	wrapper   WrapperMessageDeliverer
+	contexts  AnswerContextResolver
+	now       libtime.CurrentDateTimeGetter
+	signaller AnsweredSignaller
 	// mu guards delivered, attempts and inFlight. ⚠️ ONE instance serves BOTH the
 	// attention-watcher and the menu-answer job, which run concurrently on
 	// `run.NewConcurrentRunner`; a concurrent map read/write is an unrecoverable
@@ -267,6 +286,13 @@ func (d *headlessAnswerDelivery) settle(
 			outcome,
 			err,
 		)
+	}
+	// Signal only for a delivered card, and only after the delivered outcome is
+	// on record. Failed and held outcomes never signal.
+	if outcome == DeliveredOutcome && d.signaller != nil {
+		if sessionID, ok := deliverySessionID(ctx, item); ok {
+			d.signaller.Signal(ctx, sessionID, item)
+		}
 	}
 }
 

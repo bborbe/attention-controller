@@ -22,15 +22,15 @@ import (
 // declares no field carrying the window — it is a recorded silence, and this
 // parameter is the store's own resolution of it rather than a schema value.
 //
-// lostAnswers is optional and variadic so existing call sites need not pass a
-// nil; at most the first is honoured, and without one the counter is not written.
+// options are optional collaborators. At most one of each kind is honoured, and
+// the first of each wins.
 func NewAttentionStore(
 	db libkv.DB,
 	itemIDGenerator ItemIDGenerator,
 	sessionLivenessChecker SessionLivenessChecker,
 	currentDateTimeGetter libtime.CurrentDateTimeGetter,
 	heartbeatWindow libtime.Duration,
-	lostAnswers ...LostAnswerCounter,
+	options ...AttentionStoreOption,
 ) AttentionStore {
 	store := &attentionStore{
 		store:        libkv.NewStoreTx[string, Item](AttentionStoreBucketName),
@@ -44,17 +44,75 @@ func NewAttentionStore(
 		attempts: libkv.NewStoreTx[string, DeliveryAttempt](
 			deliveryAttemptBucketName,
 		),
+		attemptCounts: libkv.NewStoreTx[string, DeliveryAttemptCount](
+			deliveryAttemptCountBucketName,
+		),
+		parks: libkv.NewStoreTx[string, DeliveryPark](
+			deliveryParkBucketName,
+		),
 		db:                     db,
 		itemIDGenerator:        itemIDGenerator,
 		sessionLivenessChecker: sessionLivenessChecker,
 		currentDateTimeGetter:  currentDateTimeGetter,
 		heartbeatWindow:        heartbeatWindow,
-		historyPage:            &historyPageCache{},
+		historyPage:            newHistoryPageCache(),
+		// The evidence probe is a dependency of this store instance, not a
+		// package global: a shared mutable runner is what makes two stores in one
+		// test process interfere, and the rule forbids reaching a service through
+		// one. Production never replaces this value.
+		evidenceRunner: DefaultEvidenceRunner,
 	}
-	if len(lostAnswers) > 0 {
-		store.lostAnswers = lostAnswers[0]
+	for _, option := range options {
+		// A nil option is tolerated, as the previous `...LostAnswerCounter`
+		// variadic tolerated a nil counter: a caller passing nil must not panic
+		// at construction.
+		if option == nil {
+			continue
+		}
+		option.applyAttentionStoreOption(store)
 	}
 	return store
+}
+
+// AttentionStoreOption configures an optional collaborator on the store.
+//
+// It exists so NewAttentionStore can grow collaborators without a positional
+// parameter that every one of its ~68 call sites has to be edited to pass nil
+// through.
+type AttentionStoreOption interface {
+	applyAttentionStoreOption(*attentionStore)
+}
+
+// WithLostAnswers attaches the lost-answer counter the store moves on a close.
+func WithLostAnswers(counter LostAnswerCounter) AttentionStoreOption {
+	return lostAnswersOption{counter: counter}
+}
+
+type lostAnswersOption struct {
+	counter LostAnswerCounter
+}
+
+func (o lostAnswersOption) applyAttentionStoreOption(store *attentionStore) {
+	if store.lostAnswers == nil {
+		store.lostAnswers = o.counter
+	}
+}
+
+// WithExpiryCloseWriter attaches the writer the store uses to record an expiry
+// removal into the event log, so a log-replaying fold stops reporting the item
+// open. See ExpiryCloseWriter.
+func WithExpiryCloseWriter(writer ExpiryCloseWriter) AttentionStoreOption {
+	return expiryCloseOption{writer: writer}
+}
+
+type expiryCloseOption struct {
+	writer ExpiryCloseWriter
+}
+
+func (o expiryCloseOption) applyAttentionStoreOption(store *attentionStore) {
+	if store.expiryCloseWriter == nil {
+		store.expiryCloseWriter = o.writer
+	}
 }
 
 type attentionStore struct {
@@ -65,6 +123,8 @@ type attentionStore struct {
 	dedupIndex             libkv.StoreTx[string, Item]
 	answeredIndex          libkv.StoreTx[string, Item]
 	attempts               libkv.StoreTx[string, DeliveryAttempt]
+	attemptCounts          libkv.StoreTx[string, DeliveryAttemptCount]
+	parks                  libkv.StoreTx[string, DeliveryPark]
 	db                     libkv.DB
 	itemIDGenerator        ItemIDGenerator
 	sessionLivenessChecker SessionLivenessChecker
@@ -73,9 +133,17 @@ type attentionStore struct {
 	// historyPage caches the last history page, dropped by every write. See
 	// historyPageCache for why the endpoint needs one.
 	historyPage *historyPageCache
-	// lostAnswers is the counter every close site increments through closeItem.
+	// evidenceRunner probes the artifact a `done`-class answer claimed. See
+	// attention-evidence.go.
+	evidenceRunner EvidenceRunner
+	// lostAnswers is the in-process counter. It is moved by addLostAnswersTotal
+	// only, after a close transaction commits — closeItem never touches it.
 	// Nil when the store was built without one, which is the spec default.
 	lostAnswers LostAnswerCounter
+	// expiryCloseWriter records an expiry removal into the event log. Nil when
+	// the store was built without one, in which case a prune still deletes the
+	// row and simply writes no event — the pre-fix behaviour.
+	expiryCloseWriter ExpiryCloseWriter
 }
 
 func (a *attentionStore) Push(ctx context.Context, request PushRequest) (*Item, error) {
@@ -920,9 +988,13 @@ func (a *attentionStore) pruneExpired(ctx context.Context, keys []string) error 
 	// and `stillRemovable` re-checks each one — so an unconditional drop would
 	// clear the cache on reads that changed nothing.
 	removed := 0
+	// removedItems carries the rows this prune actually deleted, so the close
+	// record can be written AFTER the transaction commits — see
+	// emitExpiryCloses for why it must not be written inside it.
+	removedItems := make([]Item, 0, len(keys))
 	err := a.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
 		for _, key := range keys {
-			remove, err := a.stillRemovable(ctx, tx, key, now)
+			item, remove, err := a.stillRemovable(ctx, tx, key, now)
 			if err != nil {
 				return err
 			}
@@ -932,6 +1004,7 @@ func (a *attentionStore) pruneExpired(ctx context.Context, keys []string) error 
 			if err := a.removeItem(ctx, tx, key); err != nil {
 				return errors.Wrapf(ctx, err, "remove expired item %s failed", key)
 			}
+			removedItems = append(removedItems, item)
 			removed++
 		}
 		return nil
@@ -942,11 +1015,83 @@ func (a *attentionStore) pruneExpired(ctx context.Context, keys []string) error 
 	if removed > 0 {
 		a.historyPage.invalidate()
 	}
+	a.emitExpiryCloses(ctx, removedItems, now)
 	return nil
+}
+
+// emitExpiryCloses appends one `close` record per item this prune removed, so a
+// fold that replays the event log stops reporting the item open.
+//
+// ⚠️ It runs AFTER the removal transaction commits, never inside it. A close
+// written inside a transaction that then rolled back would hide a gate that is
+// still open — the exact defect in reverse, and the worse direction: a phantom
+// open row is noise, a hidden live gate is a lost ask.
+//
+// A failure is logged and does not fail the read. The row is already gone, and
+// a read must not fail because a diagnostic log could not be appended.
+func (a *attentionStore) emitExpiryCloses(
+	ctx context.Context,
+	items []Item,
+	now libtime.DateTime,
+) {
+	if a.expiryCloseWriter == nil || len(items) == 0 {
+		return
+	}
+	// ⚠️ The SAME instant the prune judged them by, not a second read of the
+	// clock: the close must say the item was removed at the moment it was.
+	ts := unixSeconds(now)
+	for _, item := range items {
+		sessionID := expiryCloseSessionID(ctx, item)
+		if sessionID == "" {
+			continue
+		}
+		// ⚠️ The log's `item_id` is the store's DedupKey, NOT its ItemID. The
+		// sink maps `DedupKey: DedupKey(record.ItemID)` on the way in, and
+		// `foldEventFile` keys on the log's value — so writing the generated
+		// ItemID here would append a close under a key no open record shares,
+		// leaving the fold exactly as wrong as before.
+		if err := a.expiryCloseWriter.WriteExpiryClose(
+			ctx,
+			sessionID,
+			item.DedupKey.String(),
+			ts,
+		); err != nil {
+			glog.Warningf(
+				"attention store: write expiry close for item %s failed: %v",
+				item.ItemID,
+				err,
+			)
+		}
+	}
+}
+
+// expiryCloseSessionID is the producer session whose `<session_id>.events.jsonl`
+// carries the item's `open` record, or "" when the item names no session.
+//
+// ⚠️ The close MUST go to that same file. `foldEventFile` folds each log
+// independently, so a close appended anywhere else is invisible to the fold that
+// replays the item's own log.
+//
+// ⚠️ Only a `session:` liveness ref qualifies. Falling back to
+// `producer_kind: session` + `producer_id` would be wrong for a job producer
+// that declares the session kind but a job-name id (the heartbeat watcher does
+// exactly that): it would mint a `<job-name>.events.jsonl` holding a lone close.
+// An item with no session log gets no close and stays open in the fold, which is
+// the honest outcome — there is no open record to close.
+func expiryCloseSessionID(ctx context.Context, item Item) string {
+	model, value, err := item.LivenessRef.Parse(ctx)
+	if err != nil || model != SessionLivenessModel {
+		return ""
+	}
+	return value
 }
 
 // stillRemovable re-checks one key the read classified for removal, against the
 // item as it stands inside the prune's transaction.
+//
+// It returns the item as well as the verdict: the prune needs the row it is
+// about to delete to name the session whose event log the close belongs in, and
+// re-reading it afterwards is impossible by construction.
 //
 // ⚠️ Liveness is not re-checked, because it never decided the removal: a dead
 // liveness subject alone removes nothing ([[Attention Item Schema]] § Expiry).
@@ -956,160 +1101,23 @@ func (a *attentionStore) stillRemovable(
 	tx libkv.Tx,
 	key string,
 	now libtime.DateTime,
-) (bool, error) {
+) (Item, bool, error) {
 	item, err := a.store.Get(ctx, tx, key)
 	if err != nil {
 		if isNotFound(err) {
 			// Another read pruned it first. Nothing left to do, and not an
 			// error: the item is gone, which is what this call wanted.
-			return false, nil
+			return Item{}, false, nil
 		}
-		return false, errors.Wrapf(ctx, err, "get expired item %s failed", key)
+		return Item{}, false, errors.Wrapf(ctx, err, "get expired item %s failed", key)
 	}
 	// Answered or closed since the snapshot. Its history is never rewritten, so
 	// it is left exactly as it now stands — this is the check that stops the
 	// prune destroying a resolution the operator just recorded.
 	if item.State != OpenState {
-		return false, nil
+		return Item{}, false, nil
 	}
-	return isExpired(item, now), nil
-}
-
-// History returns items NEWEST-FIRST, up to limit of them, skipping the first
-// offset.
-//
-// It is deliberately not Read. Read answers "what should an arm render now": it
-// filters to open items and removes expired ones as a side effect, which makes
-// it blind to everything that has left the queue — and it cannot report a
-// history at all, because the act of reading would delete part of what it
-// reports. History prunes nothing, and narrows on exactly one thing: an expired
-// OPEN item, which is neither what resolved nor what escalated. An answered or closed
-// item is exactly what a caller counting resolutions needs, and removing it
-// would rewrite the history the schema says is never rewritten.
-//
-// ⚠️ It walks the HISTORY INDEX in reverse rather than scanning the items
-// bucket, and both halves of that are load-bearing. The scan decoded all ~22,000
-// rows (~18.8 MB) on every request; the index costs the page. And the reverse
-// cursor is what makes the page MEANINGFUL — item ids are random 128-bit hex, so
-// items-bucket order carries no time meaning and "the first 1000" would have been
-// an arbitrary 1000 that shifted as the store grew.
-//
-// ⚠️ limit <= 0 means UNBOUNDED, and that is the compatibility path rather than a
-// convenience. The endpoint's consumers count resolutions across the whole store,
-// so a caller that needs the old behaviour can still ask for it; what changes is
-// that the DEFAULT is now a page rather than everything. offset < 0 is treated as
-// 0, so a malformed caller pages from the start instead of failing.
-//
-// A read transaction, not a write one: this path mutates nothing, so it takes
-// no writer lock and cannot interleave with the pruning Read does.
-func (a *attentionStore) History(
-	ctx context.Context,
-	limit int,
-	offset int,
-	filters ...HistoryFilter,
-) (Items, error) {
-	if err := a.ensureHistoryIndex(ctx); err != nil {
-		return nil, errors.Wrap(ctx, err, "ensure history index failed")
-	}
-	if offset < 0 {
-		offset = 0
-	}
-	// ⚠️ The caller must not modify the returned slice: a cache hit hands back
-	// the same backing array as the previous reader. The handler only encodes it.
-	key := newHistoryPageKey(limit, offset, filters)
-	cached, gen := a.historyPage.load(key)
-	if cached != nil {
-		return a.reapplyExpiry(cached), nil
-	}
-	var items Items
-	err := a.db.View(ctx, func(ctx context.Context, tx libkv.Tx) error {
-		var err error
-		items, err = historyPageCollector(a, ctx, tx, limit, offset, newHistoryMatcher(filters))
-		return err
-	})
-	if err != nil {
-		return nil, errors.Wrap(ctx, err, "history failed")
-	}
-	a.historyPage.store(gen, key, items)
-	return items, nil
-}
-
-// collectHistoryPage walks the history index in reverse and collects one page.
-//
-// ⚠️ It is a separate function because the cursor loop, the marker skip and the
-// two bound checks together exceed the complexity budget the linter allows the
-// read — the same reason `dueAnsweredKeys` and `closeAnsweredItem` were split out
-// of `SweepAnswered`. The split is by responsibility rather than by line count:
-// this walks an index, `History` decides the bounds.
-//
-// The order is newest-first because the index is keyed by creation time and the
-// cursor is REVERSE — `Rewind` positions at the highest key and `Next` descends.
-func (a *attentionStore) collectHistoryPage(
-	ctx context.Context,
-	tx libkv.Tx,
-	limit int,
-	offset int,
-	filter historyMatcher,
-) (Items, error) {
-	bucket, err := tx.Bucket(ctx, attentionHistoryIndexBucketName)
-	if err != nil {
-		if errors.Is(err, libkv.BucketNotFoundError) {
-			return Items{}, nil
-		}
-		return nil, errors.Wrap(ctx, err, "get history index bucket failed")
-	}
-	it := bucket.IteratorReverse()
-	defer it.Close()
-	// ⚠️ One `now` for the whole walk, matching `read()`. History is a scan over
-	// the same field with the same straddle hazard, and it is the endpoint whose
-	// stated purpose is a stable count — a deadline crossed mid-walk would drop a
-	// row from a set the caller is counting.
-	now := a.currentDateTimeGetter.Now()
-	items := make(Items, 0)
-	skipped := 0
-	for it.Rewind(); it.Valid(); it.Next() {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
-		}
-		// ⚠️ Skipped by NAME, never by position. The marker sorts below every real
-		// key, so the reverse cursor reaches it last — but a read that relied on
-		// that would put the marker in the result the moment the key layout
-		// changed, and the marker's value is an empty Item, which decodes cleanly
-		// and would look like a real row.
-		if string(it.Item().Key()) == historyIndexMarkerKey {
-			continue
-		}
-		item, keep, err := filter.decode(ctx, it.Item())
-		if err != nil {
-			return nil, err
-		}
-		if !keep {
-			continue
-		}
-		// ⚠️ An expired OPEN item is skipped, and it is filtered BEFORE the offset
-		// so it never occupies a page slot. This is History's one narrowing:
-		// "filters on nothing" holds for answered and closed items — their history
-		// is never rewritten — while a moot open item is neither what resolved nor
-		// what escalated, the population this endpoint exists to count.
-		//
-		// ⚠️ It also means the page is decoded before the offset is applied, where
-		// the offset used to skip without decoding at all. That cost is what buys
-		// the filter: expiry cannot be read off the index key.
-		if item.State == OpenState && isExpired(&item, now) {
-			continue
-		}
-		if skipped < offset {
-			skipped++
-			continue
-		}
-		if limit > 0 && len(items) >= limit {
-			break
-		}
-		items = append(items, item)
-	}
-	return items, nil
+	return *item, isExpired(item, now), nil
 }
 
 // decodeHistoryIndexEntry unmarshals one history index entry into an Item.
@@ -1174,6 +1182,10 @@ func (a *attentionStore) Answer(
 			}
 			return errors.Wrap(ctx, err, "get item failed")
 		}
+		// The state the write arrived on, captured before this path stamps
+		// AnsweredState: parkForEvidence needs it to refuse a move the transition
+		// table does not have (see there).
+		priorState := item.State
 		// The compare-and-set itself. It succeeds from open, and from answered
 		// on a `permission` item only when the write is an ARM answer — see the
 		// AnsweredState arm. The failure modes are distinct and a caller can
@@ -1181,6 +1193,12 @@ func (a *attentionStore) Answer(
 		switch item.State {
 		case OpenState:
 			// proceed
+		case AwaitingEvidenceState:
+			// ⚠️ Without this arm the parked state falls to `default`, where
+			// ValidateTransition(awaiting_evidence → answered) now returns nil
+			// because that row exists — so Answer returned (nil, nil) and recorded
+			// NOTHING. A re-answer of a parked card is the operator settling it
+			// directly; it takes the normal answer path.
 		case AnsweredState:
 			// ⚠️ A `permission` item accepts a second answer when that answer is
 			// an ARM answer; no other class does. `resolved_by` is the
@@ -1274,6 +1292,17 @@ func (a *attentionStore) Answer(
 		if err := item.validateAnswers(ctx); err != nil {
 			return errors.Wrap(ctx, err, "validate answers failed")
 		}
+		// ⚠️ A `done`-class answer is a CLAIM, not a fact. The answer is stamped
+		// exactly as above — it arrived, and its content is the operator's — but
+		// the item does not become `answered`, which reads as satisfied. It parks
+		// in `awaiting_evidence` carrying the artifact the answer named, and the
+		// sweep moves it on: closed as answered once that artifact is observed,
+		// reopened on the board when the deadline passes without it.
+		//
+		// Measured 2026-11-13: `done — reviewed and flipped both` closed a card
+		// while both PRs it named were still OPEN drafts with unchanged heads.
+		item.parkForEvidence(priorState, answer, answers, now)
+		item.clearStaleEvidence()
 		if err := a.putItem(ctx, tx, *item); err != nil {
 			return errors.Wrap(ctx, err, "update item failed")
 		}
@@ -1380,6 +1409,9 @@ func (a *attentionStore) Close(
 	// otherwise serve predates this change.
 	defer a.historyPage.invalidate()
 	var result *Item
+	// Counted inside the transaction, applied to the in-process counter only
+	// after it commits — see closeItem.
+	lostAnswers := 0
 	err := a.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
 		item, err := a.store.Get(ctx, tx, itemID.String())
 		if err != nil {
@@ -1423,15 +1455,18 @@ func (a *attentionStore) Close(
 				item.AnsweredClient = answeredClient
 			}
 		}
-		if err := a.closeItem(ctx, tx, item); err != nil {
+		counted, err := a.closeItem(ctx, tx, item)
+		if err != nil {
 			return errors.Wrap(ctx, err, "update item failed")
 		}
+		lostAnswers += counted
 		result = item
 		return nil
 	})
 	if err != nil {
 		return nil, errors.Wrap(ctx, err, "close failed")
 	}
+	a.addLostAnswersTotal(lostAnswers)
 	return result, nil
 }
 
@@ -1640,33 +1675,51 @@ func (a *attentionStore) SweepAnswered(
 	}
 	cutoff := a.currentDateTimeGetter.Now().Add(-maxAge)
 	closed := 0
+	// Counted inside the transaction, applied to the in-process counter only
+	// after it commits — see closeItem.
+	lostAnswers := 0
 	err := a.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
 		due, err := a.dueAnsweredKeys(ctx, tx, cutoff)
 		if err != nil {
 			return err
 		}
 		for _, key := range due {
-			didClose, err := a.closeAnsweredItem(ctx, tx, key)
+			didClose, counted, err := a.closeAnsweredItem(ctx, tx, key)
 			if err != nil {
 				return err
 			}
 			if didClose {
 				closed++
 			}
+			lostAnswers += counted
 		}
 		// ⚠️ Second pass, and it runs AFTER the max-age pass on purpose: see
 		// closeRedundantReraises. A twin closed just above leaves this scan's
 		// set, so its re-raise is correctly left open rather than closed.
-		reraises, err := a.closeRedundantReraises(ctx, tx)
+		reraises, reraisesLostAnswers, err := a.closeRedundantReraises(ctx, tx)
 		if err != nil {
 			return err
 		}
 		closed += reraises
+		lostAnswers += reraisesLostAnswers
 		return nil
 	})
 	if err != nil {
 		return 0, errors.Wrap(ctx, err, "sweep answered failed")
 	}
+	a.addLostAnswersTotal(lostAnswers)
+	// ⚠️ The evidence pass runs AFTER the transaction above, not inside it: it
+	// shells out to `gh` per parked item, and bbolt admits one writer, so probing
+	// under the write lock would block every Push/Answer/Close for the duration.
+	// A `done`-class answer parks the item in `awaiting_evidence`; this pass
+	// closes it once the artifact the answer named is observed, and reopens it on
+	// the board when the deadline passes without it — see
+	// attention-store-evidence.go.
+	verified, err := a.sweepAwaitingEvidence(ctx, a.currentDateTimeGetter.Now())
+	if err != nil {
+		return closed, errors.Wrap(ctx, err, "sweep awaiting evidence failed")
+	}
+	closed += verified
 	if closed > 0 {
 		a.historyPage.invalidate()
 	}
@@ -1707,7 +1760,9 @@ func (a *attentionStore) dueAnsweredKeys(
 	return due, nil
 }
 
-// closeAnsweredItem closes one answered item, reporting whether it closed it.
+// closeAnsweredItem closes one answered item, reporting whether it closed it and
+// how many lost answers that close counted (the caller adds the latter to the
+// in-process counter only after the transaction commits).
 //
 // ⚠️ The state is re-read here rather than trusted from the index snapshot the
 // scan produced: the scan and the close are two steps, and the item can have
@@ -1717,27 +1772,28 @@ func (a *attentionStore) closeAnsweredItem(
 	ctx context.Context,
 	tx libkv.Tx,
 	key string,
-) (bool, error) {
+) (bool, int, error) {
 	item, err := a.store.Get(ctx, tx, key)
 	if err != nil {
 		if isNotFound(err) {
-			return false, nil
+			return false, 0, nil
 		}
-		return false, errors.Wrapf(ctx, err, "get item %s failed", key)
+		return false, 0, errors.Wrapf(ctx, err, "get item %s failed", key)
 	}
 	if item.State != AnsweredState {
-		return false, nil
+		return false, 0, nil
 	}
 	if err := ValidateTransition(ctx, item.State, ClosedState); err != nil {
-		return false, err
+		return false, 0, err
 	}
 	// answeredBy is deliberately NOT written: this is the answered -> closed
 	// row, and that field already names the arm that answered. Overwriting it
 	// here would replace the answerer with the sweeper.
-	if err := a.closeItem(ctx, tx, item); err != nil {
-		return false, errors.Wrapf(ctx, err, "close answered item %s failed", key)
+	counted, err := a.closeItem(ctx, tx, item)
+	if err != nil {
+		return false, 0, errors.Wrapf(ctx, err, "close answered item %s failed", key)
 	}
-	return true, nil
+	return true, counted, nil
 }
 
 // closeRedundantReraises and closeOpenItem live in attention-store-reraises.go.
