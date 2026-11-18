@@ -52,17 +52,12 @@ func IsDoneClassAnswer(answer *Answer) bool {
 	if answer == nil {
 		return false
 	}
-	if answer.Kind == TextAnswerKind {
-		for _, text := range append([]string{answer.Value}, answer.Values...) {
-			normalized := strings.ToLower(strings.TrimSpace(text))
-			for _, prefix := range DoneClassPrefixes {
-				if strings.HasPrefix(normalized, prefix) {
-					return true
-				}
-			}
-		}
-		return false
-	}
+	// ⚠️ ONE rule for both shapes, and it is the whole-word one. A bare prefix
+	// match on free text treats `done for now`, `fixed pending review` and
+	// `done? no, still working` as finished claims; such an answer usually names
+	// no artifact, so it parks, can never verify, and comes back 30 minutes later
+	// for no reason. The motivating answer still matches — `done — reviewed and
+	// flipped both` continues with a dash, which is a separator, not a word.
 	for _, label := range append([]string{answer.Value}, answer.Values...) {
 		if isDoneClassOptionLabel(label) {
 			return true
@@ -94,6 +89,12 @@ func isDoneClassOptionLabel(label string) bool {
 		// word and claims nothing finished.
 		rest = strings.TrimLeft(rest, " \t")
 		if rest == "" {
+			return true
+		}
+		// An artifact may follow the word directly: `done https://github.com/…`
+		// and `done /srv/app/build.log` are claims, and the URL or path IS the
+		// proof the answer names.
+		if strings.HasPrefix(rest, "http://") || strings.HasPrefix(rest, "https://") || strings.HasPrefix(rest, "/") {
 			return true
 		}
 		next, _ := utf8.DecodeRuneInString(rest)

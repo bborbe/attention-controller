@@ -23,18 +23,98 @@ const EvidenceNote = "reopened: the work this answer claimed was not observed be
 // re-raise passes, so the three share one minute tick and one write lock. The
 // verification probe (a `gh` call) is the only slow step and it runs at most
 // once per parked item per tick.
+// evidenceVerdict is one parked item's probe result, computed OUTSIDE the write
+// transaction.
+type evidenceVerdict struct {
+	key      string
+	observed bool
+}
+
+// sweepAwaitingEvidence closes the items whose claimed artifact is now visible
+// and reopens the ones whose deadline passed without it.
+//
+// ⚠️ TWO PHASES, and the split is load-bearing: the probes shell out to `gh`
+// (up to EvidenceProbeTimeout each), and bbolt admits one writer, so probing
+// inside the write transaction held the store's write lock across network I/O
+// and blocked every Push/Answer/Close for the duration. Phase one reads the
+// parked set and probes it with no transaction open; phase two applies the
+// decisions in one short write.
 func (a *attentionStore) sweepAwaitingEvidence(
 	ctx context.Context,
-	tx libkv.Tx,
 	now libtime.DateTime,
 ) (int, error) {
-	keys, err := a.awaitingEvidenceKeys(ctx, tx)
+	verdicts, err := a.evaluateParkedEvidence(ctx)
 	if err != nil {
 		return 0, err
 	}
+	if len(verdicts) == 0 {
+		return 0, nil
+	}
 	changed := 0
-	for _, key := range keys {
-		moved, err := a.sweepOneAwaitingEvidence(ctx, tx, key, now)
+	err = a.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
+		moved, err := a.applyEvidenceVerdicts(ctx, tx, verdicts, now)
+		changed = moved
+		return err
+	})
+	if err != nil {
+		return 0, errors.Wrap(ctx, err, "apply evidence verdicts failed")
+	}
+	return changed, nil
+}
+
+// evaluateParkedEvidence reads the parked set and probes each claim with no
+// write transaction open.
+func (a *attentionStore) evaluateParkedEvidence(ctx context.Context) ([]evidenceVerdict, error) {
+	type parked struct {
+		key    string
+		claims []string
+	}
+	items := make([]parked, 0)
+	if err := a.db.View(ctx, func(ctx context.Context, tx libkv.Tx) error {
+		keys, err := a.awaitingEvidenceKeys(ctx, tx)
+		if err != nil {
+			return err
+		}
+		for _, key := range keys {
+			item, err := a.store.Get(ctx, tx, key)
+			if err != nil {
+				if isNotFound(err) {
+					continue
+				}
+				return errors.Wrap(ctx, err, "get awaiting-evidence item failed")
+			}
+			if item.State != AwaitingEvidenceState {
+				continue
+			}
+			items = append(items, parked{key: key, claims: item.EvidenceClaims})
+		}
+		return nil
+	}); err != nil {
+		return nil, errors.Wrap(ctx, err, "read parked evidence set failed")
+	}
+	verdicts := make([]evidenceVerdict, 0, len(items))
+	for _, item := range items {
+		verdicts = append(verdicts, evidenceVerdict{
+			key:      item.key,
+			observed: EvidenceAllObserved(ctx, item.claims, a.evidenceRunner),
+		})
+	}
+	return verdicts, nil
+}
+
+// applyEvidenceVerdicts closes or reopens the parked items a probe settled.
+//
+// ⚠️ The state is re-read inside the write: the probe ran with no transaction
+// open, so an item can have been answered, closed or re-parked in between.
+func (a *attentionStore) applyEvidenceVerdicts(
+	ctx context.Context,
+	tx libkv.Tx,
+	verdicts []evidenceVerdict,
+	now libtime.DateTime,
+) (int, error) {
+	changed := 0
+	for _, verdict := range verdicts {
+		moved, err := a.applyEvidenceVerdict(ctx, tx, verdict, now)
 		if err != nil {
 			return changed, err
 		}
@@ -43,6 +123,68 @@ func (a *attentionStore) sweepAwaitingEvidence(
 		}
 	}
 	return changed, nil
+}
+
+// applyEvidenceVerdict settles one parked item.
+func (a *attentionStore) applyEvidenceVerdict(
+	ctx context.Context,
+	tx libkv.Tx,
+	verdict evidenceVerdict,
+	now libtime.DateTime,
+) (bool, error) {
+	item, err := a.store.Get(ctx, tx, verdict.key)
+	if err != nil {
+		if isNotFound(err) {
+			return false, nil
+		}
+		return false, errors.Wrap(ctx, err, "get awaiting-evidence item failed")
+	}
+	if item.State != AwaitingEvidenceState {
+		return false, nil
+	}
+	if verdict.observed {
+		item.State = AnsweredState
+		item.EvidenceDeadline = nil
+		if err := a.putItem(ctx, tx, *item); err != nil {
+			return false, errors.Wrap(ctx, err, "close verified item failed")
+		}
+		return true, nil
+	}
+	if item.EvidenceDeadline == nil || now.Before(*item.EvidenceDeadline) {
+		return false, nil
+	}
+	// The claim was never observed in time. The card goes back on the board with
+	// the claim intact and a note saying why, because an answer nobody can
+	// verify is a question the operator still has to settle.
+	//
+	// ⚠️ The durable answered-index entry MUST go too, and before the stamps are
+	// cleared: `reconcileAnsweredIndex` is ADD-ONLY (by design — a re-raise shares
+	// the record), so clearing `AnsweredAt` alone leaves the ask recorded as
+	// answered. `ReadBoard` then drops the now-open card through
+	// `suppressAnsweredTwins` and `closeRedundantReraises` closes it as an
+	// answered twin — the reopen would be invisible, which is precisely the
+	// failure this state exists to make visible.
+	if item.AnsweredAt != nil {
+		if err := a.removeIndexKey(
+			ctx, tx, a.answeredIndex, askIdentity(*item), "answered",
+		); err != nil {
+			return false, errors.Wrap(ctx, err, "remove answered index entry failed")
+		}
+	}
+	item.State = OpenState
+	item.EvidenceDeadline = nil
+	item.AnsweredAt = nil
+	item.AnsweredBy = ""
+	item.AnsweredClient = nil
+	item.ResolvedBy = ""
+	item.Decision = ""
+	item.Answer = nil
+	item.Answers = nil
+	item.Context = ItemContext(appendNote(string(item.Context), EvidenceNote))
+	if err := a.putItem(ctx, tx, *item); err != nil {
+		return false, errors.Wrap(ctx, err, "reopen unverified item failed")
+	}
+	return true, nil
 }
 
 // awaitingEvidenceKeys lists the live-index keys currently parked.
@@ -65,78 +207,6 @@ func (a *attentionStore) awaitingEvidenceKeys(
 		return nil, errors.Wrap(ctx, err, "scan live index for awaiting evidence failed")
 	}
 	return keys, nil
-}
-
-// sweepOneAwaitingEvidence closes or reopens one parked item, reporting whether
-// it moved it.
-//
-// ⚠️ The state is re-read inside the write rather than trusted from the index
-// snapshot: the scan and the write are two steps, and an item can have been
-// closed or reopened between them.
-func (a *attentionStore) sweepOneAwaitingEvidence(
-	ctx context.Context,
-	tx libkv.Tx,
-	key string,
-	now libtime.DateTime,
-) (bool, error) {
-	item, err := a.store.Get(ctx, tx, key)
-	if err != nil {
-		if isNotFound(err) {
-			return false, nil
-		}
-		return false, errors.Wrap(ctx, err, "get awaiting-evidence item failed")
-	}
-	if item.State != AwaitingEvidenceState {
-		return false, nil
-	}
-	if EvidenceAllObserved(ctx, item.EvidenceClaims, a.evidenceRunner) {
-		item.State = AnsweredState
-		item.EvidenceDeadline = nil
-		if err := a.putItem(ctx, tx, *item); err != nil {
-			return false, errors.Wrap(ctx, err, "close verified item failed")
-		}
-		return true, nil
-	}
-	if item.EvidenceDeadline == nil || now.Before(*item.EvidenceDeadline) {
-		return false, nil
-	}
-	// The claim was never observed in time. The card goes back on the board with
-	// the claim intact and a note saying why, because an answer nobody can
-	// verify is a question the operator still has to settle.
-	// ⚠️ The durable answered-index entry MUST go too, and before the stamps are
-	// cleared: `reconcileAnsweredIndex` is ADD-ONLY (by design — a re-raise shares
-	// the record), so clearing `AnsweredAt` alone leaves the ask recorded as
-	// answered. `ReadBoard` then drops the now-open card through
-	// `suppressAnsweredTwins` and `closeRedundantReraises` closes it as an
-	// answered twin — the reopen would be invisible, which is precisely the
-	// failure this state exists to make visible.
-	if item.AnsweredAt != nil {
-		if err := a.removeIndexKey(
-			ctx, tx, a.answeredIndex, askIdentity(*item), "answered",
-		); err != nil {
-			return false, errors.Wrap(ctx, err, "remove answered index entry failed")
-		}
-	}
-	item.State = OpenState
-	item.EvidenceDeadline = nil
-	// ⚠️ The answer stamps MUST be cleared, or the reopened card never reaches
-	// the board. `answeredIndexWorthy` is `AnsweredAt != nil`, so a reopened item
-	// that kept its stamp stays in the durable answered index; `suppressAnsweredTwins`
-	// then drops the now-open card from the board and `closeRedundantReraises`
-	// closes it as an answered twin. The reopen would be invisible — the exact
-	// failure this state exists to make visible.
-	item.AnsweredAt = nil
-	item.AnsweredBy = ""
-	item.AnsweredClient = nil
-	item.ResolvedBy = ""
-	item.Decision = ""
-	item.Answer = nil
-	item.Answers = nil
-	item.Context = ItemContext(appendNote(string(item.Context), EvidenceNote))
-	if err := a.putItem(ctx, tx, *item); err != nil {
-		return false, errors.Wrap(ctx, err, "reopen unverified item failed")
-	}
-	return true, nil
 }
 
 // appendNote appends one line to an item's context, keeping an empty note empty

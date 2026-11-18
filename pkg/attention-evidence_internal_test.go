@@ -284,4 +284,14 @@ var _ = Describe("Evidence-backed close", func() {
 		// Free text keeps the prefix rule that the motivating answer needs.
 		Expect(IsDoneClassAnswer(&Answer{Kind: TextAnswerKind, Value: "done — reviewed and flipped both"})).To(BeTrue())
 	})
+
+	// The free-text finding, pinned: a bare prefix must not make an unfinished
+	// answer a claim, while an artifact right after the word still must.
+	It("rejects a free-text answer that only starts with a done word", func() {
+		Expect(IsDoneClassAnswer(&Answer{Kind: TextAnswerKind, Value: "done for now"})).To(BeFalse())
+		Expect(IsDoneClassAnswer(&Answer{Kind: TextAnswerKind, Value: "fixed pending review"})).To(BeFalse())
+		Expect(IsDoneClassAnswer(&Answer{Kind: TextAnswerKind, Value: "done? no, still working"})).To(BeFalse())
+		Expect(IsDoneClassAnswer(&Answer{Kind: TextAnswerKind, Value: "done https://github.com/bborbe/attention-controller/pull/77"})).To(BeTrue())
+		Expect(IsDoneClassAnswer(&Answer{Kind: TextAnswerKind, Value: "done /srv/app/build.log"})).To(BeTrue())
+	})
 })

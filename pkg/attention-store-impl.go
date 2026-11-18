@@ -1569,21 +1569,24 @@ func (a *attentionStore) SweepAnswered(
 		}
 		closed += reraises
 		lostAnswers += reraisesLostAnswers
-		// ⚠️ Third pass: a `done`-class answer parked the item in
-		// `awaiting_evidence`. It closes here once the artifact the answer named
-		// is observed, and reopens on the board when the deadline passes without
-		// it — see attention-store-evidence.go.
-		verified, err := a.sweepAwaitingEvidence(ctx, tx, a.currentDateTimeGetter.Now())
-		if err != nil {
-			return err
-		}
-		closed += verified
 		return nil
 	})
 	if err != nil {
 		return 0, errors.Wrap(ctx, err, "sweep answered failed")
 	}
 	a.addLostAnswersTotal(lostAnswers)
+	// ⚠️ The evidence pass runs AFTER the transaction above, not inside it: it
+	// shells out to `gh` per parked item, and bbolt admits one writer, so probing
+	// under the write lock would block every Push/Answer/Close for the duration.
+	// A `done`-class answer parks the item in `awaiting_evidence`; this pass
+	// closes it once the artifact the answer named is observed, and reopens it on
+	// the board when the deadline passes without it — see
+	// attention-store-evidence.go.
+	verified, err := a.sweepAwaitingEvidence(ctx, a.currentDateTimeGetter.Now())
+	if err != nil {
+		return closed, errors.Wrap(ctx, err, "sweep awaiting evidence failed")
+	}
+	closed += verified
 	if closed > 0 {
 		a.historyPage.invalidate()
 	}
