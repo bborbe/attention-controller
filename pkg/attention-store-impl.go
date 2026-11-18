@@ -8,7 +8,6 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	stdtime "time"
 
 	"github.com/bborbe/errors"
 	libkv "github.com/bborbe/kv"
@@ -59,6 +58,12 @@ func NewAttentionStore(
 		historyPage:            newHistoryPageCache(),
 	}
 	for _, option := range options {
+		// A nil option is tolerated, as the previous `...LostAnswerCounter`
+		// variadic tolerated a nil counter: a caller passing nil must not panic
+		// at construction.
+		if option == nil {
+			continue
+		}
 		option.applyAttentionStoreOption(store)
 	}
 	return store
@@ -1002,7 +1007,7 @@ func (a *attentionStore) pruneExpired(ctx context.Context, keys []string) error 
 	if removed > 0 {
 		a.historyPage.invalidate()
 	}
-	a.emitExpiryCloses(ctx, removedItems)
+	a.emitExpiryCloses(ctx, removedItems, now)
 	return nil
 }
 
@@ -1016,21 +1021,31 @@ func (a *attentionStore) pruneExpired(ctx context.Context, keys []string) error 
 //
 // A failure is logged and does not fail the read. The row is already gone, and
 // a read must not fail because a diagnostic log could not be appended.
-func (a *attentionStore) emitExpiryCloses(ctx context.Context, items []Item) {
+func (a *attentionStore) emitExpiryCloses(
+	ctx context.Context,
+	items []Item,
+	now libtime.DateTime,
+) {
 	if a.expiryCloseWriter == nil || len(items) == 0 {
 		return
 	}
-	// One ts for the batch, matching the one `now` the prune judged them by.
-	ts := float64(a.currentDateTimeGetter.Now().Time().UnixNano()) / float64(stdtime.Second)
+	// ⚠️ The SAME instant the prune judged them by, not a second read of the
+	// clock: the close must say the item was removed at the moment it was.
+	ts := unixSeconds(now)
 	for _, item := range items {
 		sessionID := expiryCloseSessionID(ctx, item)
 		if sessionID == "" {
 			continue
 		}
+		// ⚠️ The log's `item_id` is the store's DedupKey, NOT its ItemID. The
+		// sink maps `DedupKey: DedupKey(record.ItemID)` on the way in, and
+		// `foldEventFile` keys on the log's value — so writing the generated
+		// ItemID here would append a close under a key no open record shares,
+		// leaving the fold exactly as wrong as before.
 		if err := a.expiryCloseWriter.WriteExpiryClose(
 			ctx,
 			sessionID,
-			item.ItemID.String(),
+			item.DedupKey.String(),
 			ts,
 		); err != nil {
 			glog.Warningf(
@@ -1048,15 +1063,19 @@ func (a *attentionStore) emitExpiryCloses(ctx context.Context, items []Item) {
 // ⚠️ The close MUST go to that same file. `foldEventFile` folds each log
 // independently, so a close appended anywhere else is invisible to the fold that
 // replays the item's own log.
+//
+// ⚠️ Only a `session:` liveness ref qualifies. Falling back to
+// `producer_kind: session` + `producer_id` would be wrong for a job producer
+// that declares the session kind but a job-name id (the heartbeat watcher does
+// exactly that): it would mint a `<job-name>.events.jsonl` holding a lone close.
+// An item with no session log gets no close and stays open in the fold, which is
+// the honest outcome — there is no open record to close.
 func expiryCloseSessionID(ctx context.Context, item Item) string {
-	if model, value, err := item.LivenessRef.Parse(ctx); err == nil &&
-		model == SessionLivenessModel {
-		return value
+	model, value, err := item.LivenessRef.Parse(ctx)
+	if err != nil || model != SessionLivenessModel {
+		return ""
 	}
-	if item.ProducerKind == SessionProducerKind {
-		return item.ProducerID.String()
-	}
-	return ""
+	return value
 }
 
 // stillRemovable re-checks one key the read classified for removal, against the

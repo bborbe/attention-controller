@@ -80,9 +80,15 @@ var _ = Describe("expiry removal closes the event log", func() {
 		Expect(err).To(BeNil())
 
 		// The producer's own open record — the row the fold would replay.
+		// ⚠️ Its `item_id` is the store's DedupKey, not the generated ItemID:
+		// `StoreEventSink.pushRequest` maps `DedupKey: DedupKey(record.ItemID)`
+		// on the way in, so the log's id and the item's dedup key are the same
+		// value. Seeding the store's generated id would aim the spec at a key
+		// no real open record carries — it would pass on a fix that does nothing
+		// in production.
 		logPath := filepath.Join(stateDir, sessionID+".events.jsonl")
 		Expect(os.WriteFile(logPath, []byte(
-			`{"item_id":"`+item.ItemID.String()+`","session_id":"`+sessionID+
+			`{"item_id":"`+item.DedupKey.String()+`","session_id":"`+sessionID+
 				`","kind":"question","ts":1,"type":"open"}`+"\n",
 		), 0o600)).To(Succeed())
 
