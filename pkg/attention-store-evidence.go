@@ -103,6 +103,20 @@ func (a *attentionStore) sweepOneAwaitingEvidence(
 	// The claim was never observed in time. The card goes back on the board with
 	// the claim intact and a note saying why, because an answer nobody can
 	// verify is a question the operator still has to settle.
+	// ⚠️ The durable answered-index entry MUST go too, and before the stamps are
+	// cleared: `reconcileAnsweredIndex` is ADD-ONLY (by design — a re-raise shares
+	// the record), so clearing `AnsweredAt` alone leaves the ask recorded as
+	// answered. `ReadBoard` then drops the now-open card through
+	// `suppressAnsweredTwins` and `closeRedundantReraises` closes it as an
+	// answered twin — the reopen would be invisible, which is precisely the
+	// failure this state exists to make visible.
+	if item.AnsweredAt != nil {
+		if err := a.removeIndexKey(
+			ctx, tx, a.answeredIndex, askIdentity(*item), "answered",
+		); err != nil {
+			return false, errors.Wrap(ctx, err, "remove answered index entry failed")
+		}
+	}
 	item.State = OpenState
 	item.EvidenceDeadline = nil
 	// ⚠️ The answer stamps MUST be cleared, or the reopened card never reaches

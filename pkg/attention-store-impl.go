@@ -1061,6 +1061,12 @@ func (a *attentionStore) Answer(
 		switch item.State {
 		case OpenState:
 			// proceed
+		case AwaitingEvidenceState:
+			// ⚠️ Without this arm the parked state falls to `default`, where
+			// ValidateTransition(awaiting_evidence → answered) now returns nil
+			// because that row exists — so Answer returned (nil, nil) and recorded
+			// NOTHING. A re-answer of a parked card is the operator settling it
+			// directly; it takes the normal answer path.
 		case AnsweredState:
 			// ⚠️ A `permission` item accepts a second answer when that answer is
 			// an ARM answer; no other class does. `resolved_by` is the

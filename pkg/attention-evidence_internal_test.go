@@ -159,6 +159,19 @@ var _ = Describe("Evidence-backed close", func() {
 		Expect(got.AnsweredAt).To(BeNil(), "a reopened card is not answered")
 		Expect(got.AnsweredBy).To(BeEmpty())
 		Expect(got.Answer).To(BeNil())
+		// ⚠️ The assertion above reads the item bucket, which bypasses every read
+		// filter. The reopen only counts if the BOARD shows the card again — the
+		// durable answered index is add-only, so a leftover entry makes
+		// suppressAnsweredTwins hide it while the item still reads `open`.
+		board, err := store.ReadBoard(ctx)
+		Expect(err).To(BeNil())
+		visible := false
+		for _, candidate := range board {
+			if candidate.ItemID == item.ItemID {
+				visible = true
+			}
+		}
+		Expect(visible).To(BeTrue(), "a reopened card must reappear on the board")
 		Expect(string(got.Context)).To(ContainSubstring(EvidenceNote))
 	})
 
