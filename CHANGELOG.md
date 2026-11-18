@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.95.2
 
 - fix: **`attention_lost_answers_total` survives a controller restart, so goal SC3 can finally read a week.** The counter was a bare in-process `prometheus.Counter` created at zero and mutated only by `Inc()`, so every restart reset it — measured 2026-11-17 across five restarts in one evening, while a per-card census over the same window read 242 answered+closed cards with `never_attempted = 0`. A counter that restarts at zero can never evidence a week, so the criterion was unmeasurable as instrumented rather than unmet. The total is now persisted in the store under `attention-lost-answers-total` and written **inside the close transaction**: a committed close and the count it contributes become durable together, and a failed write aborts the close so the sweep retries rather than losing the fact. The in-process counter is applied only **after** that transaction commits, so an aborted close moves neither half — incrementing inside the transaction would have left the counter one ahead of the durable total on every abort, and the sweep's retry would then count the same close twice. At startup `main` reads the durable total and seeds the counter before it is registered. ⚠️ This makes SC3 readable; it does not tick it — the criterion still needs its own week of data.
 
