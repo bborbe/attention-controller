@@ -78,6 +78,9 @@ type menuProgress struct {
 	typed bool
 	// cycles counts how many times the arm has retried this card.
 	cycles int
+	// retryRecorded reports that this answer's retry is already on the trail, so
+	// the record is written once per answer rather than once per cycle.
+	retryRecorded bool
 	// done marks a card that reached a terminal outcome, so it is not retried.
 	done bool
 }
@@ -593,6 +596,7 @@ func (j *menuAnswerJob) deliver(
 		progress.keys = keys
 		progress.typed = false
 		progress.cycles = 0
+		progress.retryRecorded = false
 		progress.done = false
 	}
 	if progress.done {
@@ -701,9 +705,17 @@ func (j *menuAnswerJob) answerOnce(
 	return j.finishMenu(ctx, pane, keys)
 }
 
-// retry logs a cycle that delivered nothing and gives up once the card has had
-// its allowance, so a card whose menu never appears is surfaced rather than
-// retried silently until the sweep closes it.
+// retry logs a cycle that delivered nothing, records that this arm looked, and
+// gives up once the card has had its allowance, so a card whose menu never
+// appears is surfaced rather than retried silently until the sweep closes it.
+//
+// ⚠️ The record is written on the FIRST retry of an answer, not only on the
+// give-up. The allowance is bounded by THIS process's memory and by the card's
+// own lifetime, and a card that closes — the board answer's own close event
+// arrives within seconds — stops being deliverable before the allowance is
+// spent. Measured 2026-11-18: five menu cards closed 5–21 s after their answer
+// with 2–11 retries logged and no record written, so the lost-answer counter
+// counted every one of them as *no arm ever looked*.
 func (j *menuAnswerJob) retry(
 	ctx context.Context,
 	item Item,
@@ -717,6 +729,7 @@ func (j *menuAnswerJob) retry(
 		DeliveryRetry,
 		reason,
 	)
+	j.recordRetry(ctx, item, progress)
 	if progress.cycles < j.maxCycles {
 		return
 	}
@@ -727,6 +740,30 @@ func (j *menuAnswerJob) retry(
 		FailedOutcome,
 		"gave up after "+strconv.Itoa(progress.cycles)+" cycles: "+reason,
 	)
+}
+
+// recordRetry writes the trail entry for a menu card this arm looked at and
+// could not answer yet, once per answer.
+//
+// ⚠️ `retried`, not `failed`: the menu not having drawn yet is the normal shape
+// for the first cycle or two, and the give-up path above still writes `failed`
+// when the allowance is spent.
+//
+// ⚠️ A failed write clears the marker so the next cycle retries it, the same rule
+// settle follows: the read surface derives `never_attempted` from the record's
+// ABSENCE, so a record that never landed must not be treated as written.
+func (j *menuAnswerJob) recordRetry(
+	ctx context.Context,
+	item Item,
+	progress *menuProgress,
+) {
+	if progress.retryRecorded {
+		return
+	}
+	if !j.recordAttempt(ctx, item, RetriedOutcome) {
+		return
+	}
+	progress.retryRecorded = true
 }
 
 // settle records the card's terminal outcome and stops any further cycles.

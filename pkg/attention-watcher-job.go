@@ -97,6 +97,19 @@ const attentionWatcherAnsweredBy = "attention-watcher"
 // from the presence of any attempt.
 const attentionWatcherUndeliverableCarrier = attentionWatcherCarrier + ":undeliverable"
 
+// attentionWatcherRetryCarrier names a retry in the delivery trail — the record
+// that says an arm looked at this answer and could not reach the session yet.
+//
+// ⚠️ Distinct from attentionWatcherCarrier and from the undeliverable marker,
+// because it answers a different question from both. The marker says *this
+// answer has waited past the bound and the operator should look*; this says *an
+// arm is on it right now*. Collapsing them would make the bound's own delay
+// meaningless, and leaving the retry unnamed is the defect: a retry wrote no
+// record at all, so the card closed reading `never_attempted` and the
+// lost-answer counter counted an answer three arms were actively retrying.
+// Measured 2026-11-18: 14 of 24 counted losses in 12.7 h were exactly that.
+const attentionWatcherRetryCarrier = attentionWatcherCarrier + ":retrying"
+
 // AttentionWatcherJob carries a board answer into the session that asked.
 //
 // ⚠️ It is the one arm that actually carries an answer INTO a session for a tab
@@ -324,15 +337,21 @@ func (j *attentionWatcherJob) deliverable(
 		if report.Status == DeliveredStatus {
 			return false
 		}
+		// ⚠️ A RETRYING record is this arm's own footprint, not a failed delivery,
+		// so it does not space the next attempt. Gating on it would turn a
+		// composer busy for a few seconds into a five-minute delay, and the loop
+		// it would be bounding is already bounded by the undeliverable marker,
+		// which writes a `failed` record at AttentionDeliveryBound and does space
+		// every attempt after that.
+		if report.Status != RetryingStatus && !j.retryDue(item, report.AttemptedAt) {
+			return false
+		}
 		// ⚠️ A failure of THIS answer is retried, but not on the next tick. See
 		// AttentionDeliveryRetryBackoff: without this gate a card that can never
 		// be carried is re-attempted every two seconds for the life of the
 		// process, and each attempt is a durable write that wakes the board.
 		// `retryDue` ignores any record written before the item was answered, so
 		// another arm's earlier judgement never delays the operator's answer.
-		if !j.retryDue(item, report.AttemptedAt) {
-			return false
-		}
 	}
 	if _, ok := itemSessionID(ctx, item); !ok {
 		return false
@@ -403,8 +422,9 @@ func (j *attentionWatcherJob) deliver(
 		}
 	case DeliveryRetry:
 		// A busy or unreadable composer has not failed yet, so it is not marked
-		// as a failure — but it must not retry unmarked forever either. Past
+		// as a failure — but it must not retry UNRECORDED either. Past
 		// AttentionDeliveryBound the operator is told, and the retry continues.
+		j.recordRetry(ctx, item, report)
 		j.markUndeliverableIfOverdue(ctx, item, report, reason)
 		j.maybePark(ctx, item, count, verdict, reason)
 	default:
@@ -549,6 +569,59 @@ func (j *attentionWatcherJob) clearPark(ctx context.Context, item Item) {
 	}
 }
 
+// recordRetry writes the trail entry for an answer this arm looked at and could
+// not carry yet, so the card is never closeable as `never_attempted`.
+//
+// ⚠️ This is the fix for the defect the lost-answer counter was reading as a
+// delivery-arm failure. The counter counts an answered+closed card with NO
+// attempt record, and a retry wrote no record at all — so a busy composer, an
+// undrawn menu or a wrapper mid-turn produced a card that closed reading *no arm
+// ever looked at this answer*. Measured 2026-11-18: 14 of 24 counted losses in
+// 12.7 h, every one of them a card an arm was actively retrying.
+//
+// ⚠️ Exactly ONE retry record per answer. The guard's question is *has any arm
+// other than the close recorded a look at THIS answer?* — and the close's own
+// backfill (`watcher:gate-resolved`) does not count as an arm, because it is
+// written precisely BECAUSE no arm had. So the record is written when the trail
+// is empty or carries only that backfill, and skipped once this arm's own retry,
+// the undeliverable marker, or another arm's record is there:
+//
+//   - skipping the marker matters most — it is the LATER record, and overwriting
+//     it with a retry would demote a card past the bound back to "still trying",
+//     un-space the backoff and start the write loop this guard exists to prevent;
+//   - skipping another arm's `failed`/`held` record matters for the same reason:
+//     that record already proves an arm looked, which is the whole fact this
+//     write exists to establish.
+//
+// The write-amplification half is not theoretical: the retry loop runs every
+// AttentionWatcherDeliveryInterval for as long as the card lives, and one durable
+// write per cycle is the hot loop AttentionDeliveryRetryBackoff was introduced to
+// stop (measured 2026-11-16: ~20 attempt-writes a second across ~40 stuck cards,
+// 13.7 % of the process's CPU). The undeliverable marker takes the record over at
+// AttentionDeliveryBound, after which the backoff spaces every attempt.
+//
+// ⚠️ A record written BEFORE the item was answered says nothing about this
+// answer — it is another arm's earlier judgement about a gate that was still
+// open — so the guard compares against AnsweredAt, exactly as retryDue does.
+func (j *attentionWatcherJob) recordRetry(
+	ctx context.Context,
+	item Item,
+	report *DeliveryReport,
+) {
+	if report != nil && report.AttemptedAt != nil &&
+		(item.AnsweredAt == nil ||
+			!report.AttemptedAt.Time().Before(item.AnsweredAt.Time())) &&
+		report.Carrier != attentionCloseCarrier &&
+		report.Carrier != "" {
+		return
+	}
+	glog.V(2).Infof(
+		"job=attention-watcher action=retry_recorded item=%s",
+		item.ItemID,
+	)
+	j.recordAttemptAs(ctx, item, attentionWatcherRetryCarrier, RetriedOutcome)
+}
+
 // markUndeliverableIfOverdue records a terminal `failed` attempt for an answer
 // that has sat in a retry loop past AttentionDeliveryBound, so the operator is
 // told instead of waiting blind.
@@ -572,8 +645,10 @@ func (j *attentionWatcherJob) clearPark(ctx context.Context, item Item) {
 // survives only until another arm writes that record (a refuse, a headless
 // settle). A card that alternates refuse/retry after the bound therefore writes
 // one extra marker per alternation — bounded, not a loop, and the same property
-// the pre-fix code had. The retry loop alone never writes the record, which is
-// what makes the carrier a reliable "already marked" for the loop it bounds.
+// the pre-fix code had. The retry loop writes its own record under
+// attentionWatcherRetryCarrier — a different carrier, so it neither satisfies
+// nor suppresses this guard — which is what makes this carrier a reliable
+// "already marked" for the loop it bounds.
 func (j *attentionWatcherJob) markUndeliverableIfOverdue(
 	ctx context.Context,
 	item Item,

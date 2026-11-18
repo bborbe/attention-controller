@@ -432,6 +432,14 @@ func deriveDeliveryReport(item *Item, attempt *DeliveryAttempt) *DeliveryReport 
 		report.Status = DeliveredStatus
 	case HeldOutcome:
 		report.Status = HeldStatus
+	case RetriedOutcome:
+		// ⚠️ Explicit, not left to the `default` branch. A retry is the one
+		// outcome whose reader answer differs most from `failed`: it means an arm
+		// looked and is still trying, so the card must neither read
+		// `never_attempted` (no arm looked) nor `failed` (the operator must step
+		// in). The default below still catches an unknown outcome, which is the
+		// conservative answer for a value this build does not know.
+		report.Status = RetryingStatus
 	default:
 		report.Status = FailedStatus
 	}

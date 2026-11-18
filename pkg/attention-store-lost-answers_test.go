@@ -128,17 +128,20 @@ var _ = Describe("AttentionStore lost-answer counter", func() {
 		Expect(db.Close()).To(BeNil())
 	})
 
-	It("counts an answered item closed with no delivery attempt, once the grace has passed", func() {
-		id := answer("producer-lost", "key-lost")
+	It(
+		"counts an answered item closed with no delivery attempt, once the grace has passed",
+		func() {
+			id := answer("producer-lost", "key-lost")
 
-		_, err := store.Close(ctx, id, "", nil)
-		Expect(err).To(BeNil())
-		Expect(counter.Count()).To(Equal(0))
+			_, err := store.Close(ctx, id, "", nil)
+			Expect(err).To(BeNil())
+			Expect(counter.Count()).To(Equal(0))
 
-		advance(pastGrace)
-		sweep()
-		Expect(counter.Count()).To(Equal(1))
-	})
+			advance(pastGrace)
+			sweep()
+			Expect(counter.Count()).To(Equal(1))
+		},
+	)
 
 	It("does not count before the grace has passed", func() {
 		id := answer("producer-young", "key-young")
@@ -178,6 +181,42 @@ var _ = Describe("AttentionStore lost-answer counter", func() {
 		_, err := store.Close(ctx, id, "", nil)
 		Expect(err).To(BeNil())
 		_, err = store.RecordAttempt(ctx, id, "watcher", pkg.HeldOutcome)
+		Expect(err).To(BeNil())
+
+		advance(pastGrace)
+		sweep()
+		Expect(counter.Count()).To(Equal(0))
+	})
+
+	// ⚠️ The pin for the retry defect, and the whole reason `retried` exists. A
+	// card an arm looked at and could not carry YET is not a lost answer: the arm
+	// is still trying. Before this outcome the retry path wrote no record at all,
+	// so the close-time absence — and the grace-time re-read — both saw nothing
+	// and counted it. Measured 2026-11-18: 14 of 24 counted losses in 12.7 h were
+	// exactly this shape.
+	It("does not count a close whose delivery arm recorded a retry after it", func() {
+		id := answer("producer-retried", "key-retried")
+
+		_, err := store.Close(ctx, id, "", nil)
+		Expect(err).To(BeNil())
+		_, err = store.RecordAttempt(ctx, id, "watcher", pkg.RetriedOutcome)
+		Expect(err).To(BeNil())
+
+		advance(pastGrace)
+		sweep()
+		Expect(counter.Count()).To(Equal(0),
+			"an arm looked and is still trying — that is not a lost answer")
+	})
+
+	It("does not count a close that already carried a retry record", func() {
+		// The other ordering: the arm retried first (the card sat answered for an
+		// hour before the sweep closed it), so the record is present at close time
+		// and no candidate is even created.
+		id := answer("producer-retried-first", "key-retried-first")
+		_, err := store.RecordAttempt(ctx, id, "watcher", pkg.RetriedOutcome)
+		Expect(err).To(BeNil())
+
+		_, err = store.Close(ctx, id, "", nil)
 		Expect(err).To(BeNil())
 
 		advance(pastGrace)

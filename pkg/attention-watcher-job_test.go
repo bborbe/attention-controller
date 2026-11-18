@@ -108,13 +108,53 @@ var _ = Describe("attention watcher delivery job", func() {
 		Expect(outcome).To(Equal(pkg.FailedOutcome))
 	})
 
-	It("records nothing on a retry verdict", func() {
+	It("records the retry as an attempt so the card is not never_attempted", func() {
+		// ⚠️ Inverted 2026-11-18. This spec used to pin "records nothing on a
+		// retry verdict", and that pin WAS the defect: the lost-answer counter
+		// counts an answered+closed card with no attempt record, so every card a
+		// busy or unreadable composer sent into this loop closed reading *no arm
+		// ever looked at this answer*. Measured on the live board: 14 of the 24
+		// closes in the counter's 12.7 h window were exactly this.
 		carrier.verdict = pkg.DeliveryRetry
 		store.ReadBoardReturns(pkg.Items{
 			answeredItem("item-1", "operator", pkg.Decision("allow")),
 		}, nil)
 		Expect(job.DeliverOnce(context.Background())).To(Succeed())
-		Expect(store.RecordAttemptCallCount()).To(Equal(0))
+		Expect(store.RecordAttemptCallCount()).To(Equal(1))
+		_, _, attemptCarrier, outcome := store.RecordAttemptArgsForCall(0)
+		Expect(outcome).To(Equal(pkg.RetriedOutcome),
+			"a retry is an arm having looked, not a failure and not silence")
+		Expect(attemptCarrier).NotTo(Equal("watcher:gate-resolved"),
+			"the record must not be the close's backfill")
+	})
+
+	It("writes the retry record once per answer, not once per cycle", func() {
+		// The loop runs every two seconds for as long as the card lives. One
+		// durable write per cycle is the hot loop AttentionDeliveryRetryBackoff
+		// exists to stop, so the record is written on the FIRST retry only.
+		carrier.verdict = pkg.DeliveryRetry
+		store.ReadBoardReturns(pkg.Items{
+			answeredItem("item-1", "operator", pkg.Decision("allow")),
+		}, nil)
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+		Expect(store.RecordAttemptCallCount()).To(Equal(1))
+
+		_, _, attemptCarrier, outcome := store.RecordAttemptArgsForCall(0)
+		Expect(outcome).To(Equal(pkg.RetriedOutcome))
+		// The store now carries this arm's own retry record; the next cycle must
+		// not write it again.
+		attemptedAt := libtime.DateTime(libtime.NewCurrentDateTime().Now().Time())
+		store.DeliveryReportsReturns(map[pkg.ItemID]*pkg.DeliveryReport{
+			"item-1": {
+				ItemID:      pkg.ItemID("item-1"),
+				Status:      pkg.RetryingStatus,
+				Carrier:     attemptCarrier,
+				AttemptedAt: &attemptedAt,
+			},
+		}, nil)
+
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+		Expect(store.RecordAttemptCallCount()).To(Equal(1))
 	})
 
 	It("skips an open card", func() {
@@ -379,9 +419,15 @@ var _ = Describe("attention watcher delivery job", func() {
 
 		Expect(job.DeliverOnce(context.Background())).To(Succeed())
 
-		Expect(store.RecordAttemptCallCount()).To(Equal(1))
-		_, _, _, outcome := store.RecordAttemptArgsForCall(0)
+		// Two records, in this order: the retry (an arm looked) and the marker
+		// (it has waited past the bound). The first is the fix for the
+		// never_attempted defect; the second is the operator's cue to look.
+		Expect(store.RecordAttemptCallCount()).To(Equal(2))
+		_, _, _, first := store.RecordAttemptArgsForCall(0)
+		Expect(first).To(Equal(pkg.RetriedOutcome))
+		_, _, markerCarrier, outcome := store.RecordAttemptArgsForCall(1)
 		Expect(outcome).To(Equal(pkg.FailedOutcome))
+		Expect(markerCarrier).NotTo(Equal("watcher:gate-resolved"))
 	})
 
 	It("does not mark an answer undeliverable before the bound", func() {
@@ -397,9 +443,11 @@ var _ = Describe("attention watcher delivery job", func() {
 		Expect(job.DeliverOnce(context.Background())).To(Succeed())
 
 		// The positive control for the spec above: the same retry verdict inside
-		// the bound writes nothing, so the marker is the bound firing and not the
-		// retry verdict itself.
-		Expect(store.RecordAttemptCallCount()).To(Equal(0))
+		// the bound writes the RETRY record and nothing else, so the marker is the
+		// bound firing and not the retry verdict itself.
+		Expect(store.RecordAttemptCallCount()).To(Equal(1))
+		_, _, _, outcome := store.RecordAttemptArgsForCall(0)
+		Expect(outcome).To(Equal(pkg.RetriedOutcome))
 	})
 
 	It("writes the undeliverable marker exactly once across retries", func() {
@@ -411,13 +459,13 @@ var _ = Describe("attention watcher delivery job", func() {
 		item := boundItem(clock, 10*time.Minute)
 		store.ReadBoardReturns(pkg.Items{item}, nil)
 
-		// First tick past the bound writes the marker.
+		// First tick past the bound writes the retry record and the marker.
 		Expect(job.DeliverOnce(context.Background())).To(Succeed())
-		Expect(store.RecordAttemptCallCount()).To(Equal(1))
-		_, _, markerCarrier, outcome := store.RecordAttemptArgsForCall(0)
+		Expect(store.RecordAttemptCallCount()).To(Equal(2))
+		_, _, markerCarrier, outcome := store.RecordAttemptArgsForCall(1)
 		Expect(outcome).To(Equal(pkg.FailedOutcome))
 
-		// A later tick, once the backoff has passed, must not re-write it. The
+		// A later tick, once the backoff has passed, must not re-write either. The
 		// record carries the marker's own carrier, so it IS this answer's marker —
 		// that, and not the mere presence of an attempt, is what suppresses.
 		markedAt := libtime.DateTime(clock.Now().Time())
@@ -434,7 +482,7 @@ var _ = Describe("attention watcher delivery job", func() {
 		)
 
 		Expect(job.DeliverOnce(context.Background())).To(Succeed())
-		Expect(store.RecordAttemptCallCount()).To(Equal(1))
+		Expect(store.RecordAttemptCallCount()).To(Equal(2))
 	})
 
 	// The regression this bound shipped without: card f1b46ed9… (2026-11-17) was
@@ -481,7 +529,7 @@ var _ = Describe("attention watcher delivery job", func() {
 		}, nil)
 
 		Expect(job.DeliverOnce(context.Background())).To(Succeed())
-		Expect(store.RecordAttemptCallCount()).To(Equal(1))
+		Expect(store.RecordAttemptCallCount()).To(Equal(2))
 
 		// The store now carries the marker; the arm retries once the backoff has
 		// passed, and a successful attempt settles the record as delivered. The
@@ -491,6 +539,7 @@ var _ = Describe("attention watcher delivery job", func() {
 			"item-1": {
 				ItemID:      pkg.ItemID("item-1"),
 				Status:      pkg.FailedStatus,
+				Carrier:     "watcher:attention-watcher:undeliverable",
 				AttemptedAt: &markedAt,
 			},
 		}, nil)
@@ -501,8 +550,10 @@ var _ = Describe("attention watcher delivery job", func() {
 
 		Expect(job.DeliverOnce(context.Background())).To(Succeed())
 
-		Expect(store.RecordAttemptCallCount()).To(Equal(2))
-		_, _, _, outcome := store.RecordAttemptArgsForCall(1)
+		// Neither the retry record nor the marker is rewritten: the marker's
+		// carrier is this answer's own, so only the delivery is added.
+		Expect(store.RecordAttemptCallCount()).To(Equal(3))
+		_, _, _, outcome := store.RecordAttemptArgsForCall(2)
 		Expect(outcome).To(Equal(pkg.DeliveredOutcome))
 	})
 
