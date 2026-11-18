@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- feat: The routine-gate settle arm gains a `Bash` allowlist rule: a wrapper child's `Bash` gate from a workspace cwd is answered `allow` when claude-supervisor's `permission-tier.py` rates the command `allowlist`; `manager` / `operator` / any classifier failure (exit, timeout, oversized or unparseable output, unknown tier) is held as `tier-manager` / `tier-operator` / `tier-error`, and a non-workspace cwd as `bash-cwd-not-workspace`. The command reaches the classifier only on stdin, with the allowlisted child environment and a 5 s deadline, and one verdict per gate is reused for the hold interval. New setting `ATTENTION_ROUTINE_BASH_CLASSIFIER` / `-attention-routine-bash-classifier` (empty = the claude-supervisor marketplace clone; `off`, or a missing path, disables the rule — the rollback).
+
 ## v0.99.1
 
 - fix: Repoint the sweep-gate notify job's gate and checker at the `claude-wrapper` daemon's one-shot modes (`-sweep-gate-mode tick` / `check`) instead of spawning the vault-side Python script, resolving the binary by absolute path rather than from `PATH`.

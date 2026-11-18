@@ -5,11 +5,17 @@
 package pkg
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
+	"time"
+
+	libtime "github.com/bborbe/time"
+	"github.com/golang/glog"
 )
 
 // routineReadTools are the FILE-scoped tools the watcher may settle, and only
@@ -75,6 +81,46 @@ type RoutinePolicy interface {
 	RoutineRule(question json.RawMessage, cwd string) (string, bool)
 }
 
+// RoutineItemPolicy is the policy shape the settle arm prefers when the policy
+// offers it: it knows which item a gate belongs to and receives the cycle's
+// context.
+//
+// ⚠️ It exists for the Bash rule, whose verdict costs a classifier process. The
+// item lets a verdict be reused across settle cycles instead of starting a
+// process every two seconds, and the context bounds that process. A policy that
+// only implements RoutinePolicy keeps working unchanged.
+type RoutineItemPolicy interface {
+	RoutinePolicy
+	// RoutineRuleForItem returns the rule name and whether the watcher may answer
+	// item's gate.
+	RoutineRuleForItem(
+		ctx context.Context,
+		item ItemID,
+		question json.RawMessage,
+		cwd string,
+	) (string, bool)
+	// RetainItems drops every cached verdict whose item is not in open.
+	RetainItems(open map[ItemID]struct{})
+}
+
+// RoutinePolicyOption customises the policy at construction.
+type RoutinePolicyOption func(*routinePolicy)
+
+// WithRoutineBashClassifier enables the Bash rule: a `Bash` gate whose command
+// the classifier rates `allowlist` is routine. A nil classifier leaves the rule
+// disabled.
+//
+// currentDateTimeGetter is the clock the verdict cache expires on.
+func WithRoutineBashClassifier(
+	classifier RoutineBashClassifier,
+	currentDateTimeGetter libtime.CurrentDateTimeGetter,
+) RoutinePolicyOption {
+	return func(policy *routinePolicy) {
+		policy.classifier = classifier
+		policy.currentDateTimeGetter = currentDateTimeGetter
+	}
+}
+
 // NewRoutinePolicy creates the policy.
 //
 // ⚠️ roots are the OPERATOR-declared roots the arm may read beyond the child's
@@ -83,21 +129,171 @@ type RoutinePolicy interface {
 // an ancestor of the home tree) is dropped rather than honoured: `/` would make
 // every absolute path routine, and `~` would make every path under the home tree
 // routine apart from the credential prefixes.
-func NewRoutinePolicy(roots []string) RoutinePolicy {
+func NewRoutinePolicy(roots []string, options ...RoutinePolicyOption) RoutinePolicy {
 	safe := make([]string, 0, len(roots))
 	for _, root := range roots {
 		if resolved := safeRoot(root); resolved != "" {
 			safe = append(safe, resolved)
 		}
 	}
-	return &routinePolicy{roots: safe}
+	policy := &routinePolicy{roots: safe, verdicts: map[ItemID]routineBashVerdict{}}
+	for _, option := range options {
+		option(policy)
+	}
+	if policy.currentDateTimeGetter == nil {
+		policy.classifier = nil
+	}
+	return policy
 }
 
 type routinePolicy struct {
-	roots []string
+	roots                 []string
+	classifier            RoutineBashClassifier
+	currentDateTimeGetter libtime.CurrentDateTimeGetter
+
+	mutex    sync.Mutex
+	verdicts map[ItemID]routineBashVerdict
+}
+
+// routineBashVerdict is one item's cached Bash decision.
+type routineBashVerdict struct {
+	command    string
+	rule       string
+	allowed    bool
+	recordedAt time.Time
+}
+
+// RoutineRuleForItem returns the rule name and whether the watcher may answer
+// item's gate.
+//
+// ⚠️ The Bash rule runs AHEAD of the path-argument check: a Bash gate carries
+// no path argument, so the check would refuse it as `no-routine-rule` before
+// the tool was ever looked at. With the classifier disabled the gate falls
+// through to that check and is refused exactly as before.
+func (p *routinePolicy) RoutineRuleForItem(
+	ctx context.Context,
+	item ItemID,
+	question json.RawMessage,
+	cwd string,
+) (string, bool) {
+	if p.classifier != nil {
+		if command, ok := routineBashCommand(question); ok {
+			return p.bashRule(ctx, item, command, cwd)
+		}
+	}
+	return p.RoutineRule(question, cwd)
+}
+
+// RetainItems drops every cached verdict whose item is not in open.
+func (p *routinePolicy) RetainItems(open map[ItemID]struct{}) {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+	for item := range p.verdicts {
+		if _, ok := open[item]; !ok {
+			delete(p.verdicts, item)
+		}
+	}
+}
+
+// bashRule decides a Bash gate by the classifier's tier.
+//
+// ⚠️ The cwd boundary is checked BEFORE the classifier: a child spawned in `/`
+// or the home tree is not a workspace, and nothing it asks to run is routine
+// there whatever its tier.
+func (p *routinePolicy) bashRule(
+	ctx context.Context,
+	item ItemID,
+	command string,
+	cwd string,
+) (string, bool) {
+	if !absoluteCWD(cwd) {
+		return "bash-cwd-not-workspace", false
+	}
+	root, ok := resolveRealPath(cwd, cwd)
+	if !ok || !isBoundary(root) {
+		return "bash-cwd-not-workspace", false
+	}
+	now := p.currentDateTimeGetter.Now().Time()
+	if rule, allowed, hit := p.cachedVerdict(item, command, now); hit {
+		return rule, allowed
+	}
+	rule, allowed := p.classify(ctx, command)
+	p.mutex.Lock()
+	p.verdicts[item] = routineBashVerdict{
+		command:    command,
+		rule:       rule,
+		allowed:    allowed,
+		recordedAt: now,
+	}
+	p.mutex.Unlock()
+	return rule, allowed
+}
+
+// cachedVerdict returns item's verdict when it is for the same command and
+// younger than RoutineGateHoldRepeatInterval.
+func (p *routinePolicy) cachedVerdict(
+	item ItemID,
+	command string,
+	now time.Time,
+) (string, bool, bool) {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+	verdict, ok := p.verdicts[item]
+	if !ok || verdict.command != command {
+		return "", false, false
+	}
+	if !now.Before(verdict.recordedAt.Add(RoutineGateHoldRepeatInterval)) {
+		return "", false, false
+	}
+	return verdict.rule, verdict.allowed, true
+}
+
+// classify maps the classifier's tier to a rule. Only `allowlist` allows.
+func (p *routinePolicy) classify(ctx context.Context, command string) (string, bool) {
+	tier, err := p.classifier.Classify(ctx, command)
+	if err != nil {
+		// ⚠️ The error names the failure class only, never the command.
+		glog.Warningf("job=attention-watcher action=routine_bash_classifier_error error=%v", err)
+		return "tier-error", false
+	}
+	switch tier {
+	case RoutineBashTierAllowlist:
+		return "tier-allowlist", true
+	case RoutineBashTierManager:
+		return "tier-manager", false
+	case RoutineBashTierOperator:
+		return "tier-operator", false
+	default:
+		return "tier-error", false
+	}
+}
+
+// routineBashCommand returns a Bash gate's non-empty command.
+func routineBashCommand(question json.RawMessage) (string, bool) {
+	args, ok := routineArguments(question)
+	if !ok {
+		return "", false
+	}
+	if tool, ok := args["tool_name"].(string); !ok || tool != "Bash" {
+		return "", false
+	}
+	call, ok := args["input"].(map[string]any)
+	if !ok {
+		return "", false
+	}
+	command, ok := call["command"].(string)
+	if !ok || command == "" {
+		return "", false
+	}
+	return command, true
 }
 
 // RoutineRule returns the rule name and whether the watcher may answer.
+//
+// ⚠️ It never runs the Bash rule: that rule starts a process, and this entry
+// point has neither a context to bound it nor an item to cache it under. A Bash
+// gate decided here is refused as `no-routine-rule`; the settle arm reaches the
+// Bash rule through RoutineRuleForItem.
 //
 // ⚠️ Two questions, not one. The tool name says what KIND of action it is; the
 // path arguments say whether THIS call is the routine kind. A gate with no path
@@ -359,4 +555,4 @@ func routineToken(tool string) string {
 }
 
 // Compile-time guard: the policy must satisfy its own interface.
-var _ RoutinePolicy = (*routinePolicy)(nil)
+var _ RoutineItemPolicy = (*routinePolicy)(nil)
