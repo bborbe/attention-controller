@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/golang/glog"
 	libtime "github.com/bborbe/time"
@@ -24,6 +25,10 @@ import (
 // operator needs to see the card again rather than trust a `done`.
 const EvidenceDeadline = 30 * 60 * 1000 * 1000 * 1000 // 30m in nanoseconds
 
+// EvidenceProbeTimeout bounds ONE probe, so a hung probe costs its own claim
+// rather than the sweep's whole budget.
+const EvidenceProbeTimeout = 10 * 1000 * 1000 * 1000 // 10s
+
 // DoneClassPrefixes are the answer labels that assert the work is finished.
 //
 // ⚠️ The match is a case-insensitive PREFIX, not equality: operators answer
@@ -35,21 +40,66 @@ var DoneClassPrefixes = []string{"done", "merged", "deployed", "shipped", "fixed
 
 // IsDoneClassAnswer reports whether the operator's answer claims the work is
 // finished.
+//
+// ⚠️ The two answer shapes are matched differently on purpose. Free text is
+// matched by PREFIX, because the answer that motivated this path reads
+// `done — reviewed and flipped both`. An option label is a closed set chosen
+// from the card's own buttons, so it must name the done word as a whole word
+// followed by a separator — otherwise `done for now`, `deployed to staging` or
+// `fixed pending review` would park a card that claims nothing finished, and it
+// would come back to the board 30 minutes later for no reason.
 func IsDoneClassAnswer(answer *Answer) bool {
 	if answer == nil {
 		return false
 	}
-	labels := make([]string, 0, 1+len(answer.Values))
-	if answer.Value != "" {
-		labels = append(labels, answer.Value)
-	}
-	labels = append(labels, answer.Values...)
-	for _, label := range labels {
-		normalized := strings.ToLower(strings.TrimSpace(label))
-		for _, prefix := range DoneClassPrefixes {
-			if strings.HasPrefix(normalized, prefix) {
-				return true
+	if answer.Kind == TextAnswerKind {
+		for _, text := range append([]string{answer.Value}, answer.Values...) {
+			normalized := strings.ToLower(strings.TrimSpace(text))
+			for _, prefix := range DoneClassPrefixes {
+				if strings.HasPrefix(normalized, prefix) {
+					return true
+				}
 			}
+		}
+		return false
+	}
+	for _, label := range append([]string{answer.Value}, answer.Values...) {
+		if isDoneClassOptionLabel(label) {
+			return true
+		}
+	}
+	return false
+}
+
+// isDoneClassOptionLabel reports whether an option label names a done word as a
+// whole word: `done`, `done — reviewed and flipped both`, `merged: #77` yes;
+// `done for now`, `fixed pending review` no.
+func isDoneClassOptionLabel(label string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(label))
+	for _, prefix := range DoneClassPrefixes {
+		if normalized == prefix {
+			return true
+		}
+		if !strings.HasPrefix(normalized, prefix) {
+			continue
+		}
+		rest := normalized[len(prefix):]
+		// A separator, not a letter: the next rune decides whether the word
+		// ended there or the label merely starts with it.
+		if rest == "" {
+			return true
+		}
+		// Spaces are skipped, not decisive: `done — reviewed` and `done —
+		// reviewed` are the same claim, while `done for now` continues with a
+		// word and claims nothing finished.
+		rest = strings.TrimLeft(rest, " \t")
+		if rest == "" {
+			return true
+		}
+		next, _ := utf8.DecodeRuneInString(rest)
+		switch next {
+		case '-', '—', '–', ':', ',', '.', '!', '(':
+			return true
 		}
 	}
 	return false
@@ -60,7 +110,17 @@ func IsDoneClassAnswer(answer *Answer) bool {
 var pullRequestURL = regexp.MustCompile(`https://github\.com/([^/\s]+)/([^/\s]+)/pull/([0-9]+)`)
 
 // absolutePath matches an absolute path token in free text.
-var absolutePath = regexp.MustCompile(`(?:^|\s)(/[^\s,;:]+)`)
+//
+// ⚠️ It accepts a delimiter before the slash (`(`, a quote, a bracket) so a
+// markdown link like `[build](/srv/app/build.log)` yields its path, and it
+// stops at closing delimiters so the captured token is the path itself. The
+// trailing punctuation of prose (`done, see /srv/app/build.log.`) is stripped
+// by trimming after the match — a regex alone cannot tell a full stop from a
+// dot inside a filename, and the stat is what settles it.
+var absolutePath = regexp.MustCompile(`(?:^|[\s(\["'<=])(/[^\s,;:)\]}"'<>]+)`)
+
+// pathTrailingPunctuation is what a sentence may append to a path.
+const pathTrailingPunctuation = ".,;:!?"
 
 // AnswerText is the operator's own words on an answer, whichever kind carried
 // them.
@@ -77,7 +137,7 @@ func AnswerText(answer *Answer) string {
 }
 
 // EvidenceClaimsFromText returns every artifact an answer named as proof, or
-// nil when it named none.
+// an empty slice when it named none.
 //
 // ⚠️ ALL matches are returned, never just the first. The answer this feature
 // exists for named two PRs, and a first-match rule would close the card as soon
@@ -91,9 +151,10 @@ func EvidenceClaimsFromText(text string) []string {
 	}
 	claims := make([]string, 0)
 	for _, match := range absolutePath.FindAllStringSubmatch(text, -1) {
+		claim := strings.TrimRight(match[1], pathTrailingPunctuation)
 		// A bare "/" or a one-segment token is not a usable artifact.
-		if strings.Count(match[1], "/") >= 2 {
-			claims = append(claims, match[1])
+		if strings.Count(claim, "/") >= 2 {
+			claims = append(claims, claim)
 		}
 	}
 	return uniqueStrings(claims)
@@ -139,6 +200,11 @@ func EvidenceObserved(ctx context.Context, claim string, run EvidenceRunner) boo
 		if run == nil {
 			run = DefaultEvidenceRunner
 		}
+		// ⚠️ Bounded per probe, not only by the sweep's own deadline: the probe
+		// runs inside the store's write transaction, so one hung `gh` would hold
+		// the lock for the whole sweep budget instead of costing this claim alone.
+		ctx, cancel := context.WithTimeout(ctx, EvidenceProbeTimeout)
+		defer cancel()
 		out, err := run(ctx, "gh", "-R", owner+"/"+repo, "pr", "view", number, "--json", "state", "--jq", ".state")
 		if err != nil {
 			glog.V(2).Infof("evidence probe failed for %s: %v", claim, err)

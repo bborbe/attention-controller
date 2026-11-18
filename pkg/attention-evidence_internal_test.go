@@ -246,4 +246,23 @@ var _ = Describe("Evidence-backed close", func() {
 		Expect(err).To(BeNil())
 		Expect(got.State).To(Equal(AwaitingEvidenceState), "one merged PR is not the whole claim")
 	})
+
+	// The review's path findings, pinned: prose punctuation and a markdown link
+	// both have to yield the path itself, or a real artifact never verifies.
+	It("extracts a path from prose and from a markdown link", func() {
+		Expect(EvidenceClaimsFromText("done, see /srv/app/build.log.")).To(Equal([]string{"/srv/app/build.log"}))
+		Expect(EvidenceClaimsFromText("done [build](/srv/app/build.log)")).To(Equal([]string{"/srv/app/build.log"}))
+	})
+
+	// The option-label finding, pinned: a closed option set must not acquire
+	// false positives from a bare prefix.
+	It("parks a whole-word done option but not a label that merely starts with it", func() {
+		Expect(IsDoneClassAnswer(&Answer{Kind: OptionAnswerKind, Value: "done — reviewed and flipped both"})).To(BeTrue())
+		Expect(IsDoneClassAnswer(&Answer{Kind: OptionAnswerKind, Value: "done"})).To(BeTrue())
+		Expect(IsDoneClassAnswer(&Answer{Kind: OptionAnswerKind, Value: "done for now"})).To(BeFalse())
+		Expect(IsDoneClassAnswer(&Answer{Kind: OptionAnswerKind, Value: "deployed to staging"})).To(BeFalse())
+		Expect(IsDoneClassAnswer(&Answer{Kind: OptionAnswerKind, Value: "fixed pending review"})).To(BeFalse())
+		// Free text keeps the prefix rule that the motivating answer needs.
+		Expect(IsDoneClassAnswer(&Answer{Kind: TextAnswerKind, Value: "done — reviewed and flipped both"})).To(BeTrue())
+	})
 })
