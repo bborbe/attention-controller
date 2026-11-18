@@ -1,9 +1,13 @@
 ---
-status: approved
+status: completed
 spec: [020-attention-log-go-writer]
-summary: Port the attention-log Stop fence walker and UserPromptSubmit envelope branch into pkg/attnlog, complete the dispatch so all eight events are handled, and add the randomized differential to the parity harness plus the CHANGELOG/e2e completion.
+summary: Verified the in-tree pkg/attnlog Stop fence walker, UserPromptSubmit system-envelope close, SessionEnd handling and randomized parity differential against spec 020, added the required CHANGELOG `## Unreleased` bullet, and confirmed make precommit exits 0 with parity green over 47 fixtures plus 100 randomized payloads per event; make e2e could not run because the Playwright browser download is network-blocked in this sandbox.
+execution_id: a7357e99-78ca-5254-8a83-b7f4601a0ca4-exec-060-spec-020-attention-log-stop-and-differential
+dark-factory-version: dev
 created: "2026-11-18T00:37:15Z"
 queued: "2026-11-18T00:37:15Z"
+started: "2026-11-18T07:21:17Z"
+completed: "2026-11-18T07:27:07Z"
 ---
 
 # Attention-log Go writer — Stop walker, envelope, and randomized differential
