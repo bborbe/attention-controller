@@ -398,8 +398,13 @@ func (p *wakePass) commit(manager string, next map[ItemID]libtime.DateTime) {
 // stale reports whether an entry's last emission is old enough to re-type. The
 // clock is read once per pass, so two passes inside one reading cannot both see
 // a stale entry.
+//
+// ⚠️ Strictly greater, not `>=`: the spec's rule is "more than
+// ManagerWakeReemitAfter ago", so an entry exactly at the window has not yet
+// aged out. The two spellings differ on that single instant, which is the only
+// place a test can pin the choice.
 func (p *wakePass) stale(last libtime.DateTime) bool {
-	return p.now.Sub(last) >= libtime.Duration(p.job.reemitAfter)
+	return p.now.Sub(last) > libtime.Duration(p.job.reemitAfter)
 }
 
 // keeps is the ownership rule: peer drop, dead-manager keep, unowned keep.

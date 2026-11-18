@@ -1516,8 +1516,11 @@ func (a *application) addAttentionWatcherJobs(
 		pkg.ContextCrossingTokens,
 		pkg.ContextCrossingInterval,
 	).Run)
-	// The wake job is registered by its own file; see addManagerWakeJob.
-	a.addManagerWakeJob(ctx, runner, store, provenance, carrier, sessionLedger, notifier)
+	// The wake job is the second writer on the same books (the pane carrier the
+	// delivery arm already types through), so it is registered HERE and not on the
+	// cluster listener, where panes, the registry and the ledger do not exist.
+	runner.Add(ctx, pkg.NewManagerWakeJob(store, sessionLedger, provenance, carrier, notifier,
+		libtime.NewCurrentDateTime(), pkg.NewManagerWakeEmissionLog()).Run)
 
 	a.logAttentionWatcherRegistration()
 	return nil
