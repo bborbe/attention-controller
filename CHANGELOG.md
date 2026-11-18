@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.99.2
 
 - fix: **the menu answer arm retries a failed attempt-record write instead of marking the card settled.** `settle` set its in-process terminal marker before writing the `DeliveryAttempt` and swallowed a write failure, so a delivered or held outcome whose record failed to land left the card reading `never_attempted` — "no arm ever looked" — for the rest of the process's life while the arm had stopped looking. The marker is now set only after the record is on disk; re-entering `settle` is safe because nothing is typed there and the typing itself is guarded by `progress.typed`. The Python watcher pinned the same rule (`test_attention_watcher_no_target.py`, "a failed record write leaves the card unmarked for retry").
 
