@@ -61,7 +61,9 @@ func (a *attentionStore) closeItem(ctx context.Context, tx libkv.Tx, item *Item)
 	if err := a.putItem(ctx, tx, *item); err != nil {
 		return err
 	}
-	a.countLostAnswer(ctx, tx, item)
+	if err := a.countLostAnswer(ctx, tx, item); err != nil {
+		return err
+	}
 	// ⚠️ AFTER countLostAnswer, never before: the counter's meaning is "answered,
 	// closed, no record existed when it closed", and writing the record first
 	// would silently zero a metric rather than fix it. Both facts are true and
@@ -139,8 +141,8 @@ func (a *attentionStore) recordCloseAttempt(
 	return nil
 }
 
-// countLostAnswer increments attention_lost_answers_total when item is an
-// answered item with no delivery attempt ever recorded.
+// countLostAnswer records one lost answer when item is an answered item with no
+// delivery attempt ever recorded.
 //
 // The condition is "answered, closed, never attempted": AnsweredAt is what makes
 // it an answer rather than a clear, and the absence of an attempt record is what
@@ -148,20 +150,40 @@ func (a *attentionStore) recordCloseAttempt(
 // delivery arm looked, so it is not counted; the no-target hold path is a
 // separate mechanism, deliberately out of scope here.
 //
+// ⚠️ The count has two halves and they are written together: the durable total
+// in the same transaction, and the in-process Prometheus counter. The durable
+// half is what survives a restart — a bare Prometheus counter starts at zero on
+// every start, so goal SC3 could never read a week from it.
+//
 // ⚠️ Read the attempt inside the same transaction as the close. A read failure is
 // NOT a lost answer: counting it would report a condition nothing established, so
 // the failure is logged and the item is left uncounted.
-func (a *attentionStore) countLostAnswer(ctx context.Context, tx libkv.Tx, item *Item) {
-	if a.lostAnswers == nil || item.AnsweredAt == nil {
-		return
+//
+// ⚠️ A failed durable write is returned, not swallowed: a close that committed
+// without its count would lose the fact forever. The transaction aborts, the item
+// stays answered, and the sweep retries on its next tick.
+func (a *attentionStore) countLostAnswer(
+	ctx context.Context,
+	tx libkv.Tx,
+	item *Item,
+) error {
+	if item.AnsweredAt == nil {
+		return nil
 	}
 	_, err := a.attempts.Get(ctx, tx, item.ItemID.String())
 	switch {
 	case err == nil:
-		return
+		return nil
 	case isNotFound(err):
-		a.lostAnswers.LostAnswersTotalCounterInc()
+		if err := a.incrementLostAnswersTotal(ctx, tx); err != nil {
+			return errors.Wrap(ctx, err, "persist lost answers total failed")
+		}
+		if a.lostAnswers != nil {
+			a.lostAnswers.LostAnswersTotalCounterInc()
+		}
+		return nil
 	default:
 		glog.Warningf("lost-answer check for item %s failed: %v", item.ItemID, err)
+		return nil
 	}
 }

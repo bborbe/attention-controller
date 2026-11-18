@@ -49,6 +49,15 @@ var _ = Describe("Metrics", func() {
 		metrics = boardmetrics.NewMetrics(registry)
 	})
 
+	It("seeds the lost-answer counter from a durable total", func() {
+		// A restart is this: a fresh registry and counter, seeded from the value
+		// the store persisted. Without the seed the metric would read zero again
+		// on every start and could never evidence a week.
+		seededRegistry := prometheus.NewRegistry()
+		boardmetrics.NewMetrics(seededRegistry, 4)
+		Expect(counterValue(seededRegistry, "attention_lost_answers_total")).To(Equal(4.0))
+	})
+
 	It("records renders and rows on the registry it was given", func() {
 		metrics.BoardRendersTotalCounterInc()
 		metrics.BoardRendersTotalCounterInc()
