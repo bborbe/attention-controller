@@ -6,6 +6,7 @@ package pkg
 
 import (
 	"context"
+	"sort"
 
 	libkv "github.com/bborbe/kv"
 	"github.com/bborbe/errors"
@@ -96,6 +97,19 @@ func (a *attentionStore) evaluateParkedEvidence(ctx context.Context) ([]evidence
 	}); err != nil {
 		return nil, errors.Wrap(ctx, err, "read parked evidence set failed")
 	}
+	// ⚠️ Truncate by DEADLINE, not by key order. Live-index keys are random
+	// 128-bit ids, so a key-ordered prefix is a stable arbitrary subset: the items
+	// outside it would never be probed, hence never closed on an observed claim
+	// and never reopened at their deadline — they would sit parked forever. The
+	// soonest deadline goes first, and every probed item leaves the parked set
+	// (closed, or reopened when its deadline passes), so each tick makes progress
+	// on the oldest waiters.
+	sort.Slice(items, func(a, b int) bool {
+		if items[a].deadline == nil || items[b].deadline == nil {
+			return items[a].deadline == nil
+		}
+		return items[a].deadline.Time().Before(items[b].deadline.Time())
+	})
 	if len(items) > MaxEvidenceProbesPerSweep {
 		items = items[:MaxEvidenceProbesPerSweep]
 	}

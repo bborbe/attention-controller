@@ -260,22 +260,6 @@ func (i *Item) parkForEvidence(
 	answers Answers,
 	now libtime.DateTime,
 ) {
-	// ⚠️ The done-class claim can arrive in EITHER shape: the single `answer` of
-	// a one-question card, or any entry of `answers` on a multi-question card.
-	// Reading only `answer` let a multi-question card answered "done" skip the
-	// evidence gate entirely — the same false `done`, one wire shape over.
-	claim := answer
-	if !IsDoneClassAnswer(claim) {
-		for index := range answers {
-			if IsDoneClassAnswer(&answers[index].Answer) {
-				claim = &answers[index].Answer
-				break
-			}
-		}
-	}
-	if !IsDoneClassAnswer(claim) {
-		return
-	}
 	// ⚠️ Only a move the table HAS. A `permission` item accepts a second write
 	// from the ARM carrying `resolved_by`, and that write can carry a done-class
 	// answer; parking it would move answered → awaiting_evidence, which is not a
@@ -285,8 +269,29 @@ func (i *Item) parkForEvidence(
 	if prior != OpenState && prior != AwaitingEvidenceState {
 		return
 	}
+	// ⚠️ The claim can arrive in EITHER shape, and every done-class answer's
+	// claims are UNIONED. Reading only the single `answer` let a multi-question
+	// card skip the gate entirely; taking only the first done-class entry let a
+	// two-tab card close on one tab's artifact while the other tab's claimed work
+	// was never checked — the same false `done`, one tab narrower.
+	done := make([]*Answer, 0, 1+len(answers))
+	if IsDoneClassAnswer(answer) {
+		done = append(done, answer)
+	}
+	for index := range answers {
+		if IsDoneClassAnswer(&answers[index].Answer) {
+			done = append(done, &answers[index].Answer)
+		}
+	}
+	if len(done) == 0 {
+		return
+	}
+	claims := make([]string, 0)
+	for _, entry := range done {
+		claims = append(claims, EvidenceClaimsFromText(AnswerText(entry))...)
+	}
 	i.State = AwaitingEvidenceState
-	i.EvidenceClaims = EvidenceClaimsFromText(AnswerText(claim))
+	i.EvidenceClaims = uniqueStrings(claims)
 	i.EvidenceDeadline = NewEvidenceDeadline(now)
 }
 

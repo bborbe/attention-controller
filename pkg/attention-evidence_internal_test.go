@@ -311,4 +311,25 @@ var _ = Describe("Evidence-backed close", func() {
 		Expect(item.State).To(Equal(AnsweredState), "an answered item must not become awaiting_evidence")
 		Expect(item.EvidenceDeadline).To(BeNil())
 	})
+
+	// The two blocking findings from the tenth round, pinned.
+	It("records the claims of every done-class answer, not just the first", func() {
+		item := pushQuestion()
+		item.parkForEvidence(OpenState, nil, Answers{
+			{Question: "first", Answer: Answer{Kind: TextAnswerKind, Value: "done https://github.com/bborbe/attention-controller/pull/77"}},
+			{Question: "second", Answer: Answer{Kind: TextAnswerKind, Value: "done https://github.com/bborbe/attention-controller/pull/80"}},
+		}, now)
+
+		Expect(item.State).To(Equal(AwaitingEvidenceState))
+		Expect(item.EvidenceClaims).To(HaveLen(2), "both tabs' artifacts are the claim")
+	})
+
+	It("parks nothing when no answer of a multi-question card is done-class", func() {
+		item := pushQuestion()
+		item.parkForEvidence(OpenState, nil, Answers{
+			{Question: "first", Answer: Answer{Kind: OptionAnswerKind, Value: "not yet"}},
+		}, now)
+
+		Expect(item.State).NotTo(Equal(AwaitingEvidenceState))
+	})
 })
