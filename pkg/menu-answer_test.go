@@ -6,6 +6,7 @@ package pkg_test
 
 import (
 	"context"
+	stderrors "errors"
 	"time"
 
 	libtime "github.com/bborbe/time"
@@ -241,6 +242,40 @@ var _ = Describe("menu answer job", func() {
 		_, _, _, outcome := store.RecordAttemptArgsForCall(0)
 		Expect(outcome).To(Equal(pkg.HeldOutcome))
 	})
+
+	It(
+		"retries the attempt record when the write fails, instead of marking the card settled",
+		func() {
+			// ⚠️ The record is the only durable evidence this arm looked, and the read
+			// surface derives `never_attempted` from its ABSENCE. Marking the card done
+			// on a failed write therefore loses the record for the rest of the
+			// process's life: the card reads as one no arm ever looked at while this
+			// arm has stopped looking. The Python watcher pinned the same rule
+			// (`test_attention_watcher_no_target.py`, "a failed record write leaves the
+			// card unmarked for retry").
+			item := answeredMenuItem("item-1", nil)
+			item.Options = pkg.AnswerOptions{{Label: "Yes"}}
+			item.Answer = &pkg.Answer{Kind: pkg.HiddenAnswerKind}
+			store.ReadBoardReturns(pkg.Items{item}, nil)
+
+			store.RecordAttemptReturns(nil, stderrors.New("store unavailable"))
+			Expect(job.DeliverOnce(context.Background())).To(Succeed())
+			Expect(store.RecordAttemptCallCount()).To(Equal(1))
+
+			// The next cycle retries the SAME record, and the card settles only once it
+			// lands. Nothing is typed on the retry — the hidden answer types nothing at
+			// all, and a delivered card's typing is guarded by progress.typed.
+			store.RecordAttemptReturns(&pkg.DeliveryAttempt{}, nil)
+			Expect(job.DeliverOnce(context.Background())).To(Succeed())
+			Expect(store.RecordAttemptCallCount()).To(Equal(2))
+			_, _, _, outcome := store.RecordAttemptArgsForCall(1)
+			Expect(outcome).To(Equal(pkg.HeldOutcome))
+
+			// Settled now: a third cycle writes nothing more.
+			Expect(job.DeliverOnce(context.Background())).To(Succeed())
+			Expect(store.RecordAttemptCallCount()).To(Equal(2))
+		},
+	)
 
 	It("releases the gate with a lone ESC when every question was skipped", func() {
 		item := answeredMenuItem("item-1", pkg.Questions{
