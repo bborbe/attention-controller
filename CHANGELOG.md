@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.97.0
 
 - fix: **an item the store prunes on expiry no longer stays open in the event-log fold.** `pruneExpired` deleted the row and wrote no event, so `foldEventFile` — last-record-wins per item id — kept reporting every expiry-pruned item open until the 30-day event prune dropped its open record. The prune now collects the rows it actually removed and, after the transaction commits, appends one `close` record (`closed_by: "Expired"`, `forward: false`) into the producer session's own `<session_id>.events.jsonl` — the same file the fold replays, because the fold is per file and a close anywhere else is invisible to it. The record carries the item's **DedupKey**, which is the event log's `item_id`; the store's generated ItemID is not. The store gains an optional `ExpiryCloseWriter` (`pkg.WithExpiryCloseWriter`) implemented by `pkg/attnlog.NewExpiryCloseWriter`; unset keeps the pre-fix behaviour. A write failure is logged and never fails the read.
 - feat: `NewAttentionStore`'s variadic is now `...AttentionStoreOption` instead of `...LostAnswerCounter`. **Source-breaking** for a caller that passes a counter positionally; `pkg.WithLostAnswers(counter)` preserves the previous call shape, and a nil option is tolerated.
