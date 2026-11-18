@@ -20,7 +20,8 @@ import (
 
 // countingLostAnswers is a LostAnswerCounter that records how many times it was
 // incremented. The mutex is belt-and-braces: these specs are serial, but the
-// counter is written from inside the store's transaction and read from the spec.
+// counter is moved from the store after a close transaction commits and read
+// from the spec.
 type countingLostAnswers struct {
 	mu    sync.Mutex
 	count int
@@ -96,7 +97,7 @@ var _ = Describe("AttentionStore lost-answer counter", func() {
 			liveness,
 			clock,
 			heartbeatWindow,
-			counter,
+			pkg.WithLostAnswers(counter),
 		)
 	})
 

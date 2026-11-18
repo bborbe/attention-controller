@@ -29,6 +29,7 @@ import (
 	bolt "go.etcd.io/bbolt"
 
 	"github.com/bborbe/attention-controller/pkg"
+	"github.com/bborbe/attention-controller/pkg/attnlog"
 	"github.com/bborbe/attention-controller/pkg/boardmetrics"
 	"github.com/bborbe/attention-controller/pkg/buildidentity"
 	"github.com/bborbe/attention-controller/pkg/factory"
@@ -427,11 +428,22 @@ func (a *application) createStoreDeps(ctx context.Context, db libkv.DB) (storeDe
 	if err != nil {
 		return storeDeps{}, err
 	}
+	// ⚠️ The Prometheus counter is in-process and starts at zero on every start,
+	// so it is seeded from the durable total the store persists. Without this the
+	// metric resets on every restart and goal SC3 — zero lost answers per week,
+	// read as a counter — could never be evidenced.
+	initialLostAnswersTotal, err := pkg.LoadLostAnswersTotal(ctx, db)
+	if err != nil {
+		return storeDeps{}, errors.Wrap(ctx, err, "load lost answers total failed")
+	}
 	// Built once per process and injected, so every counter is registered on the
 	// default registry — the one /metrics serves — exactly once. A second
 	// registration of the same collector panics. It is built BEFORE the store so
 	// the store can count a lost answer on its close transition.
-	boardMetrics := boardmetrics.NewMetrics(prometheus.DefaultRegisterer)
+	boardMetrics := boardmetrics.NewMetrics(
+		prometheus.DefaultRegisterer,
+		initialLostAnswersTotal,
+	)
 
 	rawStore, err := a.createAttentionStore(ctx, db, livenessChecker, boardMetrics)
 	if err != nil {
@@ -481,13 +493,33 @@ func (a *application) createAttentionStore(
 	if err != nil {
 		return nil, errors.Wrapf(ctx, err, "parse heartbeat window '%s' failed", a.HeartbeatWindow)
 	}
+	options := []pkg.AttentionStoreOption{pkg.WithLostAnswers(lostAnswers)}
+	// ⚠️ The expiry closer writes into the same event log the producers write,
+	// so a fold replaying that log stops reporting a pruned item open. It is
+	// attached only when a state dir resolves: with none, the store keeps its
+	// pre-fix behaviour (delete the row, write no event) rather than failing
+	// every prune on an empty path.
+	stateDir := a.AttentionStateDir
+	if stateDir == "" {
+		resolved, resolveErr := defaultAttentionStateDir(ctx)
+		if resolveErr != nil {
+			glog.Warningf("resolve attention state dir failed: %v", resolveErr)
+		}
+		stateDir = resolved
+	}
+	if stateDir != "" {
+		options = append(
+			options,
+			pkg.WithExpiryCloseWriter(attnlog.NewExpiryCloseWriter(stateDir)),
+		)
+	}
 	return pkg.NewAttentionStore(
 		db,
 		pkg.NewItemIDGenerator(),
 		livenessChecker,
 		libtime.NewCurrentDateTime(),
 		*heartbeatWindow,
-		lostAnswers,
+		options...,
 	), nil
 }
 
@@ -1424,6 +1456,10 @@ func (a *application) addAttentionWatcherJobs(
 	// over the same base URL — two clients would be two timeout policies and two
 	// places for the URL to be read differently.
 	wrapper := pkg.NewClaudeWrapperClient(a.AttentionWrapperURL)
+	// The ANSWERED line goes to the process's own stdout because that is where
+	// the Python watcher's `ANSWERED <id>` line came from. ONE signaller serves
+	// all four arms, so the vocabulary and the in-process dedupe map are shared.
+	signaller := pkg.NewAnsweredSignaller(pkg.NewAnsweredSignalRecorder(os.Stdout))
 	// The headless delivery arm carries an answer into a session with no pane,
 	// which is the normal shape for every `sdk-cli` worker. Its cwd and task come
 	// from the item's own provenance, resolved through the SAME resolver the board
@@ -1433,6 +1469,7 @@ func (a *application) addAttentionWatcherJobs(
 		wrapper,
 		pkg.NewProvenanceAnswerContext(provenance),
 		libtime.NewCurrentDateTime(),
+		pkg.WithHeadlessAnswerSignaller(signaller),
 	)
 	runner.Add(ctx, pkg.NewAttentionWatcherJob(
 		store,
@@ -1440,6 +1477,7 @@ func (a *application) addAttentionWatcherJobs(
 		headless,
 		pkg.AttentionWatcherDeliveryInterval,
 		libtime.NewCurrentDateTime(),
+		pkg.WithAttentionWatcherSignaller(signaller),
 	).Run)
 	runner.Add(ctx, pkg.NewMenuAnswerJob(
 		store,
@@ -1447,6 +1485,7 @@ func (a *application) addAttentionWatcherJobs(
 		writer,
 		pkg.MenuAnswerInterval,
 		pkg.WithMenuAnswerHeadlessDelivery(headless),
+		pkg.WithMenuAnswerSignaller(signaller),
 	).Run)
 	// ⚠️ An empty wrapper URL leaves the arm unregistered rather than failing
 	// startup: a host with no claude-wrapper has no routine gates to settle, and
@@ -1460,6 +1499,7 @@ func (a *application) addAttentionWatcherJobs(
 			writer,
 			pkg.RoutineGateSettleInterval,
 			libtime.NewCurrentDateTime(),
+			pkg.WithRoutineGateSettleSignaller(signaller),
 		).Run)
 	}
 	// ⚠️ The release-expired-holds arm is deliberately NOT registered: its book
@@ -1476,19 +1516,8 @@ func (a *application) addAttentionWatcherJobs(
 		pkg.ContextCrossingTokens,
 		pkg.ContextCrossingInterval,
 	).Run)
-	// ⚠️ The wake job is registered HERE, beside the delivery arms, and not on
-	// the cluster listener: it is the second writer on the same books (the pane
-	// carrier the delivery arm already types through), and its inputs — panes,
-	// the registry and the ledger — exist only on the board router's host.
-	runner.Add(ctx, pkg.NewManagerWakeJob(
-		store,
-		sessionLedger,
-		provenance,
-		carrier,
-		notifier,
-		libtime.NewCurrentDateTime(),
-		pkg.NewManagerWakeEmissionLog(),
-	).Run)
+	// The wake job is registered by its own file; see addManagerWakeJob.
+	a.addManagerWakeJob(ctx, runner, store, provenance, carrier, sessionLedger, notifier)
 
 	a.logAttentionWatcherRegistration()
 	return nil
