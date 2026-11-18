@@ -117,11 +117,6 @@ func uniqueStrings(values []string) []string {
 // exists so the sweep can be tested without shelling out.
 type EvidenceRunner func(ctx context.Context, name string, args ...string) (string, error)
 
-// evidenceRunner is the probe the sweep uses. It is a package-level variable so
-// a test can inject a fake without threading it through every constructor; the
-// production value never changes.
-var evidenceRunner EvidenceRunner = DefaultEvidenceRunner
-
 // DefaultEvidenceRunner runs the probe on this machine.
 func DefaultEvidenceRunner(ctx context.Context, name string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
