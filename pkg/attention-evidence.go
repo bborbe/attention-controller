@@ -253,8 +253,17 @@ func NewEvidenceDeadline(now libtime.DateTime) *libtime.DateTime {
 // It lives here rather than inline in the store's Answer method so that method's
 // cognitive complexity stays inside the lint bound — the rule this path exists
 // to satisfy is the claim, and it reads better named.
-func (i *Item) parkForEvidence(answer *Answer, now libtime.DateTime) {
+func (i *Item) parkForEvidence(prior State, answer *Answer, now libtime.DateTime) {
 	if !IsDoneClassAnswer(answer) {
+		return
+	}
+	// ⚠️ Only a move the table HAS. A `permission` item accepts a second write
+	// from the ARM carrying `resolved_by`, and that write can carry a done-class
+	// answer; parking it would move answered → awaiting_evidence, which is not a
+	// row of AvailableTransitions, and the later reopen would clear the
+	// operator's Decision/ResolvedBy and drop the answered-index entry — erasing
+	// an authorization verdict and putting the gate back on the board.
+	if prior != OpenState && prior != AwaitingEvidenceState {
 		return
 	}
 	i.State = AwaitingEvidenceState

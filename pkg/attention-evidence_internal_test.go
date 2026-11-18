@@ -294,4 +294,21 @@ var _ = Describe("Evidence-backed close", func() {
 		Expect(IsDoneClassAnswer(&Answer{Kind: TextAnswerKind, Value: "done https://github.com/bborbe/attention-controller/pull/77"})).To(BeTrue())
 		Expect(IsDoneClassAnswer(&Answer{Kind: TextAnswerKind, Value: "done /srv/app/build.log"})).To(BeTrue())
 	})
+
+	// The blocking review finding, pinned: a permission gate's ARM re-answer
+	// carries `resolved_by` and can carry a done-class answer, and parking it
+	// would erase the operator's verdict on the later reopen.
+	It("never parks an item that was already answered", func() {
+		item := pushQuestion()
+		// Simulate the ARM's second write arriving on an answered item by
+		// parking through the helper with the answered state as the prior one.
+		item.State = AnsweredState
+		item.parkForEvidence(AnsweredState, &Answer{
+			Kind:  OptionAnswerKind,
+			Value: "done — reviewed and flipped both",
+		}, now)
+
+		Expect(item.State).To(Equal(AnsweredState), "an answered item must not become awaiting_evidence")
+		Expect(item.EvidenceDeadline).To(BeNil())
+	})
 })

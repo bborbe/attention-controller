@@ -1054,6 +1054,10 @@ func (a *attentionStore) Answer(
 			}
 			return errors.Wrap(ctx, err, "get item failed")
 		}
+		// The state the write arrived on, captured before this path stamps
+		// AnsweredState: parkForEvidence needs it to refuse a move the transition
+		// table does not have (see there).
+		priorState := item.State
 		// The compare-and-set itself. It succeeds from open, and from answered
 		// on a `permission` item only when the write is an ARM answer — see the
 		// AnsweredState arm. The failure modes are distinct and a caller can
@@ -1169,7 +1173,7 @@ func (a *attentionStore) Answer(
 		//
 		// Measured 2026-11-13: `done — reviewed and flipped both` closed a card
 		// while both PRs it named were still OPEN drafts with unchanged heads.
-		item.parkForEvidence(answer, now)
+		item.parkForEvidence(priorState, answer, now)
 		if err := a.putItem(ctx, tx, *item); err != nil {
 			return errors.Wrap(ctx, err, "update item failed")
 		}
