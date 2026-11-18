@@ -1,7 +1,9 @@
 ---
-status: draft
+status: approved
 spec: [020-attention-log-go-writer]
 summary: Port the attention-log Stop fence walker and UserPromptSubmit envelope branch into pkg/attnlog, complete the dispatch so all eight events are handled, and add the randomized differential to the parity harness plus the CHANGELOG/e2e completion.
+created: "2026-11-18T00:37:15Z"
+queued: "2026-11-18T00:37:15Z"
 ---
 
 # Attention-log Go writer — Stop walker, envelope, and randomized differential
