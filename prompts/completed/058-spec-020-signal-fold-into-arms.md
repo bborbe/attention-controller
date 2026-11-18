@@ -1,8 +1,13 @@
 ---
-status: approved
+status: completed
 spec: [020-answered-signal-folded-into-delivery-arm]
+summary: Folded the ANSWERED signal into the pane, headless, menu and settle arms through one mutex-guarded signaller, with producer scoping, durable-outcome ordering, restart catch-up, fail-open behavior and focused Ginkgo specs.
+execution_id: 320aab09-d524-5370-b349-d02209b39707-exec-058-spec-020-signal-fold-into-arms
+dark-factory-version: dev
 created: "2026-11-18T07:36:43Z"
 queued: "2026-11-18T08:54:12Z"
+started: "2026-11-18T09:18:11Z"
+completed: "2026-11-18T09:28:08Z"
 ---
 
 # Fold the ANSWERED signal into all four answer-carrying arms
