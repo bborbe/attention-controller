@@ -17,6 +17,13 @@ import (
 // reopened card says why it is back.
 const EvidenceNote = "reopened: the work this answer claimed was not observed before the evidence deadline"
 
+// parkedItem is one parked card as the probe pass sees it.
+type parkedItem struct {
+	key      string
+	claims   []string
+	deadline *libtime.DateTime
+}
+
 // evidenceVerdict is one parked item's probe result, computed OUTSIDE the write
 // transaction.
 type evidenceVerdict struct {
@@ -65,12 +72,7 @@ func (a *attentionStore) sweepAwaitingEvidence(
 // evaluateParkedEvidence reads the parked set and probes each claim with no
 // write transaction open.
 func (a *attentionStore) evaluateParkedEvidence(ctx context.Context) ([]evidenceVerdict, error) {
-	type parked struct {
-		key      string
-		claims   []string
-		deadline *libtime.DateTime
-	}
-	items := make([]parked, 0)
+	items := make([]parkedItem, 0)
 	if err := a.db.View(ctx, func(ctx context.Context, tx libkv.Tx) error {
 		keys, err := a.awaitingEvidenceKeys(ctx, tx)
 		if err != nil {
@@ -87,7 +89,7 @@ func (a *attentionStore) evaluateParkedEvidence(ctx context.Context) ([]evidence
 			if item.State != AwaitingEvidenceState {
 				continue
 			}
-			items = append(items, parked{
+			items = append(items, parkedItem{
 				key:      key,
 				claims:   item.EvidenceClaims,
 				deadline: item.EvidenceDeadline,
@@ -110,28 +112,7 @@ func (a *attentionStore) evaluateParkedEvidence(ctx context.Context) ([]evidence
 		}
 		return items[a].deadline.Time().Before(items[b].deadline.Time())
 	})
-	// ⚠️ The budget bounds PROBE CALLS, not items. One item can carry several
-	// claims (a two-tab answer names two artifacts) and each claim is its own
-	// `gh` call, so an item-count bound would let two multi-claim items spend
-	// four probes' worth of the sweep budget.
-	verdicts := make([]evidenceVerdict, 0, len(items))
-	budget := MaxEvidenceProbesPerSweep
-	for _, item := range items {
-		cost := len(item.claims)
-		if cost == 0 {
-			cost = 1
-		}
-		if cost > budget {
-			break
-		}
-		budget -= cost
-		verdicts = append(verdicts, evidenceVerdict{
-			key:      item.key,
-			observed: EvidenceAllObserved(ctx, item.claims, a.evidenceRunner),
-			deadline: item.deadline,
-		})
-	}
-	return verdicts, nil
+	return a.probeWithinBudget(ctx, items), nil
 }
 
 // applyEvidenceVerdicts closes or reopens the parked items a probe settled.
@@ -270,4 +251,35 @@ func sameDeadline(a, b *libtime.DateTime) bool {
 		return a == nil && b == nil
 	}
 	return a.Time().Equal(b.Time())
+}
+
+// probeWithinBudget probes parked items until the sweep's probe budget is
+// spent, returning one verdict per probed item.
+//
+// ⚠️ The budget bounds PROBE CALLS, not items. One item can carry several claims
+// (a two-tab answer names two artifacts) and each claim is its own `gh` call, so
+// an item-count bound would let two multi-claim items spend four probes' worth
+// of the sweep budget.
+func (a *attentionStore) probeWithinBudget(
+	ctx context.Context,
+	items []parkedItem,
+) []evidenceVerdict {
+	verdicts := make([]evidenceVerdict, 0, len(items))
+	budget := MaxEvidenceProbesPerSweep
+	for _, item := range items {
+		cost := len(item.claims)
+		if cost == 0 {
+			cost = 1
+		}
+		if cost > budget {
+			break
+		}
+		budget -= cost
+		verdicts = append(verdicts, evidenceVerdict{
+			key:      item.key,
+			observed: EvidenceAllObserved(ctx, item.claims, a.evidenceRunner),
+			deadline: item.deadline,
+		})
+	}
+	return verdicts
 }

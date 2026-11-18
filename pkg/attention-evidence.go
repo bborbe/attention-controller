@@ -309,3 +309,17 @@ func EvidenceAllObserved(ctx context.Context, claims []string, run EvidenceRunne
 	}
 	return true
 }
+
+// clearStaleEvidence drops the claim and deadline a parked item was waiting on
+// once it is no longer parked.
+//
+// ⚠️ A non-done answer to a parked item leaves that state behind: the item is
+// answered now, so its claim and deadline are stale and would be read by the
+// next sweep.
+func (i *Item) clearStaleEvidence() {
+	if i.State == AwaitingEvidenceState {
+		return
+	}
+	i.EvidenceClaims = nil
+	i.EvidenceDeadline = nil
+}
