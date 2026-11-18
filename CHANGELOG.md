@@ -12,6 +12,8 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 
 - fix: a `done`-class answer parks the item in `awaiting_evidence` until the pull request or path it names is observed, and reopens it on the board after 30 minutes unverified
 
+- test: pin the turn-end split in `paneCarrier.noPaneVerdict`. A reaped non-headless session whose transcript ends its turn is refused with "ended its turn and its process exited — answer not delivered", while a session that died mid-turn keeps "has no live process with a tty". Both directions are asserted, so neither a permanent turn-end reason nor a dropped one passes. Ported from `test_attention_watcher_turn_ended.py` cases (b) and (c); the `turnEnded` fixture was never set in any spec before this.
+
 ## v0.96.0
 
 - feat: add `pkg/attnlog` and `cmd/attention-log-event`, a compiled replacement for the `attention-log.py` hook that writes the attention event store for `PreToolUse`, `PostToolUse`, `PostToolUseFailure` and `SessionEnd`; it ports `redact`/`scrub_detail` as distinct functions, the `EventItemID` dedup key, the `.events.jsonl`/`.open.json`/`.tool.json` store shapes, `close_open`'s fail-open tool rules and the answer-marker attribution, exits 0 on malformed input, and spawns no Python interpreter. A parity harness in `hack/attnlog-parity` deep-equals its records against a reference writer.
