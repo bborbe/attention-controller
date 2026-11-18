@@ -12,8 +12,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/golang/glog"
 	libtime "github.com/bborbe/time"
+	"github.com/golang/glog"
 )
 
 // EvidenceDeadline is how long a `done`-class claim may wait unobserved before
@@ -103,7 +103,8 @@ func isDoneClassOptionLabel(label string) bool {
 		// An artifact may follow the word directly: `done https://github.com/…`
 		// and `done /srv/app/build.log` are claims, and the URL or path IS the
 		// proof the answer names.
-		if strings.HasPrefix(rest, "http://") || strings.HasPrefix(rest, "https://") || strings.HasPrefix(rest, "/") {
+		if strings.HasPrefix(rest, "http://") || strings.HasPrefix(rest, "https://") ||
+			strings.HasPrefix(rest, "/") {
 			return true
 		}
 		next, _ := utf8.DecodeRuneInString(rest)
@@ -221,7 +222,19 @@ func EvidenceObserved(ctx context.Context, claim string, run EvidenceRunner) boo
 		// the whole sweep's budget.
 		ctx, cancel := context.WithTimeout(ctx, EvidenceProbeTimeout)
 		defer cancel()
-		out, err := run(ctx, "gh", "-R", owner+"/"+repo, "pr", "view", number, "--json", "state", "--jq", ".state")
+		out, err := run(
+			ctx,
+			"gh",
+			"-R",
+			owner+"/"+repo,
+			"pr",
+			"view",
+			number,
+			"--json",
+			"state",
+			"--jq",
+			".state",
+		)
 		if err != nil {
 			glog.V(2).Infof("evidence probe failed for %s: %v", claim, err)
 			return false

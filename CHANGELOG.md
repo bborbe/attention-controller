@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- fix: Repoint the sweep-gate notify job's gate and checker at the `claude-wrapper` daemon's one-shot modes (`-sweep-gate-mode tick` / `check`) instead of spawning the vault-side Python script, resolving the binary by absolute path rather than from `PATH`.
+
 ## v0.98.0
 
 - feat: Port the answer-attribution ladder to Go as `pkg.ClassifyAnswerAttribution` and `pkg.RenderedAnswerSignal`, with a committed ten-row vector fixture in `pkg/testdata/answer-attribution-vectors.json` and the contract documented in `docs/answer-attribution.md`.
