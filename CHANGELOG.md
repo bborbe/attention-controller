@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.99.6
 
 - fix: **a delivery retry now writes an attempt record, so a card an arm is actively retrying can no longer close reading `never_attempted`.** All three delivery arms returned `DeliveryRetry` for a busy or unreadable composer, an undrawn menu, or a wrapper mid-turn, and the retry path wrote nothing at all — so the read surface said *no arm ever looked at this answer* about an answer an arm was retrying, and `attention_lost_answers_total` counted it as lost. Measured 2026-11-18 on the live board: of the 24 closes in the counter's 12.7 h window, 14 were exactly this shape — 5 prose-arm retries (`pane 140 composer is busy`, `pane 132 composer is unknown`), 5 menu-arm retries (`pane 179 shows no open menu`), and 4 headless 409s against a pane-less session (one card retried ~1800 times in an hour, another parked). A new `retried` outcome and `retrying` status carry it: an arm looked, the answer has not reached the session yet, and the arm is still trying — distinct from `failed` (the operator should look) and from `held` (declined on purpose). Each arm writes it once per answer, not once per cycle, so the hot loop the backoff exists to bound stays bounded; the undeliverable marker still takes the record over at `AttentionDeliveryBound`. Specs invert the old "records nothing on a retry verdict" pins in all three arms and pin the store-level consequence: a close whose trail carries a retry — before or after the close — is not counted, and a close whose trail carries nothing still is.
 
