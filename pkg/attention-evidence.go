@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/golang/glog"
 	libtime "github.com/bborbe/time"
 )
 
@@ -75,22 +76,41 @@ func AnswerText(answer *Answer) string {
 	return strings.Join(parts, " ")
 }
 
-// EvidenceClaimFromText returns the artifact an answer named as proof, or an
-// empty string when it named none.
+// EvidenceClaimsFromText returns every artifact an answer named as proof, or
+// nil when it named none.
 //
-// A pull-request URL wins over a path because it is the stronger claim: a path
-// can exist for unrelated reasons, while a merged PR is the effect itself.
-func EvidenceClaimFromText(text string) string {
-	if match := pullRequestURL.FindString(text); match != "" {
-		return match
+// ⚠️ ALL matches are returned, never just the first. The answer this feature
+// exists for named two PRs, and a first-match rule would close the card as soon
+// as one merged while the other claim was untouched.
+//
+// Pull-request URLs win over paths when the text carries both: a path can exist
+// for unrelated reasons, while a merged PR is the effect itself.
+func EvidenceClaimsFromText(text string) []string {
+	if matches := pullRequestURL.FindAllString(text, -1); len(matches) > 0 {
+		return uniqueStrings(matches)
 	}
-	if match := absolutePath.FindStringSubmatch(text); len(match) == 2 {
+	claims := make([]string, 0)
+	for _, match := range absolutePath.FindAllStringSubmatch(text, -1) {
 		// A bare "/" or a one-segment token is not a usable artifact.
 		if strings.Count(match[1], "/") >= 2 {
-			return match[1]
+			claims = append(claims, match[1])
 		}
 	}
-	return ""
+	return uniqueStrings(claims)
+}
+
+// uniqueStrings drops duplicates while keeping the first occurrence's order.
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 // EvidenceRunner runs one external probe and reports whether it succeeded. It
@@ -126,10 +146,16 @@ func EvidenceObserved(ctx context.Context, claim string, run EvidenceRunner) boo
 		}
 		out, err := run(ctx, "gh", "-R", owner+"/"+repo, "pr", "view", number, "--json", "state", "--jq", ".state")
 		if err != nil {
+			glog.V(2).Infof("evidence probe failed for %s: %v", claim, err)
 			return false
 		}
 		state := strings.ToUpper(strings.TrimSpace(out))
-		return state == "MERGED" || state == "CLOSED"
+		// ⚠️ `MERGED` only. `CLOSED` means closed WITHOUT merging, so a PR that
+		// was abandoned or superseded would close the item as satisfied while the
+		// work it claimed never landed — the exact false `done` this state exists
+		// to prevent, arriving through the probe instead of the answer.
+		glog.V(2).Infof("evidence probe for %s answered state=%s", claim, state)
+		return state == "MERGED"
 	}
 	if strings.HasPrefix(claim, "/") {
 		info, err := os.Stat(claim)
@@ -156,6 +182,21 @@ func (i *Item) parkForEvidence(answer *Answer, now libtime.DateTime) {
 		return
 	}
 	i.State = AwaitingEvidenceState
-	i.EvidenceClaim = EvidenceClaimFromText(AnswerText(answer))
+	i.EvidenceClaims = EvidenceClaimsFromText(AnswerText(answer))
 	i.EvidenceDeadline = NewEvidenceDeadline(now)
+}
+
+// EvidenceAllObserved reports whether EVERY claim is visible. An empty claim set
+// is never observed: the store does not treat "the answer named nothing" as
+// satisfied, because that is the case it cannot check.
+func EvidenceAllObserved(ctx context.Context, claims []string, run EvidenceRunner) bool {
+	if len(claims) == 0 {
+		return false
+	}
+	for _, claim := range claims {
+		if !EvidenceObserved(ctx, claim, run) {
+			return false
+		}
+	}
+	return true
 }

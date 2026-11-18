@@ -56,6 +56,11 @@ func NewAttentionStore(
 		currentDateTimeGetter:  currentDateTimeGetter,
 		heartbeatWindow:        heartbeatWindow,
 		historyPage:            newHistoryPageCache(),
+		// The evidence probe is a dependency of this store instance, not a
+		// package global: a shared mutable runner is what makes two stores in one
+		// test process interfere, and the rule forbids reaching a service through
+		// one. Production never replaces this value.
+		evidenceRunner: DefaultEvidenceRunner,
 	}
 	if len(lostAnswers) > 0 {
 		store.lostAnswers = lostAnswers[0]
@@ -81,6 +86,9 @@ type attentionStore struct {
 	// historyPage caches the last history page, dropped by every write. See
 	// historyPageCache for why the endpoint needs one.
 	historyPage *historyPageCache
+	// evidenceRunner probes the artifact a `done`-class answer claimed. See
+	// attention-evidence.go.
+	evidenceRunner EvidenceRunner
 	// lostAnswers is the in-process counter. It is moved by addLostAnswersTotal
 	// only, after a close transaction commits — closeItem never touches it.
 	// Nil when the store was built without one, which is the spec default.

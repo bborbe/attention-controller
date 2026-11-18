@@ -106,7 +106,7 @@ var _ = Describe("Evidence-backed close", func() {
 		})
 
 		Expect(answered.State).To(Equal(AwaitingEvidenceState))
-		Expect(answered.EvidenceClaim).To(Equal("https://github.com/bborbe/attention-controller/pull/77"))
+		Expect(answered.EvidenceClaims).To(Equal([]string{"https://github.com/bborbe/attention-controller/pull/77"}))
 	})
 
 	It("closes the item once the claimed pull request is merged", func() {
@@ -116,9 +116,9 @@ var _ = Describe("Evidence-backed close", func() {
 			Value: "done https://github.com/bborbe/attention-controller/pull/77",
 		})
 
-		original := evidenceRunner
-		DeferCleanup(func() { evidenceRunner = original })
-		evidenceRunner = func(ctx context.Context, name string, args ...string) (string, error) {
+		original := store.evidenceRunner
+		DeferCleanup(func() { store.evidenceRunner = original })
+		store.evidenceRunner = func(ctx context.Context, name string, args ...string) (string, error) {
 			return "MERGED", nil
 		}
 
@@ -138,9 +138,9 @@ var _ = Describe("Evidence-backed close", func() {
 			Value: "done https://github.com/bborbe/attention-controller/pull/77",
 		})
 
-		original := evidenceRunner
-		DeferCleanup(func() { evidenceRunner = original })
-		evidenceRunner = func(ctx context.Context, name string, args ...string) (string, error) {
+		original := store.evidenceRunner
+		DeferCleanup(func() { store.evidenceRunner = original })
+		store.evidenceRunner = func(ctx context.Context, name string, args ...string) (string, error) {
 			return "OPEN", nil
 		}
 
@@ -152,7 +152,7 @@ var _ = Describe("Evidence-backed close", func() {
 		Expect(err).To(BeNil())
 		Expect(got.State).To(Equal(OpenState))
 		Expect(got.EvidenceDeadline).To(BeNil())
-		Expect(got.EvidenceClaim).NotTo(BeEmpty(), "the claim survives so the card can say what it waits for")
+		Expect(got.EvidenceClaims).NotTo(BeEmpty(), "the claim survives so the card can say what it waits for")
 		Expect(string(got.Context)).To(ContainSubstring(EvidenceNote))
 	})
 
@@ -166,9 +166,9 @@ var _ = Describe("Evidence-backed close", func() {
 			Value: "done https://github.com/bborbe/attention-controller/pull/77",
 		})
 
-		original := evidenceRunner
-		DeferCleanup(func() { evidenceRunner = original })
-		evidenceRunner = func(ctx context.Context, name string, args ...string) (string, error) {
+		original := store.evidenceRunner
+		DeferCleanup(func() { store.evidenceRunner = original })
+		store.evidenceRunner = func(ctx context.Context, name string, args ...string) (string, error) {
 			return "OPEN", nil
 		}
 
@@ -181,19 +181,69 @@ var _ = Describe("Evidence-backed close", func() {
 	})
 
 	It("treats a failed probe as unobserved rather than verified", func() {
-		original := evidenceRunner
-		DeferCleanup(func() { evidenceRunner = original })
-		evidenceRunner = func(ctx context.Context, name string, args ...string) (string, error) {
+		original := store.evidenceRunner
+		DeferCleanup(func() { store.evidenceRunner = original })
+		store.evidenceRunner = func(ctx context.Context, name string, args ...string) (string, error) {
 			return "", errors.New("gh: not logged in")
 		}
 
-		Expect(EvidenceObserved(ctx, "https://github.com/bborbe/attention-controller/pull/77", evidenceRunner)).To(BeFalse())
+		Expect(EvidenceObserved(ctx, "https://github.com/bborbe/attention-controller/pull/77", store.evidenceRunner)).To(BeFalse())
 	})
 
 	It("never guesses an artifact from an answer that named none", func() {
-		Expect(EvidenceClaimFromText("done — reviewed and flipped both")).To(BeEmpty())
-		Expect(EvidenceClaimFromText("/etc/hosts")).To(Equal("/etc/hosts"))
+		Expect(EvidenceClaimsFromText("done — reviewed and flipped both")).To(BeEmpty())
+		Expect(EvidenceClaimsFromText("/etc/hosts")).To(Equal([]string{"/etc/hosts"}))
 		Expect(IsDoneClassAnswer(&Answer{Kind: OptionAnswerKind, Value: "Done"})).To(BeTrue())
 		Expect(IsDoneClassAnswer(&Answer{Kind: OptionAnswerKind, Value: "not yet"})).To(BeFalse())
+	})
+
+	// The two blocking review findings, pinned: a closed-unmerged PR is not
+	// proof, and a two-artifact answer needs both artifacts.
+	It("does not accept a closed-unmerged pull request as proof", func() {
+		original := store.evidenceRunner
+		DeferCleanup(func() { store.evidenceRunner = original })
+		store.evidenceRunner = func(ctx context.Context, name string, args ...string) (string, error) {
+			return "CLOSED", nil
+		}
+
+		Expect(EvidenceObserved(ctx, "https://github.com/bborbe/attention-controller/pull/77", store.evidenceRunner)).To(BeFalse())
+	})
+
+	It("records every artifact a two-pull-request answer names", func() {
+		item := pushQuestion()
+
+		answered := answerWith(item.ItemID, &Answer{
+			Kind:  TextAnswerKind,
+			Value: "done — reviewed and flipped both https://github.com/bborbe/attention-controller/pull/77 https://github.com/bborbe/attention-controller/pull/80",
+		})
+
+		Expect(answered.State).To(Equal(AwaitingEvidenceState))
+		Expect(answered.EvidenceClaims).To(HaveLen(2))
+	})
+
+	It("keeps the item parked while only one of two claimed artifacts is observed", func() {
+		item := pushQuestion()
+		answerWith(item.ItemID, &Answer{
+			Kind:  TextAnswerKind,
+			Value: "done https://github.com/bborbe/attention-controller/pull/77 https://github.com/bborbe/attention-controller/pull/80",
+		})
+
+		original := store.evidenceRunner
+		DeferCleanup(func() { store.evidenceRunner = original })
+		store.evidenceRunner = func(ctx context.Context, name string, args ...string) (string, error) {
+			for _, arg := range args {
+				if arg == "77" {
+					return "MERGED", nil
+				}
+			}
+			return "OPEN", nil
+		}
+
+		_, err := store.SweepAnswered(ctx, libtime.Duration(15*60*1e9))
+		Expect(err).To(BeNil())
+
+		got, err := store.Get(ctx, item.ItemID)
+		Expect(err).To(BeNil())
+		Expect(got.State).To(Equal(AwaitingEvidenceState), "one merged PR is not the whole claim")
 	})
 })

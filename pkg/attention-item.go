@@ -320,15 +320,21 @@ type Item struct {
 	// stored with CreatedAt + DefaultItemExpiry, so every item written by this
 	// store carries one; see effectiveExpiresAt for rows written before that.
 	ExpiresAt *libtime.DateTime `json:"expires_at,omitempty"`
-	// EvidenceClaim is the artifact a `done`-class answer named as proof: a
-	// GitHub pull-request URL or an absolute file path. Empty when the answer
-	// named none, in which case the item can never be verified and reopens at
-	// its deadline.
+	// EvidenceClaims are the artifacts a `done`-class answer named as proof: the
+	// GitHub pull-request URLs and absolute file paths in its text. Empty when
+	// the answer named none, in which case the item can never be verified and
+	// reopens at its deadline.
 	//
-	// ⚠️ It is recorded from the operator's own words and is never inferred:
+	// ⚠️ ALL of them must be observed before the item closes. The incident this
+	// state exists for answered `done — reviewed and flipped both` and named two
+	// PRs; recording only the first would close the card as soon as one merged
+	// while the other claim was still untouched — the same false `done`, one
+	// artifact narrower.
+	//
+	// ⚠️ They are recorded from the operator's own words and are never inferred:
 	// a claim invented by the store would be evidence the store supplied for
 	// itself, which is exactly the false satisfaction this state exists to stop.
-	EvidenceClaim string `json:"evidence_claim,omitempty"`
+	EvidenceClaims []string `json:"evidence_claims,omitempty"`
 	// EvidenceDeadline is when an unobserved claim stops waiting and the item
 	// returns to the board. Set when the item parks in `awaiting_evidence` and
 	// cleared when it leaves that state.

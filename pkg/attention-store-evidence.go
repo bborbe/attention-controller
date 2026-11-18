@@ -89,7 +89,7 @@ func (a *attentionStore) sweepOneAwaitingEvidence(
 	if item.State != AwaitingEvidenceState {
 		return false, nil
 	}
-	if EvidenceObserved(ctx, item.EvidenceClaim, evidenceRunner) {
+	if EvidenceAllObserved(ctx, item.EvidenceClaims, a.evidenceRunner) {
 		item.State = AnsweredState
 		item.EvidenceDeadline = nil
 		if err := a.putItem(ctx, tx, *item); err != nil {
