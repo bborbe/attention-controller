@@ -143,3 +143,19 @@ func NewEvidenceDeadline(now libtime.DateTime) *libtime.DateTime {
 	deadline := now.Add(libtime.Duration(EvidenceDeadline))
 	return &deadline
 }
+
+// parkForEvidence moves the item to `awaiting_evidence` when the answer claims
+// the work is done, recording what would prove it and when the claim stops
+// waiting. It is a no-op for every other answer.
+//
+// It lives here rather than inline in the store's Answer method so that method's
+// cognitive complexity stays inside the lint bound — the rule this path exists
+// to satisfy is the claim, and it reads better named.
+func (i *Item) parkForEvidence(answer *Answer, now libtime.DateTime) {
+	if !IsDoneClassAnswer(answer) {
+		return
+	}
+	i.State = AwaitingEvidenceState
+	i.EvidenceClaim = EvidenceClaimFromText(AnswerText(answer))
+	i.EvidenceDeadline = NewEvidenceDeadline(now)
+}

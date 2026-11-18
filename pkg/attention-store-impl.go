@@ -1155,11 +1155,7 @@ func (a *attentionStore) Answer(
 		//
 		// Measured 2026-11-13: `done — reviewed and flipped both` closed a card
 		// while both PRs it named were still OPEN drafts with unchanged heads.
-		if IsDoneClassAnswer(answer) {
-			item.State = AwaitingEvidenceState
-			item.EvidenceClaim = EvidenceClaimFromText(AnswerText(answer))
-			item.EvidenceDeadline = NewEvidenceDeadline(now)
-		}
+		item.parkForEvidence(answer, now)
 		if err := a.putItem(ctx, tx, *item); err != nil {
 			return errors.Wrap(ctx, err, "update item failed")
 		}

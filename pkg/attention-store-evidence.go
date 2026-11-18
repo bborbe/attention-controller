@@ -28,7 +28,29 @@ func (a *attentionStore) sweepAwaitingEvidence(
 	tx libkv.Tx,
 	now libtime.DateTime,
 ) (int, error) {
-	due := make([]string, 0)
+	keys, err := a.awaitingEvidenceKeys(ctx, tx)
+	if err != nil {
+		return 0, err
+	}
+	changed := 0
+	for _, key := range keys {
+		moved, err := a.sweepOneAwaitingEvidence(ctx, tx, key, now)
+		if err != nil {
+			return changed, err
+		}
+		if moved {
+			changed++
+		}
+	}
+	return changed, nil
+}
+
+// awaitingEvidenceKeys lists the live-index keys currently parked.
+func (a *attentionStore) awaitingEvidenceKeys(
+	ctx context.Context,
+	tx libkv.Tx,
+) ([]string, error) {
+	keys := make([]string, 0)
 	if err := a.liveIndex.Map(
 		ctx,
 		tx,
@@ -36,52 +58,58 @@ func (a *attentionStore) sweepAwaitingEvidence(
 			if key == liveIndexMarkerKey || item.State != AwaitingEvidenceState {
 				return nil
 			}
-			due = append(due, key)
+			keys = append(keys, key)
 			return nil
 		},
 	); err != nil {
-		return 0, errors.Wrap(ctx, err, "scan live index for awaiting evidence failed")
+		return nil, errors.Wrap(ctx, err, "scan live index for awaiting evidence failed")
 	}
-	changed := 0
-	for _, key := range due {
-		// ⚠️ The state is re-read inside the write rather than trusted from the
-		// index snapshot: the scan and the write are two steps, and an item can
-		// have been closed or reopened between them.
-		item, err := a.store.Get(ctx, tx, key)
-		if err != nil {
-			if isNotFound(err) {
-				continue
-			}
-			return changed, errors.Wrap(ctx, err, "get awaiting-evidence item failed")
+	return keys, nil
+}
+
+// sweepOneAwaitingEvidence closes or reopens one parked item, reporting whether
+// it moved it.
+//
+// ⚠️ The state is re-read inside the write rather than trusted from the index
+// snapshot: the scan and the write are two steps, and an item can have been
+// closed or reopened between them.
+func (a *attentionStore) sweepOneAwaitingEvidence(
+	ctx context.Context,
+	tx libkv.Tx,
+	key string,
+	now libtime.DateTime,
+) (bool, error) {
+	item, err := a.store.Get(ctx, tx, key)
+	if err != nil {
+		if isNotFound(err) {
+			return false, nil
 		}
-		if item.State != AwaitingEvidenceState {
-			continue
-		}
-		if EvidenceObserved(ctx, item.EvidenceClaim, evidenceRunner) {
-			item.State = AnsweredState
-			item.EvidenceDeadline = nil
-			if err := a.putItem(ctx, tx, *item); err != nil {
-				return changed, errors.Wrap(ctx, err, "close verified item failed")
-			}
-			changed++
-			continue
-		}
-		deadline := item.EvidenceDeadline
-		if deadline == nil || now.Before(*deadline) {
-			continue
-		}
-		// The claim was never observed in time. The card goes back on the board
-		// with the claim intact and a note saying why, because an answer nobody
-		// can verify is a question the operator still has to settle.
-		item.State = OpenState
+		return false, errors.Wrap(ctx, err, "get awaiting-evidence item failed")
+	}
+	if item.State != AwaitingEvidenceState {
+		return false, nil
+	}
+	if EvidenceObserved(ctx, item.EvidenceClaim, evidenceRunner) {
+		item.State = AnsweredState
 		item.EvidenceDeadline = nil
-		item.Context = ItemContext(appendNote(string(item.Context), EvidenceNote))
 		if err := a.putItem(ctx, tx, *item); err != nil {
-			return changed, errors.Wrap(ctx, err, "reopen unverified item failed")
+			return false, errors.Wrap(ctx, err, "close verified item failed")
 		}
-		changed++
+		return true, nil
 	}
-	return changed, nil
+	if item.EvidenceDeadline == nil || now.Before(*item.EvidenceDeadline) {
+		return false, nil
+	}
+	// The claim was never observed in time. The card goes back on the board with
+	// the claim intact and a note saying why, because an answer nobody can
+	// verify is a question the operator still has to settle.
+	item.State = OpenState
+	item.EvidenceDeadline = nil
+	item.Context = ItemContext(appendNote(string(item.Context), EvidenceNote))
+	if err := a.putItem(ctx, tx, *item); err != nil {
+		return false, errors.Wrap(ctx, err, "reopen unverified item failed")
+	}
+	return true, nil
 }
 
 // appendNote appends one line to an item's context, keeping an empty note empty
