@@ -97,7 +97,7 @@ var _ = Describe("AttentionStore lost-answer counter", func() {
 			liveness,
 			clock,
 			heartbeatWindow,
-			counter,
+			pkg.WithLostAnswers(counter),
 		)
 	})
 
