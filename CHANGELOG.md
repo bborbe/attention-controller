@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.99.1
 
 - fix: Repoint the sweep-gate notify job's gate and checker at the `claude-wrapper` daemon's one-shot modes (`-sweep-gate-mode tick` / `check`) instead of spawning the vault-side Python script, resolving the binary by absolute path rather than from `PATH`.
 
