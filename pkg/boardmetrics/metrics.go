@@ -23,7 +23,17 @@ import (
 // The process constructs it once on prometheus.DefaultRegisterer — the registry
 // promhttp.Handler serves — while a spec constructs it on a private registry,
 // so a spec reads its own counters back without touching the process-wide one.
-func NewMetrics(registry prometheus.Registerer) pkg.Metrics {
+//
+// initialLostAnswersTotal seeds attention_lost_answers_total from the durable
+// total the store persisted. ⚠️ It exists because the Prometheus counter starts
+// at zero on every process: without the seed the metric resets on every restart
+// and goal SC3 — zero lost answers per week, read as a counter — could never be
+// evidenced. It is variadic so the existing call sites that construct metrics
+// for a spec need not pass a value; at most the first is honoured.
+func NewMetrics(
+	registry prometheus.Registerer,
+	initialLostAnswersTotal ...uint64,
+) pkg.Metrics {
 	// ⚠️ Name carries the FULL frozen metric name with Namespace and Subsystem
 	// left empty. prometheus.NewCounter builds the exposed name as
 	// BuildFQName(Namespace, Subsystem, Name), so a Namespace here would expose
@@ -65,6 +75,13 @@ func NewMetrics(registry prometheus.Registerer) pkg.Metrics {
 		Name: "attention_lost_answers_total",
 		Help: "Total number of answers lost: an item that was answered, then closed, with no delivery attempt ever recorded.",
 	})
+	// ⚠️ Seed BEFORE registering, so a scrape that races the registration can
+	// never observe the counter at zero while the durable total is not. The seed
+	// is the durable value read from the store at startup; without it this
+	// counter restarts at zero on every process and cannot evidence a week.
+	if len(initialLostAnswersTotal) > 0 && initialLostAnswersTotal[0] > 0 {
+		lostAnswers.Add(float64(initialLostAnswersTotal[0]))
+	}
 	registry.MustRegister(renders, rowsRendered, pageRequests, watcherCycle, lostAnswers)
 	return &boardMetrics{
 		renders:      renders,
