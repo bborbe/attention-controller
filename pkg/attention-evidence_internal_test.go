@@ -306,7 +306,7 @@ var _ = Describe("Evidence-backed close", func() {
 		item.parkForEvidence(AnsweredState, &Answer{
 			Kind:  OptionAnswerKind,
 			Value: "done — reviewed and flipped both",
-		}, now)
+		}, nil, now)
 
 		Expect(item.State).To(Equal(AnsweredState), "an answered item must not become awaiting_evidence")
 		Expect(item.EvidenceDeadline).To(BeNil())

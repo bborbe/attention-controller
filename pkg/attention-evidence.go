@@ -254,8 +254,26 @@ func NewEvidenceDeadline(now libtime.DateTime) *libtime.DateTime {
 // It lives here rather than inline in the store's Answer method so that method's
 // cognitive complexity stays inside the lint bound — the rule this path exists
 // to satisfy is the claim, and it reads better named.
-func (i *Item) parkForEvidence(prior State, answer *Answer, now libtime.DateTime) {
-	if !IsDoneClassAnswer(answer) {
+func (i *Item) parkForEvidence(
+	prior State,
+	answer *Answer,
+	answers Answers,
+	now libtime.DateTime,
+) {
+	// ⚠️ The done-class claim can arrive in EITHER shape: the single `answer` of
+	// a one-question card, or any entry of `answers` on a multi-question card.
+	// Reading only `answer` let a multi-question card answered "done" skip the
+	// evidence gate entirely — the same false `done`, one wire shape over.
+	claim := answer
+	if !IsDoneClassAnswer(claim) {
+		for index := range answers {
+			if IsDoneClassAnswer(&answers[index].Answer) {
+				claim = &answers[index].Answer
+				break
+			}
+		}
+	}
+	if !IsDoneClassAnswer(claim) {
 		return
 	}
 	// ⚠️ Only a move the table HAS. A `permission` item accepts a second write
@@ -268,7 +286,7 @@ func (i *Item) parkForEvidence(prior State, answer *Answer, now libtime.DateTime
 		return
 	}
 	i.State = AwaitingEvidenceState
-	i.EvidenceClaims = EvidenceClaimsFromText(AnswerText(answer))
+	i.EvidenceClaims = EvidenceClaimsFromText(AnswerText(claim))
 	i.EvidenceDeadline = NewEvidenceDeadline(now)
 }
 
