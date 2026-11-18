@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.95.3
 
 - fix: **`make precommit`'s `format` step no longer spawns ~640 `goimports` processes.** `golines` selects its base formatter by looking `goimports` up on `PATH` and silently prefers it over `gofmt` (`shortener.go` `NewShortener`), then runs it as a subprocess twice per file — once before shortening and once after (`formatSrc`). Across this tree's 321 Go files that is ~642 `go run`-spawned `goimports` children, each burning 400–850 % CPU for seconds, so the step measured 45 s at load 20 and 52 min (killed) at load 331. The `format` target now passes `--base-formatter=gofmt`, which keeps base formatting in-process via `go/format`; `goimports-reviser` earlier in the same target and `gofmt` at its end already cover imports and the final formatting. Output is byte-identical: old and new pipelines produce a zero-diff tree from the same `6b9e3ab` source, while `format` drops from 45.05 s to 8.38 s (sys 319 s → 11 s).
 
