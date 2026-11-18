@@ -61,14 +61,14 @@ import (
 func (a *attentionStore) closeRedundantReraises(
 	ctx context.Context,
 	tx libkv.Tx,
-) (int, int, error) {
+) (int, error) {
 	// ⚠️ The answered set comes from the DURABLE record, not from the live index.
 	// A twin the answered sweep has already closed has left the live index, so
 	// building the set from it was exactly why a re-raise reappeared once its
 	// twin was retired — the same miss suppressAnsweredTwins had. See
 	// attention-store-answered-twins.go.
 	if err := a.ensureAnsweredIndexTx(ctx, tx); err != nil {
-		return 0, 0, err
+		return 0, err
 	}
 	due := make([]string, 0)
 	if err := a.liveIndex.Map(
@@ -102,26 +102,22 @@ func (a *attentionStore) closeRedundantReraises(
 			return nil
 		},
 	); err != nil {
-		return 0, 0, errors.Wrap(ctx, err, "scan live index for redundant re-raises failed")
+		return 0, errors.Wrap(ctx, err, "scan live index for redundant re-raises failed")
 	}
 	closed := 0
-	lostAnswers := 0
 	for _, key := range due {
-		didClose, counted, err := a.closeOpenItem(ctx, tx, key)
+		didClose, err := a.closeOpenItem(ctx, tx, key)
 		if err != nil {
-			return closed, lostAnswers, err
+			return closed, err
 		}
 		if didClose {
 			closed++
 		}
-		lostAnswers += counted
 	}
-	return closed, lostAnswers, nil
+	return closed, nil
 }
 
-// closeOpenItem closes one open item, reporting whether it closed it and how many
-// lost answers that close counted (the caller adds the latter to the in-process
-// counter only after the transaction commits).
+// closeOpenItem closes one open item, reporting whether it closed it.
 //
 // ⚠️ The state is re-read inside the transaction rather than trusted from the
 // index snapshot the scan produced, for the same reason closeAnsweredItem
@@ -132,19 +128,19 @@ func (a *attentionStore) closeOpenItem(
 	ctx context.Context,
 	tx libkv.Tx,
 	key string,
-) (bool, int, error) {
+) (bool, error) {
 	item, err := a.store.Get(ctx, tx, key)
 	if err != nil {
 		if isNotFound(err) {
-			return false, 0, nil
+			return false, nil
 		}
-		return false, 0, errors.Wrapf(ctx, err, "get item %s failed", key)
+		return false, errors.Wrapf(ctx, err, "get item %s failed", key)
 	}
 	if item.State != OpenState {
-		return false, 0, nil
+		return false, nil
 	}
 	if err := ValidateTransition(ctx, item.State, ClosedState); err != nil {
-		return false, 0, err
+		return false, err
 	}
 	// answeredBy is deliberately NOT written: the row was resolved without an
 	// answer, and naming a sweeper as the answerer would be a false record.
@@ -153,9 +149,8 @@ func (a *attentionStore) closeOpenItem(
 	// the row left; it does not say which closer moved it, and for a card the
 	// operator never answered that is the only question worth recording.
 	item.CloseReason = RedundantReraiseCloseReason
-	counted, err := a.closeItem(ctx, tx, item)
-	if err != nil {
-		return false, 0, errors.Wrapf(ctx, err, "close open item %s failed", key)
+	if err := a.closeItem(ctx, tx, item); err != nil {
+		return false, errors.Wrapf(ctx, err, "close open item %s failed", key)
 	}
-	return true, counted, nil
+	return true, nil
 }
