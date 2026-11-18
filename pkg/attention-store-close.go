@@ -35,8 +35,9 @@ import (
 const attentionCloseCarrier = "watcher:gate-resolved"
 
 // closeItem performs the shared close transition: it stamps ClosedAt, persists
-// the item, counts the close as a lost answer when the item was answered but
-// never attempted, and writes the terminal delivery record that says so.
+// the item, writes the durable lost-answer count when the item was answered but
+// never attempted, and writes the terminal delivery record that says so. It
+// reports the count rather than moving the in-process counter — see below.
 //
 // ⚠️ ONE helper for every close site. There are three today — Close, the
 // answered sweep's closeAnsweredItem, and the redundant-re-raise sweep's
@@ -95,9 +96,9 @@ func (a *attentionStore) closeItem(
 //
 // ⚠️ It lives in closeItem, not in each caller, for the same reason
 // countLostAnswer does: every close site already funnels through this helper, so
-// a fourth close path added later cannot silently skip the record. There are
-// three today — the explicit close route, the event-ingest sink's close, and the
-// answered sweep.
+// a fourth close path added later cannot silently skip the record. The close
+// sites are Close, the answered sweep's closeAnsweredItem, and the
+// redundant-re-raise sweep's closeOpenItem.
 //
 // ⚠️ An existing record is NEVER overwritten. A `delivered` must not be
 // downgraded to `held` by the sweep retiring a card an hour after a successful

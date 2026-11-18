@@ -81,7 +81,8 @@ type attentionStore struct {
 	// historyPage caches the last history page, dropped by every write. See
 	// historyPageCache for why the endpoint needs one.
 	historyPage *historyPageCache
-	// lostAnswers is the counter every close site increments through closeItem.
+	// lostAnswers is the in-process counter. It is moved by addLostAnswersTotal
+	// only, after a close transaction commits — closeItem never touches it.
 	// Nil when the store was built without one, which is the spec default.
 	lostAnswers LostAnswerCounter
 }
