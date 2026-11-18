@@ -35,53 +35,42 @@ import (
 const attentionCloseCarrier = "watcher:gate-resolved"
 
 // closeItem performs the shared close transition: it stamps ClosedAt, persists
-// the item, writes the durable lost-answer count when the item was answered but
-// never attempted, and writes the terminal delivery record that says so. It
-// reports the count rather than moving the in-process counter — see below.
+// the item, records the lost-answer candidate when the item was answered but
+// never attempted, and writes the terminal delivery record that says so.
 //
 // ⚠️ ONE helper for every close site. There are three today — Close, the
 // answered sweep's closeAnsweredItem, and the redundant-re-raise sweep's
 // closeOpenItem — and a fourth close site added later calls this rather than
-// repeating the write, so it cannot silently miss the counter or the record.
+// repeating the write, so it cannot silently miss the candidate or the record.
 //
 // Callers validate the transition first (ValidateTransition runs before their
 // own pre-write mutations), so this helper does not re-validate; it assumes the
 // item is about to move to ClosedState legally.
 //
-// ⚠️ The counter is incremented by the CALLER, after the transaction commits —
-// never here. The durable total is written inside the transaction, so a close
-// that aborts (a failed attempt record, a failed commit) rolls the durable half
-// back; incrementing the in-process half inside the transaction would leave the
-// two disagreeing, and the sweep's retry would then count the same close twice.
-// closeItem therefore REPORTS how many lost answers it counted (0 or 1, as a
-// count so every caller accumulates it without a branch), and the caller adds it
-// to the in-process counter once db.Update has returned nil.
+// ⚠️ It does NOT move the counter, in either half. The durable total is settled
+// by finalizeLostAnswers after LostAnswerGrace, and the in-process counter is
+// added by that pass's caller once its transaction commits — so the two stay
+// equal and a close that aborts rolls back its candidate. See countLostAnswer
+// for why the verdict cannot be taken here.
 func (a *attentionStore) closeItem(
 	ctx context.Context,
 	tx libkv.Tx,
 	item *Item,
-) (int, error) {
+) error {
 	now := a.currentDateTimeGetter.Now()
 	item.State = ClosedState
 	item.ClosedAt = &now
 	if err := a.putItem(ctx, tx, *item); err != nil {
-		return 0, err
+		return err
 	}
-	counted, err := a.countLostAnswer(ctx, tx, item)
-	if err != nil {
-		return 0, err
+	// ⚠️ AFTER the candidate is recorded, never before: the candidate's meaning is
+	// "answered, closed, no record existed when it closed", and writing the record
+	// first would silently zero the metric rather than fix it. Both facts are true
+	// and both are worth keeping — the answer was lost, and this is why.
+	if err := a.countLostAnswer(ctx, tx, item); err != nil {
+		return err
 	}
-	// ⚠️ AFTER countLostAnswer, never before: the counter's meaning is "answered,
-	// closed, no record existed when it closed", and writing the record first
-	// would silently zero a metric rather than fix it. Both facts are true and
-	// both are worth keeping — the answer was lost, and this is why.
-	if err := a.recordCloseAttempt(ctx, tx, item, now); err != nil {
-		return 0, err
-	}
-	if counted {
-		return 1, nil
-	}
-	return 0, nil
+	return a.recordCloseAttempt(ctx, tx, item, now)
 }
 
 // recordCloseAttempt writes the terminal delivery record for an answered card
@@ -151,8 +140,8 @@ func (a *attentionStore) recordCloseAttempt(
 	return nil
 }
 
-// countLostAnswer records one lost answer when item is an answered item with no
-// delivery attempt ever recorded.
+// countLostAnswer records one lost-answer CANDIDATE when item is an answered
+// item with no delivery attempt ever recorded, and reports that it did so.
 //
 // The condition is "answered, closed, never attempted": AnsweredAt is what makes
 // it an answer rather than a clear, and the absence of an attempt record is what
@@ -160,41 +149,45 @@ func (a *attentionStore) recordCloseAttempt(
 // delivery arm looked, so it is not counted; the no-target hold path is a
 // separate mechanism, deliberately out of scope here.
 //
-// ⚠️ The count has two halves: the durable total, written here inside the same
-// transaction as the close, and the in-process Prometheus counter, which the
-// CALLER increments after the transaction commits (addLostAnswersTotal). The
-// durable half is what survives a restart — a bare Prometheus counter starts at
-// zero on every start, so goal SC3 could never read a week from it. Splitting
-// the halves across the commit boundary is what keeps them equal: an aborted
-// close rolls back both.
+// ⚠️ The verdict is NOT final here and the durable total is not moved. The
+// delivery arm keeps delivering an already-closed card and writes its attempt
+// record only after it has pushed the answer, so at close time a delivery can be
+// in flight and invisible. Measured 2026-11-18 on the live board: five of the 24
+// closes counted as lost had a `delivered` record written 22–560 ms after the
+// close. Nothing at close time separates those from a genuine loss, so this
+// writes a durable candidate and finalizeLostAnswers takes the verdict after
+// LostAnswerGrace, re-reading the attempt trail.
 //
 // ⚠️ Read the attempt inside the same transaction as the close. A read failure is
 // NOT a lost answer: counting it would report a condition nothing established, so
 // the failure is logged and the item is left uncounted.
 //
 // ⚠️ A failed durable write is returned, not swallowed: a close that committed
-// without its count would lose the fact forever. The transaction aborts, the item
-// stays answered, and the sweep retries on its next tick.
+// without its candidate would lose the fact forever. The transaction aborts, the
+// item stays answered, and the sweep retries on its next tick.
 func (a *attentionStore) countLostAnswer(
 	ctx context.Context,
 	tx libkv.Tx,
 	item *Item,
-) (bool, error) {
+) error {
 	if item.AnsweredAt == nil {
-		return false, nil
+		return nil
 	}
 	_, err := a.attempts.Get(ctx, tx, item.ItemID.String())
 	switch {
 	case err == nil:
-		return false, nil
+		return nil
 	case isNotFound(err):
-		if err := a.incrementLostAnswersTotal(ctx, tx); err != nil {
-			return false, errors.Wrap(ctx, err, "persist lost answers total failed")
+		if item.ClosedAt == nil {
+			return nil
 		}
-		return true, nil
+		if err := a.addPendingLostAnswer(ctx, tx, item.ItemID, *item.ClosedAt); err != nil {
+			return errors.Wrap(ctx, err, "persist pending lost answer failed")
+		}
+		return nil
 	default:
 		glog.Warningf("lost-answer check for item %s failed: %v", item.ItemID, err)
-		return false, nil
+		return nil
 	}
 }
 
