@@ -31,12 +31,13 @@ const EvidenceProbeTimeout = 10 * 1000 * 1000 * 1000 // 10s
 
 // MaxEvidenceProbesPerSweep bounds how many parked items one sweep probes.
 //
-// ⚠️ The sweep runs under its caller's deadline (30 s), and a probe can cost
-// EvidenceProbeTimeout, so probing every parked item in one tick can outrun that
-// budget and fail the apply pass — which would strand a parked card with its
-// deadline reopen never firing. A small batch per tick drains a backlog over a
-// few minutes and keeps every tick inside its bound.
-const MaxEvidenceProbesPerSweep = 4
+// ⚠️ The sweep runs under its caller's deadline (30 s) and a probe can cost
+// EvidenceProbeTimeout, so the batch is sized to stay inside it: two probes at
+// the 10 s cap are 20 s, leaving the rest of the budget for the read and the
+// apply write. Probing the whole parked set in one tick could outrun the budget
+// and fail the apply pass, stranding a parked card with its deadline reopen
+// never firing. A small batch per tick drains a backlog over a few minutes.
+const MaxEvidenceProbesPerSweep = 2
 
 // DoneClassPrefixes are the answer labels that assert the work is finished.
 //
@@ -216,8 +217,8 @@ func EvidenceObserved(ctx context.Context, claim string, run EvidenceRunner) boo
 			run = DefaultEvidenceRunner
 		}
 		// ⚠️ Bounded per probe, not only by the sweep's own deadline: the probe
-		// runs inside the store's write transaction, so one hung `gh` would hold
-		// the lock for the whole sweep budget instead of costing this claim alone.
+		// runs in the read-only pass, so one hung `gh` costs this claim rather than
+		// the whole sweep's budget.
 		ctx, cancel := context.WithTimeout(ctx, EvidenceProbeTimeout)
 		defer cancel()
 		out, err := run(ctx, "gh", "-R", owner+"/"+repo, "pr", "view", number, "--json", "state", "--jq", ".state")

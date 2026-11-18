@@ -16,18 +16,17 @@ import (
 // reopened card says why it is back.
 const EvidenceNote = "reopened: the work this answer claimed was not observed before the evidence deadline"
 
-// sweepAwaitingEvidence closes the items whose claimed artifact is now visible
-// and reopens the ones whose deadline passed without it.
-//
-// ⚠️ It runs inside SweepAnswered's transaction, beside the answered and
-// re-raise passes, so the three share one minute tick and one write lock. The
-// verification probe (a `gh` call) is the only slow step and it runs at most
-// once per parked item per tick.
 // evidenceVerdict is one parked item's probe result, computed OUTSIDE the write
 // transaction.
 type evidenceVerdict struct {
 	key      string
 	observed bool
+	// deadline is the deadline the item carried when it was probed. The apply
+	// pass re-checks it so a RE-ANSWER of the parked item during the probe
+	// window — which stamps a new deadline and possibly new claims — cannot be
+	// settled on the old claim's verdict. That would reintroduce the false
+	// `done` this whole path exists to prevent.
+	deadline *libtime.DateTime
 }
 
 // sweepAwaitingEvidence closes the items whose claimed artifact is now visible
@@ -66,8 +65,9 @@ func (a *attentionStore) sweepAwaitingEvidence(
 // write transaction open.
 func (a *attentionStore) evaluateParkedEvidence(ctx context.Context) ([]evidenceVerdict, error) {
 	type parked struct {
-		key    string
-		claims []string
+		key      string
+		claims   []string
+		deadline *libtime.DateTime
 	}
 	items := make([]parked, 0)
 	if err := a.db.View(ctx, func(ctx context.Context, tx libkv.Tx) error {
@@ -86,7 +86,11 @@ func (a *attentionStore) evaluateParkedEvidence(ctx context.Context) ([]evidence
 			if item.State != AwaitingEvidenceState {
 				continue
 			}
-			items = append(items, parked{key: key, claims: item.EvidenceClaims})
+			items = append(items, parked{
+				key:      key,
+				claims:   item.EvidenceClaims,
+				deadline: item.EvidenceDeadline,
+			})
 		}
 		return nil
 	}); err != nil {
@@ -100,6 +104,7 @@ func (a *attentionStore) evaluateParkedEvidence(ctx context.Context) ([]evidence
 		verdicts = append(verdicts, evidenceVerdict{
 			key:      item.key,
 			observed: EvidenceAllObserved(ctx, item.claims, a.evidenceRunner),
+			deadline: item.deadline,
 		})
 	}
 	return verdicts, nil
@@ -143,6 +148,13 @@ func (a *attentionStore) applyEvidenceVerdict(
 		return false, errors.Wrap(ctx, err, "get awaiting-evidence item failed")
 	}
 	if item.State != AwaitingEvidenceState {
+		return false, nil
+	}
+	// ⚠️ The item must be the one that was probed. A re-answer during the probe
+	// window stamps a new deadline (and possibly new claims), so settling it on
+	// the old verdict would close a card nobody verified — or reopen one the
+	// operator has just settled.
+	if !sameDeadline(item.EvidenceDeadline, verdict.deadline) {
 		return false, nil
 	}
 	if verdict.observed {
@@ -219,4 +231,13 @@ func appendNote(note string, line string) string {
 		return line
 	}
 	return note + "\n" + line
+}
+
+// sameDeadline reports whether two optional deadlines are the same instant,
+// treating both-nil as equal.
+func sameDeadline(a, b *libtime.DateTime) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return a.Time().Equal(b.Time())
 }
