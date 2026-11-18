@@ -141,7 +141,8 @@ install-bin:
 		if [ -f "$(INSTALL_BIN)" ] && \
 			[ "$$(go version -m "$(INSTALL_BIN)" | sed -n 's/.*vcs.revision=//p')" != \
 			  "$$(go version -m "$$stage" | sed -n 's/.*vcs.revision=//p')" ]; then \
-			cp -p "$(INSTALL_BIN)" "$(INSTALL_BIN).prev"; \
+			cp -p "$(INSTALL_BIN)" "$(INSTALL_BIN).prev.$$$$"; \
+			mv -f "$(INSTALL_BIN).prev.$$$$" "$(INSTALL_BIN).prev"; \
 			echo "retained previous binary: $(INSTALL_BIN).prev"; \
 		fi; \
 		mv -f "$$stage" "$(INSTALL_BIN)"

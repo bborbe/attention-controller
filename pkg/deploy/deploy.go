@@ -22,7 +22,6 @@ package deploy
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"time"
 
@@ -82,6 +81,13 @@ const (
 	// Exited is a process that is gone, with launchd's last exit code if it
 	// recorded one.
 	Exited FailureClass = "exited"
+
+	// StopFailed is a job launchd never let go of, so no new process was ever
+	// started. It is its own class because the two observables above would both
+	// lie here: launchd still reports the OLD pid, so `alive-no-listener` would
+	// send the operator to a consent pane for what is a launchctl problem, and
+	// `exited` would claim a crash that never happened.
+	StopFailed FailureClass = "stop-failed"
 )
 
 // Mode is which entry point drove the deploy. It reaches the log lines only —
@@ -113,6 +119,12 @@ const (
 	// RollbackFailed is a start that failed and left the board dark, either
 	// because no previous binary was retained or because that one failed too.
 	RollbackFailed
+
+	// Aborted is a deploy refused BEFORE anything was restarted, so the board is
+	// exactly as it was. It is a separate outcome because the exit code is the
+	// alerting signal: reporting `RollbackFailed` for it would fire a
+	// dark-board alarm for a deploy that never touched the running process.
+	Aborted
 )
 
 // ProcessStatus is what launchd says about the job right now.
@@ -200,43 +212,8 @@ type Driver struct {
 	Log io.Writer
 }
 
-// outcomeError carries an Outcome alongside the one-line reason.
-//
-// It exists so the command can map an outcome to an exit code without parsing
-// the message: a rolled-back deploy and a dark board are both non-zero exits but
-// they mean different things to whatever called the deploy.
-type outcomeError struct {
-	outcome Outcome
-	message string
-}
-
-// Error returns the one-line reason.
-//
-// ⚠️ The message must stay single-line: it is printed to stderr as the whole
-// signal for a dark board, and a multi-line error would turn one line into
-// several for no gain.
-func (e *outcomeError) Error() string {
-	return e.message
-}
-
-// Outcome returns the deploy's outcome.
-func (e *outcomeError) Outcome() Outcome {
-	return e.outcome
-}
-
-// newOutcomeError builds a classified error. Every failure the driver returns
-// after it has decided what happened goes through here, so the outcome and the
-// message can never disagree.
-func newOutcomeError(outcome Outcome, format string, args ...any) error {
-	return &outcomeError{outcome: outcome, message: fmt.Sprintf(format, args...)}
-}
-
-// OutcomeOf reads the Outcome an error carries, defaulting to RollbackFailed
-// for an error the driver did not classify — a gate that cannot say what
-// happened must never report the board as serving.
-func OutcomeOf(err error) Outcome {
-	if classified, ok := err.(*outcomeError); ok {
-		return classified.outcome
-	}
-	return RollbackFailed
-}
+// ⚠️ The outcome is Run's FIRST return value and the only source of truth for
+// the exit code. It is deliberately not derived from the error: an error carries
+// a message, not a class, so classifying one collapses every abort ("nothing was
+// touched") back to "board dark" — which is how the abort exit code silently
+// failed to fire the first time it was written.

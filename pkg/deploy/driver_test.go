@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -36,10 +37,14 @@ type fakeSupervisor struct {
 	stops      int
 	status     deploy.ProcessStatus
 	bootstrap  error
+	stopErrs   []error
 }
 
 func (s *fakeSupervisor) Stop(ctx context.Context) error {
 	s.stops++
+	if len(s.stopErrs) >= s.stops {
+		return s.stopErrs[s.stops-1]
+	}
 	return nil
 }
 
@@ -324,13 +329,87 @@ var _ = Describe("Driver", func() {
 			h.binary.installed = buildidentity.Identity{}
 		})
 
-		It("refuses to start it at all", func() {
+		It("refuses to start it at all, and reports the board untouched", func() {
+			outcome, err := h.driver.Run(context.Background())
+
+			Expect(err).NotTo(BeNil())
+			// Aborted, not RollbackFailed: nothing was restarted, so the board is
+			// exactly as it was and a dark-board alarm would be false.
+			Expect(outcome).To(Equal(deploy.Aborted))
+			Expect(err.Error()).To(ContainSubstring(deploy.UnstampedCommit))
+			Expect(h.supervisor.bootstraps).To(Equal(0))
+			Expect(h.board.posted()).To(BeEmpty())
+		})
+	})
+
+	Context("a previous binary that carries no build identity", func() {
+		BeforeEach(func() {
+			h.binary.previous = buildidentity.Identity{}
+		})
+
+		It("refuses the rollback instead of claiming an unnamed build serves", func() {
 			outcome, err := h.driver.Run(context.Background())
 
 			Expect(err).NotTo(BeNil())
 			Expect(outcome).To(Equal(deploy.RollbackFailed))
-			Expect(err.Error()).To(ContainSubstring(deploy.UnstampedCommit))
-			Expect(h.supervisor.bootstraps).To(Equal(0))
+			Expect(err.Error()).To(ContainSubstring("prev has no build identity"))
+			Expect(restored).To(BeFalse(), "an unprovable prev must not be swapped in")
+			Expect(h.board.posted()).To(BeEmpty())
+		})
+	})
+
+	Context("a job launchd never releases", func() {
+		BeforeEach(func() {
+			h.supervisor.stopErrs = []error{errors.New("bootout did not finish")}
+			// The old process still answers — that is what makes this an abort
+			// rather than a dark board.
+			h.prober.result = deploy.ProbeResult{Ready: true, ServingCommit: prevCommit}
+		})
+
+		It("aborts without reverting and posts no consent literal", func() {
+			outcome, err := h.driver.Run(context.Background())
+
+			Expect(err).NotTo(BeNil())
+			Expect(outcome).To(Equal(deploy.Aborted))
+			Expect(h.supervisor.bootstraps).To(Equal(0), "nothing was started")
+			Expect(restored).To(BeFalse(), "nothing was replaced, so nothing is reverted")
+
+			cards := h.board.posted()
+			Expect(cards).To(HaveLen(1))
+			Expect(cards[0].Payload.String()).NotTo(ContainSubstring(deploy.ConsentAction))
+			Expect(cards[0].Payload.String()).To(ContainSubstring("did not stop the running job"))
+			Expect(cards[0].Context.String()).To(ContainSubstring("Nothing was rolled back"))
+		})
+
+		// The probe is the difference between "nothing happened" and "the board
+		// is down": a cancel inside the bootout wait lands after launchd may
+		// already have let the job go.
+		It("reports a dark board when nothing answers, not an untouched one", func() {
+			h.prober.result = deploy.ProbeResult{Detail: "connection refused"}
+
+			outcome, err := h.driver.Run(context.Background())
+
+			Expect(err).NotTo(BeNil())
+			Expect(outcome).To(Equal(deploy.RollbackFailed))
+			Expect(err.Error()).To(ContainSubstring("board does not answer"))
+			Expect(h.board.posted()).To(BeEmpty())
+		})
+	})
+
+	Context("a rollback whose restart cannot stop the job", func() {
+		BeforeEach(func() {
+			// First stop succeeds (the failed start), the rollback's does not.
+			h.supervisor.stopErrs = []error{nil, errors.New("bootout did not finish")}
+		})
+
+		It("reports a dark board and names both commits", func() {
+			outcome, err := h.driver.Run(context.Background())
+
+			Expect(err).NotTo(BeNil())
+			Expect(outcome).To(Equal(deploy.RollbackFailed))
+			Expect(err.Error()).To(ContainSubstring(failedCommit))
+			Expect(err.Error()).To(ContainSubstring(prevCommit))
+			Expect(err.Error()).To(ContainSubstring("restart for rollback failed"))
 			Expect(h.board.posted()).To(BeEmpty())
 		})
 	})
@@ -347,7 +426,6 @@ var _ = Describe("Driver", func() {
 
 			Expect(err).NotTo(BeNil())
 			Expect(outcome).To(Equal(deploy.RolledBack))
-			Expect(deploy.OutcomeOf(err)).To(Equal(deploy.RolledBack))
 		})
 
 		It("agree on a dark board", func() {
@@ -357,7 +435,6 @@ var _ = Describe("Driver", func() {
 
 			Expect(err).NotTo(BeNil())
 			Expect(outcome).To(Equal(deploy.RollbackFailed))
-			Expect(deploy.OutcomeOf(err)).To(Equal(deploy.RollbackFailed))
 		})
 	})
 })
