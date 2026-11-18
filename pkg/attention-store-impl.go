@@ -1146,6 +1146,20 @@ func (a *attentionStore) Answer(
 		if err := item.validateAnswers(ctx); err != nil {
 			return errors.Wrap(ctx, err, "validate answers failed")
 		}
+		// ⚠️ A `done`-class answer is a CLAIM, not a fact. The answer is stamped
+		// exactly as above — it arrived, and its content is the operator's — but
+		// the item does not become `answered`, which reads as satisfied. It parks
+		// in `awaiting_evidence` carrying the artifact the answer named, and the
+		// sweep moves it on: closed as answered once that artifact is observed,
+		// reopened on the board when the deadline passes without it.
+		//
+		// Measured 2026-11-13: `done — reviewed and flipped both` closed a card
+		// while both PRs it named were still OPEN drafts with unchanged heads.
+		if IsDoneClassAnswer(answer) {
+			item.State = AwaitingEvidenceState
+			item.EvidenceClaim = EvidenceClaimFromText(AnswerText(answer))
+			item.EvidenceDeadline = NewEvidenceDeadline(now)
+		}
 		if err := a.putItem(ctx, tx, *item); err != nil {
 			return errors.Wrap(ctx, err, "update item failed")
 		}
@@ -1545,6 +1559,15 @@ func (a *attentionStore) SweepAnswered(
 		}
 		closed += reraises
 		lostAnswers += reraisesLostAnswers
+		// ⚠️ Third pass: a `done`-class answer parked the item in
+		// `awaiting_evidence`. It closes here once the artifact the answer named
+		// is observed, and reopens on the board when the deadline passes without
+		// it — see attention-store-evidence.go.
+		verified, err := a.sweepAwaitingEvidence(ctx, tx, a.currentDateTimeGetter.Now())
+		if err != nil {
+			return err
+		}
+		closed += verified
 		return nil
 	})
 	if err != nil {
