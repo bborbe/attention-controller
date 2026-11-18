@@ -6,11 +6,13 @@ package attnlog
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/bborbe/errors"
 	"github.com/golang/glog"
 )
 
@@ -159,20 +161,32 @@ func appendEvent(stateDir, sessionID string, record any) {
 
 // appendStateLine appends one JSON object as a line to a file in the state dir.
 // It is the shared body of appendEvent and the global suppression log.
+//
+// It is the fail-open wrapper the hook path needs: a hook must exit 0 whatever
+// the filesystem does. Callers that need the failure — the store's expiry
+// closer, whose whole point is that the line lands — use appendStateLineErr.
 func appendStateLine(stateDir, name string, record any) {
+	// ⚠️ The hook path carries no context: `Handle(io.Reader)` is a one-shot CLI
+	// call that must finish whatever happens, so cancellation has nothing to
+	// honour here. This is the one place a background context is correct.
+	if err := appendStateLineErr(context.Background(), stateDir, name, record); err != nil {
+		glog.V(3).Infof("attention-log: append %s failed: %v", name, err)
+	}
+}
+
+// appendStateLineErr appends one JSON object as a line to a file in the state
+// dir and returns what went wrong instead of logging it.
+func appendStateLineErr(ctx context.Context, stateDir, name string, record any) error {
 	body, err := marshalJSON(record)
 	if err != nil {
-		glog.V(3).Infof("attention-log: marshal event failed: %v", err)
-		return
+		return errors.Wrap(ctx, err, "marshal event failed")
 	}
 	if err := os.MkdirAll(stateDir, 0o750); err != nil {
-		glog.V(3).Infof("attention-log: create state dir failed: %v", err)
-		return
+		return errors.Wrap(ctx, err, "create state dir failed")
 	}
 	root, err := os.OpenRoot(stateDir)
 	if err != nil {
-		glog.V(3).Infof("attention-log: open state dir failed: %v", err)
-		return
+		return errors.Wrap(ctx, err, "open state dir failed")
 	}
 	defer root.Close()
 	file, err := root.OpenFile(
@@ -181,13 +195,13 @@ func appendStateLine(stateDir, name string, record any) {
 		0o600,
 	)
 	if err != nil {
-		glog.V(3).Infof("attention-log: open event log failed: %v", err)
-		return
+		return errors.Wrap(ctx, err, "open event log failed")
 	}
 	defer file.Close()
 	if _, err := file.Write(body); err != nil {
-		glog.V(3).Infof("attention-log: append event failed: %v", err)
+		return errors.Wrap(ctx, err, "append event failed")
 	}
+	return nil
 }
 
 // writeJSONAtomic writes v through a temp file and a rename, so a reader never

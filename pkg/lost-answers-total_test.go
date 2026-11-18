@@ -53,7 +53,7 @@ var _ = Describe("Lost-answer total across a restart", func() {
 			liveness,
 			clock,
 			heartbeatWindow,
-			counter,
+			pkg.WithLostAnswers(counter),
 		)
 	}
 
