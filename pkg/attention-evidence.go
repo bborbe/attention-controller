@@ -181,6 +181,12 @@ type EvidenceRunner func(ctx context.Context, name string, args ...string) (stri
 // DefaultEvidenceRunner runs the probe on this machine.
 func DefaultEvidenceRunner(ctx context.Context, name string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
+	// ⚠️ WaitDelay bounds the CALL, not just the process: if `gh` leaves a
+	// descendant holding the inherited stdout pipe, Output() blocks until that
+	// descendant exits even after the context killed `gh` — and this probe runs
+	// inside the store's write transaction. Same shape and same fix as
+	// pane-lister.go.
+	cmd.WaitDelay = EvidenceProbeTimeout
 	out, err := cmd.Output()
 	return strings.TrimSpace(string(out)), err
 }

@@ -153,6 +153,12 @@ var _ = Describe("Evidence-backed close", func() {
 		Expect(got.State).To(Equal(OpenState))
 		Expect(got.EvidenceDeadline).To(BeNil())
 		Expect(got.EvidenceClaims).NotTo(BeEmpty(), "the claim survives so the card can say what it waits for")
+		// The card must actually reappear: a leftover answer stamp keeps the ask
+		// in the durable answered index, which makes the board suppress the
+		// reopened card and the re-raise sweep close it.
+		Expect(got.AnsweredAt).To(BeNil(), "a reopened card is not answered")
+		Expect(got.AnsweredBy).To(BeEmpty())
+		Expect(got.Answer).To(BeNil())
 		Expect(string(got.Context)).To(ContainSubstring(EvidenceNote))
 	})
 

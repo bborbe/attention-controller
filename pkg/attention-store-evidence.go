@@ -105,6 +105,19 @@ func (a *attentionStore) sweepOneAwaitingEvidence(
 	// verify is a question the operator still has to settle.
 	item.State = OpenState
 	item.EvidenceDeadline = nil
+	// ⚠️ The answer stamps MUST be cleared, or the reopened card never reaches
+	// the board. `answeredIndexWorthy` is `AnsweredAt != nil`, so a reopened item
+	// that kept its stamp stays in the durable answered index; `suppressAnsweredTwins`
+	// then drops the now-open card from the board and `closeRedundantReraises`
+	// closes it as an answered twin. The reopen would be invisible — the exact
+	// failure this state exists to make visible.
+	item.AnsweredAt = nil
+	item.AnsweredBy = ""
+	item.AnsweredClient = nil
+	item.ResolvedBy = ""
+	item.Decision = ""
+	item.Answer = nil
+	item.Answers = nil
 	item.Context = ItemContext(appendNote(string(item.Context), EvidenceNote))
 	if err := a.putItem(ctx, tx, *item); err != nil {
 		return false, errors.Wrap(ctx, err, "reopen unverified item failed")
