@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- fix: **`make precommit`'s `format` step no longer spawns ~640 `goimports` processes.** `golines` selects its base formatter by looking `goimports` up on `PATH` and silently prefers it over `gofmt` (`shortener.go` `NewShortener`), then runs it as a subprocess twice per file — once before shortening and once after (`formatSrc`). Across this tree's 321 Go files that is ~642 `go run`-spawned `goimports` children, each burning 400–850 % CPU for seconds, so the step measured 45 s at load 20 and 52 min (killed) at load 331. The `format` target now passes `--base-formatter=gofmt`, which keeps base formatting in-process via `go/format`; `goimports-reviser` earlier in the same target and `gofmt` at its end already cover imports and the final formatting. Output is byte-identical: old and new pipelines produce a zero-diff tree from the same `6b9e3ab` source, while `format` drops from 45.05 s to 8.38 s (sys 319 s → 11 s).
+
 ## v0.95.1
 
 - fix: **the five-minute delivery bound now marks a card that was refused before its retry loop started.** `markUndeliverableIfOverdue` suppressed its `action=undeliverable` marker whenever ANY attempt existed at or after the answer. A `refuse` records a FailedOutcome at the moment of answering — before the loop begins — so the guard compared every retry against an attempt that predated the loop it was meant to bound, and the bound never fired. Measured 2026-11-17 on card `f1b46ed9…`: refused 0.4 s after its answer, then five retries over 1216 s (four times the bound) with no marker at all, while a card refused and then delivered (`aaae53dd…`) marked correctly. The marker now writes under its own carrier, `watcher:attention-watcher:undeliverable`, so "already marked" is answered from the trail instead of inferred from the presence of an attempt; the early return still prevents re-marking an answer that was genuinely surfaced.
