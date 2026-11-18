@@ -230,11 +230,9 @@ func ResolveRoutineBashClassifier(setting string) string {
 
 // NewDefaultRoutinePolicy builds the settle arm's production policy from the
 // classifier setting: the workspace Read rule always, the Bash rule when the
-// setting resolves to an existing classifier.
-func NewDefaultRoutinePolicy(
-	setting string,
-	currentDateTimeGetter libtime.CurrentDateTimeGetter,
-) RoutinePolicy {
+// setting resolves to an existing classifier. The verdict cache expires on the
+// wall clock, the same clock the settle arm's hold interval reads.
+func NewDefaultRoutinePolicy(setting string) RoutinePolicy {
 	path := ResolveRoutineBashClassifier(setting)
 	if path == "" {
 		return NewRoutinePolicy(nil)
@@ -248,7 +246,7 @@ func NewDefaultRoutinePolicy(
 				path,
 				RoutineBashClassifierTimeout,
 			),
-			currentDateTimeGetter,
+			libtime.NewCurrentDateTime(),
 		),
 	)
 }

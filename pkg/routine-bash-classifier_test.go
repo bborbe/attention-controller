@@ -685,7 +685,7 @@ var _ = Describe("default routine policy", func() {
 	It("disables the Bash rule with one startup warning when the default is missing", func() {
 		var policy pkg.RoutinePolicy
 		output := captureGlog(func() {
-			policy = pkg.NewDefaultRoutinePolicy("", clock)
+			policy = pkg.NewDefaultRoutinePolicy("")
 		})
 		Expect(strings.Count(output, "action=routine_bash_classifier_disabled")).To(Equal(1))
 		settle(policy)
@@ -703,13 +703,13 @@ var _ = Describe("default routine policy", func() {
 		}}})
 		Expect(err).NotTo(HaveOccurred())
 		wrapper.session.Question.Raw = raw
-		settle(pkg.NewDefaultRoutinePolicy("", clock))
+		settle(pkg.NewDefaultRoutinePolicy(""))
 		Expect(wrapper.answered).To(Equal([]string{bashSessionID + ":allow"}))
 	})
 
 	It("answers an allowlist Bash gate through the default path", func() {
 		writeDefaultClassifier("allowlist")
-		settle(pkg.NewDefaultRoutinePolicy("", clock))
+		settle(pkg.NewDefaultRoutinePolicy(""))
 		Expect(markerLines(marker)).To(Equal(1))
 		Expect(wrapper.answered).To(Equal([]string{bashSessionID + ":allow"}))
 		_, _, _, outcome := store.RecordAttemptArgsForCall(0)
@@ -718,7 +718,7 @@ var _ = Describe("default routine policy", func() {
 
 	It("runs the classifier with python's isolated mode", func() {
 		writeDefaultClassifier("allowlist")
-		settle(pkg.NewDefaultRoutinePolicy("", clock))
+		settle(pkg.NewDefaultRoutinePolicy(""))
 		Expect(os.ReadFile(isolatedFile())).To(Equal([]byte("1")))
 	})
 
@@ -726,7 +726,7 @@ var _ = Describe("default routine policy", func() {
 	DescribeTable("rolls back to today's record without starting a process",
 		func(setting func() string) {
 			writeDefaultClassifier("allowlist")
-			settle(pkg.NewDefaultRoutinePolicy(setting(), clock))
+			settle(pkg.NewDefaultRoutinePolicy(setting()))
 			Expect(marker).NotTo(BeAnExistingFile())
 			Expect(wrapper.answered).To(BeEmpty())
 			Expect(store.RecordAttemptCallCount()).To(Equal(1))

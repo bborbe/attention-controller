@@ -101,10 +101,7 @@ type application struct {
 	// process this one does not own.
 	AttentionWrapperURL string `required:"false" arg:"attention-wrapper-url" env:"ATTENTION_WRAPPER_URL" usage:"claude-wrapper base URL the routine-gate settle arm answers through (empty disables that arm)" default:"http://127.0.0.1:18090"`
 
-	// AttentionRoutineBashClassifier is the permission classifier the settle
-	// arm's Bash rule runs. Empty resolves to claude-supervisor's marketplace
-	// clone; `off` — or a path that does not exist at startup — disables the Bash
-	// rule, which is the rollback.
+	// AttentionRoutineBashClassifier is the settle arm's Bash classifier; `off` or a missing path is the rollback.
 	AttentionRoutineBashClassifier string `required:"false" arg:"attention-routine-bash-classifier" env:"ATTENTION_ROUTINE_BASH_CLASSIFIER" usage:"permission-tier.py the routine-gate settle arm rates Bash gates with ('off' disables the Bash rule; empty resolves to ~/.claude/plugins/marketplaces/claude-supervisor/scripts/permission-tier.py)"`
 
 	// AttentionContextDir is the statusline context-state directory the crossing
@@ -1498,16 +1495,13 @@ func (a *application) addAttentionWatcherJobs(
 	// refusing to boot over it would take the board down for a job with nothing
 	// to do.
 	if a.AttentionWrapperURL != "" {
-		// One clock for the policy's verdict cache and the arm's hold interval:
-		// both expire on RoutineGateHoldRepeatInterval.
-		settleClock := libtime.NewCurrentDateTime()
 		runner.Add(ctx, pkg.NewRoutineGateSettleJob(
 			store,
 			wrapper,
-			pkg.NewDefaultRoutinePolicy(a.AttentionRoutineBashClassifier, settleClock),
+			pkg.NewDefaultRoutinePolicy(a.AttentionRoutineBashClassifier),
 			writer,
 			pkg.RoutineGateSettleInterval,
-			settleClock,
+			libtime.NewCurrentDateTime(),
 			pkg.WithRoutineGateSettleSignaller(signaller),
 		).Run)
 	}
