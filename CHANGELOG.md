@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.96.0
 
 - feat: add `pkg/attnlog` and `cmd/attention-log-event`, a compiled replacement for the `attention-log.py` hook that writes the attention event store for `PreToolUse`, `PostToolUse`, `PostToolUseFailure` and `SessionEnd`; it ports `redact`/`scrub_detail` as distinct functions, the `EventItemID` dedup key, the `.events.jsonl`/`.open.json`/`.tool.json` store shapes, `close_open`'s fail-open tool rules and the answer-marker attribution, exits 0 on malformed input, and spawns no Python interpreter. A parity harness in `hack/attnlog-parity` deep-equals its records against a reference writer.
 - feat: add the gate path to `pkg/attnlog` — `PermissionRequest` and `Notification` open permission, question or idle items, `AskUserQuestion` opens a question item from either `PermissionRequest` or `PreToolUse`, a different ask supersedes the prior item with `closed_by:"SupersededByNewItem"`, and a repeated ask folds instead of duplicating. Question items carry `options`/`answer_cardinality` (single question) or `questions` (multi), option labels lose their `(Recommended)` marker under the cardinality-aware first-only rule, and `owned_pane` proves pane ownership by title against the session registry via an injected `attnlog.PaneLister` (`pkg/attnlogpanes` reads `wezterm cli list`), paid only when an item opens.
