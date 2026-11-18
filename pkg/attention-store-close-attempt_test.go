@@ -88,7 +88,7 @@ var _ = Describe("AttentionStore close-path delivery record", func() {
 			liveness,
 			clock,
 			heartbeatWindow,
-			&countingLostAnswers{},
+			pkg.WithLostAnswers(&countingLostAnswers{}),
 		)
 	})
 

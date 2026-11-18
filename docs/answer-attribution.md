@@ -1,8 +1,13 @@
 # Answer attribution
 
 This page is the in-repo copy of the answer-attribution ladder. Its source is
-`bborbe/claude-supervisor`'s `scripts/answered-attribution.py`, whose `classify(item)`
-returns `(verdict, reason)`. The Go port lives in `pkg/answered-signal.go` and is
+`bborbe/claude-supervisor`'s `scripts/answered-attribution.py` at commit
+`2fdfc1a394089b5b36f17b54b1cec0178f03d728`, whose `classify(item)`
+returns `(verdict, reason)`. ⚠️ **The commit is pinned deliberately.** The source is not
+vendored, so without a pin a future upstream change would drift this page and the Go port
+silently, with nothing in this repo able to detect it. Re-derive the pin (and re-check the
+ladder row for row) whenever the source moves; if the two disagree, the source wins and the
+disagreement is a finding to report. The Go port lives in `pkg/answered-signal.go` and is
 **implemented from this contract; do not redefine it here.** If this page and the
 source disagree, the source wins and the disagreement is a finding to report.
 

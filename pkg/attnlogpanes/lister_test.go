@@ -32,6 +32,14 @@ var _ = Describe("lister", func() {
 	})
 
 	It("fails when no wezterm binary resolves", func() {
+		// ⚠️ Emptying PATH alone is not enough: binaryCandidates also carries the
+		// absolute macOS app-bundle path, which resolves on any machine with
+		// WezTerm installed — every developer machine. The spec therefore
+		// overrides the list, so it exercises the not-found branch wherever it
+		// runs instead of passing only on a host with no WezTerm at all.
+		original := binaryCandidates
+		binaryCandidates = []string{"no-such-wezterm-binary-for-this-spec"}
+		DeferCleanup(func() { binaryCandidates = original })
 		dir := GinkgoT().TempDir()
 		GinkgoT().Setenv("PATH", dir)
 		_, err := resolveBinary()

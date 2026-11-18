@@ -1,8 +1,13 @@
 ---
-status: approved
+status: completed
 spec: [020-answered-signal-folded-into-delivery-arm]
+summary: Ported the answer-attribution ladder to pkg/answered-signal.go with a ten-row committed vector fixture, six Ginkgo specs, and docs/answer-attribution.md, plus a CHANGELOG entry; make precommit passed.
+execution_id: 320aab09-d524-5370-b349-d02209b39707-exec-057-spec-020-attribution-port
+dark-factory-version: dev
 created: "2026-11-18T07:36:43Z"
 queued: "2026-11-18T08:54:12Z"
+started: "2026-11-18T08:57:07Z"
+completed: "2026-11-18T09:18:04Z"
 ---
 
 # Port the answer-attribution ladder to Go with its vectors and contract doc

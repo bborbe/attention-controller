@@ -29,6 +29,7 @@ import (
 	bolt "go.etcd.io/bbolt"
 
 	"github.com/bborbe/attention-controller/pkg"
+	"github.com/bborbe/attention-controller/pkg/attnlog"
 	"github.com/bborbe/attention-controller/pkg/boardmetrics"
 	"github.com/bborbe/attention-controller/pkg/buildidentity"
 	"github.com/bborbe/attention-controller/pkg/factory"
@@ -492,13 +493,33 @@ func (a *application) createAttentionStore(
 	if err != nil {
 		return nil, errors.Wrapf(ctx, err, "parse heartbeat window '%s' failed", a.HeartbeatWindow)
 	}
+	options := []pkg.AttentionStoreOption{pkg.WithLostAnswers(lostAnswers)}
+	// ⚠️ The expiry closer writes into the same event log the producers write,
+	// so a fold replaying that log stops reporting a pruned item open. It is
+	// attached only when a state dir resolves: with none, the store keeps its
+	// pre-fix behaviour (delete the row, write no event) rather than failing
+	// every prune on an empty path.
+	stateDir := a.AttentionStateDir
+	if stateDir == "" {
+		resolved, resolveErr := defaultAttentionStateDir(ctx)
+		if resolveErr != nil {
+			glog.Warningf("resolve attention state dir failed: %v", resolveErr)
+		}
+		stateDir = resolved
+	}
+	if stateDir != "" {
+		options = append(
+			options,
+			pkg.WithExpiryCloseWriter(attnlog.NewExpiryCloseWriter(stateDir)),
+		)
+	}
 	return pkg.NewAttentionStore(
 		db,
 		pkg.NewItemIDGenerator(),
 		livenessChecker,
 		libtime.NewCurrentDateTime(),
 		*heartbeatWindow,
-		lostAnswers,
+		options...,
 	), nil
 }
 
