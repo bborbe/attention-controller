@@ -271,10 +271,18 @@ func (a *attentionStore) probeWithinBudget(
 		if cost == 0 {
 			cost = 1
 		}
-		if cost > budget {
+		// ⚠️ Always probe at least ONE item, even when its claim count exceeds the
+		// whole budget. Breaking here stranded any item with three or more claims
+		// — it could never be probed, so it was never closed on an observed claim
+		// and never reopened at its deadline. One item per tick is progress; the
+		// sweep's own context still bounds the time.
+		if len(verdicts) > 0 && cost > budget {
 			break
 		}
 		budget -= cost
+		if budget < 0 {
+			budget = 0
+		}
 		verdicts = append(verdicts, evidenceVerdict{
 			key:      item.key,
 			observed: EvidenceAllObserved(ctx, item.claims, a.evidenceRunner),

@@ -332,4 +332,33 @@ var _ = Describe("Evidence-backed close", func() {
 
 		Expect(item.State).NotTo(Equal(AwaitingEvidenceState))
 	})
+
+	// The starvation finding, pinned: an item with more claims than the whole
+	// budget must still be probed, or it can never be closed or reopened.
+	It("probes an item whose claim count exceeds the sweep budget", func() {
+		item := pushQuestion()
+		answerWith(item.ItemID, &Answer{
+			Kind:  TextAnswerKind,
+			Value: "done https://github.com/o/r/pull/1 https://github.com/o/r/pull/2 https://github.com/o/r/pull/3",
+		})
+		parked, err := store.Get(ctx, item.ItemID)
+		Expect(err).To(BeNil())
+		Expect(parked.EvidenceClaims).To(HaveLen(3))
+
+		original := store.evidenceRunner
+		DeferCleanup(func() { store.evidenceRunner = original })
+		probes := 0
+		store.evidenceRunner = func(ctx context.Context, name string, args ...string) (string, error) {
+			probes++
+			return "MERGED", nil
+		}
+
+		_, err = store.SweepAnswered(ctx, libtime.Duration(15*60*1e9))
+		Expect(err).To(BeNil())
+		Expect(probes).To(BeNumerically(">=", 3), "every claim of the first item is probed")
+
+		got, err := store.Get(ctx, item.ItemID)
+		Expect(err).To(BeNil())
+		Expect(got.State).To(Equal(AnsweredState))
+	})
 })
