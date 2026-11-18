@@ -74,6 +74,10 @@ type PaneDelivery struct {
 	Pane int
 	// StoreItemID is the store id the answer must name.
 	StoreItemID string
+	// AnswerMechanism is the item's answer mechanism, carried so the no-pane
+	// verdict can tell a permission gate (which resolves when its turn ends)
+	// from a question (whose answer is genuinely undelivered).
+	AnswerMechanism AnswerMechanism
 	// PendingLine is the exact line already typed into the pane, or "".
 	PendingLine string
 	// PendingAt is the transcript byte mark taken before that line was typed.
@@ -360,8 +364,8 @@ func (c *paneCarrier) resolveDeliveryPane(
 ) (DeliveryVerdict, int, string) {
 	want := c.writer.SessionTTY(ctx, delivery.SessionID)
 	if want == "" {
-		return c.noPaneVerdict(ctx, delivery.SessionID, "session "+shortID(delivery.SessionID)+
-			" has no live process with a tty")
+		return c.noPaneVerdict(ctx, delivery.SessionID, delivery.AnswerMechanism,
+			"session "+shortID(delivery.SessionID)+" has no live process with a tty")
 	}
 	if delivery.Pane > 0 && c.writer.PaneTTY(ctx, delivery.Pane) == want {
 		return DeliveryOK, delivery.Pane, "ok"
@@ -394,6 +398,7 @@ func (c *paneCarrier) resolveDeliveryPane(
 func (c *paneCarrier) noPaneVerdict(
 	ctx context.Context,
 	sessionID string,
+	mechanism AnswerMechanism,
 	reason string,
 ) (DeliveryVerdict, int, string) {
 	entry, ok := c.writer.SessionEntry(ctx, sessionID)
@@ -408,7 +413,23 @@ func (c *paneCarrier) noPaneVerdict(
 		return DeliveryNoPane, 0,
 			"session " + shortID(sessionID) + " is pane-less and its process exited — resumable"
 	}
-	if ok && !processAlive(entry.PID) && c.transcripts.TurnEnded(sessionID) {
+	// ⚠️ The turn-end check must NOT require the registry record. The record is
+	// deleted on exit, so a normally-exited session arrives here with ok=false —
+	// exactly the population a turn-end record exists to classify. Requiring ok
+	// left the check unreachable for that population and fell through to the
+	// false "has no live process with a tty" card. A missing record counts as
+	// dead, as it did in the Python watcher.
+	dead := !ok || !processAlive(entry.PID)
+	if dead && c.transcripts.TurnEnded(sessionID) {
+		// A permission gate holds its turn open, so a turn-end after it proves
+		// the gate closed inside the turn: there is nothing left to answer, and
+		// the card this used to mint said the session was dead. A question is
+		// different — its answer really was not delivered — so it keeps a card.
+		if mechanism == PermissionAnswerMechanism {
+			return DeliveryResolved, 0,
+				"session " + shortID(sessionID) +
+					" ended its turn — its permission gate closed inside the turn"
+		}
 		return DeliveryRefuse, 0,
 			"session " + shortID(
 				sessionID,

@@ -604,7 +604,11 @@ func (j *menuAnswerJob) deliver(
 	}
 	// Pane 0 makes the locator resolve the pane from the session's own tty,
 	// which is the correct path for a card whose recorded pane was never ours.
-	delivery := &PaneDelivery{SessionID: sessionID, StoreItemID: string(item.ItemID)}
+	delivery := &PaneDelivery{
+		SessionID:       sessionID,
+		StoreItemID:     string(item.ItemID),
+		AnswerMechanism: item.AnswerMechanism,
+	}
 	verdict, pane, reason := j.locator.Locate(ctx, delivery)
 	if verdict != DeliveryOK {
 		switch verdict {
@@ -726,6 +730,15 @@ func (j *menuAnswerJob) retry(
 }
 
 // settle records the card's terminal outcome and stops any further cycles.
+//
+// ⚠️ The card is marked done only AFTER the record is on disk. Marking first and
+// then swallowing a failed write lost the record for the rest of the process's
+// life: the read surface derives `never_attempted` from the record's ABSENCE, so
+// a delivered answer whose write failed read as one no arm ever looked at, while
+// this arm had already stopped looking. The Python watcher pinned the same rule
+// (`test_attention_watcher_no_target.py`, "a failed record write leaves the card
+// unmarked for retry"). Re-entering settle is safe: nothing is typed here, and
+// the typing itself is guarded by progress.typed.
 func (j *menuAnswerJob) settle(
 	ctx context.Context,
 	item Item,
@@ -733,6 +746,9 @@ func (j *menuAnswerJob) settle(
 	outcome DeliveryOutcome,
 	reason string,
 ) {
+	if !j.recordAttempt(ctx, item, outcome) {
+		return
+	}
 	progress.done = true
 	glog.V(2).Infof(
 		"job=attention-watcher action=menu item=%s verdict=%s reason=%q",
@@ -740,7 +756,6 @@ func (j *menuAnswerJob) settle(
 		outcome,
 		reason,
 	)
-	j.recordAttempt(ctx, item, outcome)
 	// Signal only for a delivered card, and only after the delivered outcome is
 	// on record. The held outcome written for a card handled elsewhere never
 	// signals.
@@ -906,14 +921,15 @@ func describeKeys(keys []string) string {
 	return strings.Join(parts, "/")
 }
 
-// recordAttempt writes the trail entry, logging rather than failing: the keys
-// have already been sent, and a missing trail entry must not read as a failed
-// delivery.
+// recordAttempt writes the trail entry, reporting whether it was written: the
+// keys have already been sent, and a missing trail entry must not read as a
+// failed delivery — but it must not read as a written record either, which is
+// what settle keys the card's terminal marker on.
 func (j *menuAnswerJob) recordAttempt(
 	ctx context.Context,
 	item Item,
 	outcome DeliveryOutcome,
-) {
+) bool {
 	if _, err := j.store.RecordAttempt(ctx, item.ItemID, attentionWatcherCarrier, outcome); err != nil {
 		glog.Warningf(
 			"job=attention-watcher action=menu_attempt_error item=%s outcome=%s error=%v",
@@ -921,7 +937,9 @@ func (j *menuAnswerJob) recordAttempt(
 			outcome,
 			err,
 		)
+		return false
 	}
+	return true
 }
 
 // Compile-time guard: the job must satisfy its own interface.

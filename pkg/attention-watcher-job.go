@@ -363,7 +363,11 @@ func (j *attentionWatcherJob) deliver(
 	}
 	// Pane 0 makes the carrier resolve the pane from the session's own tty,
 	// which is the correct path for a card whose recorded pane was never ours.
-	delivery := &PaneDelivery{SessionID: sessionID, StoreItemID: string(item.ItemID)}
+	delivery := &PaneDelivery{
+		SessionID:       sessionID,
+		StoreItemID:     string(item.ItemID),
+		AnswerMechanism: item.AnswerMechanism,
+	}
 	verdict, reason := j.carrier.TypeIntoPane(ctx, delivery, text, false)
 	glog.V(2).Infof(
 		"job=attention-watcher action=deliver item=%s verdict=%s reason=%q",

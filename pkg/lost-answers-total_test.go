@@ -42,7 +42,14 @@ var _ = Describe("Lost-answer total across a restart", func() {
 	var dataDir string
 	var clock libtime.CurrentDateTime
 
-	const heartbeatWindow = libtime.Duration(15 * 60 * 1e9)
+	const (
+		heartbeatWindow = libtime.Duration(15 * 60 * 1e9)
+		// twoHours keeps the sweep's max-age close out of these specs: every item
+		// here is already closed, and the pass exists only to settle candidates.
+		twoHours = libtime.Duration(2 * 60 * 60 * 1e9)
+		// pastGrace is comfortably beyond pkg.LostAnswerGrace (2 min).
+		pastGrace = libtime.Duration(3 * 60 * 1e9)
+	)
 
 	newStore := func(counter pkg.LostAnswerCounter) pkg.AttentionStore {
 		liveness := &mocks.SessionLivenessChecker{}
@@ -58,7 +65,7 @@ var _ = Describe("Lost-answer total across a restart", func() {
 	}
 
 	// answerAndClose pushes, answers, then closes an item with no delivery
-	// attempt — the lost-answer shape.
+	// attempt — the lost-answer candidate shape.
 	answerAndClose := func(store pkg.AttentionStore, producer, dedup string) {
 		item, err := store.Push(ctx, pkg.PushRequest{
 			ProducerID:      pkg.ProducerID(producer),
@@ -73,6 +80,14 @@ var _ = Describe("Lost-answer total across a restart", func() {
 		_, err = store.Answer(ctx, item.ItemID, "arm", "session", pkg.Decision(""), nil, nil, nil)
 		Expect(err).To(BeNil())
 		_, err = store.Close(ctx, item.ItemID, "", nil)
+		Expect(err).To(BeNil())
+	}
+
+	// finalize advances the clock past the grace and runs the maintenance pass,
+	// which is what settles a candidate into the durable total.
+	finalize := func(store pkg.AttentionStore) {
+		clock.SetNow(clock.Now().Add(pastGrace))
+		_, err := store.SweepAnswered(ctx, twoHours)
 		Expect(err).To(BeNil())
 	}
 
@@ -101,7 +116,9 @@ var _ = Describe("Lost-answer total across a restart", func() {
 
 	It("keeps the total across a restart and seeds a fresh counter from it", func() {
 		first := &countingLostAnswers{}
-		answerAndClose(newStore(first), "producer-before", "key-before")
+		firstStore := newStore(first)
+		answerAndClose(firstStore, "producer-before", "key-before")
+		finalize(firstStore)
 		Expect(first.Count()).To(Equal(1))
 
 		persisted, err := pkg.LoadLostAnswersTotal(ctx, db)
@@ -123,7 +140,9 @@ var _ = Describe("Lost-answer total across a restart", func() {
 		seeded := boardmetrics.NewMetrics(registry, total)
 		Expect(lostAnswersTotalValue(registry)).To(Equal(1.0))
 
-		answerAndClose(newStore(seeded), "producer-after", "key-after")
+		afterStore := newStore(seeded)
+		answerAndClose(afterStore, "producer-after", "key-after")
+		finalize(afterStore)
 		Expect(lostAnswersTotalValue(registry)).To(Equal(2.0))
 		durable, err := pkg.LoadLostAnswersTotal(ctx, db)
 		Expect(err).To(BeNil())
@@ -163,6 +182,7 @@ var _ = Describe("Lost-answer total across a restart", func() {
 			Expect(err).To(BeNil())
 			_, err = store.Close(ctx, item.ItemID, "", nil)
 			Expect(err).To(BeNil())
+			finalize(store)
 
 			total, err := pkg.LoadLostAnswersTotal(ctx, db)
 			Expect(err).To(BeNil())
@@ -172,4 +192,26 @@ var _ = Describe("Lost-answer total across a restart", func() {
 		Entry("held", pkg.HeldOutcome),
 		Entry("failed", pkg.FailedOutcome),
 	)
+
+	// The candidate is durable, so a close whose grace expires while the process
+	// is down is settled by the next pass rather than lost with the process.
+	It("settles a candidate written before a restart on the next pass", func() {
+		before := newStore(&countingLostAnswers{})
+		answerAndClose(before, "producer-pending", "key-pending")
+		Expect(pkg.LoadLostAnswersTotal(ctx, db)).To(Equal(uint64(0)))
+
+		Expect(db.Close()).To(BeNil())
+		var err error
+		db, err = libboltkv.OpenDir(ctx, dataDir)
+		Expect(err).To(BeNil())
+
+		after := &countingLostAnswers{}
+		afterStore := newStore(after)
+		finalize(afterStore)
+		Expect(after.Count()).To(Equal(1))
+
+		durable, err := pkg.LoadLostAnswersTotal(ctx, db)
+		Expect(err).To(BeNil())
+		Expect(durable).To(Equal(uint64(1)))
+	})
 })
