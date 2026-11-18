@@ -7,9 +7,7 @@
 // writes the attention event store.
 //
 // ⚠️ The hook contract is exit 0 on malformed or absent input, so a bad payload
-// can never block a tool call. The one non-zero exit is ErrUnsupportedEvent: an
-// event whose branch a later prompt implements fails loudly rather than
-// silently dropping a gate.
+// can never block a tool call. Every hook event is handled.
 package main
 
 import (

@@ -25,6 +25,12 @@ const (
 	openSuffix   = ".open.json"
 	toolSuffix   = ".tool.json"
 	answerSuffix = ".answer.json"
+	postedSuffix = ".posted.json"
+
+	// suppressedClosersFile is the global log of closers the Stop branch
+	// deliberately did not card. The unforwarded-closer diagnostic reads it so a
+	// deliberate idle never reads as a lost gate.
+	suppressedClosersFile = "suppressed.jsonl"
 
 	// toolDetailLimit is the maximum detail length in code points.
 	toolDetailLimit = 4000
@@ -131,6 +137,9 @@ func toolPath(sessionID string) string { return sessionID + toolSuffix }
 // answerPath is the answer-marker name.
 func answerPath(sessionID string) string { return sessionID + answerSuffix }
 
+// postedCardPath is the posted-card marker name.
+func postedCardPath(sessionID string) string { return sessionID + postedSuffix }
+
 // marshalJSON encodes v with HTML escaping disabled so `<`, `>` and `&` survive
 // a detail untouched. The returned bytes end with a newline.
 func marshalJSON(v any) ([]byte, error) {
@@ -145,6 +154,12 @@ func marshalJSON(v any) ([]byte, error) {
 
 // appendEvent appends one JSON object as a line to the session's event log.
 func appendEvent(stateDir, sessionID string, record any) {
+	appendStateLine(stateDir, eventsPath(sessionID), record)
+}
+
+// appendStateLine appends one JSON object as a line to a file in the state dir.
+// It is the shared body of appendEvent and the global suppression log.
+func appendStateLine(stateDir, name string, record any) {
 	body, err := marshalJSON(record)
 	if err != nil {
 		glog.V(3).Infof("attention-log: marshal event failed: %v", err)
@@ -161,7 +176,7 @@ func appendEvent(stateDir, sessionID string, record any) {
 	}
 	defer root.Close()
 	file, err := root.OpenFile(
-		eventsPath(sessionID),
+		name,
 		os.O_CREATE|os.O_APPEND|os.O_WRONLY,
 		0o600,
 	)

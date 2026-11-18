@@ -8,14 +8,13 @@
 //
 // ⚠️ Behaviour parity with `~/.claude/hooks/attention-log.py` is the contract.
 // This package implements the store layer, redaction, the dedup key, the
-// per-tool-call hot path and the gate path (`PermissionRequest`,
-// `Notification`, and `AskUserQuestion`); the `Stop`/`UserPromptSubmit`
-// branches land in a later prompt and return ErrUnsupportedEvent until they do.
+// per-tool-call hot path, the gate path (`PermissionRequest`, `Notification`,
+// and `AskUserQuestion`), and the `Stop` closer walker plus the
+// `UserPromptSubmit` system-envelope branch.
 package attnlog
 
 import (
 	"encoding/json"
-	stderrors "errors"
 	"io"
 	"os"
 	"strings"
@@ -23,11 +22,6 @@ import (
 
 	"github.com/golang/glog"
 )
-
-// ErrUnsupportedEvent is returned for an event whose branch a later prompt
-// implements. The binary exits non-zero on it so early wiring fails loudly
-// rather than silently dropping a gate.
-var ErrUnsupportedEvent = stderrors.New("attention-log event not implemented")
 
 const (
 	// answerTTL is how long an answer marker stays attributable.
@@ -91,14 +85,17 @@ type payload struct {
 	Pane             json.RawMessage `json:"pane"`
 	NotificationType string          `json:"notification_type"`
 	Message          string          `json:"message"`
+	// LastAssistantMessage is the final assistant text a Stop payload carries.
+	LastAssistantMessage string `json:"last_assistant_message"`
+	// Prompt is the user turn a UserPromptSubmit payload carries.
+	Prompt string `json:"prompt"`
 }
 
 // Handle reads one payload and writes the store.
 //
 // ⚠️ It never returns an error for malformed or absent input: the hook always
-// exits 0 so a bad payload can never block a tool call. The one error it does
-// return is ErrUnsupportedEvent, which the binary turns into a loud non-zero
-// exit while the Stop and UserPromptSubmit branches are not yet implemented.
+// exits 0 so a bad payload can never block a tool call. Every event is handled;
+// there is no unsupported-event sentinel.
 func (a *App) Handle(reader io.Reader) error {
 	raw, err := io.ReadAll(reader)
 	if err != nil {
@@ -140,9 +137,13 @@ func (a *App) Handle(reader io.Reader) error {
 	case "Notification":
 		a.notification(stateDir, event)
 		return nil
-	case "Stop", "UserPromptSubmit":
-		// The Stop fence walker and the envelope branch land in a later prompt.
-		return ErrUnsupportedEvent
+	case "Stop":
+		a.stop(stateDir, event)
+		return nil
+	case "UserPromptSubmit":
+		// closeOpen already ran; the envelope branch is part of it, and a
+		// non-envelope turn has no other work to do.
+		return nil
 	default:
 		// Unknown or absent hook_event_name: closeOpen already ran, nothing
 		// else to do.

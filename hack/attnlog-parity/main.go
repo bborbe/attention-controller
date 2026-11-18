@@ -61,7 +61,11 @@ func main() {
 			os.Exit(1)
 		}
 	}
-	fmt.Printf("parity ok: %d fixtures, %d randomized payloads\n", len(fixtures()), *randomCount)
+	fmt.Printf(
+		"parity ok: %d fixtures, %d randomized payloads per event\n",
+		len(fixtures()),
+		*randomCount,
+	)
 }
 
 type checker struct {
@@ -201,7 +205,157 @@ func describe(files map[string]any) string {
 func fixtures() []fixture {
 	items := hotPathFixtures()
 	items = append(items, closeFixtures()...)
-	return append(items, gateFixtures()...)
+	items = append(items, gateFixtures()...)
+	items = append(items, stopFixtures()...)
+	items = append(items, stopSuppressionFixtures()...)
+	return append(items, envelopeFixtures()...)
+}
+
+// stopFixtures exercises the fence walker and the closer classification.
+func stopFixtures() []fixture {
+	return []fixture{
+		{
+			name:    "stop-idle",
+			payload: `{"session_id":"s1","hook_event_name":"Stop","last_assistant_message":"Done."}`,
+		},
+		{
+			name: "stop-approve",
+			payload: `{"session_id":"s1","hook_event_name":"Stop","last_assistant_message":` +
+				`"Done.\n🔵 READY · you decide\n👤 You: ` + "`approve: repair`" + ` — run it"}`,
+		},
+		{
+			name: "stop-pick",
+			payload: `{"session_id":"s1","hook_event_name":"Stop","last_assistant_message":` +
+				`"👤 You: pick — 1. Postgres · 2. SQLite"}`,
+		},
+		{
+			name: "stop-review",
+			payload: `{"session_id":"s1","hook_event_name":"Stop","last_assistant_message":` +
+				`"👤 You: review: the patch"}`,
+		},
+		{
+			name: "stop-you-run",
+			payload: `{"session_id":"s1","hook_event_name":"Stop","last_assistant_message":` +
+				`"👤 You: you run: make deploy"}`,
+		},
+	}
+}
+
+// stopSuppressionFixtures exercises the deliberate-non-ask branches.
+func stopSuppressionFixtures() []fixture {
+	return []fixture{
+		{
+			name: "stop-parked",
+			payload: `{"session_id":"s1","hook_event_name":"Stop","last_assistant_message":` +
+				`"👤 You: later (on the deploy): approve it"}`,
+		},
+		{
+			name: "stop-no-reply",
+			payload: `{"session_id":"s1","hook_event_name":"Stop","last_assistant_message":` +
+				`"👤 You: you run: make deploy — no reply needed"}`,
+		},
+		{
+			name: "stop-nothing",
+			payload: `{"session_id":"s1","hook_event_name":"Stop","last_assistant_message":` +
+				`"👤 You: nothing"}`,
+		},
+		{
+			name: "stop-echo",
+			payload: `{"session_id":"s1","hook_event_name":"Stop","last_assistant_message":` +
+				`"👤 You: approve: repair — run it"}`,
+			seed: map[string]string{
+				"s1.posted.json": `{"closer":"approve:  repair — run it"}`,
+			},
+		},
+		{
+			name: "stop-manager-settleable",
+			payload: `{"session_id":"s1","hook_event_name":"Stop","last_assistant_message":` +
+				`"👤 You: pick — 1. Handover to the manager · 2. Hand over to ops"}`,
+		},
+		{
+			name: "stop-board-opt-in",
+			payload: `{"session_id":"s1","hook_event_name":"Stop","last_assistant_message":` +
+				`"Done.\n📣 Board: review the migration plan"}`,
+		},
+		{
+			name: "stop-quoted-fence",
+			payload: `{"session_id":"s1","hook_event_name":"Stop","last_assistant_message":` +
+				`"Panel:\n` + "```" + `\nquoted output\n👤 You: approve: repair\nmore\n` + "```" + `"}`,
+		},
+		{
+			name: "stop-closer-panel",
+			payload: `{"session_id":"s1","hook_event_name":"Stop","last_assistant_message":` +
+				`"` + "```" + `\n🟢 READY · nothing running\n👤 You: approve: repair\n` + "```" + `"}`,
+		},
+		{
+			name: "stop-slot-blocks",
+			payload: `{"session_id":"s1","hook_event_name":"Stop","last_assistant_message":` +
+				`"👤 You: approve: repair"}`,
+			seed: map[string]string{
+				"s1.open.json": `{"item_id":"i1","session_id":"s1","kind":"permission",` +
+					`"cleared_by":{"event":["PreToolUse"]}}`,
+			},
+		},
+		{
+			name: "stop-credential",
+			payload: `{"session_id":"s1","hook_event_name":"Stop","last_assistant_message":` +
+				`"👤 You: approve: TOKEN=abc Authorization: Bearer xyz"}`,
+		},
+		{
+			name: "stop-unicode",
+			payload: `{"session_id":"s1","hook_event_name":"Stop","cwd":"/w","pane":42,` +
+				`"last_assistant_message":"👤 You: approve: 日本語 <tag> & more"}`,
+		},
+	}
+}
+
+// envelopeFixtures exercises the UserPromptSubmit local-close branch.
+func envelopeFixtures() []fixture {
+	questionSeed := map[string]string{
+		"s1.open.json": `{"item_id":"i1","session_id":"s1","kind":"question",` +
+			`"cleared_by":{"event":["PostToolUse"]}}`,
+	}
+	return []fixture{
+		{
+			name: "user-prompt-submit-envelope",
+			payload: `{"session_id":"s1","hook_event_name":"UserPromptSubmit",` +
+				`"prompt":"<system-reminder>hello</system-reminder>"}`,
+			seed: questionSeed,
+		},
+		{
+			name: "user-prompt-submit-real-prompt",
+			payload: `{"session_id":"s1","hook_event_name":"UserPromptSubmit",` +
+				`"prompt":"please continue"}`,
+			seed: questionSeed,
+		},
+		{
+			name: "user-prompt-submit-permission",
+			payload: `{"session_id":"s1","hook_event_name":"UserPromptSubmit",` +
+				`"prompt":"<system-reminder>x</system-reminder>"}`,
+			seed: map[string]string{
+				"s1.open.json": `{"item_id":"i1","session_id":"s1","kind":"permission",` +
+					`"cleared_by":{"event":["PreToolUse"]}}`,
+			},
+		},
+		{
+			name: "user-prompt-submit-tool-scoped",
+			payload: `{"session_id":"s1","hook_event_name":"UserPromptSubmit",` +
+				`"prompt":"<system-reminder>x</system-reminder>"}`,
+			seed: map[string]string{
+				"s1.open.json": `{"item_id":"i1","session_id":"s1","kind":"question",` +
+					`"cleared_by":{"tool":"AskUserQuestion"}}`,
+			},
+		},
+		{
+			name: "user-prompt-submit-envelope-answerer",
+			payload: `{"session_id":"s1","hook_event_name":"UserPromptSubmit",` +
+				`"prompt":"<command-name>/foo</command-name>"}`,
+			seed: map[string]string{
+				"s1.open.json":   `{"item_id":"i1","session_id":"s1","kind":"question"}`,
+				"s1.answer.json": `{"session_id":"manager","kind":"manager","ts":1800000000}`,
+			},
+		},
+	}
 }
 
 func gateFixtures() []fixture {
@@ -384,60 +538,140 @@ func closeFixtures() []fixture {
 	}
 }
 
-func randomized(count int) []fixture {
+func randomized(perEvent int) []fixture {
 	//nolint:gosec // a deterministic seed is the point: the differential must
 	// replay identically on every run, and this is not security-sensitive.
 	source := rand.New(rand.NewSource(20261118))
 	tools := []string{"Bash", "Read", "Write", "Mystery", "Bäsh"}
-	events := []string{"PreToolUse", "PostToolUse", "PostToolUseFailure", "SessionEnd", "Whatever"}
-	out := make([]fixture, 0, count)
-	for index := 0; index < count; index++ {
-		eventName := events[source.Intn(len(events))]
-		tool := tools[source.Intn(len(tools))]
-		command := randomText(source)
-		toolInput := `{"command":` + quote(command) + `}`
-		switch source.Intn(4) {
-		case 1:
-			toolInput = `{"unknown":` + quote(randomText(source)) + `}`
-		case 2:
-			toolInput = quote("plain-value")
-		case 3:
-			toolInput = `{}`
+	events := []string{
+		"PreToolUse", "PostToolUse", "PostToolUseFailure", "SessionEnd",
+		"PermissionRequest", "Notification", "Stop", "UserPromptSubmit", "Whatever",
+	}
+	out := make([]fixture, 0, len(events)*perEvent)
+	for _, eventName := range events {
+		for index := 0; index < perEvent; index++ {
+			out = append(out, randomFixture(source, eventName, index, tools))
 		}
-		payload := map[string]any{
-			"session_id":      "s1",
-			"hook_event_name": eventName,
-			"tool_name":       tool,
-			"cwd":             randomText(source),
-			"transcript_path": "/t.jsonl",
-		}
-		payload["tool_input"] = json.RawMessage(toolInput)
-		if source.Intn(2) == 0 {
-			payload["pane"] = source.Intn(1000)
-		}
-		if source.Intn(5) == 0 {
-			payload["agent_id"] = "a1"
-		}
-		body, err := json.Marshal(payload)
-		if err != nil {
-			panic(err)
-		}
-		seed := map[string]string{}
-		if source.Intn(2) == 0 {
-			seed["s1.tool.json"] = `{"session_id":"s1","tool":` + quote(tool) + `}`
-		}
-		if source.Intn(2) == 0 {
-			seed["s1.open.json"] = randomOpenItem(source)
-		}
-		if source.Intn(4) == 0 {
-			seed["s1.answer.json"] = `{"session_id":"manager","kind":"manager","ts":1800000000}`
-		}
-		out = append(
-			out,
-			fixture{name: fmt.Sprintf("random-%d", index), payload: string(body), seed: seed},
-		)
 	}
 	return out
+}
+
+// randomFixture builds one randomized payload and its seeded state.
+func randomFixture(source *rand.Rand, eventName string, index int, tools []string) fixture {
+	tool := tools[source.Intn(len(tools))]
+	payload := randomPayload(source, eventName, tool)
+	body, err := json.Marshal(payload)
+	if err != nil {
+		panic(err)
+	}
+	return fixture{
+		name:    fmt.Sprintf("random-%s-%d", eventName, index),
+		payload: string(body),
+		seed:    randomSeed(source, tool),
+	}
+}
+
+// randomPayload builds the payload fields, including the event-specific ones.
+func randomPayload(source *rand.Rand, eventName, tool string) map[string]any {
+	payload := map[string]any{
+		"session_id":      "s1",
+		"hook_event_name": eventName,
+		"tool_name":       tool,
+		"cwd":             randomText(source),
+		"transcript_path": "/t.jsonl",
+		"tool_input":      json.RawMessage(randomToolInput(source)),
+	}
+	if source.Intn(2) == 0 {
+		payload["pane"] = source.Intn(1000)
+	}
+	if source.Intn(5) == 0 {
+		payload["agent_id"] = "a1"
+	}
+	switch eventName {
+	case "Stop":
+		payload["last_assistant_message"] = randomMessage(source)
+	case "UserPromptSubmit":
+		payload["prompt"] = randomPrompt(source)
+	case "Notification":
+		payload["notification_type"] = randomNotificationType(source)
+		payload["message"] = randomText(source)
+	}
+	return payload
+}
+
+// randomToolInput draws one of the tool_input shapes.
+func randomToolInput(source *rand.Rand) string {
+	switch source.Intn(4) {
+	case 1:
+		return `{"unknown":` + quote(randomText(source)) + `}`
+	case 2:
+		return quote("plain-value")
+	case 3:
+		return `{}`
+	default:
+		return `{"command":` + quote(randomText(source)) + `}`
+	}
+}
+
+// randomSeed builds the seeded state files for one randomized payload.
+func randomSeed(source *rand.Rand, tool string) map[string]string {
+	seed := map[string]string{}
+	if source.Intn(2) == 0 {
+		seed["s1.tool.json"] = `{"session_id":"s1","tool":` + quote(tool) + `}`
+	}
+	if source.Intn(2) == 0 {
+		seed["s1.open.json"] = randomOpenItem(source)
+	}
+	if source.Intn(4) == 0 {
+		seed["s1.answer.json"] = `{"session_id":"manager","kind":"manager","ts":1800000000}`
+	}
+	if source.Intn(5) == 0 {
+		seed["s1.posted.json"] = `{"closer":` + quote(randomMessage(source)) + `}`
+	}
+	return seed
+}
+
+// randomMessage draws a final assistant message from the closer vocabulary.
+func randomMessage(source *rand.Rand) string {
+	messages := []string{
+		"Done.",
+		"👤 You: approve: repair — run it",
+		"👤 You: pick — 1. Postgres · 2. SQLite",
+		"👤 You: pick — 1. Handover to the manager · 2. Hand over to ops",
+		"👤 You: review: the patch",
+		"👤 You: you run: make deploy",
+		"👤 You: later (on the deploy): approve it",
+		"👤 You: you run: make deploy — no reply needed",
+		"👤 You: nothing",
+		"Done.\n📣 Board: " + randomText(source),
+		"Panel:\n```\nquoted output\n👤 You: approve: repair\nmore\n```",
+		"```\n🟢 READY · nothing running\n👤 You: review: " + randomText(source) + "\n```",
+		"👤 You: approve: " + randomText(source),
+		"👤 You: pick — 1. " + randomText(source) + " · 2. " + randomText(source),
+	}
+	return messages[source.Intn(len(messages))]
+}
+
+// randomPrompt draws a UserPromptSubmit prompt, envelope or real.
+func randomPrompt(source *rand.Rand) string {
+	prompts := []string{
+		"please continue",
+		"<system-reminder>context</system-reminder>",
+		"<command-name>/vault-cli:next-task</command-name>",
+		"<local-command-stdout>ok</local-command-stdout>",
+		"<task-notification>done</task-notification>",
+		randomText(source),
+	}
+	return prompts[source.Intn(len(prompts))]
+}
+
+// randomNotificationType draws a notification type, including an unknown one.
+func randomNotificationType(source *rand.Rand) string {
+	types := []string{
+		"permission_prompt", "elicitation_dialog", "elicitation_url_dialog",
+		"agent_needs_input", "idle_prompt", "unknown",
+	}
+	return types[source.Intn(len(types))]
 }
 
 func randomOpenItem(source *rand.Rand) string {

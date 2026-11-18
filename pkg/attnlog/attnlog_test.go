@@ -6,7 +6,6 @@ package attnlog_test
 
 import (
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -343,8 +342,8 @@ var _ = Describe("Handle", func() {
 		})
 	})
 
-	Describe("unsupported events", func() {
-		DescribeTable("return the sentinel but still run closeOpen",
+	Describe("previously unsupported events", func() {
+		DescribeTable("still run closeOpen before dispatch",
 			func(eventName string) {
 				Expect(os.WriteFile(
 					filepath.Join(stateDir, "s1.open.json"),
@@ -352,10 +351,9 @@ var _ = Describe("Handle", func() {
 					0o600,
 				)).To(Succeed())
 				body := `{"session_id":"s1","hook_event_name":"` + eventName + `"}`
-				err := handle(newApp(stateDir), body)
-				Expect(errors.Is(err, attnlog.ErrUnsupportedEvent)).To(BeTrue())
+				Expect(handle(newApp(stateDir), body)).To(BeNil())
 				lines := readEventLines(filepath.Join(stateDir, "s1.events.jsonl"))
-				Expect(lines).To(HaveLen(1))
+				Expect(lines).NotTo(BeEmpty())
 				Expect(lines[0]["closed_by"]).To(Equal(eventName))
 			},
 			Entry("Stop", "Stop"),

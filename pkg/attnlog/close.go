@@ -4,6 +4,8 @@
 
 package attnlog
 
+import "strings"
+
 // closeOpen answers the session's open item, when this event may answer it.
 //
 // The rules, in order:
@@ -23,6 +25,10 @@ func (a *App) closeOpen(stateDir string, event payload) {
 	if !ok {
 		return
 	}
+	if a.systemEnvelopeAnswer(item, event) {
+		a.closeLocally(stateDir, event, item)
+		return
+	}
 	if !answered(item, event) {
 		return
 	}
@@ -33,6 +39,66 @@ func (a *App) closeOpen(stateDir string, event payload) {
 		"ts":         a.now(),
 		"closed_by":  event.HookEventName,
 		"tool_name":  event.ToolName,
+	}
+	if session, kind, attributed := a.answerer(stateDir, event.SessionID); attributed {
+		record["answerer_session"] = session
+		record["answerer_kind"] = kind
+	}
+	appendEvent(stateDir, event.SessionID, record)
+	removeStateFile(stateDir, openPath(event.SessionID))
+}
+
+// systemEnvelopeAnswer reports whether this turn is a system envelope that
+// clears a question item locally.
+//
+// ⚠️ The envelope close is a REAL close with `forward:false`, not a skip:
+// `pkg/event-ingest.go` branches on `!record.Forward`, so the local feed clears
+// while the board item stays open. It bypasses the cleared_by.event filter — a
+// question item's vocabulary names the tool events, not UserPromptSubmit — but
+// it is scoped to a question whose cleared_by carries no tool: a permission or
+// idle item is not answered by a system turn.
+func (a *App) systemEnvelopeAnswer(item openItem, event payload) bool {
+	if event.HookEventName != "UserPromptSubmit" {
+		return false
+	}
+	if item.Kind != "question" {
+		return false
+	}
+	if item.ClearedBy != nil && item.ClearedBy.Tool != "" {
+		return false
+	}
+	return isSystemEnvelope(event.Prompt)
+}
+
+// isSystemEnvelope reports whether the user turn is a harness-generated
+// envelope rather than a real prompt.
+func isSystemEnvelope(prompt string) bool {
+	trimmed := strings.TrimSpace(prompt)
+	for _, prefix := range []string{
+		"<system-reminder>",
+		"<command-name>",
+		"<command-message>",
+		"<local-command-",
+		"<user-prompt-submit-hook>",
+		"<task-notification>",
+	} {
+		if strings.HasPrefix(trimmed, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// closeLocally appends a close the ingest must not forward, then removes the
+// open item.
+func (a *App) closeLocally(stateDir string, event payload, item openItem) {
+	record := map[string]any{
+		"item_id":    item.ItemID,
+		"session_id": event.SessionID,
+		"ts":         a.now(),
+		"closed_by":  event.HookEventName,
+		"tool_name":  event.ToolName,
+		"forward":    false,
 	}
 	if session, kind, attributed := a.answerer(stateDir, event.SessionID); attributed {
 		record["answerer_session"] = session

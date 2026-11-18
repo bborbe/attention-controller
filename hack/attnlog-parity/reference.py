@@ -6,7 +6,8 @@ container. This file reconstructs the writer from spec 020, the prompt and the
 Go readers, so the harness can still run a genuine two-implementation
 differential. It is deliberately kept to the same branch set as `pkg/attnlog`:
 PreToolUse (including the AskUserQuestion gate), PostToolUse, PostToolUseFailure,
-SessionEnd, PermissionRequest and Notification, plus close_open.
+SessionEnd, PermissionRequest, Notification, Stop and UserPromptSubmit, plus
+close_open (including the system-envelope local close).
 
 `owned_pane` here keeps the recorded pane: the harness has no WezTerm listing to
 compare titles against, which is the same fail-open branch the Go writer takes
@@ -27,6 +28,35 @@ ASSIGN_SECRET = re.compile(
     r"[A-Za-z0-9_]*\s*=\s*)([^\s\"'&;]+)"
 )
 RECOMMENDED = re.compile(r"(?i)\s*\(recommended\)\s*")
+
+# The Stop closer contract. Kept in lockstep with pkg/attnlog/stop.go: the same
+# fence walker, the same waiting verbs, and the same suppression rules.
+CLOSER_LINE = re.compile(r"^[*_\s]*👤\s*You\s*[*_]*\s*:\s*[*_]*\s*:?(.*)$")
+CLOSER_DECORATION = re.compile(r"[`*_]")
+STATE_GLYPH = re.compile(r"^[*_\s]*(🟢|🟡|🔴|🔵|⚪|⏰)")
+PARKED = re.compile(r"(?i)^later\s*\(on\b")
+NO_REPLY = re.compile(
+    r"(?i)(^|[—–]\s*)(no reply( needed)?|nothing needed|no action needed)"
+    r"(\s+[A-Za-z0-9_]{1,12})?[.!]?\s*$"
+)
+NOTHING = re.compile(r"(?i)^nothing\b")
+APPROVE = re.compile(r"(?i)^approve\s*:")
+PICK_LEAD = re.compile(r"(?i)^pick\b")
+REVIEW = re.compile(r"(?i)^review\s*:")
+YOU_RUN = re.compile(r"(?i)^you\s+run\s*:")
+BOARD_OPT_IN = re.compile(r"(?i)📣\s*Board:\s*(.*)")
+HANDOVER_OPTION = re.compile(r"(?i)hand\s*over|handover")
+PICK_LABEL = re.compile(r"^\s*(?:\d+[.)]|[-*])\s*")
+
+IDLE_CLEARED = {"event": ["UserPromptSubmit", "SessionEnd"], "tool": ""}
+ENVELOPE_PREFIXES = (
+    "<system-reminder>",
+    "<command-name>",
+    "<command-message>",
+    "<local-command-",
+    "<user-prompt-submit-hook>",
+    "<task-notification>",
+)
 
 ANSWER_TTL = 300.0
 ANSWERER_EPOCH = 1764000000.0
@@ -255,6 +285,42 @@ def answerer(directory, session_id, now):
     return None
 
 
+def is_system_envelope(prompt):
+    trimmed = prompt.strip()
+    return any(trimmed.startswith(prefix) for prefix in ENVELOPE_PREFIXES)
+
+
+def system_envelope_answer(item, payload):
+    if (payload.get("hook_event_name") or "") != "UserPromptSubmit":
+        return False
+    if item.get("kind") != "question":
+        return False
+    cleared = item.get("cleared_by") or {}
+    if cleared.get("tool") or "":
+        return False
+    return is_system_envelope(payload.get("prompt") or "")
+
+
+def close_locally(directory, payload, item):
+    session_id = payload["session_id"]
+    record = {
+        "item_id": item.get("item_id", ""),
+        "session_id": session_id,
+        "ts": now_seconds(),
+        "closed_by": payload.get("hook_event_name") or "",
+        "tool_name": payload.get("tool_name") or "",
+        "forward": False,
+    }
+    attributed = answerer(directory, session_id, now_seconds())
+    if attributed is not None:
+        record["answerer_session"], record["answerer_kind"] = attributed
+    append_event(directory, session_id, record)
+    try:
+        os.remove(os.path.join(directory, session_id + ".open.json"))
+    except OSError:
+        pass
+
+
 def close_open(directory, payload):
     session_id = payload["session_id"]
     item = read_json(directory, session_id + ".open.json")
@@ -263,6 +329,9 @@ def close_open(directory, payload):
     event_name = payload.get("hook_event_name") or ""
     tool = payload.get("tool_name") or ""
     agent = payload.get("agent_id") or ""
+    if system_envelope_answer(item, payload):
+        close_locally(directory, payload, item)
+        return
     if event_name != "SessionEnd" and not cleared_by_event(item.get("cleared_by"), event_name):
         return
     cleared = item.get("cleared_by") or {}
@@ -482,6 +551,188 @@ def clear_tool_marker(directory, payload):
         pass
 
 
+def undecorate_ask(ask):
+    return CLOSER_DECORATION.sub("", ask).strip(" :")
+
+
+def normalize_closer_text(value):
+    cleaned = CLOSER_DECORATION.sub("", value)
+    return " ".join(cleaned.split())
+
+
+def fenced_block_closer(block):
+    lines = [line for line in block if line]
+    if not lines:
+        return None
+    panel = any(STATE_GLYPH.match(line) for line in lines)
+    closers = []
+    for line in lines:
+        match = CLOSER_LINE.match(line)
+        if match:
+            closers.append(match.group(1))
+    if not closers or (len(lines) != 1 and not panel):
+        return None
+    return closers[-1]
+
+
+def last_owned_closer(message):
+    if not message:
+        return ""
+    unfenced = []
+    fenced = []
+    block = []
+    in_fence = False
+    for line in message.split("\n"):
+        trimmed = line.strip()
+        if trimmed.startswith("```"):
+            if in_fence:
+                closer = fenced_block_closer(block)
+                if closer is not None:
+                    fenced.append(closer)
+            in_fence = not in_fence
+            block = []
+            continue
+        if in_fence:
+            block.append(trimmed)
+            continue
+        match = CLOSER_LINE.match(trimmed)
+        if match:
+            unfenced.append(match.group(1))
+    asks = unfenced or fenced
+    if not asks:
+        return ""
+    return undecorate_ask(asks[-1])
+
+
+def board_opt_in(message):
+    for line in message.split("\n"):
+        match = BOARD_OPT_IN.search(line)
+        if match:
+            return match.group(1).strip(), True
+    return "", False
+
+
+def closer_exempt(ask):
+    return bool(PARKED.match(ask) or NO_REPLY.search(ask) or NOTHING.match(ask))
+
+
+def mintable_closer(ask):
+    return bool(
+        APPROVE.match(ask) or PICK_LEAD.match(ask) or REVIEW.match(ask) or YOU_RUN.match(ask)
+    )
+
+
+def pick_options(ask):
+    body = PICK_LEAD.sub("", ask, count=1).lstrip(" —-–:·;|\t")
+    parts = re.split(r"[·;|\n]", body)
+    out = []
+    for part in parts:
+        label = PICK_LABEL.sub("", part).strip()
+        if label:
+            out.append({"label": label, "recommended": False})
+    return out
+
+
+def manager_settleable(ask):
+    if not PICK_LEAD.match(ask):
+        return False
+    options = pick_options(ask)
+    if not options:
+        return False
+    return all(HANDOVER_OPTION.search(option["label"]) for option in options)
+
+
+def closer_options(ask):
+    if APPROVE.match(ask):
+        return [
+            {"label": "Approve", "recommended": False},
+            {"label": "Deny", "recommended": False},
+        ]
+    if PICK_LEAD.match(ask):
+        return pick_options(ask)
+    if REVIEW.match(ask):
+        return [
+            {"label": "Approve", "recommended": False},
+            {"label": "Request changes", "recommended": False},
+        ]
+    if YOU_RUN.match(ask):
+        return [
+            {"label": "Done", "recommended": False},
+            {"label": "Skip", "recommended": False},
+        ]
+    return []
+
+
+def suppress_closer(directory, session_id, closer):
+    record = {"session_id": session_id, "ts": now_seconds()}
+    if closer:
+        record["closer"] = closer
+    os.makedirs(directory, exist_ok=True)
+    with open(os.path.join(directory, "suppressed.jsonl"), "ab") as handle:
+        handle.write(json_bytes(record))
+
+
+def echoes_posted_card(directory, session_id, ask):
+    record = read_json(directory, session_id + ".posted.json")
+    if not record:
+        return False
+    posted = record.get("closer") or ""
+    if not posted:
+        return False
+    return normalize_closer_text(ask) == normalize_closer_text(posted)
+
+
+def mint_closer_question(directory, payload, detail, options):
+    full_detail = scrub_detail(detail)
+    units = [
+        {
+            "tab": "",
+            "payload": full_detail,
+            "cardinality": "single",
+            "options": options,
+        }
+    ]
+    open_item(
+        directory,
+        payload,
+        "question",
+        full_detail,
+        units=units,
+        cleared_by={"event": ["UserPromptSubmit", "SessionEnd"], "tool": ""},
+    )
+
+
+def open_idle(directory, payload, detail):
+    open_item(directory, payload, "idle", scrub_detail(detail), cleared_by=IDLE_CLEARED)
+
+
+def stop(directory, payload):
+    session_id = payload["session_id"]
+    if gate_is_open(directory, session_id):
+        return
+    message = payload.get("last_assistant_message") or ""
+    ask = last_owned_closer(message)
+    board, has_board = board_opt_in(message)
+    if not ask and not has_board:
+        open_idle(directory, payload, "")
+        return
+    if ask and (
+        closer_exempt(ask)
+        or echoes_posted_card(directory, session_id, ask)
+        or manager_settleable(ask)
+    ):
+        suppress_closer(directory, session_id, ask)
+        open_idle(directory, payload, ask)
+        return
+    if not ask:
+        mint_closer_question(directory, payload, board, [])
+        return
+    if not mintable_closer(ask) and not has_board:
+        open_idle(directory, payload, ask)
+        return
+    mint_closer_question(directory, payload, ask, closer_options(ask))
+
+
 def main():
     raw = sys.stdin.buffer.read()
     try:
@@ -504,8 +755,10 @@ def main():
         permission_request(directory, payload)
     elif event_name == "Notification":
         notification(directory, payload)
-    elif event_name in ("Stop", "UserPromptSubmit"):
-        sys.exit(1)
+    elif event_name == "Stop":
+        stop(directory, payload)
+    elif event_name == "UserPromptSubmit":
+        pass
 
 
 if __name__ == "__main__":
