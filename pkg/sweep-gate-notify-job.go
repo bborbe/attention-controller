@@ -137,9 +137,9 @@ const (
 	// Python; the vault-side gate script is no longer spawned from here at all.
 	//
 	// ⚠️ Resolved to an absolute path at the wiring, never left bare: the launchd
-	// job carries ~/.local/bin on PATH today, and a bare name would break silently
-	// the day that plist changes — the defect the port already fixed once for its
-	// python binary.
+	// job carries the user's local bin directory on PATH today, and a bare name
+	// would break silently the day that plist changes — the defect the port
+	// already fixed once for its python binary.
 	sweepGateGoBinaryRel = ".local/bin/claude-wrapper"
 
 	// sweepGateAdhocStateEnv is the ad-hoc pass's dedup ledger. ⚠️ It must sit
