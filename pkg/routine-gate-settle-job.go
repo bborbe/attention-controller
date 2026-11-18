@@ -66,6 +66,21 @@ type RoutineGateSettleJob interface {
 	SettleOnce(ctx context.Context) error
 }
 
+// RoutineGateSettleOption customises the settle arm at construction.
+type RoutineGateSettleOption func(*routineGateSettleJob)
+
+// WithRoutineGateSettleSignaller sets the helper that emits the ANSWERED signal
+// after a card is delivered. ⚠️ This arm settles OPEN gates, and an open card
+// classifies NOTHING, so the call is a no-op here; it is wired so every
+// DeliveryOK site reaches the helper uniformly.
+func WithRoutineGateSettleSignaller(
+	signaller AnsweredSignaller,
+) RoutineGateSettleOption {
+	return func(job *routineGateSettleJob) {
+		job.signaller = signaller
+	}
+}
+
 // NewRoutineGateSettleJob creates the originate arm.
 //
 // currentDateTimeGetter is injected rather than reached for, because the hold
@@ -78,8 +93,9 @@ func NewRoutineGateSettleJob(
 	sessions RoutineGateSessionReader,
 	interval time.Duration,
 	currentDateTimeGetter libtime.CurrentDateTimeGetter,
+	options ...RoutineGateSettleOption,
 ) RoutineGateSettleJob {
-	return &routineGateSettleJob{
+	job := &routineGateSettleJob{
 		store:                 store,
 		wrapper:               wrapper,
 		policy:                policy,
@@ -87,6 +103,10 @@ func NewRoutineGateSettleJob(
 		interval:              interval,
 		currentDateTimeGetter: currentDateTimeGetter,
 	}
+	for _, option := range options {
+		option(job)
+	}
+	return job
 }
 
 type routineGateSettleJob struct {
@@ -96,6 +116,7 @@ type routineGateSettleJob struct {
 	sessions              RoutineGateSessionReader
 	interval              time.Duration
 	currentDateTimeGetter libtime.CurrentDateTimeGetter
+	signaller             AnsweredSignaller
 }
 
 // Run settles routine gates until the context is cancelled.
@@ -204,6 +225,11 @@ func (j *routineGateSettleJob) settle(
 	switch verdict {
 	case DeliveryOK:
 		j.recordAttempt(ctx, item, attentionWatcherCarrier, DeliveredOutcome)
+		// Harmless no-op: this arm only sees open gates, and an open card
+		// classifies NOTHING. The call keeps every DeliveryOK site uniform.
+		if j.signaller != nil {
+			j.signaller.Signal(ctx, sessionID, item)
+		}
 	case DeliveryRefuse:
 		j.recordAttempt(ctx, item, attentionWatcherCarrier, FailedOutcome)
 	default:

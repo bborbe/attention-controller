@@ -120,6 +120,17 @@ type AttentionWatcherJob interface {
 	DeliverOnce(ctx context.Context) error
 }
 
+// AttentionWatcherOption customises the delivery arm at construction.
+type AttentionWatcherOption func(*attentionWatcherJob)
+
+// WithAttentionWatcherSignaller sets the helper that emits the ANSWERED signal
+// after a card is delivered.
+func WithAttentionWatcherSignaller(signaller AnsweredSignaller) AttentionWatcherOption {
+	return func(job *attentionWatcherJob) {
+		job.signaller = signaller
+	}
+}
+
 // NewAttentionWatcherJob creates the delivery arm.
 //
 // The headless arm is a constructor parameter rather than an option because a
@@ -135,14 +146,19 @@ func NewAttentionWatcherJob(
 	headless HeadlessAnswerDeliverer,
 	interval time.Duration,
 	currentDateTimeGetter libtime.CurrentDateTimeGetter,
+	options ...AttentionWatcherOption,
 ) AttentionWatcherJob {
-	return &attentionWatcherJob{
+	job := &attentionWatcherJob{
 		store:                 store,
 		carrier:               carrier,
 		headless:              headless,
 		interval:              interval,
 		currentDateTimeGetter: currentDateTimeGetter,
 	}
+	for _, option := range options {
+		option(job)
+	}
+	return job
 }
 
 type attentionWatcherJob struct {
@@ -151,6 +167,7 @@ type attentionWatcherJob struct {
 	headless              HeadlessAnswerDeliverer
 	interval              time.Duration
 	currentDateTimeGetter libtime.CurrentDateTimeGetter
+	signaller             AnsweredSignaller
 }
 
 // Run delivers answered cards until the context is cancelled.
@@ -363,6 +380,11 @@ func (j *attentionWatcherJob) deliver(
 	switch verdict {
 	case DeliveryOK:
 		j.recordAttempt(ctx, item, DeliveredOutcome)
+		// Signal only after the delivered outcome is on record: the durable
+		// DeliveryReport is the dedupe state the next tick reads.
+		if j.signaller != nil {
+			j.signaller.Signal(ctx, sessionID, item)
+		}
 		// Delivered: any park is over, and the count it took is moot.
 		j.clearPark(ctx, item)
 	case DeliveryRefuse:

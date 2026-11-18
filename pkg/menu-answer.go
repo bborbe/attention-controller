@@ -425,6 +425,14 @@ func WithMenuAnswerHeadlessDelivery(headless HeadlessAnswerDeliverer) MenuAnswer
 	}
 }
 
+// WithMenuAnswerSignaller sets the helper that emits the ANSWERED signal after
+// a card is delivered.
+func WithMenuAnswerSignaller(signaller AnsweredSignaller) MenuAnswerOption {
+	return func(job *menuAnswerJob) {
+		job.signaller = signaller
+	}
+}
+
 // NewMenuAnswerJob creates the menu arm.
 //
 // The locator and the writer are separate because the pane is resolved by the
@@ -459,6 +467,7 @@ type menuAnswerJob struct {
 	locator     PaneLocator
 	writer      PaneTextWriter
 	headless    HeadlessAnswerDeliverer
+	signaller   AnsweredSignaller
 	interval    time.Duration
 	keySettle   time.Duration
 	submitPolls int
@@ -732,6 +741,14 @@ func (j *menuAnswerJob) settle(
 		reason,
 	)
 	j.recordAttempt(ctx, item, outcome)
+	// Signal only for a delivered card, and only after the delivered outcome is
+	// on record. The held outcome written for a card handled elsewhere never
+	// signals.
+	if outcome == DeliveredOutcome && j.signaller != nil {
+		if sessionID, ok := itemSessionID(ctx, item); ok {
+			j.signaller.Signal(ctx, sessionID, item)
+		}
+	}
 }
 
 // deliverHeadless carries the answer into a session that has no pane.
