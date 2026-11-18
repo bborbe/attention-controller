@@ -1,5 +1,6 @@
 ---
-status: draft
+status: approved
+approved: "2026-11-18T06:39:36Z"
 branch: dark-factory/permission-answer-hook-streams
 ---
 

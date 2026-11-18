@@ -1,5 +1,6 @@
 ---
-status: draft
+status: approved
+approved: "2026-11-18T06:39:34Z"
 branch: dark-factory/answered-signal-folded-into-delivery-arm
 ---
 
