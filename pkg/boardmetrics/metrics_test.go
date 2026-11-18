@@ -54,8 +54,23 @@ var _ = Describe("Metrics", func() {
 		// the store persisted. Without the seed the metric would read zero again
 		// on every start and could never evidence a week.
 		seededRegistry := prometheus.NewRegistry()
-		boardmetrics.NewMetrics(seededRegistry, 4)
+		seeded := boardmetrics.NewMetrics(seededRegistry, 4)
 		Expect(counterValue(seededRegistry, "attention_lost_answers_total")).To(Equal(4.0))
+
+		// ⚠️ The seeded counter must be the SAME counter the returned handle
+		// increments. A regression that registered a seeded counter but returned a
+		// fresh one would leave the registry at 4.0 forever and pass a seed-only
+		// assertion.
+		seeded.LostAnswersTotalCounterInc()
+		Expect(counterValue(seededRegistry, "attention_lost_answers_total")).To(Equal(5.0))
+	})
+
+	It("honours only the first seed, as its contract says", func() {
+		// ⚠️ At most the first argument is honoured. A regression that summed the
+		// variadic tail would read 10 here instead of 3.
+		tailRegistry := prometheus.NewRegistry()
+		boardmetrics.NewMetrics(tailRegistry, 3, 7)
+		Expect(counterValue(tailRegistry, "attention_lost_answers_total")).To(Equal(3.0))
 	})
 
 	It("records renders and rows on the registry it was given", func() {

@@ -47,31 +47,40 @@ const attentionCloseCarrier = "watcher:gate-resolved"
 // own pre-write mutations), so this helper does not re-validate; it assumes the
 // item is about to move to ClosedState legally.
 //
-// ⚠️ The counter is incremented inside the transaction, after the item write and
-// before the commit. The write it counts is the last operation in every caller's
-// transaction, so the only remaining failure is the commit itself; a commit
-// failure would leave the item unanswered, and a retry would count it once. The
-// alternative — returning a flag and incrementing after commit — would put the
-// increment back at three call sites, which is exactly the shape this helper
-// exists to remove.
-func (a *attentionStore) closeItem(ctx context.Context, tx libkv.Tx, item *Item) error {
+// ⚠️ The counter is incremented by the CALLER, after the transaction commits —
+// never here. The durable total is written inside the transaction, so a close
+// that aborts (a failed attempt record, a failed commit) rolls the durable half
+// back; incrementing the in-process half inside the transaction would leave the
+// two disagreeing, and the sweep's retry would then count the same close twice.
+// closeItem therefore REPORTS how many lost answers it counted (0 or 1, as a
+// count so every caller accumulates it without a branch), and the caller adds it
+// to the in-process counter once db.Update has returned nil.
+func (a *attentionStore) closeItem(
+	ctx context.Context,
+	tx libkv.Tx,
+	item *Item,
+) (int, error) {
 	now := a.currentDateTimeGetter.Now()
 	item.State = ClosedState
 	item.ClosedAt = &now
 	if err := a.putItem(ctx, tx, *item); err != nil {
-		return err
+		return 0, err
 	}
-	if err := a.countLostAnswer(ctx, tx, item); err != nil {
-		return err
+	counted, err := a.countLostAnswer(ctx, tx, item)
+	if err != nil {
+		return 0, err
 	}
 	// ⚠️ AFTER countLostAnswer, never before: the counter's meaning is "answered,
 	// closed, no record existed when it closed", and writing the record first
 	// would silently zero a metric rather than fix it. Both facts are true and
 	// both are worth keeping — the answer was lost, and this is why.
 	if err := a.recordCloseAttempt(ctx, tx, item, now); err != nil {
-		return err
+		return 0, err
 	}
-	return nil
+	if counted {
+		return 1, nil
+	}
+	return 0, nil
 }
 
 // recordCloseAttempt writes the terminal delivery record for an answered card
@@ -150,10 +159,13 @@ func (a *attentionStore) recordCloseAttempt(
 // delivery arm looked, so it is not counted; the no-target hold path is a
 // separate mechanism, deliberately out of scope here.
 //
-// ⚠️ The count has two halves and they are written together: the durable total
-// in the same transaction, and the in-process Prometheus counter. The durable
-// half is what survives a restart — a bare Prometheus counter starts at zero on
-// every start, so goal SC3 could never read a week from it.
+// ⚠️ The count has two halves: the durable total, written here inside the same
+// transaction as the close, and the in-process Prometheus counter, which the
+// CALLER increments after the transaction commits (addLostAnswersTotal). The
+// durable half is what survives a restart — a bare Prometheus counter starts at
+// zero on every start, so goal SC3 could never read a week from it. Splitting
+// the halves across the commit boundary is what keeps them equal: an aborted
+// close rolls back both.
 //
 // ⚠️ Read the attempt inside the same transaction as the close. A read failure is
 // NOT a lost answer: counting it would report a condition nothing established, so
@@ -166,24 +178,37 @@ func (a *attentionStore) countLostAnswer(
 	ctx context.Context,
 	tx libkv.Tx,
 	item *Item,
-) error {
+) (bool, error) {
 	if item.AnsweredAt == nil {
-		return nil
+		return false, nil
 	}
 	_, err := a.attempts.Get(ctx, tx, item.ItemID.String())
 	switch {
 	case err == nil:
-		return nil
+		return false, nil
 	case isNotFound(err):
 		if err := a.incrementLostAnswersTotal(ctx, tx); err != nil {
-			return errors.Wrap(ctx, err, "persist lost answers total failed")
+			return false, errors.Wrap(ctx, err, "persist lost answers total failed")
 		}
-		if a.lostAnswers != nil {
-			a.lostAnswers.LostAnswersTotalCounterInc()
-		}
-		return nil
+		return true, nil
 	default:
 		glog.Warningf("lost-answer check for item %s failed: %v", item.ItemID, err)
-		return nil
+		return false, nil
+	}
+}
+
+// addLostAnswersTotal adds count to the in-process counter for closes that have
+// COMMITTED.
+//
+// ⚠️ It is the only writer of the in-process half, and every caller invokes it
+// after db.Update returned nil. Calling it from inside a transaction would
+// re-open the divergence countLostAnswer exists to close: the durable total
+// rolls back on abort and this would not.
+func (a *attentionStore) addLostAnswersTotal(count int) {
+	if a.lostAnswers == nil {
+		return
+	}
+	for i := 0; i < count; i++ {
+		a.lostAnswers.LostAnswersTotalCounterInc()
 	}
 }

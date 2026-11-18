@@ -58,11 +58,12 @@ func LoadLostAnswersTotal(ctx context.Context, db libkv.DB) (uint64, error) {
 	return total, nil
 }
 
-// incrementLostAnswersTotal adds one to the durable total inside tx and returns
-// the new value.
+// incrementLostAnswersTotal adds one to the durable total inside tx.
 //
 // ⚠️ It shares the close's transaction, so a committed close and the count it
 // contributes become durable together: an aborted transaction leaves neither.
+// It does NOT touch the in-process counter — that is added by the caller after
+// the transaction commits, so an abort cannot leave the two disagreeing.
 func (a *attentionStore) incrementLostAnswersTotal(
 	ctx context.Context,
 	tx libkv.Tx,

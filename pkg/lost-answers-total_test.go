@@ -39,6 +39,7 @@ func lostAnswersTotalValue(registry *prometheus.Registry) float64 {
 var _ = Describe("Lost-answer total across a restart", func() {
 	var ctx context.Context
 	var db libkv.DB
+	var dataDir string
 	var clock libtime.CurrentDateTime
 
 	const heartbeatWindow = libtime.Duration(15 * 60 * 1e9)
@@ -77,8 +78,13 @@ var _ = Describe("Lost-answer total across a restart", func() {
 
 	BeforeEach(func() {
 		ctx = context.Background()
+		// ⚠️ A real directory, not OpenTemp: the restart spec CLOSES this database
+		// and reopens the same file, which is what production does. A second
+		// handle on a still-open db would not catch a total kept in process
+		// memory.
+		dataDir = GinkgoT().TempDir()
 		var err error
-		db, err = libboltkv.OpenTemp(ctx)
+		db, err = libboltkv.OpenDir(ctx, dataDir)
 		Expect(err).To(BeNil())
 		clock = libtime.NewCurrentDateTime()
 	})
@@ -102,43 +108,68 @@ var _ = Describe("Lost-answer total across a restart", func() {
 		Expect(err).To(BeNil())
 		Expect(persisted).To(Equal(uint64(1)))
 
-		// The restart: a new store and a new counter on the same database, then
-		// the same seed main performs.
-		second := &countingLostAnswers{}
-		restarted := newStore(second)
+		// The restart, composed exactly as main does it: the database is CLOSED
+		// and reopened from the same file, then ONE counter is built from the
+		// durable total and handed to the store, so the seed and the continuation
+		// are the same object. A regression that seeded one counter and gave the
+		// store a different one leaves the registry at 1.0 below.
+		Expect(db.Close()).To(BeNil())
+		db, err = libboltkv.OpenDir(ctx, dataDir)
+		Expect(err).To(BeNil())
+
 		total, err := pkg.LoadLostAnswersTotal(ctx, db)
 		Expect(err).To(BeNil())
-
 		registry := prometheus.NewRegistry()
-		boardmetrics.NewMetrics(registry, total)
+		seeded := boardmetrics.NewMetrics(registry, total)
 		Expect(lostAnswersTotalValue(registry)).To(Equal(1.0))
 
-		// The restarted store keeps counting from the durable value rather than
-		// from zero.
-		answerAndClose(restarted, "producer-after", "key-after")
-		Expect(second.Count()).To(Equal(1))
-		Expect(pkg.LoadLostAnswersTotal(ctx, db)).To(Equal(uint64(2)))
+		answerAndClose(newStore(seeded), "producer-after", "key-after")
+		Expect(lostAnswersTotalValue(registry)).To(Equal(2.0))
+		durable, err := pkg.LoadLostAnswersTotal(ctx, db)
+		Expect(err).To(BeNil())
+		Expect(durable).To(Equal(uint64(2)))
 	})
 
-	It("does not persist a count for an answered item that was attempted", func() {
-		store := newStore(&countingLostAnswers{})
-		item, err := store.Push(ctx, pkg.PushRequest{
-			ProducerID:      pkg.ProducerID("producer-attempted"),
-			ProducerKind:    pkg.SessionProducerKind,
-			LivenessRef:     pkg.LivenessRef("session:producer-attempted"),
-			DedupKey:        pkg.DedupKey("key-attempted"),
-			InterruptClass:  "approve",
-			Payload:         "deploy prod?",
-			AnswerMechanism: pkg.MessageAnswerMechanism,
-		})
-		Expect(err).To(BeNil())
-		_, err = store.Answer(ctx, item.ItemID, "arm", "session", pkg.Decision(""), nil, nil, nil)
-		Expect(err).To(BeNil())
-		_, err = store.RecordAttempt(ctx, item.ItemID, "watcher", pkg.DeliveredOutcome)
-		Expect(err).To(BeNil())
-		_, err = store.Close(ctx, item.ItemID, "", nil)
-		Expect(err).To(BeNil())
+	// ⚠️ ANY attempt record suppresses the count, whatever its outcome — the
+	// condition is the record's existence, not what it says. A regression that
+	// switched on the outcome would pass a delivered-only spec, so the table
+	// covers all three.
+	DescribeTable(
+		"does not persist a count for an answered item that was attempted",
+		func(outcome pkg.DeliveryOutcome) {
+			store := newStore(&countingLostAnswers{})
+			item, err := store.Push(ctx, pkg.PushRequest{
+				ProducerID:      pkg.ProducerID("producer-attempted"),
+				ProducerKind:    pkg.SessionProducerKind,
+				LivenessRef:     pkg.LivenessRef("session:producer-attempted"),
+				DedupKey:        pkg.DedupKey("key-attempted"),
+				InterruptClass:  "approve",
+				Payload:         "deploy prod?",
+				AnswerMechanism: pkg.MessageAnswerMechanism,
+			})
+			Expect(err).To(BeNil())
+			_, err = store.Answer(
+				ctx,
+				item.ItemID,
+				"arm",
+				"session",
+				pkg.Decision(""),
+				nil,
+				nil,
+				nil,
+			)
+			Expect(err).To(BeNil())
+			_, err = store.RecordAttempt(ctx, item.ItemID, "watcher", outcome)
+			Expect(err).To(BeNil())
+			_, err = store.Close(ctx, item.ItemID, "", nil)
+			Expect(err).To(BeNil())
 
-		Expect(pkg.LoadLostAnswersTotal(ctx, db)).To(Equal(uint64(0)))
-	})
+			total, err := pkg.LoadLostAnswersTotal(ctx, db)
+			Expect(err).To(BeNil())
+			Expect(total).To(Equal(uint64(0)))
+		},
+		Entry("delivered", pkg.DeliveredOutcome),
+		Entry("held", pkg.HeldOutcome),
+		Entry("failed", pkg.FailedOutcome),
+	)
 })

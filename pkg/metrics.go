@@ -17,6 +17,12 @@ type LostAnswerCounter interface {
 	// without any delivery attempt ever being recorded. It is edge-triggered on
 	// the close transition, never re-scanned: a store scan over the same closed
 	// items must not move it again.
+	//
+	// ⚠️ The only legal caller is attentionStore.addLostAnswersTotal, and only
+	// AFTER the close transaction commits. The durable half of the same count is
+	// written inside that transaction, so incrementing here from inside one would
+	// leave the counter and the durable total disagreeing whenever the
+	// transaction aborts.
 	LostAnswersTotalCounterInc()
 }
 
