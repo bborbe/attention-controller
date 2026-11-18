@@ -253,6 +253,41 @@ var _ = Describe("pane carrier", func() {
 		Expect(writer.sent).To(BeEmpty())
 	})
 
+	// The turn-end split: a dead session whose transcript proves it finished its
+	// turn is refused with a reason that says so, because "no live process with a
+	// tty" reads as a crash and sends the operator looking for a fault that is not
+	// there. Ported from `test_attention_watcher_turn_ended.py` case (b).
+	It("names the turn-end when a reaped session ended its turn before exiting", func() {
+		delete(writer.sessionTTY, sessionID)
+		writer.entries[sessionID] = SessionEntry{
+			SessionID: sessionID, PID: 999999, Entrypoint: "cli",
+		}
+		transcript.turnEnded[sessionID] = true
+		verdict, reason := carrier.TypeIntoPane(ctx, delivery, "allow", false)
+		Expect(verdict).To(Equal(DeliveryRefuse))
+		Expect(reason).To(ContainSubstring("ended its turn and its process exited"))
+		Expect(reason).To(ContainSubstring("answer not delivered"))
+		Expect(reason).NotTo(ContainSubstring("has no live process with a tty"))
+		Expect(writer.sent).To(BeEmpty())
+	})
+
+	// The discriminating half: the turn-end reason is NOT the default. A session
+	// that died mid-turn keeps the plain death refusal — that is the failure the
+	// card exists for. An implementation that always said "ended its turn" would
+	// pass the spec above and fail this one.
+	It("keeps the plain death refusal when a reaped session died mid-turn", func() {
+		delete(writer.sessionTTY, sessionID)
+		writer.entries[sessionID] = SessionEntry{
+			SessionID: sessionID, PID: 999999, Entrypoint: "cli",
+		}
+		transcript.turnEnded[sessionID] = false
+		verdict, reason := carrier.TypeIntoPane(ctx, delivery, "allow", false)
+		Expect(verdict).To(Equal(DeliveryRefuse))
+		Expect(reason).To(ContainSubstring("has no live process with a tty"))
+		Expect(reason).NotTo(ContainSubstring("ended its turn"))
+		Expect(writer.sent).To(BeEmpty())
+	})
+
 	It("retries when the pane list could not be read", func() {
 		writer.panes = map[int]Pane{}
 		writer.listErr = errors.New("wezterm down")
