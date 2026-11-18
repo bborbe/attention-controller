@@ -1174,6 +1174,13 @@ func (a *attentionStore) Answer(
 		// Measured 2026-11-13: `done — reviewed and flipped both` closed a card
 		// while both PRs it named were still OPEN drafts with unchanged heads.
 		item.parkForEvidence(priorState, answer, answers, now)
+		// ⚠️ A non-done answer to a PARKED item leaves that state behind: the item
+		// is answered now, so the claim and deadline it was waiting on are stale
+		// and would be read by the next sweep.
+		if item.State != AwaitingEvidenceState {
+			item.EvidenceClaims = nil
+			item.EvidenceDeadline = nil
+		}
 		if err := a.putItem(ctx, tx, *item); err != nil {
 			return errors.Wrap(ctx, err, "update item failed")
 		}

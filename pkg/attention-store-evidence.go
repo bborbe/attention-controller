@@ -110,11 +110,21 @@ func (a *attentionStore) evaluateParkedEvidence(ctx context.Context) ([]evidence
 		}
 		return items[a].deadline.Time().Before(items[b].deadline.Time())
 	})
-	if len(items) > MaxEvidenceProbesPerSweep {
-		items = items[:MaxEvidenceProbesPerSweep]
-	}
+	// ⚠️ The budget bounds PROBE CALLS, not items. One item can carry several
+	// claims (a two-tab answer names two artifacts) and each claim is its own
+	// `gh` call, so an item-count bound would let two multi-claim items spend
+	// four probes' worth of the sweep budget.
 	verdicts := make([]evidenceVerdict, 0, len(items))
+	budget := MaxEvidenceProbesPerSweep
 	for _, item := range items {
+		cost := len(item.claims)
+		if cost == 0 {
+			cost = 1
+		}
+		if cost > budget {
+			break
+		}
+		budget -= cost
 		verdicts = append(verdicts, evidenceVerdict{
 			key:      item.key,
 			observed: EvidenceAllObserved(ctx, item.claims, a.evidenceRunner),
@@ -200,6 +210,12 @@ func (a *attentionStore) applyEvidenceVerdict(
 			return false, errors.Wrap(ctx, err, "remove answered index entry failed")
 		}
 	}
+	// ⚠️ The expiry must be re-armed. A parked item keeps the producer's original
+	// ExpiresAt, and only OpenState items are renewed by the live sweep — so the
+	// clock kept ticking while the item waited and a reopen could land already
+	// expired, closing the card the same minute it came back.
+	expiresAt := now.Add(DefaultItemExpiry)
+	item.ExpiresAt = &expiresAt
 	item.State = OpenState
 	item.EvidenceDeadline = nil
 	item.AnsweredAt = nil
