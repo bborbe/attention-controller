@@ -269,7 +269,7 @@ func (p *routinePolicy) bashRule(
 	// ⚠️ The guard's verdict is cached beside the classifier's: the guard reads
 	// the disk for a glob, and the settle cycle asks again every two seconds.
 	rule, allowed := "bash-denied-path", false
-	if !bashNamesDeniedPath(command, root) {
+	if !bashNamesDeniedPath(ctx, command, root) {
 		rule, allowed = p.classify(ctx, command)
 	}
 	p.mutex.Lock()
@@ -390,9 +390,9 @@ func bashWorkspace(cwd string) (string, bool) {
 // expanded, a relative word is joined with the cwd, and a glob word is expanded
 // so `~/.ss*` is judged by what it reaches. A false hold costs one operator
 // card; a false allow hands a credential to a headless child.
-func bashNamesDeniedPath(command string, cwd string) bool {
+func bashNamesDeniedPath(ctx context.Context, command string, cwd string) bool {
 	home, _ := os.UserHomeDir()
-	words, ok := bashWords(command, home)
+	words, ok := bashWords(ctx, command, home)
 	if !ok || len(words) > routineBashWordCap {
 		return true
 	}
@@ -415,17 +415,22 @@ func bashNamesDeniedPath(command string, cwd string) bool {
 //
 // ⚠️ It is the guard's own reading of the command, so the guard does not lean
 // on the classifier refusing quotes and `$`: `.e"nv"` is the word `.env`.
-func bashWords(command string, home string) ([]string, bool) {
+func bashWords(ctx context.Context, command string, home string) ([]string, bool) {
 	runes := []rune(command)
 	words := make([]string, 0, 8)
 	var word strings.Builder
 	inWord := false
-	flush := func() {
+	flush := func() bool {
+		// ⚠️ A cancelled cycle stops the scan and holds the gate.
+		if ctx.Err() != nil {
+			return false
+		}
 		if inWord {
 			words = append(words, word.String())
 			word.Reset()
 			inWord = false
 		}
+		return true
 	}
 	for index := 0; index < len(runes); index++ {
 		r := runes[index]
@@ -436,19 +441,8 @@ func bashWords(command string, home string) ([]string, bool) {
 				word.WriteRune(runes[index])
 			}
 			inWord = true
-		case r == '\'':
-			end := index + 1
-			for end < len(runes) && runes[end] != '\'' {
-				end++
-			}
-			if end >= len(runes) {
-				return nil, false
-			}
-			word.WriteString(string(runes[index+1 : end]))
-			index = end
-			inWord = true
-		case r == '"':
-			end, ok := bashDoubleQuoted(runes, index+1, home, &word)
+		case r == '\'' || r == '"':
+			end, ok := bashQuoted(runes, index, home, &word)
 			if !ok {
 				return nil, false
 			}
@@ -458,14 +452,33 @@ func bashWords(command string, home string) ([]string, bool) {
 			index += bashHomeVariable(runes[index:], home, &word) - 1
 			inWord = true
 		case unicode.IsSpace(r) || strings.ContainsRune(routineBashWordBreaks, r):
-			flush()
+			if !flush() {
+				return nil, false
+			}
 		default:
 			word.WriteRune(r)
 			inWord = true
 		}
 	}
-	flush()
+	if !flush() {
+		return nil, false
+	}
 	return words, true
+}
+
+// bashQuoted copies the quoted span opening at runes[start] into word and
+// returns the index of its closing quote. A single-quoted span is literal.
+func bashQuoted(runes []rune, start int, home string, word *strings.Builder) (int, bool) {
+	if runes[start] == '"' {
+		return bashDoubleQuoted(runes, start+1, home, word)
+	}
+	for end := start + 1; end < len(runes); end++ {
+		if runes[end] == '\'' {
+			word.WriteString(string(runes[start+1 : end]))
+			return end, true
+		}
+	}
+	return 0, false
 }
 
 // bashDoubleQuoted copies a double-quoted span starting at start into word and
@@ -502,8 +515,11 @@ func bashHomeVariable(runes []rune, home string, word *strings.Builder) int {
 
 // bashHomeVariableLength returns the length of a `${HOME}` or `$HOME` at the
 // start of runes, or 0 — `$HOMEDIR` is a different variable.
+//
+// ⚠️ It reads a bounded prefix, never the rest of the command: it runs on every
+// `$`, so converting the whole tail would make the scan quadratic.
 func bashHomeVariableLength(runes []rune) int {
-	text := string(runes)
+	text := string(runes[:min(len(runes), len("${HOME}"))])
 	if strings.HasPrefix(text, "${HOME}") {
 		return len("${HOME}")
 	}
@@ -521,6 +537,11 @@ func bashHomeVariableLength(runes []rune) int {
 // credential location — literally, through a symlink, as a directory above
 // one, or through a glob.
 func bashWordDenied(word string, cwd string, home string) bool {
+	// ⚠️ `~user`, `~+` and `~-` name a directory the guard cannot resolve without
+	// a user lookup; it fails closed instead.
+	if strings.HasPrefix(word, "~") && word != "~" && !strings.HasPrefix(word, "~/") {
+		return true
+	}
 	path := expandHome(word)
 	if !filepath.IsAbs(path) {
 		path = filepath.Join(cwd, path)

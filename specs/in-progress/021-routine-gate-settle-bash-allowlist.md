@@ -159,3 +159,4 @@ The live classifier rates `cat ~/.claude/.credentials.json`, `head ~/.teamvault.
 - **The guard's verdict is cached** per (item, command) next to the classifier's verdict, for the hold interval.
 - **The process group is killed only when `Run` hit the deadline or the `WaitDelay`.** A classifier whose output a leftover child held open is a `tier-error`.
 - **Residual, accepted.** A recursive read of the workspace itself (`grep -r KEY .`) still reaches a `.env` file inside the workspace. This is the same gap the Read rule documents for `Grep`. Holding every directory argument would refuse the common `grep -rn` case outright.
+- **Round 3.** A word starting with `~` that is neither `~` nor `~/…` (for example `~user`, `~+`, `~-`) is held as `bash-denied-path`, with no user lookup. The `$HOME` scan reads a bounded prefix, so it is linear in the command length. A cancelled cycle stops the word scan and holds the gate.

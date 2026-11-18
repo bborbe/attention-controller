@@ -60,6 +60,16 @@ func markerLines(marker string) int {
 	return strings.Count(string(content), "\n")
 }
 
+// testHome is the test process's own home directory, so a case naming an
+// ancestor of it holds on every runner (`/Users/…`, `/home/runner`).
+func testHome() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		panic(err)
+	}
+	return home
+}
+
 // captureGlog runs fn with glog writing every level to a captured stderr.
 func captureGlog(fn func()) string {
 	toStderr := flag.Lookup("logtostderr").Value.String()
@@ -426,7 +436,7 @@ var _ = Describe("routine gate settle job Bash rule", func() {
 		Entry("home with a slash", "grep -rh token ~/"),
 		Entry("HOME variable alone", "grep -r token $HOME"),
 		Entry("claude dir", "grep -r accessToken ~/.claude"),
-		Entry("an ancestor of home", "grep -r token /Users"),
+		Entry("an ancestor of home", "grep -r token "+filepath.Dir(testHome())),
 		Entry("root", "grep -r token /"),
 		Entry("a relative climb to home", "grep -r token ../../../../../../../../.."),
 		Entry("claude.json", "jq . ~/.claude.json"),
@@ -438,6 +448,12 @@ var _ = Describe("routine gate settle job Bash rule", func() {
 		Entry("backslash", `cat .\env`),
 		Entry("escaped dollar in double quotes", `cat "\$HOME/.netrc"`),
 		Entry("unterminated quote", `cat "README.md`),
+		// Review round 3: a tilde-prefix the guard cannot resolve fails closed.
+		Entry("tilde user", "grep -rh token ~bborbe"),
+		Entry("tilde other user", "ls ~root/.ssh"),
+		Entry("tilde plus", "ls ~+"),
+		Entry("tilde minus", "ls ~-"),
+		Entry("tilde user in a flag value", "jq . --rawfile=~root/x"),
 	)
 
 	It("holds a home glob that reaches a credential directory", func() {
