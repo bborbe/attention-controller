@@ -174,7 +174,9 @@ var _ = Describe("headless answer delivery", func() {
 
 	It("leaves the answer pending while the wrapper is unreachable and retries", func() {
 		// The wrapper is down: nothing was learned, so nothing failed. Recording
-		// `failed` here would drop the operator's answer over a transient outage.
+		// `failed` here would drop the operator's answer over a transient outage —
+		// but recording NOTHING left the card reading `never_attempted`, which the
+		// lost-answer counter counts. `retried` is the third thing it can say.
 		wrapper.verdicts = []pkg.DeliveryVerdict{
 			pkg.DeliveryRetry,
 			pkg.DeliveryRetry,
@@ -185,13 +187,16 @@ var _ = Describe("headless answer delivery", func() {
 
 		Expect(delivery.DeliverHeadless(context.Background(), item)).To(BeFalse())
 		Expect(delivery.DeliverHeadless(context.Background(), item)).To(BeFalse())
-		Expect(store.RecordAttemptCallCount()).To(Equal(0), "a retry is not a failure yet")
+		Expect(store.RecordAttemptCallCount()).To(Equal(1),
+			"one record for the retry, not one per cycle")
+		_, _, _, retryOutcome := store.RecordAttemptArgsForCall(0)
+		Expect(retryOutcome).To(Equal(pkg.RetriedOutcome))
 
 		// The wrapper recovers and the answer lands exactly once.
 		Expect(delivery.DeliverHeadless(context.Background(), item)).To(BeTrue())
 		Expect(delivery.DeliverHeadless(context.Background(), item)).To(BeTrue())
-		Expect(store.RecordAttemptCallCount()).To(Equal(1))
-		_, _, _, outcome := store.RecordAttemptArgsForCall(0)
+		Expect(store.RecordAttemptCallCount()).To(Equal(2))
+		_, _, _, outcome := store.RecordAttemptArgsForCall(1)
 		Expect(outcome).To(Equal(pkg.DeliveredOutcome))
 	})
 
@@ -328,11 +333,15 @@ var _ = Describe("menu answer job headless path", func() {
 		store.ReadBoardReturns(pkg.Items{headlessItem("item-1")}, nil)
 
 		Expect(job.DeliverOnce(context.Background())).To(Succeed())
-		Expect(store.RecordAttemptCallCount()).To(Equal(0))
+		// The first cycle records the retry, so the card never reads
+		// `never_attempted` while an arm is retrying it.
+		Expect(store.RecordAttemptCallCount()).To(Equal(1))
+		_, _, _, retryOutcome := store.RecordAttemptArgsForCall(0)
+		Expect(retryOutcome).To(Equal(pkg.RetriedOutcome))
 
 		Expect(job.DeliverOnce(context.Background())).To(Succeed())
 		Expect(wrapper.delivered).To(HaveLen(2))
-		_, _, _, outcome := store.RecordAttemptArgsForCall(0)
+		_, _, _, outcome := store.RecordAttemptArgsForCall(1)
 		Expect(outcome).To(Equal(pkg.DeliveredOutcome))
 	})
 

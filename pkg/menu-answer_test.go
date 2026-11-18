@@ -155,7 +155,12 @@ var _ = Describe("menu answer job", func() {
 		Expect(store.RecordAttemptCallCount()).To(Equal(1))
 	})
 
-	It("retries without recording when the pane shows no menu", func() {
+	It("records the retry when the pane shows no menu", func() {
+		// ⚠️ Inverted 2026-11-18: this used to pin "retries without recording",
+		// which is the defect. A card whose menu had not drawn closed reading
+		// `never_attempted`, and the lost-answer counter counted it. Measured on
+		// the live board: five menu cards closed 5–21 s after their answer with
+		// 2–11 retries logged and no record written.
 		item := answeredMenuItem("item-1", nil)
 		item.Options = pkg.AnswerOptions{{Label: "Yes"}}
 		item.Answer = &pkg.Answer{Kind: pkg.OptionAnswerKind, Value: "Yes"}
@@ -163,7 +168,9 @@ var _ = Describe("menu answer job", func() {
 		writer.texts = []string{"an ordinary prompt\n"}
 		Expect(job.DeliverOnce(context.Background())).To(Succeed())
 		Expect(writer.sent).To(BeEmpty())
-		Expect(store.RecordAttemptCallCount()).To(Equal(0))
+		Expect(store.RecordAttemptCallCount()).To(Equal(1))
+		_, _, _, outcome := store.RecordAttemptArgsForCall(0)
+		Expect(outcome).To(Equal(pkg.RetriedOutcome))
 	})
 
 	It("records failed when the answer cannot be keyed", func() {
@@ -177,14 +184,16 @@ var _ = Describe("menu answer job", func() {
 		Expect(outcome).To(Equal(pkg.FailedOutcome))
 	})
 
-	It("retries without recording when the menu never closes", func() {
+	It("records the retry when the menu never closes", func() {
 		item := answeredMenuItem("item-1", nil)
 		item.Options = pkg.AnswerOptions{{Label: "Yes"}}
 		item.Answer = &pkg.Answer{Kind: pkg.OptionAnswerKind, Value: "Yes"}
 		store.ReadBoardReturns(pkg.Items{item}, nil)
 		writer.texts = []string{"menu\nEnter to select"}
 		Expect(job.DeliverOnce(context.Background())).To(Succeed())
-		Expect(store.RecordAttemptCallCount()).To(Equal(0))
+		Expect(store.RecordAttemptCallCount()).To(Equal(1))
+		_, _, _, outcome := store.RecordAttemptArgsForCall(0)
+		Expect(outcome).To(Equal(pkg.RetriedOutcome))
 	})
 
 	It("skips an item a prior attempt already delivered", func() {
@@ -294,7 +303,7 @@ var _ = Describe("menu answer job", func() {
 		Expect(outcome).To(Equal(pkg.DeliveredOutcome))
 	})
 
-	It("retries without recording when the pane becomes unreadable while confirming", func() {
+	It("records the retry when the pane becomes unreadable while confirming", func() {
 		// An unreadable pane is not a closed menu: treating it as one would record
 		// a delivery that never happened and drop the answer for good.
 		item := answeredMenuItem("item-1", nil)
@@ -305,10 +314,12 @@ var _ = Describe("menu answer job", func() {
 		writer.unreadableAfter = 1
 		Expect(job.DeliverOnce(context.Background())).To(Succeed())
 		Expect(writer.sent).To(Equal([]string{"1"}))
-		Expect(store.RecordAttemptCallCount()).To(Equal(0))
+		Expect(store.RecordAttemptCallCount()).To(Equal(1))
+		_, _, _, outcome := store.RecordAttemptArgsForCall(0)
+		Expect(outcome).To(Equal(pkg.RetriedOutcome))
 	})
 
-	It("retries without typing when the pane is unreadable before the keys", func() {
+	It("records the retry when the pane is unreadable before the keys", func() {
 		item := answeredMenuItem("item-1", nil)
 		item.Options = pkg.AnswerOptions{{Label: "Yes"}}
 		item.Answer = &pkg.Answer{Kind: pkg.OptionAnswerKind, Value: "Yes"}
@@ -317,7 +328,9 @@ var _ = Describe("menu answer job", func() {
 		writer.unreadableAfter = 0
 		Expect(job.DeliverOnce(context.Background())).To(Succeed())
 		Expect(writer.sent).To(BeEmpty())
-		Expect(store.RecordAttemptCallCount()).To(Equal(0))
+		Expect(store.RecordAttemptCallCount()).To(Equal(1))
+		_, _, _, outcome := store.RecordAttemptArgsForCall(0)
+		Expect(outcome).To(Equal(pkg.RetriedOutcome))
 	})
 
 	It("sends the keys once and gives up after the retry allowance", func() {
@@ -330,11 +343,18 @@ var _ = Describe("menu answer job", func() {
 		writer.texts = []string{"menu\nEnter to select"}
 		Expect(job.DeliverOnce(context.Background())).To(Succeed())
 		Expect(writer.sent).To(Equal([]string{"2"}))
-		Expect(store.RecordAttemptCallCount()).To(Equal(0))
+		// The first retry records that this arm looked; the card is not yet
+		// failed, so the outcome is `retried`.
+		Expect(store.RecordAttemptCallCount()).To(Equal(1))
+		_, _, _, first := store.RecordAttemptArgsForCall(0)
+		Expect(first).To(Equal(pkg.RetriedOutcome))
 
 		Expect(job.DeliverOnce(context.Background())).To(Succeed())
 		Expect(writer.sent).To(Equal([]string{"2"}), "keys must not be re-sent")
-		_, _, _, outcome := store.RecordAttemptArgsForCall(0)
+		// The allowance is spent, so the second cycle settles `failed` — and does
+		// NOT re-write the retry record it already wrote.
+		Expect(store.RecordAttemptCallCount()).To(Equal(2))
+		_, _, _, outcome := store.RecordAttemptArgsForCall(1)
 		Expect(outcome).To(Equal(pkg.FailedOutcome))
 	})
 

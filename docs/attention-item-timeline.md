@@ -55,24 +55,29 @@ When a board first rendered the card.
 
 An absent timestamp renders as `—`, never as a zero delta. A delta computed from a missing stage asserts that the stage took no time, which is the opposite of what an absent stage means.
 
-## Delivery attempts — the four reader-visible outcomes
+## Delivery attempts — the reader-visible outcomes
 
 | Reader-visible outcome | Derivation |
 |---|---|
 | `delivered` | an attempt record exists with `outcome: delivered`, **or** with a `settled` sub-record |
 | `failed` | an attempt record exists with `outcome: failed` |
+| `retrying` | an attempt record exists with `outcome: retried` |
 | `never_attempted` | **no** attempt record, and the item's `answered_at` is **after** the trail epoch |
 | `pre_trail_unknown` | **no** attempt record, and the item's `answered_at` is **before** the trail epoch |
 
-- **Only `delivered` and `failed` are stored**; `never_attempted` and `pre_trail_unknown` are derived by the reader against a trail epoch.
-- **A settled delivery is first-write-wins.** A `delivered` write records a `settled` sub-record (the delivering carrier and its `attempted_at`). A later write still updates the top-level `outcome` / `carrier` / `attempted_at`, but carries the settlement forward untouched, so a redundant carrier arriving after the gate was settled cannot erase a real delivery. Both writes stay visible: the top-level fields are the last write, the settlement is the delivery. Readers use the effective outcome, never the raw `outcome`. A later `delivered` still upgrades an earlier `failed`/`held`.
+- **Only `delivered`, `failed`, `held` and `retried` are stored**; `never_attempted` and `pre_trail_unknown` are derived by the reader against a trail epoch.
+- **`retrying` is not `failed`.** It means an arm RAN and could not reach the session *yet* — a busy or unreadable composer, a menu that had not drawn, a wrapper mid-turn — and is still trying. `failed` is the operator's cue that the answer did not arrive; a busy composer is a transient the arm itself retries. Rendering a retry as `failed` would also light the undeliverable marker on a card that delivers a moment later, which is why the marker's predicate stays `failed || never_attempted` and a `retrying` row carries no marker.
+- **A retry is written once per answer, not once per cycle.** The retry loops run every two seconds for as long as a card lives, so one durable write per cycle would be the hot loop `AttentionDeliveryRetryBackoff` exists to stop. The undeliverable marker takes the record over at `AttentionDeliveryBound`.
+- **A settled delivery is first-write-wins.** A `delivered` write records a `settled` sub-record (the delivering carrier and its `attempted_at`). A later write still updates the top-level `outcome` / `carrier` / `attempted_at`, but carries the settlement forward untouched, so a redundant carrier arriving after the gate was settled cannot erase a real delivery. Both writes stay visible: the top-level fields are the last write, the settlement is the delivery. Readers use the effective outcome, never the raw `outcome`. A later `delivered` still upgrades an earlier `failed`/`held`/`retried`.
 - **The epoch gates on `answered_at`, not `created_at`**, and it is an **instant, not a date**. An unanswered item falls back to `created_at` — the only timestamp it has.
 - **A close is not a delivery.** The discriminator is `answered_at`, never `state`. An item closed with no `answered_at` was *cleared*: its answer's fate is `never_attempted` or `pre_trail_unknown`, never `delivered`.
 - **The attempting arm is not the answering arm**, and the set of attempting arms is open.
 
-### ⚠️ `held` is a code-vs-schema gap
+### ⚠️ `held` and `retried` are code-vs-schema gaps
 
-`pkg/delivery-attempt.go` stores a third outcome, `held` — a deliberate hold, not a failure — while the schema page lists two stored outcomes and two derived states. The renderer must not invent a meaning for it: an answer that is `held` was **not** an undelivered answer, and flagging it as one would light up 245 of the 736 answered cards measured on 2026-11-11. Until the gap is resolved on the schema page, any surface that flags undelivered answers flags exactly `failed` and `never_attempted`.
+`pkg/delivery-attempt.go` stores two outcomes the schema page does not list: `held` — a deliberate hold, not a failure — and `retried` — an arm that looked and could not deliver yet. Both are recorded here as gaps rather than resolved: the schema page owns the outcome vocabulary, and amending it is that page's job, not this document's.
+
+The renderer must not invent a meaning for either. An answer that is `held` was **not** an undelivered answer, and flagging it as one would light up 245 of the 736 answered cards measured on 2026-11-11; a `retried` answer is still being retried, and flagging it would mark a card that delivers a moment later. Until the gap is resolved on the schema page, any surface that flags undelivered answers flags exactly `failed` and `never_attempted`.
 
 **Interim rendering of `held`:** a card whose attempt record is `held` shows **no delivery-outcome line and no marker**. Rendering `—` would be false — an attempt and its timestamp exist — and rendering the literal `held` would name a fifth outcome this page does not list. Silence is the only honest option until the gap is resolved.
 
