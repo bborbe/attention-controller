@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.99.5
 
 - fix: **`attention_lost_answers_total` no longer counts an answer as lost while its delivery is still in flight.** Measured 2026-11-18 on the live board: of the 24 closes the counter had counted since the persistence deploy, five carried a `delivered` attempt record written 22–560 ms AFTER the close — the delivery arm had already pushed the answer and had not yet written its record when the close committed. `countLostAnswer` now writes a durable candidate (`attention-lost-answers-pending`) instead of incrementing, and `finalizeLostAnswers` — run from the existing answered sweep on its one-minute tick — settles it after `LostAnswerGrace` (2 min) by re-reading the attempt trail: a candidate whose record is now anything other than the close-time backfill was delivered or looked at, and is not a loss. The close path no longer moves the counter in either half, so `closeItem` returns an error only. Specs pin the delivered-inside-the-grace race, the grace boundary, the held-after-close case, the single count on re-scan, and a candidate that survives a restart.
 
