@@ -53,40 +53,43 @@ var _ = Describe("WhoNeedsMeReader", func() {
 		}
 	}
 
-	It("joins item fields to a resolver answer of generated values, single-line (AC1, AC2)", func() {
-		// Generated, not constant: a hardcoded literal in the reader cannot match.
-		name := fmt.Sprintf("worker-%d", stdtime.Now().UnixNano())
-		task := fmt.Sprintf("task-%d", stdtime.Now().UnixNano())
-		item := permissionItem()
-		item.Payload = "Approve the\ndeploy?\n\nYes/no" // multi-line must collapse
-		store := &mocks.AttentionStore{}
-		store.ReadReturns(pkg.Items{item}, nil)
-		provenance := &mocks.ProvenanceResolver{}
-		provenance.ResolveReturns(pkg.Provenances{
-			"store-1": {Pane: "3", Routable: true, SessionName: name, TaskName: task},
-		})
-		panes := &mocks.PaneLister{}
-		panes.ListReturns(map[int]pkg.Pane{}, nil)
+	It(
+		"joins item fields to a resolver answer of generated values, single-line (AC1, AC2)",
+		func() {
+			// Generated, not constant: a hardcoded literal in the reader cannot match.
+			name := fmt.Sprintf("worker-%d", stdtime.Now().UnixNano())
+			task := fmt.Sprintf("task-%d", stdtime.Now().UnixNano())
+			item := permissionItem()
+			item.Payload = "Approve the\ndeploy?\n\nYes/no" // multi-line must collapse
+			store := &mocks.AttentionStore{}
+			store.ReadReturns(pkg.Items{item}, nil)
+			provenance := &mocks.ProvenanceResolver{}
+			provenance.ResolveReturns(pkg.Provenances{
+				"store-1": {Pane: "3", Routable: true, SessionName: name, TaskName: task},
+			})
+			panes := &mocks.PaneLister{}
+			panes.ListReturns(map[int]pkg.Pane{}, nil)
 
-		feed, err := newReader(store, provenance, panes, "", "").Read(ctx)
-		Expect(err).To(BeNil())
-		Expect(feed.Source).To(Equal("store"))
-		Expect(feed.Sources.Store).To(Equal("ok"))
-		Expect(feed.Items).To(HaveLen(1))
-		row := feed.Items[0]
-		Expect(row.ItemID).To(Equal("store-1"))
-		Expect(row.DedupKey).To(Equal("dedup-1"))
-		Expect(row.SessionID).To(Equal("session-abc"))
-		Expect(row.Kind).To(Equal("permission"))
-		Expect(row.SessionName).To(Equal(name))
-		Expect(row.Task).To(Equal(task))
-		Expect(row.Pane).To(Equal("3"))
-		Expect(row.AgeSeconds).To(BeNumerically(">=", 89))
-		// AC1: no field carries a multi-line preformatted feed.
-		Expect(row.Text).ToNot(ContainSubstring("\n"))
-		// AC7: the reader reaches the store through Read only.
-		Expect(store.ReadCallCount()).To(Equal(1))
-	})
+			feed, err := newReader(store, provenance, panes, "", "").Read(ctx)
+			Expect(err).To(BeNil())
+			Expect(feed.Source).To(Equal("store"))
+			Expect(feed.Sources.Store).To(Equal("ok"))
+			Expect(feed.Items).To(HaveLen(1))
+			row := feed.Items[0]
+			Expect(row.ItemID).To(Equal("store-1"))
+			Expect(row.DedupKey).To(Equal("dedup-1"))
+			Expect(row.SessionID).To(Equal("session-abc"))
+			Expect(row.Kind).To(Equal("permission"))
+			Expect(row.SessionName).To(Equal(name))
+			Expect(row.Task).To(Equal(task))
+			Expect(row.Pane).To(Equal("3"))
+			Expect(row.AgeSeconds).To(BeNumerically(">=", 89))
+			// AC1: no field carries a multi-line preformatted feed.
+			Expect(row.Text).ToNot(ContainSubstring("\n"))
+			// AC7: the reader reaches the store through Read only.
+			Expect(store.ReadCallCount()).To(Equal(1))
+		},
+	)
 
 	It("omits an ack item — it is not a gate (AC1)", func() {
 		store := &mocks.AttentionStore{}

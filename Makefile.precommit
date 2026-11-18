@@ -13,7 +13,12 @@ ensure:
 format:
 	find . -type f -name 'go.mod' -not -path './vendor/*' -exec go run github.com/shoenig/go-modtool@$(GO_MODTOOL_VERSION) -w fmt "{}" \;
 	go run github.com/incu6us/goimports-reviser/v3@$(GOIMPORTS_REVISER_VERSION) -project-name github.com/bborbe/attention-controller -format -excludes vendor ./...
-	find . -type d -name vendor -prune -o -type f -name '*.go' -print0 | xargs -0 -n 10 go run github.com/segmentio/golines@$(GOLINES_VERSION) --max-len=100 -w
+	# --base-formatter=gofmt is load-bearing: golines otherwise picks goimports
+	# from PATH and spawns it twice per file (before and after shortening) —
+	# ~640 subprocesses for this tree, which collapses under machine load.
+	# gofmt keeps base formatting in-process; goimports-reviser above and
+	# gofmt below already cover imports and the final formatting.
+	find . -type d -name vendor -prune -o -type f -name '*.go' -print0 | xargs -0 -n 10 go run github.com/segmentio/golines@$(GOLINES_VERSION) --max-len=100 --base-formatter=gofmt -w
 	# golines last, then gofmt last so its wrapping is normalized and the gofmt lint check passes
 	find . -type f -name '*.go' -not -path './vendor/*' -exec gofmt -w "{}" +
 
