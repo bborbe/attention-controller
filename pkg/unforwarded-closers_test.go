@@ -445,18 +445,21 @@ var _ = Describe("UnforwardedOutcome", func() {
 	// `expires_at`, so a gate that DID reach the board disappears from the store
 	// and would otherwise read as lost — 25 of the 26 question/permission findings
 	// on 2026-11-17. The ingest's delivery ledger is what proves it landed.
-	It("reports no finding for a row whose delivery the ledger records after the item was pruned", func() {
-		fixture := newUnforwardedFixture()
-		fixture.openRow("s7b", "ggggggge", "question", "", unforwardedNow-600, "Stop")
-		// No store item: the prune already removed it. Only the ledger knows.
-		fixture.writeForwardedLedger("ggggggge", unforwardedNow-600)
+	It(
+		"reports no finding for a row whose delivery the ledger records after the item was pruned",
+		func() {
+			fixture := newUnforwardedFixture()
+			fixture.openRow("s7b", "ggggggge", "question", "", unforwardedNow-600, "Stop")
+			// No store item: the prune already removed it. Only the ledger knows.
+			fixture.writeForwardedLedger("ggggggge", unforwardedNow-600)
 
-		result := fixture.scanner().Scan(context.Background())
+			result := fixture.scanner().Scan(context.Background())
 
-		Expect(result.Err).To(BeNil())
-		Expect(result.Outcome()).To(Equal(pkg.UnforwardedOutcomeNone))
-		Expect(result.Findings).To(BeEmpty())
-	})
+			Expect(result.Err).To(BeNil())
+			Expect(result.Outcome()).To(Equal(pkg.UnforwardedOutcomeNone))
+			Expect(result.Findings).To(BeEmpty())
+		},
+	)
 
 	// The paired control for the ledger: a mark for a DIFFERENT item must not
 	// excuse this row. Without it, a reader that returned every marked id
