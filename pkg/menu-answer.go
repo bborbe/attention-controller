@@ -604,7 +604,11 @@ func (j *menuAnswerJob) deliver(
 	}
 	// Pane 0 makes the locator resolve the pane from the session's own tty,
 	// which is the correct path for a card whose recorded pane was never ours.
-	delivery := &PaneDelivery{SessionID: sessionID, StoreItemID: string(item.ItemID)}
+	delivery := &PaneDelivery{
+		SessionID:       sessionID,
+		StoreItemID:     string(item.ItemID),
+		AnswerMechanism: item.AnswerMechanism,
+	}
 	verdict, pane, reason := j.locator.Locate(ctx, delivery)
 	if verdict != DeliveryOK {
 		switch verdict {

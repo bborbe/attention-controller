@@ -288,6 +288,64 @@ var _ = Describe("pane carrier", func() {
 		Expect(writer.sent).To(BeEmpty())
 	})
 
+	// ⚠️ The turn-ended permission arm. A permission gate holds its turn open, so
+	// a turn-end after it proves the gate closed inside the turn — there is
+	// nothing left to answer, and carding it said a live session was dead. The
+	// question arm above keeps an honest refusal: its answer really was not
+	// delivered. This is the arm the Python watcher had and the Go port dropped.
+	It("resolves a permission gate whose session is dead and its turn ended", func() {
+		delete(writer.sessionTTY, sessionID)
+		writer.entries[sessionID] = SessionEntry{
+			SessionID: sessionID, PID: 999999, Entrypoint: "cli",
+		}
+		transcript.turnEnded[sessionID] = true
+		delivery.AnswerMechanism = PermissionAnswerMechanism
+		verdict, reason := carrier.TypeIntoPane(ctx, delivery, "allow", false)
+		Expect(verdict).To(Equal(DeliveryResolved))
+		Expect(reason).To(ContainSubstring("permission gate closed inside the turn"))
+		Expect(writer.sent).To(BeEmpty())
+	})
+
+	// ⚠️ The record is deleted on exit, so a normally-exited session reaches the
+	// verdict with ok=false. The turn-end check must still fire, or the false
+	// "has no live process with a tty" card returns for exactly the population
+	// this fix serves.
+	It("resolves a dead turn-ended permission gate whose registry record is gone", func() {
+		delete(writer.sessionTTY, sessionID)
+		delete(writer.entries, sessionID)
+		transcript.turnEnded[sessionID] = true
+		delivery.AnswerMechanism = PermissionAnswerMechanism
+		verdict, reason := carrier.TypeIntoPane(ctx, delivery, "allow", false)
+		Expect(verdict).To(Equal(DeliveryResolved))
+		Expect(reason).To(ContainSubstring("permission gate closed inside the turn"))
+		Expect(writer.sent).To(BeEmpty())
+	})
+
+	It("keeps the plain refusal for a dead mid-turn permission gate", func() {
+		delete(writer.sessionTTY, sessionID)
+		writer.entries[sessionID] = SessionEntry{
+			SessionID: sessionID, PID: 999999, Entrypoint: "cli",
+		}
+		delivery.AnswerMechanism = PermissionAnswerMechanism
+		verdict, reason := carrier.TypeIntoPane(ctx, delivery, "allow", false)
+		Expect(verdict).To(Equal(DeliveryRefuse))
+		Expect(reason).To(ContainSubstring("has no live process with a tty"))
+		Expect(writer.sent).To(BeEmpty())
+	})
+
+	It("keeps the refusal for a live non-headless session with no tty", func() {
+		delete(writer.sessionTTY, sessionID)
+		writer.entries[sessionID] = SessionEntry{
+			SessionID: sessionID, PID: os.Getpid(), Entrypoint: "cli",
+		}
+		transcript.turnEnded[sessionID] = true
+		delivery.AnswerMechanism = PermissionAnswerMechanism
+		verdict, reason := carrier.TypeIntoPane(ctx, delivery, "allow", false)
+		Expect(verdict).To(Equal(DeliveryRefuse))
+		Expect(reason).To(ContainSubstring("has no live process with a tty"))
+		Expect(writer.sent).To(BeEmpty())
+	})
+
 	It("retries when the pane list could not be read", func() {
 		writer.panes = map[int]Pane{}
 		writer.listErr = errors.New("wezterm down")
