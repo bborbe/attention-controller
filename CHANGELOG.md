@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.96.1
 
 - test: pin the turn-end split in `paneCarrier.noPaneVerdict`. A reaped non-headless session whose transcript ends its turn is refused with "ended its turn and its process exited — answer not delivered", while a session that died mid-turn keeps "has no live process with a tty". Both directions are asserted, so neither a permanent turn-end reason nor a dropped one passes. Ported from `test_attention_watcher_turn_ended.py` cases (b) and (c); the `turnEnded` fixture was never set in any spec before this.
 
