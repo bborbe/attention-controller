@@ -2,6 +2,9 @@
 status: draft
 ---
 
+> ⚠️ **DO NOT APPROVE — this draft is materially wrong and needs a rewrite (audited 2026-11-18, 5/10).**
+> It restates `manager-attention-watch.py` from memory rather than from the source. Against `is_gated` (`:1051`) the gated union has six limbs, not three: the `stuck:<cause>` limb and the headless-live limb (`None` status + fresh heartbeat, transcript decides alone) are both missing, and the script's docstring says collapsing the latter *"is what holds every headless worker forever"*. `CLEARED` has two `False` sites (`idle:no-ask` and `headless:no-ask`), not one. `HELD` has four causes, not two — the lost-sight cause and `closer-unknown` are missing, and lost-sight is the script's documented false-`CLEARED` route. The fail-open rule for an unreadable **registry** is backwards: the script HELDs and drops. Five user-observable behaviours have no DB, AC or Non-goal while this spec's Goal deletes the script: content-keyed `NEW GATE` re-emit, `AGED` escalation at 15/60 min, re-post of a lost card, the two-poll stability gate, and incident/liveness records. `pkg/transcript-reader.go` cannot supply the three reads the port needs, so the "no second reader" constraint is false. The full inventory is recorded on the owning task under subtask 3(e).
+
 ## Summary
 
 - `manager-attention-watch.py` reads the workers' own transcripts because a mid-turn `👤 You:` closer never reaches the store. That read moves **in-process**, so the script is deleted without reversing the 2026-10-17 closer-mirror ruling.
