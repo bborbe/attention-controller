@@ -25,7 +25,7 @@ With this change and the supervisor arming-site removal, a manager is woken for 
 ## Non-goals
 
 - **`answered-watch.py`.** Its fold into the delivery arm is spec `020-answered-signal-folded-into-delivery-arm`.
-- **`manager-attention-watch.py`.** Blocked on an open operator decision (attention card `8d165bb0b9cf2b9745280eb1ba3b550c`).
+- **`manager-attention-watch.py`.** The operator ruled (card `8d165bb0b9cf2b9745280eb1ba3b550c`, option 1): SC3 is scoped to store-borne raises and the closer-mirror ruling stands, so the script's transcript read moves in-process rather than being dropped. That port is `manager-transcript-wake`; it extends this spec's job as a second source.
 - **`permission-answer-poll.py`.** A `PreToolUse` hook; its port is spec `022-permission-answer-hook-streams`.
 - **Re-deciding ownership.** The four hops and hop 3b are the script's existing policy; this moves the computation, it does not change it.
 - **A new HTTP route.** This adds no route; it consumes the store, ledger, registry and pane list the process already holds.
