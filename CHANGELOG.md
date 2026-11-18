@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- fix: Repoint the sweep-gate notify job's gate and checker at the `claude-wrapper` daemon's one-shot modes (`-sweep-gate-mode tick` / `check`) instead of spawning the vault-side Python script, resolving the binary by absolute path rather than from `PATH`.
+
 ## v0.99.0
 
 - feat: **the `ANSWERED` signal is carried by the delivery arms themselves, so a session learns its card was answered without a second poller.** The signal fires from each arm that carries an answered card — the pane arm, the headless arm and the menu arm — through one shared recorder, read from the item's own state and `producer_id` and gated by the ported attribution ladder, so a scripted click is never reported as the operator's answer. It replaces the per-manager `answered-watch.py` process, which consumed the same store write and reconnected every 900 s. Dedupe is the existing durable `DeliveryReport`, and the signal is emitted after the delivered outcome is recorded.

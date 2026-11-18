@@ -80,7 +80,9 @@ var _ = Describe("Evidence-backed close", func() {
 		Expect(answered.State).To(Equal(AwaitingEvidenceState))
 		Expect(answered.AnsweredAt).NotTo(BeNil(), "the answer itself is still recorded")
 		Expect(answered.EvidenceDeadline).NotTo(BeNil())
-		Expect(answered.EvidenceDeadline.Time().Sub(now.Time())).To(Equal(time.Duration(EvidenceDeadline)))
+		Expect(
+			answered.EvidenceDeadline.Time().Sub(now.Time()),
+		).To(Equal(time.Duration(EvidenceDeadline)))
 	})
 
 	// Negative control: without this, "parked" could be the state every answer
@@ -106,7 +108,9 @@ var _ = Describe("Evidence-backed close", func() {
 		})
 
 		Expect(answered.State).To(Equal(AwaitingEvidenceState))
-		Expect(answered.EvidenceClaims).To(Equal([]string{"https://github.com/bborbe/attention-controller/pull/77"}))
+		Expect(
+			answered.EvidenceClaims,
+		).To(Equal([]string{"https://github.com/bborbe/attention-controller/pull/77"}))
 	})
 
 	It("closes the item once the claimed pull request is merged", func() {
@@ -152,7 +156,9 @@ var _ = Describe("Evidence-backed close", func() {
 		Expect(err).To(BeNil())
 		Expect(got.State).To(Equal(OpenState))
 		Expect(got.EvidenceDeadline).To(BeNil())
-		Expect(got.EvidenceClaims).NotTo(BeEmpty(), "the claim survives so the card can say what it waits for")
+		Expect(
+			got.EvidenceClaims,
+		).NotTo(BeEmpty(), "the claim survives so the card can say what it waits for")
 		// The card must actually reappear: a leftover answer stamp keeps the ask
 		// in the durable answered index, which makes the board suppress the
 		// reopened card and the re-raise sweep close it.
@@ -206,7 +212,13 @@ var _ = Describe("Evidence-backed close", func() {
 			return "", errors.New("gh: not logged in")
 		}
 
-		Expect(EvidenceObserved(ctx, "https://github.com/bborbe/attention-controller/pull/77", store.evidenceRunner)).To(BeFalse())
+		Expect(
+			EvidenceObserved(
+				ctx,
+				"https://github.com/bborbe/attention-controller/pull/77",
+				store.evidenceRunner,
+			),
+		).To(BeFalse())
 	})
 
 	It("never guesses an artifact from an answer that named none", func() {
@@ -225,7 +237,13 @@ var _ = Describe("Evidence-backed close", func() {
 			return "CLOSED", nil
 		}
 
-		Expect(EvidenceObserved(ctx, "https://github.com/bborbe/attention-controller/pull/77", store.evidenceRunner)).To(BeFalse())
+		Expect(
+			EvidenceObserved(
+				ctx,
+				"https://github.com/bborbe/attention-controller/pull/77",
+				store.evidenceRunner,
+			),
+		).To(BeFalse())
 	})
 
 	It("records every artifact a two-pull-request answer names", func() {
@@ -269,30 +287,63 @@ var _ = Describe("Evidence-backed close", func() {
 	// The review's path findings, pinned: prose punctuation and a markdown link
 	// both have to yield the path itself, or a real artifact never verifies.
 	It("extracts a path from prose and from a markdown link", func() {
-		Expect(EvidenceClaimsFromText("done, see /srv/app/build.log.")).To(Equal([]string{"/srv/app/build.log"}))
-		Expect(EvidenceClaimsFromText("done [build](/srv/app/build.log)")).To(Equal([]string{"/srv/app/build.log"}))
+		Expect(
+			EvidenceClaimsFromText("done, see /srv/app/build.log."),
+		).To(Equal([]string{"/srv/app/build.log"}))
+		Expect(
+			EvidenceClaimsFromText("done [build](/srv/app/build.log)"),
+		).To(Equal([]string{"/srv/app/build.log"}))
 	})
 
 	// The option-label finding, pinned: a closed option set must not acquire
 	// false positives from a bare prefix.
 	It("parks a whole-word done option but not a label that merely starts with it", func() {
-		Expect(IsDoneClassAnswer(&Answer{Kind: OptionAnswerKind, Value: "done — reviewed and flipped both"})).To(BeTrue())
+		Expect(
+			IsDoneClassAnswer(
+				&Answer{Kind: OptionAnswerKind, Value: "done — reviewed and flipped both"},
+			),
+		).To(BeTrue())
 		Expect(IsDoneClassAnswer(&Answer{Kind: OptionAnswerKind, Value: "done"})).To(BeTrue())
-		Expect(IsDoneClassAnswer(&Answer{Kind: OptionAnswerKind, Value: "done for now"})).To(BeFalse())
-		Expect(IsDoneClassAnswer(&Answer{Kind: OptionAnswerKind, Value: "deployed to staging"})).To(BeFalse())
-		Expect(IsDoneClassAnswer(&Answer{Kind: OptionAnswerKind, Value: "fixed pending review"})).To(BeFalse())
+		Expect(
+			IsDoneClassAnswer(&Answer{Kind: OptionAnswerKind, Value: "done for now"}),
+		).To(BeFalse())
+		Expect(
+			IsDoneClassAnswer(&Answer{Kind: OptionAnswerKind, Value: "deployed to staging"}),
+		).To(BeFalse())
+		Expect(
+			IsDoneClassAnswer(&Answer{Kind: OptionAnswerKind, Value: "fixed pending review"}),
+		).To(BeFalse())
 		// Free text keeps the prefix rule that the motivating answer needs.
-		Expect(IsDoneClassAnswer(&Answer{Kind: TextAnswerKind, Value: "done — reviewed and flipped both"})).To(BeTrue())
+		Expect(
+			IsDoneClassAnswer(
+				&Answer{Kind: TextAnswerKind, Value: "done — reviewed and flipped both"},
+			),
+		).To(BeTrue())
 	})
 
 	// The free-text finding, pinned: a bare prefix must not make an unfinished
 	// answer a claim, while an artifact right after the word still must.
 	It("rejects a free-text answer that only starts with a done word", func() {
-		Expect(IsDoneClassAnswer(&Answer{Kind: TextAnswerKind, Value: "done for now"})).To(BeFalse())
-		Expect(IsDoneClassAnswer(&Answer{Kind: TextAnswerKind, Value: "fixed pending review"})).To(BeFalse())
-		Expect(IsDoneClassAnswer(&Answer{Kind: TextAnswerKind, Value: "done? no, still working"})).To(BeFalse())
-		Expect(IsDoneClassAnswer(&Answer{Kind: TextAnswerKind, Value: "done https://github.com/bborbe/attention-controller/pull/77"})).To(BeTrue())
-		Expect(IsDoneClassAnswer(&Answer{Kind: TextAnswerKind, Value: "done /srv/app/build.log"})).To(BeTrue())
+		Expect(
+			IsDoneClassAnswer(&Answer{Kind: TextAnswerKind, Value: "done for now"}),
+		).To(BeFalse())
+		Expect(
+			IsDoneClassAnswer(&Answer{Kind: TextAnswerKind, Value: "fixed pending review"}),
+		).To(BeFalse())
+		Expect(
+			IsDoneClassAnswer(&Answer{Kind: TextAnswerKind, Value: "done? no, still working"}),
+		).To(BeFalse())
+		Expect(
+			IsDoneClassAnswer(
+				&Answer{
+					Kind:  TextAnswerKind,
+					Value: "done https://github.com/bborbe/attention-controller/pull/77",
+				},
+			),
+		).To(BeTrue())
+		Expect(
+			IsDoneClassAnswer(&Answer{Kind: TextAnswerKind, Value: "done /srv/app/build.log"}),
+		).To(BeTrue())
 	})
 
 	// The blocking review finding, pinned: a permission gate's ARM re-answer
@@ -308,7 +359,9 @@ var _ = Describe("Evidence-backed close", func() {
 			Value: "done — reviewed and flipped both",
 		}, nil, now)
 
-		Expect(item.State).To(Equal(AnsweredState), "an answered item must not become awaiting_evidence")
+		Expect(
+			item.State,
+		).To(Equal(AnsweredState), "an answered item must not become awaiting_evidence")
 		Expect(item.EvidenceDeadline).To(BeNil())
 	})
 
@@ -316,8 +369,20 @@ var _ = Describe("Evidence-backed close", func() {
 	It("records the claims of every done-class answer, not just the first", func() {
 		item := pushQuestion()
 		item.parkForEvidence(OpenState, nil, Answers{
-			{Question: "first", Answer: Answer{Kind: TextAnswerKind, Value: "done https://github.com/bborbe/attention-controller/pull/77"}},
-			{Question: "second", Answer: Answer{Kind: TextAnswerKind, Value: "done https://github.com/bborbe/attention-controller/pull/80"}},
+			{
+				Question: "first",
+				Answer: Answer{
+					Kind:  TextAnswerKind,
+					Value: "done https://github.com/bborbe/attention-controller/pull/77",
+				},
+			},
+			{
+				Question: "second",
+				Answer: Answer{
+					Kind:  TextAnswerKind,
+					Value: "done https://github.com/bborbe/attention-controller/pull/80",
+				},
+			},
 		}, now)
 
 		Expect(item.State).To(Equal(AwaitingEvidenceState))

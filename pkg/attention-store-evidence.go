@@ -8,8 +8,8 @@ import (
 	"context"
 	"sort"
 
-	libkv "github.com/bborbe/kv"
 	"github.com/bborbe/errors"
+	libkv "github.com/bborbe/kv"
 	libtime "github.com/bborbe/time"
 )
 
