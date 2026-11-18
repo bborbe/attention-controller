@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- feat: complete `pkg/attnlog` for the `Stop` and `UserPromptSubmit` hook events — the fence-aware closer walker mints a question item for a `pick`/`approve:`/`review:`/`you run:` closer or an explicit `📣 Board:` opt-in, records `idle` for a turn with no closer, and suppresses `nothing`/parked/no-reply/echo-of-a-posted-card/manager-settleable closers into `suppressed.jsonl`; a system-envelope `UserPromptSubmit` closes a question item with a local `forward:false` record so the local feed clears while the board item stays open, a non-envelope turn falls through to the forwardable close, `SessionEnd` closes whatever is open and clears the tool marker, and all eight hook events are dispatched. `hack/attnlog-parity` gains a deterministic randomized differential of 100 payloads per event across all eight events plus an unknown one, covering random tools, arbitrary `tool_input`, non-ASCII, a detail over 4000 code points, credential-shaped strings and `cleared_by` variants.
+
 ## v0.96.0
 
 - feat: add `pkg/attnlog` and `cmd/attention-log-event`, a compiled replacement for the `attention-log.py` hook that writes the attention event store for `PreToolUse`, `PostToolUse`, `PostToolUseFailure` and `SessionEnd`; it ports `redact`/`scrub_detail` as distinct functions, the `EventItemID` dedup key, the `.events.jsonl`/`.open.json`/`.tool.json` store shapes, `close_open`'s fail-open tool rules and the answer-marker attribution, exits 0 on malformed input, and spawns no Python interpreter. A parity harness in `hack/attnlog-parity` deep-equals its records against a reference writer.
