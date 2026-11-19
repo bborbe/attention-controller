@@ -489,6 +489,27 @@ func (a *application) createAttentionStore(
 			pkg.WithExpiryCloseWriter(attnlog.NewExpiryCloseWriter(stateDir)),
 		)
 	}
+	// ⚠️ The pane lister and the session registry are what let the evidence
+	// sweep tell a DEAD target from an UNPROVABLE one. Without both, `targetGone`
+	// answers false forever and the retirement never fires in this process — the
+	// change would ship as a no-op while its tests passed. A host with no
+	// WezTerm (a cluster backend) simply gets a lister whose listing fails, which
+	// is unprovable, which reopens exactly as before.
+	sessionsDir := a.SessionsDir
+	if sessionsDir == "" {
+		resolved, resolveErr := defaultSessionsDir(ctx)
+		if resolveErr != nil {
+			glog.Warningf("resolve sessions dir failed: %v", resolveErr)
+		}
+		sessionsDir = resolved
+	}
+	if sessionsDir != "" {
+		options = append(
+			options,
+			pkg.WithSessionsDir(sessionsDir),
+			pkg.WithPaneLister(pkg.NewWeztermPaneLister(libtime.NewCurrentDateTime())),
+		)
+	}
 	return pkg.NewAttentionStore(
 		db,
 		pkg.NewItemIDGenerator(),
