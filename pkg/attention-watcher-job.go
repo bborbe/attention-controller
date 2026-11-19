@@ -230,16 +230,21 @@ func (j *attentionWatcherJob) DeliverOnce(ctx context.Context) error {
 		}
 		j.deliver(ctx, item, reports[item.ItemID])
 	}
-	// ⚠️ The hold's bounded fallback: an open, answered card whose delivery never
-	// succeeded must leave the open set past AttentionDeliveryBound, carrying the
-	// undeliverable marker the trail writes. This pass runs over EVERY open
-	// answered item, not only the deliverable ones, because a parked card
-	// (exhausted attempts) is exactly the population that will never deliver and
-	// would otherwise sit on the board forever. The delivery report is re-read so
-	// a card that settled in THIS tick is never closed as undelivered.
+	j.closeOverdueHeld(ctx, items)
+	return nil
+}
+
+// closeOverdueHeld is the hold's bounded fallback: an open, answered card whose
+// delivery never succeeded must leave the open set past AttentionDeliveryBound,
+// carrying the undeliverable marker the trail writes. It runs over EVERY open
+// answered item, not only the deliverable ones, because a parked card (exhausted
+// attempts) is exactly the population that will never deliver and would otherwise
+// sit on the board forever. The delivery report is re-read so a card that settled
+// in THIS tick is never closed as undelivered.
+func (j *attentionWatcherJob) closeOverdueHeld(ctx context.Context, items Items) {
 	for _, item := range items {
 		if err := ctx.Err(); err != nil {
-			return nil
+			return
 		}
 		if item.State != OpenState || item.AnsweredAt == nil {
 			continue
@@ -264,7 +269,6 @@ func (j *attentionWatcherJob) DeliverOnce(ctx context.Context) error {
 		j.markUndeliverableIfOverdue(ctx, item, report, "delivery bound exceeded")
 		j.closeUndelivered(ctx, item)
 	}
-	return nil
 }
 
 // eligible reports whether an item may be attempted NOW, applying the backoff

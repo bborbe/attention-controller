@@ -124,7 +124,12 @@ var _ = Describe("Answer hold", func() {
 		// (DeliveryReport.Status == failed), never for `held`. So the close must
 		// keep the `failed` record, which recordCloseAttempt does (it never
 		// overwrites an existing attempt).
-		_, err := store.RecordAttempt(ctx, item.ItemID, "attention-watcher:undeliverable", pkg.FailedOutcome)
+		_, err := store.RecordAttempt(
+			ctx,
+			item.ItemID,
+			"attention-watcher:undeliverable",
+			pkg.FailedOutcome,
+		)
 		Expect(err).To(BeNil())
 
 		closed, err := store.CloseUndelivered(ctx, item.ItemID)
@@ -133,7 +138,9 @@ var _ = Describe("Answer hold", func() {
 
 		report, err := store.Delivery(ctx, item.ItemID)
 		Expect(err).To(BeNil())
-		Expect(report.Status).To(Equal(pkg.FailedStatus), "SC4: the close must carry the visible undeliverable marker")
+		Expect(
+			report.Status,
+		).To(Equal(pkg.FailedStatus), "SC4: the close must carry the visible undeliverable marker")
 	})
 
 	It("records held on a bare close with no prior attempt", func() {
