@@ -33,6 +33,7 @@ func (s *recordingCrossingSink) Raise(
 var _ = Describe("ContextCrossingJob", func() {
 	var ctx context.Context
 	var dir string
+	var bookPath string
 	var sink *recordingCrossingSink
 
 	writeState := func(name string, sessionID string, tokens int) {
@@ -51,6 +52,7 @@ var _ = Describe("ContextCrossingJob", func() {
 			&fixedLiveness{live: live},
 			threshold,
 			stdtime.Hour,
+			bookPath,
 		)
 	}
 
@@ -59,6 +61,9 @@ var _ = Describe("ContextCrossingJob", func() {
 		var err error
 		dir, err = os.MkdirTemp("", "crossing-")
 		Expect(err).NotTo(HaveOccurred())
+		// The book lives in its own directory: a *.json file beside the readings
+		// would be listed as one of them and decoded on every scan.
+		bookPath = filepath.Join(dir, "state", "crossing-book.json")
 		sink = &recordingCrossingSink{}
 	})
 
@@ -109,7 +114,84 @@ var _ = Describe("ContextCrossingJob", func() {
 
 		Expect(sink.raised).To(BeEmpty())
 	})
+
+	It("raises once for a session that stays over the threshold across ticks", func() {
+		writeState("a.json", "sid-1", 600000)
+		one := job(true, 500000)
+
+		Expect(one.ScanOnce(ctx)).To(Succeed())
+		Expect(one.ScanOnce(ctx)).To(Succeed())
+		Expect(one.ScanOnce(ctx)).To(Succeed())
+
+		Expect(sink.raised).To(Equal([]string{"sid-1"}))
+	})
+
+	It("re-arms after a real sub-threshold reading", func() {
+		one := job(true, 500000)
+
+		writeState("a.json", "sid-1", 600000)
+		Expect(one.ScanOnce(ctx)).To(Succeed())
+		writeState("a.json", "sid-1", 100000)
+		Expect(one.ScanOnce(ctx)).To(Succeed())
+		writeState("a.json", "sid-1", 600000)
+		Expect(one.ScanOnce(ctx)).To(Succeed())
+
+		Expect(sink.raised).To(Equal([]string{"sid-1", "sid-1"}))
+	})
+
+	It("does not re-arm on a zero reading", func() {
+		one := job(true, 500000)
+
+		writeState("a.json", "sid-1", 600000)
+		Expect(one.ScanOnce(ctx)).To(Succeed())
+		writeState("a.json", "sid-1", 0)
+		Expect(one.ScanOnce(ctx)).To(Succeed())
+		writeState("a.json", "sid-1", 600000)
+		Expect(one.ScanOnce(ctx)).To(Succeed())
+
+		Expect(sink.raised).To(Equal([]string{"sid-1"}))
+	})
+
+	It("does not re-raise after a restart over the same book", func() {
+		writeState("a.json", "sid-1", 600000)
+
+		Expect(job(true, 500000).ScanOnce(ctx)).To(Succeed())
+		Expect(job(true, 500000).ScanOnce(ctx)).To(Succeed())
+
+		Expect(sink.raised).To(Equal([]string{"sid-1"}))
+	})
+
+	It("re-arms a session that is no longer live", func() {
+		writeState("a.json", "sid-1", 600000)
+		liveness := &switchableLiveness{live: true}
+		one := pkg.NewContextCrossingJob(
+			dir,
+			sink,
+			liveness,
+			500000,
+			stdtime.Hour,
+			bookPath,
+		)
+
+		Expect(one.ScanOnce(ctx)).To(Succeed())
+		liveness.live = false
+		Expect(one.ScanOnce(ctx)).To(Succeed())
+		liveness.live = true
+		Expect(one.ScanOnce(ctx)).To(Succeed())
+
+		Expect(sink.raised).To(Equal([]string{"sid-1", "sid-1"}))
+	})
 })
+
+// switchableLiveness flips between live and not, so a spec can drive a
+// session's death and resume within one job.
+type switchableLiveness struct {
+	live bool
+}
+
+func (l *switchableLiveness) IsLive(_ context.Context, _ string) bool {
+	return l.live
+}
 
 var _ = Describe("StoreContextCrossingSink", func() {
 	var ctx context.Context
