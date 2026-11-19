@@ -77,6 +77,27 @@ var _ = Describe("attention watcher delivery job", func() {
 		Expect(outcome).To(Equal(pkg.DeliveredOutcome))
 	})
 
+	It("settles a held card (open + answered) once delivery is observed", func() {
+		held := answeredItem("item-1", "operator", pkg.Decision("allow"))
+		held.State = pkg.OpenState
+		store.ReadBoardReturns(pkg.Items{held}, nil)
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+
+		Expect(store.RecordAttemptCallCount()).To(Equal(1))
+		Expect(store.SettleAnswerCallCount()).To(Equal(1),
+			"the held card leaves the open set only after delivery was observed")
+		_, itemID := store.SettleAnswerArgsForCall(0)
+		Expect(itemID).To(Equal(pkg.ItemID("item-1")))
+	})
+
+	It("does not settle an item that is already answered", func() {
+		store.ReadBoardReturns(pkg.Items{
+			answeredItem("item-1", "operator", pkg.Decision("allow")),
+		}, nil)
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+		Expect(store.SettleAnswerCallCount()).To(Equal(0))
+	})
+
 	It("skips a card the originate arm settled", func() {
 		store.ReadBoardReturns(pkg.Items{
 			answeredItem("item-1", "attention-watcher", pkg.Decision("allow")),
