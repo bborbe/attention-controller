@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.103.1
 
 - fix: **a card that reopens repeatedly shows one counted line instead of N identical ones.** The evidence-deadline reopen appended `reopened: the work this answer claimed was not observed before the evidence deadline` on every bounce, so the "Verify the Two Attention-Delivery Fixes" card carried 34 identical lines in its subtitle. `appendEvidenceNote` now replaces that line with `reopened ×N, last HH:MM`, counting the legacy bare note as one reopen and preserving every unrelated context line.
 
