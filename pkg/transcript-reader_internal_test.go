@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -46,6 +47,32 @@ var _ = Describe("transcript reader", func() {
 			Expect(reader.Path("99999999-9999-9999-9999-999999999999")).To(BeEmpty())
 			_, ok := reader.Offset("99999999-9999-9999-9999-999999999999")
 			Expect(ok).To(BeFalse())
+		})
+	})
+
+	Describe("Paths", func() {
+		It("returns every session's newest transcript from one pass", func() {
+			older := writeTranscript(root, sessionID, "{}\n")
+			otherID := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+			other := writeTranscript(root, otherID, "{}\n")
+
+			// A second, strictly NEWER transcript for the same session in another
+			// project directory — Paths must pick the newest, as Path does.
+			rotatedDir := filepath.Join(root, "project-rotated")
+			Expect(os.MkdirAll(rotatedDir, 0o750)).To(Succeed())
+			newer := filepath.Join(rotatedDir, sessionID+".jsonl")
+			Expect(os.WriteFile(newer, []byte("{}\n"), 0o600)).To(Succeed())
+			future := time.Now().Add(time.Minute)
+			Expect(os.Chtimes(newer, future, future)).To(Succeed())
+
+			paths := reader.Paths()
+			Expect(paths[sessionID]).To(Equal(newer))
+			Expect(paths[sessionID]).NotTo(Equal(older))
+			Expect(paths[otherID]).To(Equal(other))
+		})
+
+		It("returns an empty map for an empty root rather than globbing the cwd", func() {
+			Expect(NewTranscriptReader("").Paths()).To(BeEmpty())
 		})
 	})
 

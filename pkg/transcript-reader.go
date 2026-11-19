@@ -73,6 +73,18 @@ type TranscriptReader interface {
 	// never fails: an absent transcript is a fact, not an error.
 	Path(sessionID string) string
 
+	// Paths returns the newest transcript path for every session under the root,
+	// keyed by session id, built from ONE pass over the project directories.
+	//
+	// ⚠️ Callers that need a path for MANY sessions must use this rather than
+	// Path per session. Path globs the whole project tree, so calling it once per
+	// registry session is O(sessions × files): the who-needs-me feed did exactly
+	// that and measured 60 % of the process's CPU in filepath.Glob / os.readdir,
+	// stretching a single read to 8–19 s and saturating the process (2026-11-19).
+	// This builds the same answer from a single scan. It never fails: an
+	// unreadable tree yields an empty map.
+	Paths() map[string]string
+
 	// Offset returns the transcript's current byte length and whether it is
 	// known. Taken immediately BEFORE an answer is typed, so everything the
 	// delivery writes lands after it — which is what makes the submit check
@@ -180,6 +192,48 @@ func (r *transcriptReader) Path(sessionID string) string {
 		return transcriptMTime(found[i]) > transcriptMTime(found[j])
 	})
 	return found[0]
+}
+
+// Paths returns the newest transcript path for every session under the root,
+// keyed by session id, from a SINGLE pass over the project directories.
+//
+// ⚠️ It exists because Path per session is O(sessions × files): Go's
+// filepath.Glob opens and sorts EVERY project directory on each call, so one
+// glob per registry session (the who-needs-me host snapshot did this for ~58
+// sessions against 131 project dirs) burned 60 % of the process's CPU in
+// readdir and stretched a read to 8–19 s (2026-11-19). One glob here answers
+// the whole snapshot. A session with a single transcript is taken without a
+// stat; mtime is consulted only to break a tie between two files for the same
+// session, matching Path's "newest wins".
+func (r *transcriptReader) Paths() map[string]string {
+	out := make(map[string]string)
+	if r.root == "" {
+		// An empty root would make the glob relative to the process cwd.
+		return out
+	}
+	found, err := filepath.Glob(filepath.Join(r.root, "*", "*.jsonl"))
+	if err != nil {
+		return out
+	}
+	bySession := make(map[string][]string, len(found))
+	for _, path := range found {
+		sessionID := strings.TrimSuffix(filepath.Base(path), ".jsonl")
+		if sessionID == "" {
+			continue
+		}
+		bySession[sessionID] = append(bySession[sessionID], path)
+	}
+	for sessionID, paths := range bySession {
+		if len(paths) == 1 {
+			out[sessionID] = paths[0]
+			continue
+		}
+		sort.Slice(paths, func(i, j int) bool {
+			return transcriptMTime(paths[i]) > transcriptMTime(paths[j])
+		})
+		out[sessionID] = paths[0]
+	}
+	return out
 }
 
 // Offset returns the transcript's current byte length.

@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- fix: **`who-needs-me` builds its transcript index in one pass instead of one glob per session.** `hostSnapshot` called `transcripts.Path(sid)` for every registry session, and `Path` runs `filepath.Glob(root/*/<sid>.jsonl)` — which makes Go open and sort *every* project directory on *every* call. With ~58 sessions against 131 project dirs that is O(sessions × files): a 10 s CPU profile put 60 % of the process in `filepath.Glob`/`os.readdir`, a single read took 8–19 s, and the endpoint saturated the process at >100 % CPU while `/healthz` stayed instant. A new `TranscriptReader.Paths()` returns the newest transcript per session from one glob; `hostSnapshot` looks up from that map. Measured: the full per-request loop drops from 1.70 s (58 × 25.8 ms) to one scan.
+
 ## v0.104.0
 
 - fix: **a `resolved` verdict now records a `held` attempt, so a cleared gate is no longer counted as a lost answer.** The prose delivery arm's `default` branch — the `DeliveryResolved` verdict, meaning the gate was already gone when the arm looked — recorded no attempt, while the menu arm records `held` for the same verdict. An answered card whose only verdict was `resolved` therefore closed carrying nothing but the close's own `watcher:gate-resolved` backfill, and `countLostAnswer` read that as an answer no arm had ever picked up. The branch now writes `held` under `watcher:attention-watcher` before it parks, matching `menu-answer.go`'s `DeliveryResolved` handling, so the two arms agree about what `resolved` means and `pendingLostAnswerStillLost` no longer counts it. Measured 2026-11-19: two live closes, `3a5a4ab9…` and `f3a96f81…`, both answered+closed with only the backfill on the trail. Write volume is unchanged in shape — the attempt is spaced by the existing five-minute backoff and the card still parks at the threshold.
