@@ -709,16 +709,6 @@ func defaultSessionsDir(ctx context.Context) (string, error) {
 	return filepath.Join(home, ".claude", "sessions"), nil
 }
 
-// defaultSpawnLedgerDir resolves the supervisor's spawn ledger, which records
-// the pane each session was spawned in and outlives the session.
-func defaultSpawnLedgerDir(ctx context.Context) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", errors.Wrap(ctx, err, "resolve home dir failed")
-	}
-	return filepath.Join(home, ".local", "state", "claude-supervisor", "sessions"), nil
-}
-
 // createProvenanceResolver builds the resolver the page joins item provenance
 // from.
 //
