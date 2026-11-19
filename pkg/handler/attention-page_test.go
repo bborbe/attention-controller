@@ -195,6 +195,34 @@ var _ = Describe("AttentionPageHandler", func() {
 		}
 	})
 
+	// SC1's endpoint half. The store-level test proves ReadBoard omits a probe;
+	// this proves the page the operator actually opens renders no row for one.
+	// Both cards are posted in the same window and the ordinary one must render,
+	// so a page that dropped every row would fail here rather than pass.
+	It("renders no row for a synthetic probe, and a row for the card beside it", func() {
+		probe, err := store.Push(ctx, pushRequest(
+			"producer-probe",
+			"probe-1",
+			pkg.Payload(pkg.ProbeTagPrefix+" #218: synthetic dismissal"),
+		))
+		Expect(err).To(BeNil())
+		ordinary, err := store.Push(
+			ctx,
+			pushRequest("producer-b", "gate-b", "approve the migration"),
+		)
+		Expect(err).To(BeNil())
+
+		resp := get("GET")
+		Expect(resp.Code).To(Equal(http.StatusOK))
+
+		body := resp.Body.String()
+		Expect(body).NotTo(ContainSubstring(`data-item-id="` + probe.ItemID.String() + `"`))
+		Expect(body).To(ContainSubstring(`data-item-id="` + ordinary.ItemID.String() + `"`))
+		// One row, not two: the count is what catches a filter that renders the
+		// probe's row without its id attribute.
+		Expect(strings.Count(body, `data-item-id="`)).To(Equal(1))
+	})
+
 	It("renders an empty page for an empty store", func() {
 		resp := get("GET")
 
@@ -203,6 +231,7 @@ var _ = Describe("AttentionPageHandler", func() {
 		Expect(
 			strings.Count(resp.Body.String(), `<p class="empty">Nothing needs attention.</p>`),
 		).To(Equal(1))
+
 	})
 
 	// ⚠️ One header on the successful HTML response, asserted by EXACT equality:
