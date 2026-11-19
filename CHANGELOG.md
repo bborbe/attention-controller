@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.103.2
 
 - fix: **an answered card with nothing to deliver is no longer counted as a lost answer.** `attention_lost_answers_total` counted any answered+closed card with no delivery-arm attempt record, including two shapes where no arm is *supposed* to look: a `hidden` dismissal (the board's corner X) and a no-content supervisor answer (`answer_permission` delivers the content out of band, leaving `decision`/`answer`/`answers` empty). Those made the counter unable to read zero, so goal SC3 ("zero lost answers per week") could not be evidenced — measured 2026-11-18/19, 5 of the 29 closes in the counter's windows. The close now classifies with the arms' own predicates (`answerCarriesDelivery`: the prose arm's `answerText`, the menu arm's `menuHandledElsewhere`) and writes its backfill record under carrier `watcher:nothing-to-deliver` instead of `watcher:gate-resolved`; the counter counts only the latter, which is the discriminator `[[Attention Item Schema]]` § Delivery attempts already names. The record is still written, so such a card reads `held` rather than the false `never_attempted` alarm. Tests cover both exclusions and a genuine lost answer as the positive control.
 
