@@ -6,7 +6,10 @@ registry this service already holds — and types only the entries that **enter*
 manager's pane. This page is the contract: the ownership rule, the re-emit rule and the channel.
 
 The wake channel is the pane. A wake is one plain line typed through the pane carrier, the same
-path the delivery arm already uses — there is no feed, no stream and no second writer.
+path the delivery arm already uses — there is no feed, no stream and no second writer. The job
+now carries a second, transcript-and-registry source for the gates the store cannot carry, and
+the gated / `CLEARED` / `HELD` doctrine lives in
+[`docs/manager-gate-semantics.md`](manager-gate-semantics.md).
 
 ## What a manager is
 

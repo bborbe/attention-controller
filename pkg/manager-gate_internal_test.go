@@ -366,6 +366,17 @@ func expectBusyParkedModalIsGated() {
 	Expect(decision).To(Equal(ManagerGateGated))
 	Expect(reason).To(Equal("busy+parked-modal"))
 
+	By("not gating a busy modal whose transcript is still moving")
+	decision, reason = managerGateVerdict(managerGateInput{
+		Status:      managerGateTestStatus("busy"),
+		PendingTool: "AskUserQuestion",
+		Frozen:      false,
+		CloserKnown: true,
+		CloserBody:  "nothing",
+	})
+	Expect(decision).To(Equal(ManagerGateHeld))
+	Expect(reason).To(Equal("held:busy"))
+
 	By("refusing a freeze an unreadable mtime would have manufactured")
 	now := time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC)
 	Expect(managerTranscriptFrozen(time.Time{}, false, now, managerLiveWindow)).To(BeFalse())

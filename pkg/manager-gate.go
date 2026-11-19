@@ -183,7 +183,7 @@ func managerTranscriptFrozen(
 	modifiedAt time.Time,
 	readable bool,
 	now time.Time,
-	window time.Duration,
+	window time.Duration, //nolint:unparam // the call site names the constant it applies
 ) bool {
 	if !readable {
 		return false
