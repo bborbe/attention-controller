@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.104.1
 
 - fix: **the history endpoint accepts `rated=true`, so a consumer reads only rated rows instead of walking the whole store.** `GET /api/1.0/attention/history` parsed `limit`, `offset`, `producer_id` and `dedup_key_prefix` only, so a `rated` filter was silently ignored — the ratings readout made ~145 paged requests against a 157k-item store, and one page past the 30 s timeout killed the run (`STORE UNREADABLE: timed out`, exit 2, twice on 2026-11-18). `HistoryFilter.RatedOnly` narrows the page: the raw-byte pre-check rules an unrated row out before the decode (an unrated item omits the field, so the needle is `"rating":`), the decoded check is exact, and the page-cache key carries the flag so a rated page can never answer an unfiltered read. `?rated=true` enables it, `false` or absent means no filter, and any other value is a 400 rather than a silent fallback that would answer a typo with the whole store.
 
