@@ -1,6 +1,8 @@
 ---
-status: approved
+status: prompted
 approved: "2026-11-19T00:00:53Z"
+generating: "2026-11-19T00:39:56Z"
+prompted: "2026-11-19T00:39:56Z"
 branch: dark-factory/permission-answer-hook-streams
 ---
 

@@ -1,7 +1,8 @@
 ---
-spec: ["022-permission-answer-hook-streams"]
-status: draft
+status: approved
+spec: [022-permission-answer-hook-streams]
 created: "2026-11-19T10:10:00Z"
+queued: "2026-11-19T00:39:59Z"
 ---
 
 # Permission answer hook: install step, stream doc, changelog and guard evidence
