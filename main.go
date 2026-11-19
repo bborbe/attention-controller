@@ -1485,12 +1485,16 @@ func (a *application) addAttentionWatcherJobs(
 	// an always-empty book — a job that can never post, which reads in a log
 	// exactly like a quiet fleet. It lands with the ingest change that fills the
 	// book; until then manager gates post immediately, as they did before.
+	// ⚠️ The book lives under the attention state dir, not the context-state dir:
+	// the statusline owns the latter, and its files are the readings this job
+	// judges rather than a place this job writes.
 	runner.Add(ctx, pkg.NewContextCrossingJob(
 		contextDir,
 		pkg.NewStoreContextCrossingSink(store, nil),
 		liveness,
 		pkg.ContextCrossingTokens,
 		pkg.ContextCrossingInterval,
+		filepath.Join(stateDir, pkg.ContextCrossingBookFileName),
 	).Run)
 	// The wake job is the second writer on the same books (the pane carrier the
 	// delivery arm already types through), so it is registered HERE and not on the
