@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.102.0
 
 - feat: **a live Fleet Manager now covers every session's attention card, so the board stops labelling fleet-relayable cards "no live manager can relay it".** `pkg/worker-coverage.go` `workerUncovered` gained tier 4 of `docs/fleet-surface.md` § Which manager owns a subject: when the registry holds a live session named `Fleet Manager` (`fleet-board.py`'s `ROOT_NAME`), every non-manager card is covered — goal-less, unbound, or with a task whose goals have no live manager — because `gate-owner-filter.py`'s `route_unowned()` already routes such a gate to the Fleet Manager. A manager's own card and the Fleet Manager's own card stay uncovered; a manager detected only by tab colour is indistinguishable from a worker to a name-reading rule, and the parity spec counts that as a known gap. The live-fleet parity spec's reference derivation moved in lockstep: a worker is covered by any parent (a goal manager or the root), an unmanaged session is covered whenever the Fleet Manager is live, and "the Fleet Manager is live" is read from the registry name, never from fleet-board's root heuristic.
 
