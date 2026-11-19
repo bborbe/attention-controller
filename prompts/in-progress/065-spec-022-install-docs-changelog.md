@@ -119,8 +119,8 @@ Reference docs (in-container paths):
    TestUntrackedGateAbandonedAfterGrace
    TestLocalCloseReadsProducerStateFile
    TestFailOpenOnErrorMalformedDeadline
-   - `TestDroppedStreamRunsToDeadline` (AC11) — delete the branch that keeps waiting after the events channel closes, so the loop re-subscribes; the guard must fail
-   - `TestBoardURLMustBeLoopback` (AC12) — delete the loopback check so a remote base URL is accepted; the guard must fail
+   TestDroppedStreamRunsToDeadline
+   TestBoardURLMustBeLoopback
    TestStdoutContractGolden
    TestDeliveryAttemptRecordedAfterEmit
    ```
