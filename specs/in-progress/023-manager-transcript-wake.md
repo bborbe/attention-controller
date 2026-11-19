@@ -1,5 +1,9 @@
 ---
-status: draft
+status: prompted
+approved: "2026-11-19T15:53:55Z"
+generating: "2026-11-19T16:20:55Z"
+prompted: "2026-11-19T16:20:55Z"
+branch: dark-factory/manager-transcript-wake
 ---
 
 ## Summary
