@@ -143,10 +143,10 @@ Two facts to verify before trusting them: `cmd/import-spawn-ledger/main_suite_te
    `newHTTPStoreClient(baseURL string) storeClient` implements it against `pkg/wrapper-client.go`'s shape:
    - one `*http.Client` with a request timeout;
    - `GET <base>/api/1.0/attention` decoded into `pkg.Items`;
-   - `GET <base>/api/1.0/attention/<itemID>` decoded into `*pkg.Item`; a 404 returns an error wrapping `pkg.ErrItemNotFound` (declared in `pkg/attention-error-codes.go`);
+   - `GET <base>/api/1.0/attention/<itemID>` decoded into `*pkg.Item`; a 404 returns an error wrapping `pkg.ErrItemNotFound` (declared in `pkg/errors.go`);
    - `POST <base>/api/1.0/attention/<itemID>/attempt` with `Content-Type: application/json` and body `{"carrier": <carrier>, "outcome": <outcome>}`;
    - every failure wrapped with `errors.Wrapf(ctx, err, ...)` from `github.com/bborbe/errors`, never `fmt.Errorf`;
-   - a non-loopback or unparseable base URL disables the client the way `normaliseWrapperURL` disables the wrapper: follow that function rather than inventing a second policy.
+   - a non-loopback or unparseable base URL disables the client the way `normaliseWrapperURL` disables the wrapper: follow that function rather than inventing a second policy. ⚠️ **This is the only HTTP boundary in the change and it must be tested** — the recording fake used by the other specs replaces it, so without a test the real serialization is never exercised and a grep is the only evidence. Add `cmd/permission-answer-hook/client_test.go` (httptest, following `pkg/wrapper-client_internal_test.go`) as `Describe("TestStoreClientHTTPContract")`, asserting the exact method and path for list / get-by-id / attempt, the JSON body fields `carrier` and `outcome`, a 404 wrapping `pkg.ErrItemNotFound`, and a non-loopback URL disabling the client.
 
    The base URL comes from `ATTENTION_BOARD_URL`, defaulting to `http://127.0.0.1:18080` when unset — the local board, which is the only store this hook talks to (§ Non-goals: "The nuke-prod store instance. The hook talks to the local board."). See `## Open questions` at the end of this prompt.
 
@@ -313,6 +313,7 @@ Run in the repo root. ⚠️ The package is Ginkgo-only: `-run TestSuite` select
 - `go test ./cmd/permission-answer-hook/... -count=1 -run TestSuite -ginkgo.focus='TestDenyNeverInferred' -ginkgo.fail-on-empty`
 - `go test ./cmd/permission-answer-hook/... -count=1 -run TestSuite -ginkgo.focus='TestKillSwitchSupervisorPermissionPollOff' -ginkgo.fail-on-empty`
 - `go test ./cmd/permission-answer-hook/... -count=1 -run TestSuite -ginkgo.focus='TestHeadlessWorkerSkipped' -ginkgo.fail-on-empty`
+- `go test ./cmd/permission-answer-hook/... -count=1 -run TestSuite -ginkgo.focus='TestStoreClientHTTPContract' -ginkgo.fail-on-empty` — the real HTTP boundary, driven through httptest rather than the recording fake
 - `test -d cmd/permission-answer-hook` — the binary's directory exists.
 - `! grep -rqE 'time\.Sleep|NewTicker|DEFAULT_INTERVAL' cmd/permission-answer-hook/` — exits 0 (no repeating tick and no sleep in the package).
 - `grep -rq 'SUPERVISOR_PERMISSION_POLL' cmd/permission-answer-hook/` — exits 0.

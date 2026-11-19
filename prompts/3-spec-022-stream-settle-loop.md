@@ -139,6 +139,13 @@ Reference docs (in-container paths):
        Decision pkg.Decision
        ItemID   pkg.ItemID
        Reason   string
+       // Deadline is set when the loop stopped because the hook deadline
+       // expired, so the terminal line can say so without inferring it from
+       // Reason. ⚠️ Without this field there is no way to tell a deadline from
+       // any other reason, and AC5's terminal-line path becomes unassertable —
+       // the implementer would have to invent a sentinel string, which is
+       // exactly the kind of unstated convention that drifts.
+       Deadline bool
    }
 
    // settle holds the subscription and decides from the store. started is when
@@ -158,7 +165,7 @@ Reference docs (in-container paths):
    c. The loop, a single `select` over the subscription's events, `opts.Clock.Timer(stateCheckInterval)`, and `ctx.Done()`:
       - **A matching event** (`event.ItemID == item.ItemID.String()`): `opts.Client.Get(ctx, item.ItemID)`, then `permissionVerdict`. A decision returns immediately. A `Get` error or a failing verdict keeps the reason and the loop continues. An event for another item id is ignored without a read.
       - **A timer tick:** re-read the gate state (see § E).
-      - **`ctx.Done()`:** return no decision with the last reason (the caller prints the terminal line).
+      - **`ctx.Done()`:** return `settleResult{Reason: lastReason, Deadline: true}` — the caller prints the terminal line. ⚠️ **Setting `Deadline` is the writer for the field requirement 11 reads**; a loop that returns a bare reason leaves the terminal line unassertable and the field dead.
       - **The events channel closing** (the stream dropped): ⚠️ **do not re-subscribe and do not return.** Keep waiting on the timer and `ctx.Done()` until the deadline, so a dropped stream runs to the deadline rather than becoming a reconnect loop. Record `"stream closed"` as the last reason.
    d. **Before returning any decision derived from a store read**, re-read the gate state once and suppress the decision when the file was **seen open earlier and is now absent** (§ E). This is what makes first-answer-wins hold even when the store event and the pane close land close together.
 
@@ -189,7 +196,7 @@ Reference docs (in-container paths):
 
     ⚠️ **It must print the deadline in SECONDS**, not with `time.Duration.String()` — `540 * time.Second` renders as `9m0s` there, and the required line is `permission-answer-hook: deadline after 540s — last: <reason>`. Use `fmt.Sprintf("permission-answer-hook: deadline after %.0fs — last: %s", deadline.Seconds(), lastReason)`. The dash is an em dash (`—`), as the spec writes it.
 
-11. Extend `run` to: capture the invocation start from `opts.Clock.Now()`; `resolveItem`; on a reason write `permission-answer-hook: <reason>` to `opts.Stderr` and return nil; otherwise `settle(ctx, opts, item, started)`. When the result carries no decision, write the reason to `opts.Stderr`; when the reason is a deadline, write `deadlineLine(opts.Deadline, lastReason)` instead. **Do not write to `opts.Stdout`** and **do not post an attempt record** — the next prompt owns both.
+11. Extend `run` to: capture the invocation start from `opts.Clock.Now()`; `resolveItem`; on a reason write `permission-answer-hook: <reason>` to `opts.Stderr` and return nil; otherwise `settle(ctx, opts, item, started)`. When the result carries no decision, write the reason to `opts.Stderr`; **when `result.Deadline` is true** (never inferred from the reason string), write `deadlineLine(opts.Deadline, lastReason)` instead. **Do not write to `opts.Stdout`** and **do not post an attempt record** — the next prompt owns both.
 
 12. Any error path returns nil from `run` (fail-open, exit 0). No path returns a non-nil error except a programming error the caller cannot recover from.
 
@@ -199,7 +206,7 @@ Reference docs (in-container paths):
 
 14. ⚠️ **Every spec's `Describe` text must contain the guard token verbatim**, because the evidence command focuses on that token and `-ginkgo.fail-on-empty` is what turns a non-matching focus into a failure.
 
-15. Write these seven specs:
+15. Write these eight specs:
 
     a. **`TestOneSubscriptionNoListRepoll`** — drive `settle` to a decision delivered by one matching event. Assert: `subscribeCalls == 1`; `listCalls == 0` inside `settle` (the list was read only by the resolve, so drive `run` and assert the total is 1); exactly one `Get` before the event (the catch-up) and exactly one more after it. Then close the events channel and assert the loop does **not** re-subscribe: `subscribeCalls` stays 1 and the hook reaches the deadline instead.
 
@@ -214,6 +221,8 @@ Reference docs (in-container paths):
     f. **`TestLocalCloseReadsProducerStateFile`** — drive the real path with a temp `ATTENTION_STATE_DIR` containing `<session_id>.open.json`: create the file, let one tick see it present, remove it, advance one tick, and assert a local close is seen. Then repeat with a file whose content is not valid JSON and assert the hook **keeps waiting** (fails open) instead of reading it as closed. ⚠️ This spec must be runnable **by name** — the guard is worthless if the only evidence is a comment or an unused string literal.
 
     g. **`TestFailOpenOnErrorMalformedDeadline`** — three cases: (i) `Subscribe` returns an error → no decision, a reason on stderr, exit 0; (ii) `Get` returns a malformed/empty `&pkg.Item{}` → no decision, a reason naming the failed condition; (iii) a reached deadline with `opts.Deadline = 50 * time.Millisecond` and a frozen fake clock → no decision, exit 0, and stderr carries the terminal line. Assert `deadlineLine(HookDeadline, "no answer")` equals exactly `permission-answer-hook: deadline after 540s — last: no answer` — that is where the 540 s value is asserted without waiting 540 s. **Positive control:** an event arriving before the deadline settles normally.
+
+    h. **`TestStreamFrameParsed`** — serve `data: {"type":"upsert","item_id":"X"}\n\n` from an `httptest` server and drive the real `httpStoreClient.Subscribe` through the scanner path, asserting the emitted `StreamEvent` is `{Type:"upsert", ItemID:"X"}`. ⚠️ No extracted parser and no fake event channel: every other spec here injects `StreamEvent` values, so without this one a wrong JSON tag or a wrong frame parser passes them all and fails only against the live board.
 
 16. Before you finish, re-run the `<verification>` block and confirm every command passes, then walk each requirement above against the change and report any you could not satisfy.
 </requirements>
@@ -242,6 +251,7 @@ Run in the repo root. ⚠️ The package is Ginkgo-only: `-run TestSuite` select
 - `go test ./cmd/permission-answer-hook/... -count=1 -run TestSuite -ginkgo.focus='TestOneSubscriptionNoListRepoll' -ginkgo.fail-on-empty`
 - `go test ./cmd/permission-answer-hook/... -count=1 -run TestSuite -ginkgo.focus='TestCatchUpReadDecidesWhenAnswerLandedInBaselineGap' -ginkgo.fail-on-empty`
 - `go test ./cmd/permission-answer-hook/... -count=1 -run TestSuite -ginkgo.focus='TestResolveWindowExpiresQuietly' -ginkgo.fail-on-empty`
+- `go test ./cmd/permission-answer-hook/... -count=1 -run TestSuite -ginkgo.focus='TestStreamFrameParsed' -ginkgo.fail-on-empty` — ⚠️ **the real wire format, not the fake.** Every other spec in this prompt drives the subscription with `StreamEvent` values directly, so a wrong JSON tag or a wrong frame parser passes all of them and fails only in production. This spec must feed a literal `data: {"type":"upsert","item_id":"X"}\n\n` byte stream through the scanner path and assert it decodes to `StreamEvent{Type:"upsert", ItemID:"X"}`.
 - `go test ./cmd/permission-answer-hook/... -count=1 -run TestSuite -ginkgo.focus='TestFirstAnswerWinsOverInPane' -ginkgo.fail-on-empty`
 - `go test ./cmd/permission-answer-hook/... -count=1 -run TestSuite -ginkgo.focus='TestUntrackedGateAbandonedAfterGrace' -ginkgo.fail-on-empty`
 - `go test ./cmd/permission-answer-hook/... -count=1 -run TestSuite -ginkgo.focus='TestLocalCloseReadsProducerStateFile' -ginkgo.fail-on-empty`
