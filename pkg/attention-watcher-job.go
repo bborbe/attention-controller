@@ -230,6 +230,40 @@ func (j *attentionWatcherJob) DeliverOnce(ctx context.Context) error {
 		}
 		j.deliver(ctx, item, reports[item.ItemID])
 	}
+	// ⚠️ The hold's bounded fallback: an open, answered card whose delivery never
+	// succeeded must leave the open set past AttentionDeliveryBound, carrying the
+	// undeliverable marker the trail writes. This pass runs over EVERY open
+	// answered item, not only the deliverable ones, because a parked card
+	// (exhausted attempts) is exactly the population that will never deliver and
+	// would otherwise sit on the board forever. The delivery report is re-read so
+	// a card that settled in THIS tick is never closed as undelivered.
+	for _, item := range items {
+		if err := ctx.Err(); err != nil {
+			return nil
+		}
+		if item.State != OpenState || item.AnsweredAt == nil {
+			continue
+		}
+		if j.currentDateTimeGetter.Now().Time().Before(
+			item.AnsweredAt.Time().Add(AttentionDeliveryBound),
+		) {
+			continue
+		}
+		report, err := j.store.Delivery(ctx, item.ItemID)
+		if err != nil {
+			glog.Warningf(
+				"job=attention-watcher action=bound_read_error item=%s error=%v",
+				item.ItemID,
+				err,
+			)
+			continue
+		}
+		if report != nil && report.Status == DeliveredStatus {
+			continue
+		}
+		j.markUndeliverableIfOverdue(ctx, item, report, "delivery bound exceeded")
+		j.closeUndelivered(ctx, item)
+	}
 	return nil
 }
 
@@ -326,7 +360,10 @@ func (j *attentionWatcherJob) deliverable(
 	item Item,
 	reports map[ItemID]*DeliveryReport,
 ) bool {
-	if item.State != AnsweredState || item.AnsweredAt == nil {
+	if (item.State != AnsweredState && item.State != OpenState) || item.AnsweredAt == nil {
+		// ⚠️ The HOLD: an answered card stays OPEN until an arm observes delivery,
+		// so this arm must carry an OpenState item that carries an answer. An
+		// OpenState item with no answer is still not ours.
 		return false
 	}
 	// An approved compact card is the TRIO's answer, not prose. This arm would
@@ -411,6 +448,9 @@ func (j *attentionWatcherJob) deliver(
 	switch verdict {
 	case DeliveryOK:
 		j.recordAttempt(ctx, item, DeliveredOutcome)
+		// ⚠️ Settle AFTER the delivered record is durable: the record is the
+		// evidence the card left the open set only once delivery was observed.
+		j.settleAnswer(ctx, item)
 		// Signal only after the delivered outcome is on record: the durable
 		// DeliveryReport is the dedupe state the next tick reads.
 		if j.signaller != nil {
@@ -575,6 +615,38 @@ func (j *attentionWatcherJob) clearPark(ctx context.Context, item Item) {
 			err,
 		)
 	}
+}
+
+// settleAnswer moves a held card from open to answered once delivery was
+// observed, logging rather than failing: the answer has already reached the
+// session, and a failed settle only leaves the card on the board one more tick.
+func (j *attentionWatcherJob) settleAnswer(ctx context.Context, item Item) {
+	if item.State != OpenState {
+		return
+	}
+	if _, err := j.store.SettleAnswer(ctx, item.ItemID); err != nil {
+		glog.Warningf(
+			"job=attention-watcher action=settle_error item=%s error=%v",
+			item.ItemID,
+			err,
+		)
+		return
+	}
+	glog.V(2).Infof("job=attention-watcher action=settled item=%s", item.ItemID)
+}
+
+// closeUndelivered closes a held card whose delivery never succeeded, logging
+// rather than failing for the same reason settleAnswer does.
+func (j *attentionWatcherJob) closeUndelivered(ctx context.Context, item Item) {
+	if _, err := j.store.CloseUndelivered(ctx, item.ItemID); err != nil {
+		glog.Warningf(
+			"job=attention-watcher action=close_undelivered_error item=%s error=%v",
+			item.ItemID,
+			err,
+		)
+		return
+	}
+	glog.V(2).Infof("job=attention-watcher action=closed_undelivered item=%s", item.ItemID)
 }
 
 // recordRetry writes the trail entry for an answer this arm looked at and could

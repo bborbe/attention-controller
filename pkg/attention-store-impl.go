@@ -1211,7 +1211,20 @@ func (a *attentionStore) Answer(
 		// tell them apart.
 		switch item.State {
 		case OpenState:
-			// proceed
+			// ⚠️ The HOLD: a card answered but not yet delivered stays OPEN, so it
+			// remains in the board's open set until an arm observes delivery. A
+			// second answer while it is held is refused rather than overwriting the
+			// first — except the ARM's own write (resolved_by set), which exists to
+			// attach the resolver the release path reads and must land.
+			if item.AnsweredAt != nil && resolvedBy == "" {
+				return errors.Wrapf(
+					ctx,
+					ErrAlreadyAnswered,
+					"item %s was already answered by %s",
+					itemID,
+					item.AnsweredBy,
+				)
+			}
 		case AwaitingEvidenceState:
 			// ⚠️ Without this arm the parked state falls to `default`, where
 			// ValidateTransition(awaiting_evidence → answered) now returns nil
@@ -1254,8 +1267,16 @@ func (a *attentionStore) Answer(
 			return ValidateTransition(ctx, item.State, AnsweredState)
 		}
 		now := a.currentDateTimeGetter.Now()
-		item.State = AnsweredState
-		item.AnsweredAt = &now
+		// ⚠️ The HOLD, continued: the card stays OPEN here. The schema's
+		// open→answered trigger is "the answer-return path DELIVERS an answer to
+		// producer_id" — delivery, not the click — so the transition is taken by
+		// SettleAnswer once a `delivered` attempt is on record. Setting AnsweredState
+		// here is the defect this hold removes: the board read the card as resolved
+		// while the worker was still parked. A `done`-class claim still parks in
+		// awaiting_evidence via parkForEvidence below.
+		if item.AnsweredAt == nil {
+			item.AnsweredAt = &now
+		}
 		item.AnsweredBy = answeredBy
 		// Stamped from the caller's declaration, never derived and never
 		// authenticated. An empty value is written as empty rather than
@@ -1330,6 +1351,94 @@ func (a *attentionStore) Answer(
 	})
 	if err != nil {
 		return nil, errors.Wrap(ctx, err, "answer failed")
+	}
+	return result, nil
+}
+
+// SettleAnswer moves an answered-but-held item from open to answered, so the
+// card leaves the open set only after an arm observed delivery.
+//
+// ⚠️ Idempotent: an item already answered returns unchanged, because the
+// delivery arm may settle twice across a restart and the legacy shape (answered
+// at Answer time) must not fail here.
+func (a *attentionStore) SettleAnswer(
+	ctx context.Context,
+	itemID ItemID,
+) (*Item, error) {
+	defer a.historyPage.invalidate()
+	var result *Item
+	err := a.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
+		item, err := a.store.Get(ctx, tx, itemID.String())
+		if err != nil {
+			if isNotFound(err) {
+				return errors.Wrapf(ctx, ErrItemNotFound, "item %s not found", itemID)
+			}
+			return errors.Wrap(ctx, err, "get item failed")
+		}
+		if item.State == AnsweredState {
+			result = item
+			return nil
+		}
+		if item.State != OpenState || item.AnsweredAt == nil {
+			// Nothing to settle: the item is not a held answer.
+			result = item
+			return nil
+		}
+		if err := ValidateTransition(ctx, OpenState, AnsweredState); err != nil {
+			return err
+		}
+		item.State = AnsweredState
+		if err := a.putItem(ctx, tx, *item); err != nil {
+			return errors.Wrap(ctx, err, "update item failed")
+		}
+		result = item
+		return nil
+	})
+	if err != nil {
+		return nil, errors.Wrap(ctx, err, "settle answer failed")
+	}
+	return result, nil
+}
+
+// CloseUndelivered closes an open, answered item that never delivered, so it
+// leaves the open set carrying the delivery trail's undeliverable marker.
+//
+// ⚠️ It calls closeItem, so the close writes the same terminal delivery record
+// (and lost-answer candidate) every other close path does — the marker the board
+// renders comes from the attempt record, not from this call.
+func (a *attentionStore) CloseUndelivered(
+	ctx context.Context,
+	itemID ItemID,
+) (*Item, error) {
+	defer a.historyPage.invalidate()
+	var result *Item
+	err := a.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
+		item, err := a.store.Get(ctx, tx, itemID.String())
+		if err != nil {
+			if isNotFound(err) {
+				return errors.Wrapf(ctx, ErrItemNotFound, "item %s not found", itemID)
+			}
+			return errors.Wrap(ctx, err, "get item failed")
+		}
+		if item.State == ClosedState {
+			result = item
+			return nil
+		}
+		if item.State != OpenState || item.AnsweredAt == nil {
+			result = item
+			return nil
+		}
+		if err := ValidateTransition(ctx, item.State, ClosedState); err != nil {
+			return err
+		}
+		if err := a.closeItem(ctx, tx, item); err != nil {
+			return err
+		}
+		result = item
+		return nil
+	})
+	if err != nil {
+		return nil, errors.Wrap(ctx, err, "close undelivered failed")
 	}
 	return result, nil
 }

@@ -220,6 +220,24 @@ type AttentionStore interface {
 		route ...AnswerRoute,
 	) (*Item, error)
 
+	// SettleAnswer takes the hold's second half: it moves an ANSWERED-but-held
+	// item from open to answered once an arm has observed delivery, so the card
+	// leaves the open set only after a `delivered` attempt is on record.
+	//
+	// ⚠️ Idempotent on an item already answered — the legacy shape and a
+	// re-settle both return it unchanged. A `delivered` attempt is the caller's
+	// evidence; this method does not re-check the attempt trail.
+	SettleAnswer(ctx context.Context, itemID ItemID) (*Item, error)
+
+	// CloseUndelivered closes an open, answered item that never delivered, so it
+	// leaves the open set carrying the delivery trail's undeliverable marker. It
+	// is the hold's bounded fallback: past AttentionDeliveryBound the board must
+	// stop showing a card that cannot be delivered.
+	//
+	// ⚠️ It refuses an item with no answer (nothing to be undelivered) and an
+	// item already closed.
+	CloseUndelivered(ctx context.Context, itemID ItemID) (*Item, error)
+
 	// Escalate records which session is carrying this item to the operator, as
 	// an atomic compare-and-set. Exactly one of two concurrent escalations
 	// stamps the item; the loser receives ErrAlreadyEscalated and must read

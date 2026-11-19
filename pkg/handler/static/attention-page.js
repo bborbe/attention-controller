@@ -1270,7 +1270,12 @@ function replayFailure(row) {
     while (next && !next.classList.contains('item')) { next = next.nextElementSibling; }
     return next ? next.getAttribute('data-item-id') : null;
   }
-  function isAnswered(row) { return row.classList.contains('dimmed'); }
+  /* A held row (answered, not yet delivered) renders like a dimmed record but is
+     NOT answered for filter purposes: it stays visible under the answerable
+     filter, because the worker it belongs to is still parked. */
+  function isAnswered(row) {
+    return row.classList.contains('dimmed') && row.getAttribute('data-held') !== 'true';
+  }
   function isFlagged(row) { return row.getAttribute('data-flagged') === 'true'; }
   /* The contract's predicate, verbatim:
        visible(row) = (hideOff || !row.answered) && (flagsOff || !row.flagged)
@@ -1408,7 +1413,7 @@ function replayFailure(row) {
         /* Recorded before the row leaves the document: whether it counts depends
            on whether it was dimmed, which only the node knows. */
         kindStreamed[rows[i].getAttribute('data-item-id')] =
-          rows[i].classList.contains('dimmed');
+          rows[i].classList.contains('dimmed') && rows[i].getAttribute('data-held') !== 'true';
         rows[i].remove();
       }
     }

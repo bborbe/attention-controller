@@ -205,7 +205,13 @@ func (a *attentionStore) suppressAnsweredTwins(
 	err := a.db.View(ctx, func(ctx context.Context, tx libkv.Tx) error {
 		kept = kept[:0]
 		for _, item := range items {
-			if item.State == OpenState {
+			// ⚠️ A HELD item (open + AnsweredAt != nil) is the answered card
+			// itself, not a re-raise twin of it: the hold keeps the answer on an
+			// open card until delivery. Its own answer wrote its ask identity into
+			// the index, so testing it here would suppress the card against its own
+			// record and drop it from the board — the exact defect the hold exists
+			// to fix. Only an UNANSWERED open item can be a redundant re-raise.
+			if item.State == OpenState && item.AnsweredAt == nil {
 				// One point read per open item, not a scan of the whole index:
 				// the board returns tens of items while the record grows with
 				// every ask ever answered.
