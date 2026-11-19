@@ -20,6 +20,7 @@ type historyMatcher struct {
 	producerNeedles [][]byte
 	prefix          DedupKey
 	prefixNeedle    []byte
+	ratedOnly       bool
 }
 
 // newHistoryMatcher merges the filters and builds the raw-byte needles.
@@ -54,6 +55,9 @@ func newHistoryMatcher(filters []HistoryFilter) historyMatcher {
 		if f.DedupKeyPrefix != "" {
 			m.prefix = f.DedupKeyPrefix
 		}
+		if f.RatedOnly {
+			m.ratedOnly = true
+		}
 	}
 	if m.prefix != "" {
 		if value, err := json.Marshal(string(m.prefix)); err == nil {
@@ -67,11 +71,19 @@ func newHistoryMatcher(filters []HistoryFilter) historyMatcher {
 // only rule an entry OUT; a read error answers true so the decode that follows
 // reports it.
 func (m historyMatcher) mayMatch(it libkv.Item) bool {
-	if len(m.ids) == 0 && m.prefix == "" {
+	if len(m.ids) == 0 && m.prefix == "" && !m.ratedOnly {
 		return true
 	}
 	ok := true
 	err := it.Value(func(v []byte) error {
+		// ⚠️ An unrated item omits the field entirely (`rating,omitempty`), so the
+		// needle is the KEY with its colon — matching `"rated_at":` would be wrong
+		// in both directions, and a bare `"rating"` would also match the key name
+		// inside `"rating":null` if a future encoder ever wrote it.
+		if m.ratedOnly && !bytes.Contains(v, []byte(`"rating":`)) {
+			ok = false
+			return nil
+		}
 		if m.prefixNeedle != nil && !bytes.Contains(v, m.prefixNeedle) {
 			ok = false
 			return nil
@@ -99,6 +111,9 @@ func (m historyMatcher) matches(item Item) bool {
 		}
 	}
 	if m.prefix != "" && !strings.HasPrefix(string(item.DedupKey), string(m.prefix)) {
+		return false
+	}
+	if m.ratedOnly && item.Rating == NoRating {
 		return false
 	}
 	return true
