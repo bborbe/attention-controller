@@ -257,7 +257,10 @@ func appendEvidenceNote(note string, now libtime.DateTime) string {
 	kept := make([]string, 0, 1)
 	for _, line := range strings.Split(note, "\n") {
 		if n, ok := evidenceReopenCount(line); ok {
-			count = n
+			// ⚠️ ACCUMULATE, never assign. The defect this replaces left N
+			// identical bare notes on one item; assigning would collapse 34 of
+			// them to `×2` and throw away the very count the operator wanted.
+			count += n
 			continue
 		}
 		kept = append(kept, line)

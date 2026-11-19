@@ -50,6 +50,16 @@ var _ = Describe("appendEvidenceNote", func() {
 			To(Equal("reopened ×2, last 09:12"))
 	})
 
+	It("accumulates the 34 legacy lines the reported card carried", func() {
+		lines := make([]string, 34)
+		for i := range lines {
+			lines[i] = EvidenceNote
+		}
+		got := appendEvidenceNote(strings.Join(lines, "\n"), at(17, 5))
+		Expect(countLines(got)).To(HaveLen(1))
+		Expect(got).To(Equal("reopened ×35, last 17:05"))
+	})
+
 	It("keeps the surrounding context lines", func() {
 		note := "asked in pane 229\ntype anything and press Enter"
 		got := appendEvidenceNote(note, at(17, 5))
