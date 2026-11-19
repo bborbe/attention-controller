@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.100.1
 
 - fix: **the starting page renders in the board's dark palette instead of a white document.** The startup gate's `GET /` page is the operator's first sight of the service on every restart, and it served a bare light page (`margin:3em; color:#333` on white) that flashed before the dark board appeared — one surface announcing itself in two different designs. It now carries the board's own tokens (`--bg #111418`, `--panel #1a1f26`, `--border #2a3038`, `--text #e8edf2`, `--muted #8b95a3`), the board's font stack and its 760px column, with the pending init step as a monospace chip in a warn-banded panel and an indeterminate progress bar (suppressed under `prefers-reduced-motion`). The 503 status, the `Retry-After` header, the 2 s meta-refresh and the `starting` JSON body on API routes are unchanged, and the page still names the pending step. Two assertions pin the palette so the page cannot silently return to white.
 
