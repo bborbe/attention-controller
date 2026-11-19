@@ -624,4 +624,11 @@ type HistoryFilter struct {
 	Producers []ProducerID
 	// DedupKeyPrefix keeps items whose `dedup_key` starts with it.
 	DedupKeyPrefix DedupKey
+	// RatedOnly keeps items the operator has rated (`rating` is up or down).
+	// It exists for the ratings readout, which counts rated cards and otherwise
+	// has to walk the whole store: the read is O(offset) on the index, so
+	// reading every page to find a few hundred rated rows is the cost this
+	// removes. An unrated item carries no `rating` key at all, so the raw-byte
+	// pre-check can rule it out before the decode.
+	RatedOnly bool
 }

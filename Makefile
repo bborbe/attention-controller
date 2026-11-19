@@ -61,6 +61,11 @@ INSTALL_BIN ?= $(HOME)/.local/bin/attention-controller
 # not the launchd service, so it carries no .prev rollback: a failed hook start
 # cannot take the board down.
 INSTALL_HOOK_BIN ?= $(HOME)/.local/bin/attention-controller-permission-answer-hook
+# The approve-run helper is a third binary installed from this repo: the client
+# that posts a command-approval card and runs the approved command as a child of
+# the agent's own Bash call. It has its own target (install-approve-run) so a
+# client install never swaps the daemon binary.
+INSTALL_APPROVE_RUN_BIN ?= $(HOME)/.local/bin/attention-controller-approve-run
 
 #
 # The binary is built and signed at a staging path and only moved into place
@@ -157,6 +162,21 @@ install-bin:
 		codesign -f -s "$(CODESIGN_IDENTITY)" "$$stage"; \
 		codesign --verify --strict "$$stage"; \
 		mv -f "$$stage" "$(INSTALL_HOOK_BIN)"
+
+# Builds, signs and installs ONLY the approve-run client, so installing it never
+# swaps the daemon binary. Mirrors the permission-answer hook's staging block.
+.PHONY: install-approve-run
+install-approve-run:
+	@security find-identity -p codesigning | grep -qF '"$(CODESIGN_IDENTITY)"' \
+		|| { echo "codesign identity '$(CODESIGN_IDENTITY)' not in keychain; check: security find-identity -p codesigning" >&2; exit 1; }
+	@mkdir -p "$(dir $(INSTALL_APPROVE_RUN_BIN))"
+	@set -e; \
+		stage="$(INSTALL_APPROVE_RUN_BIN).new.$$$$"; \
+		trap 'rm -f "$$stage"' EXIT INT TERM; \
+		go build -o "$$stage" ./cmd/approve-run; \
+		codesign -f -s "$(CODESIGN_IDENTITY)" "$$stage"; \
+		codesign --verify --strict "$$stage"; \
+		mv -f "$$stage" "$(INSTALL_APPROVE_RUN_BIN)"
 
 .PHONY: install
 install: install-bin
