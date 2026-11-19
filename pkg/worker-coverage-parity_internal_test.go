@@ -57,9 +57,6 @@ var _ = Describe("worker coverage parity with fleet-board.py", func() {
 		)
 		sessionsDir := filepath.Join(home, ".claude", "sessions")
 
-		reference := readFleetBoardVerdicts(script)
-		Expect(reference).NotTo(BeEmpty(), "fleet-board returned no sessions — the probe is blind")
-
 		tasks := NewTaskIndex(ctx, vaultDir, libtime.NewCurrentDateTime())
 		names := readSessionNames(ctx, sessionsDir)
 		Expect(names).NotTo(BeEmpty(), "registry unreadable — the probe is blind")
@@ -67,6 +64,9 @@ var _ = Describe("worker coverage parity with fleet-board.py", func() {
 		for id, entry := range names {
 			registry[id] = entry.Name
 		}
+
+		reference := readFleetBoardVerdicts(script, registry)
+		Expect(reference).NotTo(BeEmpty(), "fleet-board returned no sessions — the probe is blind")
 
 		ids := make([]string, 0, len(reference))
 		for id := range reference {
@@ -99,7 +99,8 @@ var _ = Describe("worker coverage parity with fleet-board.py", func() {
 				// rule, which reads names — so the Fleet Manager covers a card
 				// fleet-board calls a manager's own. Counted, never silently
 				// dropped: any disagreement OUTSIDE this class still fails.
-				if want.role == "manager" && index.subject(registry[id]) == "" {
+				if want.uncovered && !got && want.role == "manager" &&
+					index.subject(registry[id]) == "" {
 					knownGaps++
 					GinkgoWriter.Println("known gap (colour-manager): " + line)
 					continue
@@ -165,9 +166,20 @@ type fleetBoardVerdict struct {
 // ⚠️ The reference encodes the coverage RULE, not only the parent chain: a
 // worker is covered by any parent (a goal manager, or the root — the Fleet
 // Manager — as tier 4's fallback), and an unmanaged session is covered by the
-// Fleet Manager whenever the root is live. A manager's own card is never
-// covered: nothing sits above it but the root.
-func readFleetBoardVerdicts(script string) map[string]fleetBoardVerdict {
+// Fleet Manager whenever the Fleet Manager is live. A manager's own card is
+// never covered: nothing sits above it but the root.
+//
+// ⚠️ "The Fleet Manager is live" is a fact about the REGISTRY, never about
+// which session fleet-board picked as its root. When no Fleet Manager runs,
+// every manager's parent is nil, so a `parent == nil` probe would pick an
+// arbitrary manager and read the fleet as live — the exact divergence this
+// spec exists to catch. The raw registry name is matched, exactly as the
+// production rule does; fleet-board's `label` is glyph-stripped for display
+// and would disagree on a name carrying a status glyph.
+func readFleetBoardVerdicts(
+	script string,
+	registry map[string]string,
+) map[string]fleetBoardVerdict {
 	out, err := exec.Command("python3", script, "--json").
 		Output()
 		// #nosec G204 -- test-only, path from the operator's env
@@ -181,13 +193,18 @@ func readFleetBoardVerdicts(script string) map[string]fleetBoardVerdict {
 		} `json:"sessions"`
 	}
 	Expect(json.Unmarshal(out, &doc)).To(Succeed())
-	root := ""
+
+	isFleetManager := func(sessionID string) bool {
+		return strings.TrimSpace(registry[sessionID]) == fleetManagerName
+	}
+	fleetLive := false
 	for _, s := range doc.Sessions {
-		if s.Role == "manager" && s.Parent == nil {
-			root = s.SessionID
+		if isFleetManager(s.SessionID) {
+			fleetLive = true
+			break
 		}
 	}
-	rootLive := root != ""
+
 	verdicts := make(map[string]fleetBoardVerdict, len(doc.Sessions))
 	for _, s := range doc.Sessions {
 		parent := ""
@@ -198,14 +215,18 @@ func readFleetBoardVerdicts(script string) map[string]fleetBoardVerdict {
 		switch s.Role {
 		case "manager":
 			covered = false
-		case "unmanaged":
-			covered = rootLive
-		default: // "worker"
+		case "worker":
 			covered = parent != "" && parent != "unmanaged"
+		case "unmanaged":
+			covered = fleetLive
+		default:
+			// ⚠️ An unknown role is not a licence to cover: fail closed, so a
+			// new role value surfaces as a disagreement rather than passing.
+			covered = false
 		}
 		// ⚠️ A session named `Fleet Manager` is the root (or a second root): its
 		// own card has nothing above it, so it is uncovered whatever its role.
-		if s.Label == fleetManagerName {
+		if isFleetManager(s.SessionID) {
 			covered = false
 		}
 		verdicts[s.SessionID] = fleetBoardVerdict{role: s.Role, label: s.Label, uncovered: !covered}

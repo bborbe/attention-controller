@@ -48,8 +48,12 @@ import (
 //     supervisor's gate relay already routes an unowned gate there
 //     (`gate-owner-filter.py` `route_unowned()`), so a card it can relay must
 //     not be labelled "no live manager can relay it". With the Fleet Manager
-//     live, only a manager's own card stays uncovered — nothing sits above it
-//     but the root, and the operator oversees managers by default.
+//     live, every card is covered except a manager's own card and the Fleet
+//     Manager's own card.
+//     ⚠️ "Manager" here means a session whose NAME resolves to a goal or topic.
+//     A manager `fleet-board.py` detects only by TAB COLOUR is indistinguishable
+//     from a worker to a name-reading rule, so its card is covered too — the
+//     known gap the parity spec counts rather than hides.
 //   - A manager's own card, and the Fleet Manager's own card, have no relaying
 //     parent above them, so both are uncovered.
 //
@@ -125,6 +129,13 @@ func liveFleetManagerSessionID(
 	isLive func(ctx context.Context, sessionID string) bool,
 ) string {
 	for sessionID, name := range registry {
+		// ⚠️ Checked per entry, like liveManagerSubjects: isLive may stat the
+		// registry, and this runs once per page across every registered session.
+		select {
+		case <-ctx.Done():
+			return ""
+		default:
+		}
 		if strings.TrimSpace(name) != fleetManagerName {
 			continue
 		}
