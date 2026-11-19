@@ -395,6 +395,9 @@ func (j *attentionWatcherJob) deliver(
 		StoreItemID:     string(item.ItemID),
 		AnswerMechanism: item.AnswerMechanism,
 	}
+	if IsManagerAnswered(item) {
+		delivery.Answerer = ManagerAnswerer
+	}
 	verdict, reason := j.carrier.TypeIntoPane(ctx, delivery, text, false)
 	glog.V(2).Infof(
 		"job=attention-watcher action=deliver item=%s verdict=%s reason=%q",
