@@ -112,7 +112,7 @@ func WithManagerWakeTranscriptSource(
      - read the store's open and answered views **only when the pass has a parked session** (`Open`/`Answered` nil when the read fails); build `ManagerGateObserveInput` and call `tracker.Observe`.
      - type each record through the existing carrier with `bare=true`: `NEW GATE` / `AGED` → `attention gate: <sid8> (<label>): <detail>`; `CLEARED` → `attention cleared: <sid8>`. A `HELD` record is typed **only** when its detail is not `managerUntrackedDetail` (lost-sight is bookkeeping and is never announced).
      - append one `ManagerWakeEmission` per typed line, with an **empty** `ItemID` (a transcript wake names no card; the operator probe reads `emitted_at` for that session).
-     - post each `ManagerRepostRequest` with `store.Push(ctx, PushRequest{ProducerID, LivenessRef: "owner:", DedupKey, InterruptClass, Payload, AnswerMechanism, Options})`; a failed push is logged and does not stop the pass.
+     - post each `ManagerRepostRequest` with a `PushRequest` that **passes `PushRequest.Validate`** — ⚠️ the obvious six-field form is rejected and the arm would silently never post a card. Copy the shape from `pkg/unforwarded-closers-job.go:177-202` (`UnforwardedPushRequest`), which re-presents a gate for exactly this reason, and fill every field `Validate` names: `ProducerID`, `ProducerKind` (a real kind — `CronProducerKind` in the peer), `ProvenanceClass`, `LivenessRef`, `DedupKey`, `InterruptClass`, `Risk`, `Payload`, `Options`, `AnswerCardinality`, `Questions`, `AnswerMechanism`, `ExpiresAt`. ⚠️ **`LivenessRef: "owner:"` with nothing after the colon is invalid** — the session-less form is `LivenessRef("owner:" + <producerID>)`, and a session-borne one is `LivenessRef("session:" + sessionID)` (see `unforwardedLivenessRef`). Add `TestRepostRequestPassesValidate`, calling `Validate` on the constructed request and requiring no error, so a field this snippet forgets fails a test rather than a silent log line; a failed push is logged and does not stop the pass.
    - Guard the new fields with the existing `passMu`; do not add a second mutex.
 
 4. `docs/manager-gate-semantics.md` — new page. It must carry, in this order:
@@ -186,6 +186,7 @@ func WithManagerWakeTranscriptSource(
 <verification>
 - `go test ./pkg -run TestSuite -ginkgo.focus='FailOpenIsSplitByInput' -ginkgo.fail-on-empty` — exits 0
 - `go test ./pkg -run TestSuite -ginkgo.focus='TestDocTableMatchesCode' -ginkgo.fail-on-empty` — exits 0
+- `go test ./pkg -run TestSuite -ginkgo.focus='TestRepostRequestPassesValidate' -ginkgo.fail-on-empty` — exits 0, so the re-post request is proven to satisfy `PushRequest.Validate` rather than failing silently at push time
 - `test -f docs/manager-gate-semantics.md` — exits 0
 - `test -f hack/guard-mutation.sh` — exits 0
 - `[ "$(awk '/^func \(a \*application\) addAttentionWatcherJobs/,/^}/' main.go | grep -c 'NewManagerWakeJob')" -ge 1 ]` — the call sits inside that function

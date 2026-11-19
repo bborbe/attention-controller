@@ -31,7 +31,7 @@ Read before changing anything:
 The four causes, evaluated in this order — the order is load-bearing:
 
 1. `stream-closed` — the **trailing** run of permission failures contains a closed channel.
-2. `permission-channel` — at least `managerStuckPermChannelMin` `Stream closed` aborts inside the last `managerStuckPermChannelWindow` of the transcript's **own record time**, anchored on the tail's **last** timestamp (never on the last abort).
+2. `permission-channel` — at least `managerStuckPermChannelMin` `Stream closed` aborts inside the last `managerStuckPermChannelWindow` of the transcript's **own record time**, anchored on the **maximum** timestamp in the tail (⚠️ never the tail's LAST stamp and never the last abort — records can be out of order, and the source takes `max(stamp)` at `:991`; requirement 4 states the same anchor, and the two must not diverge).
 3. `blocked-closer` — the closer text carries a line starting with `🔴 BLOCKED` **and** the closer body is **not** an answerable ask.
 4. `permission-failures` — the trailing permission-failure run is at least `managerStuckPermissionFailures`.
 
@@ -74,7 +74,7 @@ Walk lines with `decodeTranscriptRecord` and `transcriptContentBlocks(record.Mes
 
 4. `managerChannelAborts(tail []byte, window time.Duration) int` — parse each record's `Timestamp` (`time.Parse(time.RFC3339Nano, …)`, `Z` allowed) into `time.Time`; anchor on the **maximum** stamp; count aborts with `ts >= anchor - window`; return 0 when no stamp parses. Recency is measured against the transcript's own now, never the aborts' own last stamp.
 
-5. `managerStuckReason(closerText string, tail []byte, channelTail []byte) string` — returns `""` when not stuck, else one of the four cause constants, in the order above. `stream-closed` fires when the trailing run is non-zero and any outcome **inside that run** is a closed channel. `permission-channel` uses `channelTail` (the wider read). `blocked-closer` uses `managerIsAsk(managerCloserBody(closerText))` from requirement 8.
+5. `managerStuckReason(closerText string, tail []byte, channelTail []byte) string` — returns `""` when not stuck, else one of the four cause constants, in the order above. `stream-closed` fires when the trailing run is non-zero and any outcome **inside that run** is a closed channel. `permission-channel` uses `channelTail` (the wider read). `blocked-closer` fires when the closer text carries a line starting with `🔴 BLOCKED` and `managerIsAsk(managerNormalizeCloser(<that line's body>))` is **false** — the body is the text after the `🔴 BLOCKED` marker, already available to this function; ⚠️ there is no `managerCloserBody` helper, so do not call one.
 
 6. `managerStuckGateReason(cause string, registered bool) string` — `""` for an empty cause; `"stuck:" + cause` when `!registered`; `"stuck-tab:" + cause` when `registered`. This is the only place the two prefixes are formed.
 
