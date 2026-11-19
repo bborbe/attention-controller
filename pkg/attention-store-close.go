@@ -34,6 +34,48 @@ import (
 // answer — and this value answers exactly that.
 const attentionCloseCarrier = "watcher:gate-resolved"
 
+// attentionNothingToDeliverCarrier names the close paths in the delivery trail,
+// for an answered card whose answer carried NOTHING any arm could carry.
+//
+// ⚠️ Distinct from attentionCloseCarrier on purpose, and the distinction is the
+// whole fix. Both records are `held` (nothing went wrong, no delivery was
+// attempted), so outcome cannot tell them apart — [[Attention Item Schema]]
+// § Delivery attempts says the counter separates them by CARRIER, never by
+// outcome. `watcher:gate-resolved` means an answer existed and no arm carried
+// it: a lost answer. This one means there was nothing to carry:
+//
+//   - `answer.kind: hidden` — the board's corner X, "handled elsewhere, deliver
+//     nothing". The operator answered the gate in the pane; the card exists only
+//     to be taken off the board.
+//   - no answer content at all — `decision`, `answer` and `answers` all empty,
+//     which is what a supervisor-channel answer (`answer_permission`) leaves on
+//     the record: the content reached the session through the supervisor's own
+//     channel, so no delivery arm has anything to type.
+//
+// ⚠️ Without this record the card reads `never_attempted` (no record, answered
+// after the trail epoch), which § Delivery attempts flags as undelivered — the
+// same false alarm in a different surface. So the close writes a record either
+// way; only the carrier changes.
+const attentionNothingToDeliverCarrier = "watcher:nothing-to-deliver"
+
+// answerCarriesDelivery reports whether any delivery arm has something to carry
+// for item's answer.
+//
+// ⚠️ It composes the ARMS' OWN predicates rather than inventing a third
+// definition: the prose arm's is answerText, and the menu arm's is
+// menuHandledElsewhere over item.Answers. A predicate written independently here
+// would drift from what the arms actually do, and the two would disagree about a
+// card — the drift the carrier rules exist to prevent.
+//
+// ⚠️ `skip` counts as delivery: it is a DECLINE, and the prose arm delivers it
+// as declineText. Only `hidden` and an empty answer carry nothing.
+func answerCarriesDelivery(item Item) bool {
+	if _, ok := answerText(item); ok {
+		return true
+	}
+	return len(item.Answers) > 0 && !menuHandledElsewhere(item)
+}
+
 // closeItem performs the shared close transition: it stamps ClosedAt, persists
 // the item, records the lost-answer candidate when the item was answered but
 // never attempted, and writes the terminal delivery record that says so.
@@ -121,7 +163,7 @@ func (a *attentionStore) recordCloseAttempt(
 	}
 	attempt := DeliveryAttempt{
 		ItemID:      item.ItemID,
-		Carrier:     attentionCloseCarrier,
+		Carrier:     closeAttemptCarrier(*item),
 		Outcome:     HeldOutcome,
 		AttemptedAt: now,
 	}
@@ -134,20 +176,40 @@ func (a *attentionStore) recordCloseAttempt(
 	glog.V(2).Infof(
 		"job=attention-watcher action=close_attempt item=%s carrier=%s outcome=%s",
 		item.ItemID,
-		attentionCloseCarrier,
+		attempt.Carrier,
 		HeldOutcome,
 	)
 	return nil
 }
 
-// countLostAnswer records one lost-answer CANDIDATE when item is an answered
-// item with no delivery attempt ever recorded, and reports that it did so.
+// closeAttemptCarrier names why the close backfill is being written, so a
+// reader can tell a lost answer from an answer with nothing to deliver by
+// carrier alone.
 //
-// The condition is "answered, closed, never attempted": AnsweredAt is what makes
-// it an answer rather than a clear, and the absence of an attempt record is what
-// makes it lost. Any attempt record — delivered, held or failed — means a
-// delivery arm looked, so it is not counted; the no-target hold path is a
-// separate mechanism, deliberately out of scope here.
+// ⚠️ The outcome is `held` in both cases and therefore carries no information —
+// [[Attention Item Schema]] § Delivery attempts says the lost-answer counter
+// separates the two by carrier, never by outcome. Writing the same carrier for
+// both would make the two indistinguishable on the record and re-create the
+// over-count this distinction removes.
+func closeAttemptCarrier(item Item) string {
+	if answerCarriesDelivery(item) {
+		return attentionCloseCarrier
+	}
+	return attentionNothingToDeliverCarrier
+}
+
+// countLostAnswer records one lost-answer CANDIDATE when item is an answered
+// item whose answer carried something to deliver, with no delivery attempt ever
+// recorded, and reports that it did so.
+//
+// The condition is "answered, closed, never attempted, and something to carry":
+// AnsweredAt is what makes it an answer rather than a clear, the absence of an
+// attempt record is what makes it lost, and answerCarriesDelivery is what keeps
+// a hidden dismissal or a no-content supervisor answer out of the count — those
+// have nothing for an arm to deliver, so no arm looking is correct rather than a
+// loss. Any attempt record — delivered, held or failed — means a delivery arm
+// looked, so it is not counted either; the no-target hold path is a separate
+// mechanism, deliberately out of scope here.
 //
 // ⚠️ The verdict is NOT final here and the durable total is not moved. The
 // delivery arm keeps delivering an already-closed card and writes its attempt
@@ -171,6 +233,17 @@ func (a *attentionStore) countLostAnswer(
 	item *Item,
 ) error {
 	if item.AnsweredAt == nil {
+		return nil
+	}
+	// ⚠️ An answer with nothing to deliver cannot be a LOST answer. Two shapes
+	// reach this close with no attempt record precisely because no arm was
+	// supposed to look: a `hidden` dismissal and a no-content supervisor answer
+	// (see attentionNothingToDeliverCarrier). Counting them made the metric
+	// unable to read zero — measured 2026-11-18/19: 5 of the 29 closes in the
+	// counter's windows were these shapes. recordCloseAttempt still writes a
+	// terminal record for them, under its own carrier, so the read surface does
+	// not fall back to `never_attempted`.
+	if !answerCarriesDelivery(*item) {
 		return nil
 	}
 	_, err := a.attempts.Get(ctx, tx, item.ItemID.String())
