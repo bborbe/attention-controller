@@ -224,6 +224,25 @@ var _ = Describe("AttentionStore lost-answer counter", func() {
 		Expect(counter.Count()).To(Equal(0))
 	})
 
+	It("does not count a close that already carried a held record for a resolved verdict", func() {
+		// The fixed shape: the prose arm records `held` when its carrier reports
+		// `resolved` (the gate was already gone), so the record exists BEFORE the
+		// answered sweep closes the card. Before that fix the arm wrote nothing and
+		// the close's own `watcher:gate-resolved` backfill was all the trail held —
+		// counted as a loss. Measured 2026-11-19 on 3a5a4ab9… and f3a96f81….
+		id := answer("producer-resolved", "key-resolved")
+		_, err := store.RecordAttempt(ctx, id, "watcher:attention-watcher", pkg.HeldOutcome)
+		Expect(err).To(BeNil())
+
+		_, err = store.Close(ctx, id, "", nil)
+		Expect(err).To(BeNil())
+
+		advance(pastGrace)
+		sweep()
+		Expect(counter.Count()).To(Equal(0),
+			"an arm looked and found the gate gone — that is not a lost answer")
+	})
+
 	It("counts a lost answer once and not again when the sweep re-scans", func() {
 		answer("producer-sweep", "key-sweep")
 		advance(twoHours)
