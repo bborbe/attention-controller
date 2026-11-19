@@ -177,6 +177,41 @@ var _ = Describe("AttentionAnswerHandler", func() {
 		return item
 	}
 
+	// The answerer decides the voice every carrier delivers in, so both
+	// answerers are asserted on the STORED item, one card each.
+	DescribeTable("records the answerer the body names",
+		func(dedup pkg.DedupKey, answerer string, want pkg.Answerer) {
+			item := pushMessage(dedup)
+
+			rec := answer(
+				item.ItemID,
+				`{"answered_by":"supervisor","answer":{"kind":"text","value":"Approve","answerer":"`+answerer+`"}}`,
+			)
+			Expect(rec.Code).To(Equal(http.StatusOK))
+
+			got, err := store.Get(ctx, item.ItemID)
+			Expect(err).To(BeNil())
+			Expect(got.Answer).NotTo(BeNil())
+			Expect(got.Answer.Answerer).To(Equal(want))
+		},
+		Entry("manager", pkg.DedupKey("answerer-manager"), "manager", pkg.ManagerAnswerer),
+		Entry("operator", pkg.DedupKey("answerer-operator"), "operator", pkg.OperatorAnswerer),
+	)
+
+	It("rejects an unknown answerer and leaves the item open", func() {
+		item := pushMessage("answerer-unknown")
+
+		rec := answer(
+			item.ItemID,
+			`{"answered_by":"supervisor","answer":{"kind":"text","value":"Approve","answerer":"boss"}}`,
+		)
+		Expect(rec.Code).To(Equal(http.StatusBadRequest))
+
+		got, err := store.Get(ctx, item.ItemID)
+		Expect(err).To(BeNil())
+		Expect(got.State).To(Equal(pkg.OpenState))
+	})
+
 	It("records a hidden answer as a kind, leaving the state at answered", func() {
 		item := pushMessage("hidden-1")
 
