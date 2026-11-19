@@ -6,6 +6,7 @@ package pkg_test
 
 import (
 	"context"
+	"time"
 
 	libboltkv "github.com/bborbe/boltkv"
 	"github.com/bborbe/errors"
@@ -114,7 +115,28 @@ var _ = Describe("Answer hold", func() {
 		Expect(errors.Is(err, pkg.ErrAlreadyAnswered)).To(BeTrue())
 	})
 
-	It("closes an undelivered open card, carrying the held marker", func() {
+	It("closes an undelivered open card carrying the FAILED marker", func() {
+		item := push()
+		answer(item)
+
+		// The arm writes the undeliverable `failed` record at the bound, then
+		// closes — the board renders the visible marker only for `failed`
+		// (DeliveryReport.Status == failed), never for `held`. So the close must
+		// keep the `failed` record, which recordCloseAttempt does (it never
+		// overwrites an existing attempt).
+		_, err := store.RecordAttempt(ctx, item.ItemID, "attention-watcher:undeliverable", pkg.FailedOutcome)
+		Expect(err).To(BeNil())
+
+		closed, err := store.CloseUndelivered(ctx, item.ItemID)
+		Expect(err).To(BeNil())
+		Expect(closed.State).To(Equal(pkg.ClosedState))
+
+		report, err := store.Delivery(ctx, item.ItemID)
+		Expect(err).To(BeNil())
+		Expect(report.Status).To(Equal(pkg.FailedStatus), "SC4: the close must carry the visible undeliverable marker")
+	})
+
+	It("records held on a bare close with no prior attempt", func() {
 		item := push()
 		answer(item)
 
@@ -122,12 +144,19 @@ var _ = Describe("Answer hold", func() {
 		Expect(err).To(BeNil())
 		Expect(closed.State).To(Equal(pkg.ClosedState))
 
-		// The board reads the marker from the delivery trail, not from the state:
-		// a close with no prior attempt records `held`, which is what SC4 requires
-		// the bounded fallback to carry.
+		// No arm looked, so the close backfills `held` — an honest record, but NOT
+		// the SC4 marker. The bound path writes `failed` first (the spec above).
 		report, err := store.Delivery(ctx, item.ItemID)
 		Expect(err).To(BeNil())
 		Expect(report.Status).To(Equal(pkg.HeldStatus))
+	})
+
+	It("pins the delivery bound inside SC4's range", func() {
+		// SC4 requires the bound outlast the supervisor's 35 s delivery wait and
+		// stay within its 600 s ceiling. The constant must not drift out of that
+		// window when the retry backoff is retuned.
+		Expect(pkg.AttentionDeliveryBound).To(BeNumerically(">=", 35*time.Second))
+		Expect(pkg.AttentionDeliveryBound).To(BeNumerically("<=", 600*time.Second))
 	})
 
 	It("keeps a held card in the board's open set", func() {
