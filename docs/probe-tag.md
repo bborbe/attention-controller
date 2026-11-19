@@ -67,6 +67,16 @@ The **history** endpoint is deliberately untouched: it is the census surface,
 and the producing tasks' own requirement is that a census *exclude the tag by
 name*, not that the history read hide it.
 
+⚠️ **`ReadBoard` has in-process consumers besides the two board surfaces** — the
+watcher job, the menu-answer job, the context-crossing sink, the compact trio and
+the event-ingest sink. They inherit the exclusion, which is the intended
+direction: a synthetic probe must not raise an invariant card or drive a manager
+wake. The one consequence worth knowing is `StoreEventSink.Close`, which resolves
+an open item by dedup key from `ReadBoard`: a probe closed through that path
+no-ops and stays open until `expires_at`. Probes are posted through
+`attention-ask.py`, not through event ingest, so this does not arise in practice;
+if a probe ever is produced by a hook, close it by item id instead.
+
 ## For a probe author
 
 1. Open the payload with `SC2 burst probe`.
