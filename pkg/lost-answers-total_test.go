@@ -64,8 +64,13 @@ var _ = Describe("Lost-answer total across a restart", func() {
 		)
 	}
 
-	// answerAndClose pushes, answers, then closes an item with no delivery
-	// attempt — the lost-answer candidate shape.
+	// answerAndClose pushes, answers with CONTENT, then closes an item with no
+	// delivery attempt — the lost-answer candidate shape.
+	//
+	// ⚠️ The answer must carry something to deliver. An empty answer is the
+	// nothing-to-deliver shape this helper deliberately does not exercise: it is
+	// excluded from the count (see answerCarriesDelivery), so answering empty
+	// here would make these specs pass for the wrong reason.
 	answerAndClose := func(store pkg.AttentionStore, producer, dedup string) {
 		item, err := store.Push(ctx, pkg.PushRequest{
 			ProducerID:      pkg.ProducerID(producer),
@@ -77,7 +82,16 @@ var _ = Describe("Lost-answer total across a restart", func() {
 			AnswerMechanism: pkg.MessageAnswerMechanism,
 		})
 		Expect(err).To(BeNil())
-		_, err = store.Answer(ctx, item.ItemID, "arm", "session", pkg.Decision(""), nil, nil, nil)
+		_, err = store.Answer(
+			ctx,
+			item.ItemID,
+			"arm",
+			"session",
+			pkg.Decision(""),
+			&pkg.Answer{Kind: pkg.OptionAnswerKind, Value: "Yes"},
+			nil,
+			nil,
+		)
 		Expect(err).To(BeNil())
 		_, err = store.Close(ctx, item.ItemID, "", nil)
 		Expect(err).To(BeNil())
@@ -173,7 +187,7 @@ var _ = Describe("Lost-answer total across a restart", func() {
 				"arm",
 				"session",
 				pkg.Decision(""),
-				nil,
+				&pkg.Answer{Kind: pkg.OptionAnswerKind, Value: "Yes"},
 				nil,
 				nil,
 			)
@@ -213,5 +227,141 @@ var _ = Describe("Lost-answer total across a restart", func() {
 		durable, err := pkg.LoadLostAnswersTotal(ctx, db)
 		Expect(err).To(BeNil())
 		Expect(durable).To(Equal(uint64(1)))
+	})
+})
+
+// ⚠️ The counter measures answers that were LOST, not answers that had nothing
+// to deliver. Two shapes reach a close with no attempt record precisely because
+// no arm was supposed to look, and counting them made goal SC3 ("zero lost
+// answers per week") unable to read zero. Measured 2026-11-18/19: 5 of the 29
+// closes in the counter's windows were these shapes.
+//
+// ⚠️ The third spec is the POSITIVE CONTROL and is not optional. A counter that
+// stopped moving for every class also reads zero here, so a suite asserting only
+// the two exclusions would pass with the instrument dead.
+var _ = Describe("Lost-answer total excludes answers with nothing to deliver", func() {
+	var ctx context.Context
+	var db libkv.DB
+	var clock libtime.CurrentDateTime
+	var store pkg.AttentionStore
+
+	const (
+		heartbeatWindow = libtime.Duration(15 * 60 * 1e9)
+		// twoHours keeps the sweep's max-age close out of these specs: every item
+		// here is already closed, and the pass exists only to settle candidates.
+		twoHours = libtime.Duration(2 * 60 * 60 * 1e9)
+		// pastGrace is comfortably beyond pkg.LostAnswerGrace (2 min).
+		pastGrace = libtime.Duration(3 * 60 * 1e9)
+	)
+
+	// pushAnswerClose pushes a message item, answers it with the given shape,
+	// then closes it with no delivery attempt — the shape under test.
+	pushAnswerClose := func(
+		decision pkg.Decision,
+		answer *pkg.Answer,
+		answers pkg.Answers,
+	) pkg.ItemID {
+		item, err := store.Push(ctx, pkg.PushRequest{
+			ProducerID:      pkg.ProducerID("producer-shape"),
+			ProducerKind:    pkg.SessionProducerKind,
+			LivenessRef:     pkg.LivenessRef("session:producer-shape"),
+			DedupKey:        pkg.DedupKey("key-shape"),
+			InterruptClass:  "approve",
+			Payload:         "deploy prod?",
+			AnswerMechanism: pkg.MessageAnswerMechanism,
+		})
+		Expect(err).To(BeNil())
+		_, err = store.Answer(
+			ctx,
+			item.ItemID,
+			"arm",
+			"session",
+			decision,
+			answer,
+			answers,
+			nil,
+		)
+		Expect(err).To(BeNil())
+		_, err = store.Close(ctx, item.ItemID, "", nil)
+		Expect(err).To(BeNil())
+		return item.ItemID
+	}
+
+	finalize := func() {
+		clock.SetNow(clock.Now().Add(pastGrace))
+		_, err := store.SweepAnswered(ctx, twoHours)
+		Expect(err).To(BeNil())
+	}
+
+	total := func() uint64 {
+		value, err := pkg.LoadLostAnswersTotal(ctx, db)
+		Expect(err).To(BeNil())
+		return value
+	}
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		dataDir := GinkgoT().TempDir()
+		var err error
+		db, err = libboltkv.OpenDir(ctx, dataDir)
+		Expect(err).To(BeNil())
+		clock = libtime.NewCurrentDateTime()
+		liveness := &mocks.SessionLivenessChecker{}
+		liveness.IsLiveReturns(true)
+		store = pkg.NewAttentionStore(
+			db,
+			pkg.NewItemIDGenerator(),
+			liveness,
+			clock,
+			heartbeatWindow,
+		)
+	})
+
+	AfterEach(func() {
+		Expect(db.Close()).To(BeNil())
+	})
+
+	It("does not count a hidden-answer dismissal", func() {
+		itemID := pushAnswerClose("", &pkg.Answer{Kind: pkg.HiddenAnswerKind}, nil)
+		finalize()
+		Expect(total()).To(Equal(uint64(0)))
+
+		// The close still writes a terminal record, under its own carrier: the
+		// read surface must not fall back to `never_attempted` for a card that
+		// had nothing to deliver.
+		attempts, err := store.DeliveryAttempts(ctx)
+		Expect(err).To(BeNil())
+		Expect(attempts).To(HaveKey(itemID))
+		Expect(attempts[itemID].Carrier).To(Equal("watcher:nothing-to-deliver"))
+		Expect(attempts[itemID].Outcome).To(Equal(pkg.HeldOutcome))
+	})
+
+	It("does not count a no-content supervisor answer", func() {
+		itemID := pushAnswerClose("", nil, nil)
+		finalize()
+		Expect(total()).To(Equal(uint64(0)))
+
+		// The carrier assertion is load-bearing here: without it a regression that
+		// stopped writing the record entirely would also read 0, and the card
+		// would fall back to `never_attempted` — the false alarm this record
+		// exists to prevent.
+		attempts, err := store.DeliveryAttempts(ctx)
+		Expect(err).To(BeNil())
+		Expect(attempts).To(HaveKey(itemID))
+		Expect(attempts[itemID].Carrier).To(Equal("watcher:nothing-to-deliver"))
+	})
+
+	It("still counts a genuine lost answer (positive control)", func() {
+		itemID := pushAnswerClose(
+			"",
+			&pkg.Answer{Kind: pkg.OptionAnswerKind, Value: "Yes"},
+			nil,
+		)
+		finalize()
+		Expect(total()).To(Equal(uint64(1)))
+
+		attempts, err := store.DeliveryAttempts(ctx)
+		Expect(err).To(BeNil())
+		Expect(attempts[itemID].Carrier).To(Equal("watcher:gate-resolved"))
 	})
 })

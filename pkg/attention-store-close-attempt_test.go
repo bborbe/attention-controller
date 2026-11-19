@@ -52,13 +52,17 @@ var _ = Describe("AttentionStore close-path delivery record", func() {
 
 	answer := func(producer pkg.ProducerID, dedup pkg.DedupKey) pkg.ItemID {
 		id := push(producer, dedup)
+		// ⚠️ The answer must carry something to deliver. An empty answer is the
+		// nothing-to-deliver shape, which the close records under its own carrier
+		// (watcher:nothing-to-deliver) instead of the gate-resolved one these
+		// specs assert.
 		_, err := store.Answer(
 			ctx,
 			id,
 			"attention-board",
 			"session",
 			pkg.Decision(""),
-			nil,
+			&pkg.Answer{Kind: pkg.OptionAnswerKind, Value: "Yes"},
 			nil,
 			nil,
 		)
