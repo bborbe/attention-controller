@@ -52,6 +52,11 @@ var AvailableTransitions = Transitions{
 		Trigger: "the evidence deadline passed with the claim unobserved, so the item returns to the board",
 	},
 	{
+		From:    AwaitingEvidenceState,
+		To:      ClosedState,
+		Trigger: "the evidence deadline passed and the item's target pane and session are both provably gone, so the card is retired instead of returned",
+	},
+	{
 		From:    OpenState,
 		To:      ClosedState,
 		Trigger: "the item is resolved without an answer",
