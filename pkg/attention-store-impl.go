@@ -380,8 +380,24 @@ func classifyForRead(
 	includeAnswered bool,
 	now libtime.DateTime,
 ) readDisposition {
+	// ⚠️ A synthetic probe is omitted from the BOARD's result, and this is the
+	// first decision so it applies to an answered probe as well as an open one.
+	// It is NOT a removal: the disposition is neither keep nor remove, so the
+	// item stays in the store as the audit trail its producer requires — and the
+	// expiry branch below still clears an expired open probe like any other row.
+	//
+	// ⚠️ It is scoped to the board (includeAnswered) rather than to both readers.
+	// Read feeds the JSON read API and the arms that act on what it returns;
+	// widening the filter would change what every one of those consumers sees,
+	// and the defect this excludes is a probe reaching the OPERATOR'S board. The
+	// two readers already differ by intent, and this adds a third difference
+	// deliberately rather than by drift. See docs/probe-tag.md.
+	probe := includeAnswered && IsSyntheticProbePayload(item.Payload)
 	if item.State == AnsweredState && includeAnswered {
 		// Rendered as a dimmed record. Never pruned.
+		if probe {
+			return readDisposition{}
+		}
 		return readDisposition{keep: true}
 	}
 	if item.State != OpenState {
@@ -391,6 +407,9 @@ func classifyForRead(
 		glog.V(2).
 			Infof("removing item %s: expires_at %s has passed", item.ItemID, effectiveExpiresAt(&item).Time())
 		return readDisposition{remove: true}
+	}
+	if probe {
+		return readDisposition{}
 	}
 	return readDisposition{keep: true}
 }
