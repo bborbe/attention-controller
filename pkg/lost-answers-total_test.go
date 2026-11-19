@@ -337,9 +337,18 @@ var _ = Describe("Lost-answer total excludes answers with nothing to deliver", f
 	})
 
 	It("does not count a no-content supervisor answer", func() {
-		pushAnswerClose("", nil, nil)
+		itemID := pushAnswerClose("", nil, nil)
 		finalize()
 		Expect(total()).To(Equal(uint64(0)))
+
+		// The carrier assertion is load-bearing here: without it a regression that
+		// stopped writing the record entirely would also read 0, and the card
+		// would fall back to `never_attempted` — the false alarm this record
+		// exists to prevent.
+		attempts, err := store.DeliveryAttempts(ctx)
+		Expect(err).To(BeNil())
+		Expect(attempts).To(HaveKey(itemID))
+		Expect(attempts[itemID].Carrier).To(Equal("watcher:nothing-to-deliver"))
 	})
 
 	It("still counts a genuine lost answer (positive control)", func() {
