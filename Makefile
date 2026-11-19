@@ -57,6 +57,10 @@ e2e:
 # (`security find-identity -p codesigning`).
 CODESIGN_IDENTITY ?= bborbe local codesign
 INSTALL_BIN ?= $(HOME)/.local/bin/attention-controller
+# The permission-answer hook is a second binary installed from this repo. It is
+# not the launchd service, so it carries no .prev rollback: a failed hook start
+# cannot take the board down.
+INSTALL_HOOK_BIN ?= $(HOME)/.local/bin/attention-controller-permission-answer-hook
 
 #
 # The binary is built and signed at a staging path and only moved into place
@@ -146,6 +150,13 @@ install-bin:
 			echo "retained previous binary: $(INSTALL_BIN).prev"; \
 		fi; \
 		mv -f "$$stage" "$(INSTALL_BIN)"
+	@set -e; \
+		stage="$(INSTALL_HOOK_BIN).new.$$$$"; \
+		trap 'rm -f "$$stage"' EXIT INT TERM; \
+		go build -o "$$stage" ./cmd/permission-answer-hook; \
+		codesign -f -s "$(CODESIGN_IDENTITY)" "$$stage"; \
+		codesign --verify --strict "$$stage"; \
+		mv -f "$$stage" "$(INSTALL_HOOK_BIN)"
 
 .PHONY: install
 install: install-bin
