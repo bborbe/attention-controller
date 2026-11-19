@@ -7,7 +7,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	stderrors "errors"
+	"flag"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -50,7 +53,18 @@ type recordingClient struct {
 	attemptCalls   int
 	subscribeCalls int
 	attempts       []recordedAttempt
+	// trace is the shared ordering trace. RecordAttempt appends "attempt" to it
+	// and the stdout wrapper appends "stdout", so a spec asserts that the answer
+	// reached stdout BEFORE the record was posted instead of inferring it from
+	// call counts — counts are identical whichever order they happened in.
+	trace *[]string
 }
+
+// traceStdout is the marker the stdout wrapper records.
+const traceStdout = "stdout"
+
+// traceAttempt is the marker RecordAttempt records.
+const traceAttempt = "attempt"
 
 func (c *recordingClient) List(_ context.Context) (pkg.Items, error) {
 	c.listCalls++
@@ -86,7 +100,23 @@ func (c *recordingClient) RecordAttempt(
 		c.attempts,
 		recordedAttempt{itemID: itemID, carrier: carrier, outcome: outcome},
 	)
+	if c.trace != nil {
+		*c.trace = append(*c.trace, traceAttempt)
+	}
 	return c.attemptErr
+}
+
+// traceWriter records "stdout" on the shared trace as the bytes are written and
+// forwards them, so the assertion is on what writeDecision actually emitted.
+type traceWriter struct {
+	writer io.Writer
+	trace  *[]string
+}
+
+// Write records the write on the trace and forwards it to the wrapped writer.
+func (w *traceWriter) Write(p []byte) (int, error) {
+	*w.trace = append(*w.trace, traceStdout)
+	return w.writer.Write(p)
 }
 
 // Subscribe records the call and hands out the spec's event channel.
@@ -642,6 +672,53 @@ func newSettleFixture(client *recordingClient) settleFixture {
 	return settleFixture{opts: opts, clock: clock, dir: dir, stdout: stdout, stderr: stderr}
 }
 
+// tracedStdout points the fixture's stdout and the client at one shared trace,
+// so a spec can assert the order the answer and the record were emitted in. The
+// fixture's own buffer still receives the bytes.
+func tracedStdout(fixture *settleFixture, client *recordingClient) *[]string {
+	trace := &[]string{}
+	client.trace = trace
+	fixture.opts.Stdout = &traceWriter{writer: fixture.stdout, trace: trace}
+	return trace
+}
+
+// goldenBytes reads one committed golden fixture.
+//
+// ⚠️ The fixture is the contract, so it is read from disk. A spec that composed
+// the expected bytes itself would prove only that the spec agrees with itself.
+func goldenBytes(name string) []byte {
+	raw, err := os.ReadFile(filepath.Join("testdata", name))
+	Expect(err).ToNot(HaveOccurred())
+	return raw
+}
+
+// captureGlog runs fn with glog writing every level to a captured stderr, so a
+// fail-open warning is asserted rather than assumed.
+func captureGlog(fn func()) string {
+	toStderr := flag.Lookup("logtostderr").Value.String()
+	verbosity := flag.Lookup("v").Value.String()
+	Expect(flag.Set("logtostderr", "true")).To(Succeed())
+	Expect(flag.Set("v", "2")).To(Succeed())
+	reader, writer, err := os.Pipe()
+	Expect(err).NotTo(HaveOccurred())
+	original := os.Stderr
+	os.Stderr = writer
+	done := make(chan string)
+	go func() {
+		content, _ := io.ReadAll(reader)
+		done <- string(content)
+	}()
+	defer func() {
+		os.Stderr = original
+		Expect(flag.Set("logtostderr", toStderr)).To(Succeed())
+		Expect(flag.Set("v", verbosity)).To(Succeed())
+	}()
+	fn()
+	os.Stderr = original
+	Expect(writer.Close()).To(Succeed())
+	return <-done
+}
+
 // answeredCard is the card as settled with allow.
 func answeredCard() *pkg.Item {
 	item := newItemFixture(func(i *pkg.Item) {
@@ -1079,5 +1156,187 @@ var _ = Describe("TestDroppedStreamRunsToDeadline", func() {
 		// that left the closed channel in its select arms one per iteration and
 		// spins until the deadline, which is the busy-wait this guards.
 		Expect(fixture.clock.armedCount()).To(BeNumerically("<=", 5))
+	})
+})
+
+var _ = Describe("TestStdoutContractGolden", func() {
+	// decodedOutput is a test-local shape, deliberately NOT the production type:
+	// decoding through permissionHookOutput would assert the code against itself.
+	type decodedOutput struct {
+		HookSpecificOutput struct {
+			HookEventName string `json:"hookEventName"`
+			Decision      struct {
+				Behavior string `json:"behavior"`
+			} `json:"decision"`
+		} `json:"hookSpecificOutput"`
+	}
+
+	for _, decision := range []pkg.Decision{pkg.AllowDecision, pkg.DenyDecision} {
+		It(
+			"TestStdoutContractGolden writes "+decision.String()+" byte-identical to its golden",
+			func() {
+				buffer := &bytes.Buffer{}
+				Expect(writeDecision(buffer, decision)).To(Succeed())
+
+				// ⚠️ Byte-for-byte, read from the committed file: a trailing-newline
+				// or field-order change must fail here.
+				Expect(buffer.Bytes()).To(Equal(goldenBytes(decision.String() + ".json")))
+
+				var decoded decodedOutput
+				Expect(json.Unmarshal(buffer.Bytes(), &decoded)).To(Succeed())
+				Expect(decoded.HookSpecificOutput.HookEventName).To(Equal("PermissionRequest"))
+				Expect(decoded.HookSpecificOutput.Decision.Behavior).
+					To(Equal(decision.String()))
+			},
+		)
+	}
+
+	It("TestStdoutContractGolden writes nothing at all for an unknown verdict", func() {
+		for _, decision := range []pkg.Decision{pkg.Decision("maybe"), pkg.Decision("")} {
+			buffer := &bytes.Buffer{}
+			Expect(writeDecision(buffer, decision)).To(Succeed())
+			// Zero bytes: no JSON, not even an empty object.
+			Expect(buffer.Len()).To(Equal(0))
+		}
+	})
+})
+
+var _ = Describe("TestDeliveryAttemptRecordedAfterEmit", func() {
+	// settledRun builds the options for a run that settles with allow: the
+	// resolved card is open and the catch-up read returns the answered one.
+	settledRun := func(client *recordingClient) (settleFixture, *[]string) {
+		fixture := newSettleFixture(client)
+		fixture.opts.Stdin = strings.NewReader(`{"session_id":"session-1"}`)
+		return fixture, tracedStdout(&fixture, client)
+	}
+
+	It("TestDeliveryAttemptRecordedAfterEmit posts one delivered attempt after the answer", func() {
+		client := &recordingClient{
+			items:  pkg.Items{newItemFixture(nil)},
+			item:   answeredCard(),
+			events: make(chan StreamEvent, 8),
+		}
+		fixture, trace := settledRun(client)
+
+		Expect(run(context.Background(), fixture.opts)).To(Succeed())
+
+		Expect(client.attempts).To(HaveLen(1))
+		Expect(client.attempts[0].itemID).To(Equal(pkg.ItemID("item-1")))
+		Expect(client.attempts[0].carrier).To(Equal("supervisor:permission-answer-poll"))
+		Expect(client.attempts[0].outcome).To(Equal(pkg.DeliveredOutcome))
+		// The trace, not a count: the answer reached stdout BEFORE the record.
+		Expect(*trace).To(Equal([]string{"stdout", "attempt"}))
+		// ⚠️ These are the bytes `run` emitted, compared with the committed
+		// golden — which is what ties the golden to the real output rather than
+		// to a string the spec composed.
+		Expect(fixture.stdout.Bytes()).To(Equal(goldenBytes("allow.json")))
+	})
+
+	It("TestDeliveryAttemptRecordedAfterEmit posts nothing when the store fails open", func() {
+		client := &recordingClient{
+			items:        pkg.Items{newItemFixture(nil)},
+			subscribeErr: stderrors.New("board down"),
+		}
+		fixture, trace := settledRun(client)
+
+		Expect(run(context.Background(), fixture.opts)).To(Succeed())
+		Expect(fixture.stdout.Len()).To(Equal(0))
+		Expect(client.attemptCalls).To(Equal(0))
+		Expect(*trace).To(BeEmpty())
+	})
+
+	It("TestDeliveryAttemptRecordedAfterEmit posts nothing at the deadline", func() {
+		client := &recordingClient{
+			items:  pkg.Items{newItemFixture(nil)},
+			item:   openCard(),
+			events: make(chan StreamEvent, 8),
+		}
+		fixture, trace := settledRun(client)
+		// A REAL 50ms deadline: the fake clock is frozen, so only a real context
+		// timeout ends this run.
+		fixture.opts.Deadline = 50 * time.Millisecond
+
+		Expect(run(context.Background(), fixture.opts)).To(Succeed())
+		Expect(fixture.stdout.Len()).To(Equal(0))
+		Expect(fixture.stderr.String()).To(ContainSubstring("deadline after"))
+		Expect(client.attemptCalls).To(Equal(0))
+		Expect(*trace).To(BeEmpty())
+	})
+
+	It(
+		"TestDeliveryAttemptRecordedAfterEmit posts nothing when the gate closed in the pane",
+		func() {
+			client := &recordingClient{
+				items:      pkg.Items{newItemFixture(nil)},
+				item:       openCard(),
+				events:     make(chan StreamEvent, 8),
+				subscribed: make(chan struct{}, 1),
+			}
+			fixture, trace := settledRun(client)
+			marker := writeOpenMarker(fixture.dir, "session-1", `{"item_id":"item-1"}`)
+
+			done := make(chan error, 1)
+			go func() { done <- run(context.Background(), fixture.opts) }()
+			Eventually(client.subscribed).Should(Receive())
+			ticker := newTicker(fixture.clock, stateCheckInterval)
+			ticker.tick()      // the file is present: seenOpen becomes true
+			ticker.awaitNext() // that tick is fully processed before the file moves
+			Expect(os.Remove(marker)).To(Succeed())
+			ticker.tick() // the file is gone: the gate closed locally
+
+			Eventually(done).Should(Receive(BeNil()))
+			Expect(fixture.stdout.Len()).To(Equal(0))
+			Expect(fixture.stderr.String()).To(ContainSubstring("closed locally"))
+			Expect(client.attemptCalls).To(Equal(0))
+			Expect(*trace).To(BeEmpty())
+		},
+	)
+
+	It("TestDeliveryAttemptRecordedAfterEmit posts nothing for an ambiguous selection", func() {
+		client := &recordingClient{
+			items: pkg.Items{
+				newItemFixture(func(i *pkg.Item) { i.DedupKey = pkg.DedupKey("dedup-1") }),
+				newItemFixture(func(i *pkg.Item) {
+					i.ItemID = pkg.ItemID("item-2")
+					i.DedupKey = pkg.DedupKey("dedup-2")
+				}),
+			},
+			item:   openCard(),
+			events: make(chan StreamEvent, 8),
+		}
+		fixture, trace := settledRun(client)
+
+		done := make(chan error, 1)
+		go func() { done <- run(context.Background(), fixture.opts) }()
+		newTicker(fixture.clock, resolveRetryInterval).
+			ticks(int(ResolveGrace / resolveRetryInterval))
+
+		Eventually(done).Should(Receive(BeNil()))
+		Expect(fixture.stderr.String()).To(ContainSubstring("ambiguous"))
+		Expect(client.subscribeCalls).To(Equal(0))
+		Expect(fixture.stdout.Len()).To(Equal(0))
+		Expect(client.attemptCalls).To(Equal(0))
+		Expect(*trace).To(BeEmpty())
+	})
+
+	It("TestDeliveryAttemptRecordedAfterEmit keeps the answer when the record write fails", func() {
+		client := &recordingClient{
+			items:      pkg.Items{newItemFixture(nil)},
+			item:       answeredCard(),
+			events:     make(chan StreamEvent, 8),
+			attemptErr: stderrors.New("store rejected the attempt"),
+		}
+		fixture, trace := settledRun(client)
+
+		var err error
+		logged := captureGlog(func() { err = run(context.Background(), fixture.opts) })
+
+		// The record is a requirement on the happy path, never a gate on the
+		// verdict: the answer is on stdout and the hook still exits 0.
+		Expect(err).ToNot(HaveOccurred())
+		Expect(fixture.stdout.Bytes()).To(Equal(goldenBytes("allow.json")))
+		Expect(*trace).To(Equal([]string{"stdout", "attempt"}))
+		Expect(logged).To(ContainSubstring("item-1"))
+		Expect(logged).To(ContainSubstring("store rejected the attempt"))
 	})
 })

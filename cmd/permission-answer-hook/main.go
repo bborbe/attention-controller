@@ -865,6 +865,85 @@ func deadlineLine(deadline time.Duration, lastReason string) string {
 	)
 }
 
+// permissionDecision is the decision member of the harness's response.
+type permissionDecision struct {
+	Behavior string `json:"behavior"`
+}
+
+// permissionHookOutput is the harness's response envelope. The field order is
+// the wire order, so the marshalled bytes are stable.
+type permissionHookOutput struct {
+	HookSpecificOutput struct {
+		HookEventName string             `json:"hookEventName"`
+		Decision      permissionDecision `json:"decision"`
+	} `json:"hookSpecificOutput"`
+}
+
+// hookEventName is the literal event the harness matches the response to.
+const hookEventName = "PermissionRequest"
+
+// writeDecision writes the harness response for a settled verdict, and writes
+// nothing at all for a verdict the harness would not understand.
+//
+// ⚠️ The bytes are the contract: no extra field, no reordering, no
+// pretty-printing and no omitted newline. An unknown verdict prints no JSON at
+// all — a half-understood verdict is worse than no answer, because the harness
+// would read it as a decision it never received.
+func writeDecision(w io.Writer, decision pkg.Decision) error {
+	if decision != pkg.AllowDecision && decision != pkg.DenyDecision {
+		return nil
+	}
+	output := permissionHookOutput{}
+	output.HookSpecificOutput.HookEventName = hookEventName
+	output.HookSpecificOutput.Decision = permissionDecision{Behavior: decision.String()}
+	encoded, err := json.Marshal(output)
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(append(encoded, '\n'))
+	return err
+}
+
+// recordDeliveryAttempt posts the delivery record for a settled answer.
+//
+// ⚠️ It is fail-open in the same sense as the verdict path: a rejected POST is
+// logged with the item id and the decision still stands. A missing record is a
+// measurable defect, not a benign one — the tab path's received_at reads it.
+func recordDeliveryAttempt(
+	ctx context.Context,
+	client storeClient,
+	itemID pkg.ItemID,
+) error {
+	if err := client.RecordAttempt(ctx, itemID, attemptCarrier, pkg.DeliveredOutcome); err != nil {
+		return errors.Wrapf(ctx, err, "record delivery attempt for %s failed", itemID)
+	}
+	return nil
+}
+
+// emitDecision writes the settled verdict to stdout and then records the
+// delivery attempt.
+//
+// ⚠️ The ordering is load-bearing. The answer goes out first and the record is
+// posted after it, so a slow or failing store write can never delay, gate or
+// alter the verdict — and no record is posted on a path that wrote no answer.
+func emitDecision(ctx context.Context, opts hookOptions, result settleResult) {
+	if err := writeDecision(opts.Stdout, result.Decision); err != nil {
+		glog.Warningf(
+			"permission-answer-hook: write decision for %s failed: %v",
+			result.ItemID,
+			err,
+		)
+		return
+	}
+	if err := recordDeliveryAttempt(ctx, opts.Client, result.ItemID); err != nil {
+		glog.Warningf(
+			"permission-answer-hook: record delivery attempt for %s failed: %v",
+			result.ItemID,
+			err,
+		)
+	}
+}
+
 // run executes one hook invocation.
 //
 //nolint:unparam // the error return is the fail-open contract later steps use.
@@ -893,9 +972,7 @@ func run(ctx context.Context, opts hookOptions) error {
 	}
 	result := settle(ctx, opts, item, started)
 	if result.Decision != "" {
-		// The stdout contract and the delivery-attempt record land in a later
-		// step; the decision is carried no further than this branch for now.
-		glog.V(2).Infof("permission-answer-hook decided %s for %s", result.Decision, item.ItemID)
+		emitDecision(ctx, opts, result)
 		return nil
 	}
 	writeSettleReason(opts, result)
