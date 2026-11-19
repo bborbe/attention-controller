@@ -38,6 +38,16 @@ var CompactTrioCommands = []string{
 // highlighted option on an unrelated question.
 const compactApprovalDedupPrefix = "compact-approval:"
 
+// compactTrioCarrier is the attempt-record carrier the trio writes.
+//
+// ⚠️ It is what makes "never compact twice" DURABLE. The in-memory `finished`
+// map dies with the process, while an answered compact card stays on the board
+// for up to an hour — so a restart inside that window would find the card
+// again, create a fresh progress record and re-run the whole trio, compacting a
+// session that was already compacted. The attempt record outlives the process,
+// so a restarted job reads it and stops.
+const compactTrioCarrier = "attention-watcher:compact-trio"
+
 // Defaults for the trio. They are constants beside the job rather than config
 // knobs: each is a measured or ruled value, and a deployment that could re-tune
 // them would make the sequence's own safety a property of the host.
@@ -181,15 +191,31 @@ func (j *compactTrioJob) AdvanceOnce(ctx context.Context) error {
 		return errors.Wrap(ctx, err, "read board failed")
 	}
 	seen := make(map[ItemID]struct{}, len(items))
+	live := make(Items, 0, len(items))
 	for _, item := range items {
-		if err := ctx.Err(); err != nil {
-			return nil
-		}
 		if !compactTrioOwns(item) {
 			continue
 		}
 		seen[item.ItemID] = struct{}{}
+		live = append(live, item)
+	}
+	// ⚠️ The attempt reports are read for EVERY trio card, because they are the
+	// durable record that a sequence already ran. A failure here returns rather
+	// than proceeding: running the trio without knowing whether it already ran
+	// is exactly how a restart compacts a session twice.
+	reports, err := j.store.DeliveryReports(readCtx, live)
+	if err != nil {
+		return errors.Wrap(ctx, err, "read delivery reports failed")
+	}
+	for _, item := range live {
+		if err := ctx.Err(); err != nil {
+			return nil
+		}
 		if _, done := j.finished[item.ItemID]; done {
+			continue
+		}
+		if trioAlreadySettled(reports[item.ItemID]) {
+			j.finish(item.ItemID)
 			continue
 		}
 		j.advance(ctx, item)
@@ -207,6 +233,20 @@ func (j *compactTrioJob) AdvanceOnce(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// trioAlreadySettled reports whether this card's sequence already ended, read
+// from the durable attempt record rather than from process memory.
+//
+// ⚠️ `delivered` and `failed` are both terminal. `failed` covers the sequence
+// that gave up at a ceiling — re-running it after a restart would send
+// `prepare-compact` and `/compact` again, i.e. compact a second time, which is
+// precisely what giving up exists to prevent.
+func trioAlreadySettled(report *DeliveryReport) bool {
+	if report == nil || report.Carrier != compactTrioCarrier {
+		return false
+	}
+	return report.Status == DeliveredStatus || report.Status == FailedStatus
 }
 
 // compactTrioOwns reports whether an approved compact card's answer is the
@@ -234,12 +274,18 @@ func compactTrioOwns(item Item) bool {
 // between, so acknowledging IS the approval and it passes. A `message` card
 // approves only when the answer names one of its `recommended` labels.
 //
-// ⚠️ It fails CLOSED. A false approval compacts a session the operator declined
-// and cannot be undone; a false decline only leaves the session as it was, and
-// the card may be raised again. Measured 2026-10-17: an implementation that read
-// the empty string as the approve signal ran the trio on "Not now" too, turning
-// a no-op into an unwanted compaction.
+// ⚠️ It fails CLOSED, and the skip/hidden check comes FIRST for that reason. A
+// dismissed or hidden answer on a zero-option card would otherwise satisfy the
+// no-options branch and run the trio against the operator's own decline — the
+// measured 2026-10-17 defect, where every answer ran the sequence and answering
+// "Not now" compacted the session anyway. A false approval cannot be undone; a
+// false decline only leaves the session as it was, and the card may be raised
+// again.
 func compactApproved(item Item) bool {
+	if item.Answer != nil &&
+		(item.Answer.Kind == SkipAnswerKind || item.Answer.Kind == HiddenAnswerKind) {
+		return false
+	}
 	if len(item.Options) == 0 {
 		return true
 	}
@@ -281,8 +327,15 @@ func (j *compactTrioJob) advance(ctx context.Context, item Item) {
 		SessionID:   sessionID,
 		StoreItemID: string(item.ItemID),
 	}
-	pane, ok := j.resolvePane(ctx, item, delivery)
-	if !ok {
+	pane, verdict := j.resolvePane(ctx, item, delivery)
+	if verdict != DeliveryOK {
+		// ⚠️ A transient resolution failure must not bypass the ceiling. Left
+		// unbounded, a session whose panes cannot be listed is re-probed every
+		// tick forever — the same "gate that can never open" the ceiling exists
+		// to bound. Restarting is safe here: nothing has been sent.
+		if verdict == DeliveryRetry && j.overdue(progress) {
+			j.giveUp(ctx, item, progress, "pane could not be resolved")
+		}
 		return
 	}
 	if progress.pane != pane {
@@ -299,14 +352,14 @@ func (j *compactTrioJob) resolvePane(
 	ctx context.Context,
 	item Item,
 	delivery *PaneDelivery,
-) (int, bool) {
+) (int, DeliveryVerdict) {
 	verdict, pane, reason := j.carrier.Locate(ctx, delivery)
 	switch verdict {
 	case DeliveryOK:
-		return pane, true
+		return pane, DeliveryOK
 	case DeliveryRetry:
 		// A transient read failure: keep the position and try again next tick.
-		return 0, false
+		return 0, DeliveryRetry
 	case DeliveryNoPane:
 		glog.V(2).Infof(
 			"job=compact-trio action=no-pane item=%s reason=%q", item.ItemID, reason,
@@ -320,7 +373,7 @@ func (j *compactTrioJob) resolvePane(
 		)
 	}
 	j.finish(item.ItemID)
-	return 0, false
+	return 0, verdict
 }
 
 // step sends the next command when its gate is open, or records why it waited.
@@ -336,7 +389,7 @@ func (j *compactTrioJob) step(
 	open, why := j.gateOpen(ctx, sessionID, pane, progress)
 	if !open {
 		if j.overdue(progress) {
-			j.giveUp(item, progress, why)
+			j.giveUp(ctx, item, progress, why)
 		}
 		return
 	}
@@ -371,6 +424,7 @@ func (j *compactTrioJob) step(
 				pane,
 				len(CompactTrioCommands),
 			)
+			j.record(ctx, item, DeliveredOutcome)
 			j.finish(item.ItemID)
 		}
 	case DeliveryRetry:
@@ -386,7 +440,26 @@ func (j *compactTrioJob) step(
 			verdict,
 			why,
 		)
+		j.record(ctx, item, FailedOutcome)
 		j.finish(item.ItemID)
+	}
+}
+
+// record writes the sequence's terminal outcome to the store.
+//
+// ⚠️ This is the DURABLE half of "never compact twice": `finished` forgets on
+// restart, the attempt record does not. A failure is logged and never stops the
+// tick — the sequence has already ended either way.
+func (j *compactTrioJob) record(ctx context.Context, item Item, outcome DeliveryOutcome) {
+	if _, err := j.store.RecordAttempt(
+		ctx, item.ItemID, compactTrioCarrier, outcome,
+	); err != nil {
+		glog.Warningf(
+			"job=compact-trio action=attempt_error item=%s outcome=%s error=%v",
+			item.ItemID,
+			outcome,
+			err,
+		)
 	}
 }
 
@@ -451,6 +524,7 @@ func (j *compactTrioJob) overdue(progress *compactTrioProgress) bool {
 // documented cooldown cost (one extra prepare turn), and it is the only way a
 // session that was busy at the moment the card was approved ever makes progress.
 func (j *compactTrioJob) giveUp(
+	ctx context.Context,
 	item Item,
 	progress *compactTrioProgress,
 	why string,
@@ -463,6 +537,7 @@ func (j *compactTrioJob) giveUp(
 			len(CompactTrioCommands),
 			why,
 		)
+		j.record(ctx, item, FailedOutcome)
 		j.finish(item.ItemID)
 		return
 	}
@@ -476,6 +551,7 @@ func (j *compactTrioJob) giveUp(
 			progress.restarts-1,
 			why,
 		)
+		j.record(ctx, item, FailedOutcome)
 		j.finish(item.ItemID)
 		return
 	}

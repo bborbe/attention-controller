@@ -216,12 +216,23 @@ func (r *transcriptReader) ModifiedAt(sessionID string) (time.Time, bool) {
 
 // compactionBoundaryMarker is the substring every compaction record carries.
 //
-// ⚠️ It is a SUBSTRING, not a parsed field, and that is the reference
-// implementation's own rule (`compaction_boundaries` counted lines containing
-// it). The record is a `system` entry whose payload shape is the harness's, and
-// parsing it would make the gate fail closed on any harness change — while the
-// count only has to answer "did one MORE appear since I sent `/compact`".
+// ⚠️ It is only a PRE-FILTER. The record is a `system` entry with
+// `subtype: compact_boundary`; the string also appears inside ordinary user and
+// tool-result records that merely mention it (measured on this machine: a
+// `toolUseResult` quoting a compaction, and a `user` record carrying
+// `compactMetadata` in nested text). Counting raw occurrences therefore reports
+// a boundary that never happened — and a false boundary is the worst kind here,
+// because it is what licenses `post-compact` to fire into a running compaction.
 const compactionBoundaryMarker = "compact_boundary"
+
+// compactionBoundarySubtype is the record's own declaration that it IS a
+// boundary, matched at the TOP LEVEL of the line's JSON.
+const compactionBoundarySubtype = "compact_boundary"
+
+// compactionBoundaryCacheMax bounds the per-path count cache. One entry per
+// session ever polled is tiny, but the map must not grow without limit in a
+// process that lives for weeks.
+const compactionBoundaryCacheMax = 64
 
 // CompactionBoundaries counts the transcript's compaction records.
 //
@@ -251,9 +262,35 @@ func (r *transcriptReader) CompactionBoundaries(sessionID string) (int, bool) {
 	if err != nil {
 		return 0, false
 	}
-	count := bytes.Count(content, []byte(compactionBoundaryMarker))
+	count := countCompactionBoundaries(content)
 	r.rememberBoundaries(path, info, count)
 	return count, true
+}
+
+// countCompactionBoundaries counts the transcript's real compaction records.
+//
+// ⚠️ A line counts only when its TOP-LEVEL JSON declares
+// `subtype: compact_boundary`. The marker string also occurs inside tool
+// results and message text that merely quote a compaction, and those are nested
+// rather than top-level — counting them would fabricate the very boundary the
+// gate waits for.
+func countCompactionBoundaries(content []byte) int {
+	count := 0
+	for _, line := range bytes.Split(content, []byte("\n")) {
+		if !bytes.Contains(line, []byte(compactionBoundaryMarker)) {
+			continue
+		}
+		var record struct {
+			Subtype string `json:"subtype"`
+		}
+		if err := json.Unmarshal(line, &record); err != nil {
+			continue
+		}
+		if record.Subtype == compactionBoundarySubtype {
+			count++
+		}
+	}
+	return count
 }
 
 // cachedBoundaries returns the cached count for exactly this file state.
@@ -273,6 +310,15 @@ func (r *transcriptReader) rememberBoundaries(path string, info os.FileInfo, cou
 	defer r.mu.Unlock()
 	if r.boundaries == nil {
 		r.boundaries = map[string]transcriptBoundaryCount{}
+	}
+	if len(r.boundaries) >= compactionBoundaryCacheMax {
+		// Forget one arbitrary entry rather than grow without bound. A dropped
+		// entry costs one re-read on its next poll; it can never hide a boundary,
+		// because the count is always recomputed from the file's current state.
+		for stale := range r.boundaries {
+			delete(r.boundaries, stale)
+			break
+		}
 	}
 	r.boundaries[path] = transcriptBoundaryCount{
 		size:  info.Size(),

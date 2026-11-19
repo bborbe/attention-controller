@@ -292,4 +292,79 @@ var _ = Describe("compact trio", func() {
 		Expect(job.AdvanceOnce(context.Background())).To(Succeed())
 		Expect(carrier.sent).To(BeEmpty())
 	})
+
+	It(
+		"TestTrioSkipsACardAlreadyDeliveredByAPreviousProcess — the guard outlives a restart",
+		func() {
+			// The answered card stays on the board for up to an hour, so a restart
+			// inside that window would otherwise re-run the whole trio and compact the
+			// session a second time. The durable attempt record is what stops it.
+			store.ReadBoardReturns(pkg.Items{approvedCompactItem()}, nil)
+			store.DeliveryReportsReturns(map[pkg.ItemID]*pkg.DeliveryReport{
+				"item-1": {
+					ItemID:  "item-1",
+					Carrier: "attention-watcher:compact-trio",
+					Status:  pkg.DeliveredStatus,
+				},
+			}, nil)
+
+			Expect(job.AdvanceOnce(context.Background())).To(Succeed())
+			Expect(carrier.sent).To(BeEmpty())
+
+			// And it stays skipped on later ticks.
+			Expect(job.AdvanceOnce(context.Background())).To(Succeed())
+			Expect(carrier.sent).To(BeEmpty())
+		},
+	)
+
+	It("TestTrioRecordsItsOutcomeDurably — a delivered sequence writes an attempt", func() {
+		store.ReadBoardReturns(pkg.Items{approvedCompactItem()}, nil)
+
+		for i := 0; i < len(pkg.CompactTrioCommands); i++ {
+			Expect(job.AdvanceOnce(context.Background())).To(Succeed())
+			now = now.Add(pkg.CompactTrioQuiet)
+			if i == 1 {
+				writeTranscript(
+					"{\"type\":\"user\"}\n{\"type\":\"system\",\"subtype\":\"compact_boundary\"}\n",
+					now.Add(-2*stdtime.Minute),
+				)
+			}
+		}
+
+		Expect(store.RecordAttemptCallCount()).To(Equal(1))
+		_, _, carrierName, outcome := store.RecordAttemptArgsForCall(0)
+		Expect(carrierName).To(Equal("attention-watcher:compact-trio"))
+		Expect(outcome).To(Equal(pkg.DeliveredOutcome))
+	})
+
+	It("TestTrioNeverApprovesADismissalOnAZeroOptionCard — skip is not an approval", func() {
+		// A zero-option card approves on acknowledgement — but a DISMISSAL is not
+		// an acknowledgement. Reading it as one is the measured 2026-10-17 defect:
+		// every answer ran the sequence, and declining compacted the session.
+		item := approvedCompactItem()
+		item.Options = nil
+		item.Answer = &pkg.Answer{Kind: pkg.SkipAnswerKind}
+		store.ReadBoardReturns(pkg.Items{item}, nil)
+
+		Expect(job.AdvanceOnce(context.Background())).To(Succeed())
+		Expect(carrier.sent).To(BeEmpty())
+	})
+
+	It("TestTrioBoundsAnUnresolvablePane — a transient failure cannot retry forever", func() {
+		store.ReadBoardReturns(pkg.Items{approvedCompactItem()}, nil)
+		carrier.verdict = pkg.DeliveryRetry
+
+		// One tick creates the progress record, then each ceiling crossing spends
+		// one restart until the sequence is abandoned.
+		for i := 0; i <= pkg.CompactTrioRestarts+1; i++ {
+			now = now.Add(pkg.CompactTrioIdleCeiling + stdtime.Second)
+			Expect(job.AdvanceOnce(context.Background())).To(Succeed())
+		}
+		Expect(carrier.sent).To(BeEmpty())
+
+		// Abandoned: a resolvable pane no longer revives it.
+		carrier.verdict = ""
+		Expect(job.AdvanceOnce(context.Background())).To(Succeed())
+		Expect(carrier.sent).To(BeEmpty())
+	})
 })
