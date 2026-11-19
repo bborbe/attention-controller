@@ -50,6 +50,8 @@ var _ = Describe("AttentionStore answered retention", func() {
 		id := push(producer, dedup)
 		_, err := store.Answer(ctx, id, "arm", "session", pkg.Decision(""), nil, nil, nil)
 		Expect(err).To(BeNil())
+		_, err = store.SettleAnswer(ctx, id)
+		Expect(err).To(BeNil())
 		return id
 	}
 
@@ -203,6 +205,8 @@ var _ = Describe("AttentionStore answered retention", func() {
 		Expect(ids(read)).To(HaveKey(id))
 
 		_, err = store.Answer(ctx, id, "arm", "session", pkg.Decision(""), nil, nil, nil)
+		Expect(err).To(BeNil())
+		_, err = store.SettleAnswer(ctx, id)
 		Expect(err).To(BeNil())
 
 		read, err = store.Read(ctx)

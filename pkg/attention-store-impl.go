@@ -1216,7 +1216,8 @@ func (a *attentionStore) Answer(
 			// second answer while it is held is refused rather than overwriting the
 			// first — except the ARM's own write (resolved_by set), which exists to
 			// attach the resolver the release path reads and must land.
-			if item.AnsweredAt != nil && resolvedBy == "" {
+			if item.AnsweredAt != nil &&
+				(item.AnswerMechanism != PermissionAnswerMechanism || resolvedBy == "") {
 				return errors.Wrapf(
 					ctx,
 					ErrAlreadyAnswered,

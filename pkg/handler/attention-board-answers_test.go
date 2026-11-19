@@ -178,6 +178,9 @@ var _ = Describe("Board answers over HTTP", func() {
 			)
 			Expect(rec.Code).To(Equal(http.StatusOK))
 
+			_, err := store.SettleAnswer(ctx, item.ItemID)
+			Expect(err).To(BeNil())
+
 			got, err := store.Get(ctx, item.ItemID)
 			Expect(err).To(BeNil())
 			Expect(got.State).To(Equal(pkg.AnsweredState))

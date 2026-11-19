@@ -255,10 +255,15 @@ var _ = Describe("the undeliverable marker on the served page", func() {
 			// clock returns to now so the remaining fixtures are all after it.
 			setClock(pkg.DeliveryTrailEpoch.Add(-stdtime.Hour))
 			preTrail := answered("undeliverable-pre-trail", "Pre-trail?")
+			// Settled on the old clock: a held answer is still an open row, and an
+			// open row this old is past its default deadline and is pruned from the
+			// board, which would drop the pre-trail record this case needs rendered.
+			_, err := store.SettleAnswer(ctx, preTrail.ItemID)
+			Expect(err).To(BeNil())
 			setClock(stdtime.Now().UTC())
 
 			delivered := answered("undeliverable-outcome-delivered", "Deliver?")
-			_, err := store.RecordAttempt(
+			_, err = store.RecordAttempt(
 				ctx,
 				delivered.ItemID,
 				"attention-watcher",

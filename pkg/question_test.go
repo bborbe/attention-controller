@@ -315,7 +315,11 @@ var _ = Describe("Questions and cardinality", func() {
 					{Question: "Priority", Answer: pkg.Answer{Kind: pkg.SkipAnswerKind}},
 				}, nil)
 			Expect(err).To(BeNil())
-			Expect(answered.State).To(Equal(pkg.AnsweredState))
+			Expect(answered.State).To(Equal(pkg.OpenState))
+			Expect(answered.AnsweredAt).NotTo(BeNil())
+			settled, err := store.SettleAnswer(ctx, pushed.ItemID)
+			Expect(err).To(BeNil())
+			Expect(settled.State).To(Equal(pkg.AnsweredState))
 			Expect(answered.Answers).To(HaveLen(2))
 			Expect(answered.Answers[0].Question).To(Equal("Chores"))
 			// A multi-pick question's labels ride in values, so two picks are two

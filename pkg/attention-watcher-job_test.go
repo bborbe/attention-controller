@@ -159,7 +159,10 @@ var _ = Describe("attention watcher delivery job", func() {
 
 	It("skips an open card", func() {
 		item := answeredItem("item-1", "operator", pkg.Decision("allow"))
+		// An open card with no recorded answer is unanswered; an open card WITH
+		// one is the hold, which the arm does deliver.
 		item.State = pkg.OpenState
+		item.AnsweredAt = nil
 		store.ReadBoardReturns(pkg.Items{item}, nil)
 		Expect(job.DeliverOnce(context.Background())).To(Succeed())
 		Expect(carrier.calls).To(BeEmpty())

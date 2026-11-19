@@ -125,7 +125,10 @@ var _ = Describe("Answered client", func() {
 			)
 			Expect(err).To(BeNil())
 			Expect(answered.AnsweredClient).NotTo(BeNil())
+			Expect(answered.State).To(Equal(pkg.OpenState))
 
+			_, err = store.SettleAnswer(ctx, item.ItemID)
+			Expect(err).To(BeNil())
 			got, err := store.Get(ctx, item.ItemID)
 			Expect(err).To(BeNil())
 			Expect(got.State).To(Equal(pkg.AnsweredState))
@@ -352,6 +355,8 @@ var _ = Describe("Answered client", func() {
 				client("curl/8.7.1", "192.0.2.1:51234", automation(true)),
 			)
 			Expect(err).To(BeNil())
+			_, err = store.SettleAnswer(ctx, item.ItemID)
+			Expect(err).To(BeNil())
 
 			_, err = store.Close(
 				ctx,
@@ -391,6 +396,8 @@ var _ = Describe("Answered client", func() {
 				nil,
 				client("curl/8.7.1", "192.0.2.1:51234", automation(true)),
 			)
+			Expect(err).To(BeNil())
+			_, err = store.SettleAnswer(ctx, item.ItemID)
 			Expect(err).To(BeNil())
 
 			// The value type is json.RawMessage rather than Item so the bytes

@@ -215,7 +215,10 @@ var _ = Describe("Board answers", func() {
 			}, nil, nil)
 			Expect(err).To(BeNil())
 			Expect(answered.Answer).NotTo(BeNil())
+			Expect(answered.State).To(Equal(pkg.OpenState))
 
+			_, err = store.SettleAnswer(ctx, item.ItemID)
+			Expect(err).To(BeNil())
 			got, err := store.Get(ctx, item.ItemID)
 			Expect(err).To(BeNil())
 			Expect(got.State).To(Equal(pkg.AnsweredState))
@@ -392,7 +395,8 @@ var _ = Describe("Board answers", func() {
 				ctx, item.ItemID, "attention-board", "", pkg.AllowDecision, nil, nil, nil,
 			)
 			Expect(err).To(BeNil())
-			Expect(board.State).To(Equal(pkg.AnsweredState))
+			Expect(board.State).To(Equal(pkg.OpenState))
+			Expect(board.AnsweredAt).NotTo(BeNil())
 			Expect(board.ResolvedBy).To(BeEmpty())
 
 			// The arm's answer, carrying the resolver the release path reads.

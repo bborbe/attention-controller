@@ -95,8 +95,16 @@ var _ = Describe("Evidence-backed close", func() {
 			Value: "not yet",
 		})
 
-		Expect(answered.State).To(Equal(AnsweredState))
+		// The hold: the ordinary answer is recorded and the card stays open until
+		// an arm observes delivery; it does not park for evidence.
+		Expect(answered.State).To(Equal(OpenState))
+		Expect(answered.AnsweredAt).NotTo(BeNil())
 		Expect(answered.EvidenceDeadline).To(BeNil())
+
+		settled, err := store.SettleAnswer(ctx, item.ItemID)
+		Expect(err).To(BeNil())
+		Expect(settled.State).To(Equal(AnsweredState))
+		Expect(settled.EvidenceDeadline).To(BeNil())
 	})
 
 	It("records the pull request a text answer names", func() {

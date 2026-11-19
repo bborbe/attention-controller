@@ -560,6 +560,8 @@ var _ = Describe("AttentionStore", func() {
 			Expect(err).To(BeNil())
 			_, err = store.Answer(ctx, answered.ItemID, "telegram", "manager-1", "", nil, nil, nil)
 			Expect(err).To(BeNil())
+			_, err = store.SettleAnswer(ctx, answered.ItemID)
+			Expect(err).To(BeNil())
 			_, err = store.Close(ctx, closed.ItemID, "", nil)
 			Expect(err).To(BeNil())
 
@@ -719,9 +721,17 @@ var _ = Describe("AttentionStore", func() {
 
 			answered, err := store.Answer(ctx, item.ItemID, "telegram", "", "", nil, nil, nil)
 			Expect(err).To(BeNil())
-			Expect(answered.State).To(Equal(pkg.AnsweredState))
+			// The hold: the answer is recorded but the card stays open until an
+			// arm observes delivery and settles it.
+			Expect(answered.State).To(Equal(pkg.OpenState))
 			Expect(answered.AnsweredBy).To(Equal("telegram"))
 			Expect(answered.AnsweredAt).NotTo(BeNil())
+
+			settled, err := store.SettleAnswer(ctx, item.ItemID)
+			Expect(err).To(BeNil())
+			Expect(settled.State).To(Equal(pkg.AnsweredState))
+			Expect(settled.AnsweredBy).To(Equal("telegram"))
+			Expect(settled.AnsweredAt).NotTo(BeNil())
 		})
 
 		It("rejects a second answer as already-answered", func() {
@@ -811,6 +821,8 @@ var _ = Describe("AttentionStore", func() {
 			// Exactly one answered_by recorded per item, and every item reached
 			// answered exactly once.
 			for _, itemID := range itemIDs {
+				_, err := store.SettleAnswer(ctx, itemID)
+				Expect(err).To(BeNil())
 				item, err := store.Get(ctx, itemID)
 				Expect(err).To(BeNil())
 				Expect(item.State).To(Equal(pkg.AnsweredState))
@@ -965,6 +977,8 @@ var _ = Describe("AttentionStore", func() {
 			Expect(err).To(BeNil())
 			_, err = store.Answer(ctx, item.ItemID, "telegram", "", "", nil, nil, nil)
 			Expect(err).To(BeNil())
+			_, err = store.SettleAnswer(ctx, item.ItemID)
+			Expect(err).To(BeNil())
 
 			_, err = store.Escalate(ctx, item.ItemID, managerSessionID)
 			Expect(err).NotTo(BeNil())
@@ -1064,6 +1078,8 @@ var _ = Describe("AttentionStore", func() {
 
 			_, err = store.Answer(ctx, item.ItemID, "attention-board", "", "", nil, nil, nil)
 			Expect(err).To(BeNil())
+			_, err = store.SettleAnswer(ctx, item.ItemID)
+			Expect(err).To(BeNil())
 
 			read, err := store.Get(ctx, item.ItemID)
 			Expect(err).To(BeNil())
@@ -1098,6 +1114,8 @@ var _ = Describe("AttentionStore", func() {
 			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
 			Expect(err).To(BeNil())
 			_, err = store.Answer(ctx, item.ItemID, "telegram", "", "", nil, nil, nil)
+			Expect(err).To(BeNil())
+			_, err = store.SettleAnswer(ctx, item.ItemID)
 			Expect(err).To(BeNil())
 
 			_, err = store.Flag(ctx, item.ItemID, "asked the wrong team")
@@ -1259,8 +1277,11 @@ var _ = Describe("AttentionStore", func() {
 				nil,
 			)
 			Expect(err).To(BeNil())
-			Expect(answered.State).To(Equal(pkg.AnsweredState))
+			Expect(answered.AnsweredAt).NotTo(BeNil())
 			Expect(answered.Decision).To(Equal(pkg.DenyDecision))
+			settled, err := store.SettleAnswer(ctx, item.ItemID)
+			Expect(err).To(BeNil())
+			Expect(settled.State).To(Equal(pkg.AnsweredState))
 		})
 
 		It("still lets a producer withdraw its own item, which names no arm", func() {
@@ -1435,6 +1456,8 @@ var _ = Describe("AttentionStore", func() {
 			Expect(err).To(BeNil())
 			_, err = store.Answer(ctx, item.ItemID, "telegram", "", "", nil, nil, nil)
 			Expect(err).To(BeNil())
+			_, err = store.SettleAnswer(ctx, item.ItemID)
+			Expect(err).To(BeNil())
 
 			read, err := store.Read(ctx)
 			Expect(err).To(BeNil())
@@ -1494,6 +1517,8 @@ var _ = Describe("AttentionStore", func() {
 			Expect(err).To(BeNil())
 			_, err = store.Answer(ctx, item.ItemID, "telegram", "", "", nil, nil, nil)
 			Expect(err).To(BeNil())
+			_, err = store.SettleAnswer(ctx, item.ItemID)
+			Expect(err).To(BeNil())
 
 			// The producer exited after the item was answered.
 			sessionLivenessChecker.IsLiveReturns(false)
@@ -1518,6 +1543,8 @@ var _ = Describe("AttentionStore", func() {
 				answered, err := store.Push(ctx, pushRequest("session-dead-a", "gate-answered"))
 				Expect(err).To(BeNil())
 				_, err = store.Answer(ctx, answered.ItemID, "telegram", "", "", nil, nil, nil)
+				Expect(err).To(BeNil())
+				_, err = store.SettleAnswer(ctx, answered.ItemID)
 				Expect(err).To(BeNil())
 
 				past := libtime.DateTimeFromUnixMicro(
@@ -1560,6 +1587,8 @@ var _ = Describe("AttentionStore", func() {
 			Expect(err).To(BeNil())
 			_, err = store.Answer(ctx, answered.ItemID, "attention-board", "", "", nil, nil, nil)
 			Expect(err).To(BeNil())
+			_, err = store.SettleAnswer(ctx, answered.ItemID)
+			Expect(err).To(BeNil())
 
 			// The producer re-raises the same ask after the answer. The store writes
 			// a second row — that is the open-scoped suppression, and this spec does
@@ -1601,6 +1630,8 @@ var _ = Describe("AttentionStore", func() {
 			answered, err := store.Push(ctx, pushRequest("session-reuse", "gate-reused"))
 			Expect(err).To(BeNil())
 			_, err = store.Answer(ctx, answered.ItemID, "attention-board", "", "", nil, nil, nil)
+			Expect(err).To(BeNil())
+			_, err = store.SettleAnswer(ctx, answered.ItemID)
 			Expect(err).To(BeNil())
 
 			// The SAME producer and dedup key, a DIFFERENT question.
@@ -1651,6 +1682,8 @@ var _ = Describe("AttentionStore", func() {
 			answered, err := store.Push(ctx, pushRequest("session-new", "gate-reused-open"))
 			Expect(err).To(BeNil())
 			_, err = store.Answer(ctx, answered.ItemID, "attention-board", "", "", nil, nil, nil)
+			Expect(err).To(BeNil())
+			_, err = store.SettleAnswer(ctx, answered.ItemID)
 			Expect(err).To(BeNil())
 
 			changed := pushRequest("session-new", "gate-reused-open")
@@ -1955,6 +1988,8 @@ var _ = Describe("AttentionStore", func() {
 			hooked := storeHookedOnPrune(func() {
 				_, answerErr := store.Answer(ctx, item.ItemID, "telegram", "", "", nil, nil, nil)
 				Expect(answerErr).To(BeNil())
+				_, settleErr := store.SettleAnswer(ctx, item.ItemID)
+				Expect(settleErr).To(BeNil())
 			})
 
 			counting.updates = 0
