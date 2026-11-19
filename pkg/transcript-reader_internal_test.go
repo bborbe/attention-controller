@@ -257,4 +257,50 @@ var _ = Describe("transcript reader", func() {
 			Expect(reader.TurnEnded("99999999-9999-9999-9999-999999999999")).To(BeFalse())
 		})
 	})
+
+	Describe("CompactionBoundaries", func() {
+		It("counts only records that DECLARE the subtype", func() {
+			// ⚠️ The marker string also occurs inside tool results and message text
+			// that merely quote a compaction. Counting those fabricates the boundary
+			// `post-compact` waits for, so only a TOP-LEVEL subtype counts.
+			writeTranscript(
+				root,
+				sessionID,
+				`{"type":"system","subtype":"compact_boundary","compactMetadata":{"preTokens":100}}`+"\n"+
+					`{"type":"user","message":{"content":"we saw compact_boundary earlier"}}`+"\n"+
+					`{"type":"user","toolUseResult":{"note":"compact_boundary"}}`+"\n"+
+					`{"type":"system","subtype":"compact_boundary","compactMetadata":{"preTokens":200}}`+"\n",
+			)
+			count, ok := reader.CompactionBoundaries(sessionID)
+			Expect(ok).To(BeTrue())
+			Expect(count).To(Equal(2))
+		})
+
+		It("re-reads only when the file changed", func() {
+			path := writeTranscript(
+				root,
+				sessionID,
+				`{"type":"system","subtype":"compact_boundary"}`+"\n",
+			)
+			first, ok := reader.CompactionBoundaries(sessionID)
+			Expect(ok).To(BeTrue())
+			Expect(first).To(Equal(1))
+
+			// An append moves size and mtime, so the cached count is invalidated.
+			Expect(os.WriteFile(
+				path,
+				[]byte(`{"type":"system","subtype":"compact_boundary"}`+"\n"+
+					`{"type":"system","subtype":"compact_boundary"}`+"\n"),
+				0o600,
+			)).To(Succeed())
+			second, ok := reader.CompactionBoundaries(sessionID)
+			Expect(ok).To(BeTrue())
+			Expect(second).To(Equal(2))
+		})
+
+		It("is false when the transcript is absent", func() {
+			_, ok := reader.CompactionBoundaries("99999999-9999-9999-9999-999999999999")
+			Expect(ok).To(BeFalse())
+		})
+	})
 })
