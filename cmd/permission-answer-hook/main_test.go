@@ -422,6 +422,26 @@ var _ = Describe("TestDenyNeverInferred", func() {
 	})
 })
 
+// runWithin runs the hook under a bounded wait. ⚠️ Without it, a guard whose
+// early-exit branch has been deleted does not FAIL — run() proceeds to
+// resolveItem and blocks on the fake clock, so the spec dies on Ginkgo's 60 s
+// suite timeout and the signal is a hang rather than a failing assertion. A
+// hang is also fragile: on a slower machine the suite timeout is the only thing
+// standing between a deleted guard and a green run.
+func runWithin(d time.Duration, opts hookOptions) error {
+	done := make(chan error, 1)
+	go func() { done <- run(context.Background(), opts) }()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(d):
+		Fail(
+			"run did not return within " + d.String() + " — the early-exit branch is missing or inert",
+		)
+		return nil
+	}
+}
+
 var _ = Describe("TestKillSwitchSupervisorPermissionPollOff", func() {
 	for _, value := range []string{"off", "OFF", "Off"} {
 		It("TestKillSwitchSupervisorPermissionPollOff exits for "+value, func() {
@@ -432,7 +452,7 @@ var _ = Describe("TestKillSwitchSupervisorPermissionPollOff", func() {
 				map[string]string{"SUPERVISOR_PERMISSION_POLL": value},
 				client,
 			)
-			Expect(run(context.Background(), opts)).To(Succeed())
+			Expect(runWithin(2*time.Second, opts)).To(Succeed())
 			Expect(stdout.String()).To(BeEmpty())
 			noStoreCalls(client)
 		})
@@ -463,7 +483,7 @@ var _ = Describe("TestHeadlessWorkerSkipped", func() {
 			map[string]string{"SUPERVISOR_WORKER_MODE": "headless"},
 			client,
 		)
-		Expect(run(context.Background(), opts)).To(Succeed())
+		Expect(runWithin(2*time.Second, opts)).To(Succeed())
 		Expect(stdout.String()).To(BeEmpty())
 		noStoreCalls(client)
 	})
