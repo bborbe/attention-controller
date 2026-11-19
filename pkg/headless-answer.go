@@ -383,7 +383,7 @@ func deliverySessionID(ctx context.Context, item Item) (string, bool) {
 	return "", false
 }
 
-// AnswerTurnText renders the turn that carries an operator's answer into a
+// AnswerTurnText renders the turn that carries an operator's or a manager's answer into a
 // pane-less session.
 //
 // The turn must stand on its own: the session has just ended a turn and has no
@@ -397,7 +397,16 @@ func AnswerTurnText(ctx context.Context, item Item, answerContext AnswerContext)
 		return "", false
 	}
 	var builder strings.Builder
-	builder.WriteString("The operator answered on the attention board.\n")
+	if IsManagerAnswered(item) {
+		// A manager's answer opens in its own voice and never says the operator
+		// answered: a worker treats an operator answer as an operator release.
+		builder.WriteString(ManagerAnswerText(strings.Join(answers, "; ")))
+		builder.WriteString(
+			"\nA manager session answered your card on the attention board — not the operator.\n",
+		)
+	} else {
+		builder.WriteString("The operator answered on the attention board.\n")
+	}
 	builder.WriteString("\nQuestion: ")
 	builder.WriteString(strings.TrimSpace(string(item.Payload)))
 	builder.WriteString("\n")

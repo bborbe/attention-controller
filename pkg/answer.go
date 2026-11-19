@@ -45,6 +45,11 @@ type Answer struct {
 	// It is `option`-kind only: a `skip` has nothing to list, and a `text`
 	// answer is already the operator's own words.
 	Values []string `json:"values,omitempty"`
+	// Answerer is whose answer this is — `operator` or `manager`. It decides the
+	// voice every carrier delivers the answer in. Absent on every answer recorded
+	// before this field existed, which a carrier renders as the operator's, as
+	// it always did.
+	Answerer Answerer `json:"answerer,omitempty"`
 }
 
 // Validate returns an error when the kind and the value disagree with the shape
@@ -58,6 +63,7 @@ type Answer struct {
 func (a Answer) Validate(ctx context.Context) error {
 	return validation.All{
 		validation.Name("Kind", a.Kind),
+		validation.Name("Answerer", a.Answerer),
 		validation.Name("Value", validation.HasValidationFunc(a.validateValue)),
 		validation.Name("Values", validation.HasValidationFunc(a.validateValues)),
 	}.Validate(ctx)

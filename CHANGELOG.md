@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- feat: **a manager's card answer is delivered in the manager's voice, never the operator's.** `answer` gains `answerer` (`operator` | `manager`; absent on earlier answers), validated against `AvailableAnswerers` and stored with the rest of the answer. The pane carrier types a manager answer as `Manager answer, via supervisor: <text> [<item id>]` instead of `Operator answer, via attention board: …`, and `AnswerTurnText` opens a manager's resumed turn with the same prefix instead of "The operator answered on the attention board." The prefix is applied once, so a value that already carries it (the supervisor gate answerer's) is not doubled. Operator and legacy answers render exactly as before. Tests cover both answerers on the store, the pane line and the headless turn.
+
 ## v0.103.2
 
 - fix: **a synthetic probe card is no longer rendered on the board.** A payload beginning `SC2 burst probe` is a deliberate test probe, and the board served 220 of them in one 8-second burst on 2026-11-17 — every one carries `displayed_at`, so the operator-facing read rendered each card. `classifyForRead` now omits a probe from `ReadBoard`'s result while leaving it in the store (the disposition is neither keep nor remove, so the burst remains the audit trail its producers require, and the expiry rule still applies). `Read` is unchanged, so the JSON API and every arm that acts on it see exactly what they saw before. The exclusion keys on the payload tag, never on a producer id, and it is a prefix match so a real card that merely mentions the probes still renders. Convention: `docs/probe-tag.md`.
