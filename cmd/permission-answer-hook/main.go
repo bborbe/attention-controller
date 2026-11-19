@@ -14,6 +14,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -24,7 +25,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bborbe/errors"
@@ -52,10 +55,8 @@ const (
 	// before it is not mistaken for a stale one.
 	notBeforeTolerance = 5 * time.Second
 	// resolveRetryInterval paces the bounded resolve window.
-	//nolint:unused // consumed by the settle loop in a later step.
 	resolveRetryInterval = time.Second
 	// stateCheckInterval paces the producer state-file re-read.
-	//nolint:unused // consumed by the settle loop in a later step.
 	stateCheckInterval = time.Second
 
 	// boardURLEnv names the board URL the hook reads from.
@@ -70,6 +71,25 @@ const (
 	maxExpectRunes = 200
 	// maxDetailRunes caps the compact-JSON fallback detail.
 	maxDetailRunes = 120
+
+	// streamPath is the board's change feed.
+	streamPath = "/api/1.0/attention/stream"
+	// dataPrefix frames one event payload line in the feed.
+	dataPrefix = "data:"
+	// openItemSuffix is the producer's open-gate marker file name suffix.
+	openItemSuffix = ".open.json"
+	// stateDirEnvName names the directory the producer writes its state into.
+	stateDirEnvName = "ATTENTION_STATE_DIR"
+	// defaultStateDirSuffix is the state directory under the home directory,
+	// matching pkg/attnlog/store.go's default.
+	defaultStateDirSuffix = ".claude/state/attention"
+
+	// localCloseReason names the in-pane answer the hook must not race.
+	localCloseReason = "gate closed locally"
+	// untrackedReason names a gate the producer never recorded as open.
+	untrackedReason = "gate is not feed-tracked: no open item seen within FeedGrace"
+	// streamClosedReason names a stream that dropped mid-run.
+	streamClosedReason = "stream closed"
 )
 
 // Clock is the hook's time source. It is injected so a spec advances time
@@ -102,12 +122,31 @@ type storeClient interface {
 		carrier string,
 		outcome pkg.DeliveryOutcome,
 	) error
+	Subscribe(ctx context.Context) (Subscription, error)
+}
+
+// StreamEvent is one change the board's stream reported. The stream is a
+// change signal, not the item, so the hook re-reads the item by id.
+type StreamEvent struct {
+	Type   string `json:"type"`
+	ItemID string `json:"item_id"`
+}
+
+// Subscription is one open stream subscription.
+type Subscription interface {
+	// Events delivers change events until the stream ends or ctx is done.
+	Events() <-chan StreamEvent
+	// Close releases the connection.
+	Close()
 }
 
 // httpStoreClient is the loopback HTTP implementation of storeClient.
 type httpStoreClient struct {
 	baseURL string
 	client  *http.Client
+	// stream carries no client timeout: a stream is long-lived by design, so
+	// its lifetime is the context's, not a fixed wall-clock bound.
+	stream *http.Client
 }
 
 // newHTTPStoreClient creates the board client.
@@ -119,6 +158,7 @@ func newHTTPStoreClient(baseURL string) storeClient {
 	return &httpStoreClient{
 		baseURL: normaliseBoardURL(baseURL),
 		client:  &http.Client{Timeout: requestTimeout},
+		stream:  &http.Client{},
 	}
 }
 
@@ -178,6 +218,92 @@ func (c *httpStoreClient) RecordAttempt(
 	}
 	path := "/api/1.0/attention/" + url.PathEscape(itemID.String()) + "/attempt"
 	return c.do(ctx, http.MethodPost, path, bytes.NewReader(payload), nil)
+}
+
+// Subscribe opens the board's change feed.
+//
+// ⚠️ It returns only once the response headers have been received, which is
+// what "established" means: the server writes its baseline and flushes the
+// headers before the first byte of the body (pkg/handler/attention-stream.go
+// takes the snapshot and then flushes), so a read issued after Subscribe returns
+// is outside the baseline gap. Returning before Do completes would put the
+// catch-up read back inside it.
+func (c *httpStoreClient) Subscribe(ctx context.Context) (Subscription, error) {
+	if c.baseURL == "" {
+		return nil, errors.New(ctx, "no board configured (board URL is not loopback)")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+streamPath, nil)
+	if err != nil {
+		return nil, errors.Wrapf(ctx, err, "build stream request failed")
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := c.stream.Do(req)
+	if err != nil {
+		glog.V(2).Infof("board stream open failed: %v", err)
+		return nil, errors.Wrapf(ctx, err, "open attention stream failed")
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		_ = resp.Body.Close()
+		return nil, errors.Wrapf(
+			ctx,
+			errors.New(ctx, "unexpected status"),
+			"attention stream returned %d",
+			resp.StatusCode,
+		)
+	}
+	subscription := &httpSubscription{resp: resp, events: make(chan StreamEvent)}
+	go subscription.read(ctx)
+	return subscription, nil
+}
+
+// httpSubscription is one open stream: a body scanner feeding an event channel.
+type httpSubscription struct {
+	resp   *http.Response
+	events chan StreamEvent
+	once   sync.Once
+}
+
+// Events delivers change events until the body ends or ctx is done.
+func (s *httpSubscription) Events() <-chan StreamEvent { return s.events }
+
+// Close releases the connection. It is idempotent because both the reader and
+// the caller close it.
+func (s *httpSubscription) Close() { s.once.Do(func() { _ = s.resp.Body.Close() }) }
+
+// read frames the body into events and closes the channel when it ends.
+func (s *httpSubscription) read(ctx context.Context) {
+	defer close(s.events)
+	defer s.Close()
+	scanner := bufio.NewScanner(s.resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxBodyBytes)
+	payload := make([]byte, 0, 1024)
+	for scanner.Scan() {
+		line := strings.TrimRight(scanner.Text(), "\r")
+		if line == "" {
+			if len(payload) == 0 {
+				continue
+			}
+			event := StreamEvent{}
+			if err := json.Unmarshal(payload, &event); err != nil {
+				glog.V(2).Infof("stream event decode failed: %v", err)
+				payload = payload[:0]
+				continue
+			}
+			payload = payload[:0]
+			select {
+			case s.events <- event:
+			case <-ctx.Done():
+				return
+			}
+			continue
+		}
+		if rest, ok := strings.CutPrefix(line, dataPrefix); ok {
+			payload = append(payload, strings.TrimPrefix(rest, " ")...)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		glog.V(2).Infof("attention stream read ended: %v", err)
+	}
 }
 
 // do performs one board call and decodes the response into target when set.
@@ -442,6 +568,101 @@ func isSelectionCandidate(
 	return !item.CreatedAt.Time().Before(earliest)
 }
 
+// resolveItem waits up to ResolveGrace for the session's card, re-reading the
+// list on a one-shot timer. It returns the item, or a reason when the window
+// expires with no card.
+//
+// ⚠️ This is the only place the list is read. Once the subscription is
+// established the hook reads the list zero times; a re-resolve after subscribing
+// would be the poll under another name.
+func resolveItem(
+	ctx context.Context,
+	client storeClient,
+	clock Clock,
+	producerID string,
+	expect string,
+	notBefore time.Time,
+) (pkg.Item, string) {
+	deadline := notBefore.Add(ResolveGrace)
+	// Assigned on every pass before it is read, so it is declared without a
+	// value: a seeded one would be dead on the first pass.
+	var lastReason string
+	for {
+		items, err := client.List(ctx)
+		if err != nil {
+			lastReason = errors.Wrapf(ctx, err, "list attention items failed").Error()
+		} else if item, reason := selectItem(items, producerID, expect, notBefore); reason == "" {
+			return item, ""
+		} else {
+			lastReason = reason
+		}
+		if !clock.Now().Before(deadline) {
+			return pkg.Item{}, lastReason
+		}
+		select {
+		case <-clock.Timer(resolveRetryInterval):
+		case <-ctx.Done():
+			return pkg.Item{}, lastReason
+		}
+	}
+}
+
+// gateState is what the producer's open-item file says.
+type gateState struct {
+	// Present is true when the file exists and decodes.
+	Present bool
+	// Ok is true when the file could be read at all; false means "unknown",
+	// which fails OPEN — the hook keeps waiting rather than reading an
+	// unreadable file as a closed gate.
+	Ok bool
+}
+
+// readGateState reads <stateDir>/<sessionID>.open.json.
+//
+// It follows pkg/attnlog/store.go's resolution and its fail-open reading: the
+// file is opened through a confined root, so a session id that would escape the
+// directory reads nothing rather than another file.
+func readGateState(stateDir, sessionID string) gateState {
+	if stateDir == "" || sessionID == "" {
+		return gateState{}
+	}
+	root, err := os.OpenRoot(stateDir)
+	if err != nil {
+		return gateState{}
+	}
+	defer root.Close()
+	file, err := root.Open(sessionID + openItemSuffix)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return gateState{Ok: true}
+		}
+		return gateState{}
+	}
+	defer file.Close()
+	raw, err := io.ReadAll(io.LimitReader(file, maxBodyBytes))
+	if err != nil {
+		return gateState{}
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return gateState{}
+	}
+	return gateState{Present: true, Ok: true}
+}
+
+// stateDirFrom resolves ATTENTION_STATE_DIR, falling back to
+// ~/.claude/state/attention exactly as pkg/attnlog/store.go's stateDir does.
+func stateDirFrom(getenv func(string) string) string {
+	if dir := getenv(stateDirEnvName); dir != "" {
+		return dir
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, defaultStateDirSuffix)
+}
+
 // skipBeforeConnect reports whether the hook must exit before opening any
 // connection, and the reason to print.
 func skipBeforeConnect(getenv func(string) string) (bool, string) {
@@ -467,6 +688,183 @@ type hookOptions struct {
 	Deadline time.Duration
 }
 
+// settleResult is what one settle loop concluded.
+type settleResult struct {
+	Decision pkg.Decision
+	ItemID   pkg.ItemID
+	Reason   string
+	// Deadline is set when the loop stopped because the hook deadline expired,
+	// so the terminal line can say so without inferring it from Reason.
+	// ⚠️ Without this field there is no way to tell a deadline from any other
+	// reason, and the terminal-line path becomes unassertable — the implementer
+	// would have to invent a sentinel string, which drifts.
+	Deadline bool
+}
+
+// settle holds the subscription and decides from the store. started is when the
+// invocation began, and is the FeedGrace anchor.
+//
+// ⚠️ The deadline is a REAL context.WithTimeout, not opts.Clock. A fake clock
+// advancing cannot trip a context deadline, so a spec that needs it sets a short
+// real opts.Deadline and waits. It is the one place this package uses real time
+// besides the process clock itself.
+func settle(ctx context.Context, opts hookOptions, item pkg.Item, started time.Time) settleResult {
+	deadlineCtx, cancel := context.WithTimeout(ctx, opts.Deadline)
+	defer cancel()
+
+	sub, err := opts.Client.Subscribe(deadlineCtx)
+	if err != nil {
+		return settleResult{
+			ItemID: item.ItemID,
+			Reason: errors.Wrapf(deadlineCtx, err, "subscribe failed").Error(),
+		}
+	}
+	defer sub.Close()
+
+	run := &settleRun{
+		opts:     opts,
+		item:     item,
+		started:  started,
+		stateDir: stateDirFrom(opts.Getenv),
+		events:   sub.Events(),
+	}
+	if result, done := run.catchUp(deadlineCtx); done {
+		return result
+	}
+	return run.wait(deadlineCtx)
+}
+
+// settleRun is one settle loop's mutable state, split out of settle so each step
+// stays inside the repo's function-length limits.
+type settleRun struct {
+	opts       hookOptions
+	item       pkg.Item
+	started    time.Time
+	stateDir   string
+	seenOpen   bool
+	lastReason string
+	events     <-chan StreamEvent
+}
+
+// catchUp performs the one read taken immediately after the subscription is
+// established and decides from it.
+//
+// ⚠️ That read IS the decision when the item is already answered: an answer that
+// landed between the server's baseline and the subscription's establishment
+// emits no event, so this read is the only thing that catches it. Discarding its
+// result would leave the baseline gap exactly as open as no read at all.
+func (r *settleRun) catchUp(ctx context.Context) (settleResult, bool) {
+	read, err := r.opts.Client.Get(ctx, r.item.ItemID)
+	if err != nil {
+		r.lastReason = errors.Wrapf(ctx, err, "catch-up read of %s failed", r.item.ItemID).
+			Error()
+		return settleResult{}, false
+	}
+	return r.verdict(read)
+}
+
+// wait is the loop: one select over the events, the state re-check and the
+// deadline.
+func (r *settleRun) wait(ctx context.Context) settleResult {
+	for {
+		select {
+		case event, open := <-r.events:
+			if !open {
+				// ⚠️ A closed channel is receive-ready forever: leaving it in the
+				// select busy-spins until the deadline. A nil channel blocks
+				// forever, so the loop waits on the timer and the deadline instead.
+				r.events = nil
+				r.lastReason = streamClosedReason
+				continue
+			}
+			if result, done := r.handleEvent(ctx, event); done {
+				return result
+			}
+		case <-r.opts.Clock.Timer(stateCheckInterval):
+			if result, done := r.handleTick(); done {
+				return result
+			}
+		case <-ctx.Done():
+			return settleResult{
+				ItemID:   r.item.ItemID,
+				Reason:   r.lastReason,
+				Deadline: true,
+			}
+		}
+	}
+}
+
+// handleEvent reads one matching item by id and decides from it. An event for
+// another item is ignored without a read.
+func (r *settleRun) handleEvent(ctx context.Context, event StreamEvent) (settleResult, bool) {
+	if event.ItemID != r.item.ItemID.String() {
+		return settleResult{}, false
+	}
+	read, err := r.opts.Client.Get(ctx, r.item.ItemID)
+	if err != nil {
+		r.lastReason = errors.Wrapf(ctx, err, "read item %s failed", r.item.ItemID).Error()
+		return settleResult{}, false
+	}
+	return r.verdict(read)
+}
+
+// verdict runs the permission verdict and decides, or records the reason and
+// keeps waiting.
+func (r *settleRun) verdict(read *pkg.Item) (settleResult, bool) {
+	decision, reason := permissionVerdict(read)
+	if decision == "" {
+		r.lastReason = reason
+		return settleResult{}, false
+	}
+	return r.decide(decision), true
+}
+
+// decide suppresses a store decision when the gate was seen open locally and has
+// since gone: an in-pane answer wins even when the store event lands just behind
+// it.
+func (r *settleRun) decide(decision pkg.Decision) settleResult {
+	state := readGateState(r.stateDir, r.item.ProducerID.String())
+	if state.Ok && !state.Present && r.seenOpen {
+		return settleResult{ItemID: r.item.ItemID, Reason: localCloseReason}
+	}
+	return settleResult{Decision: decision, ItemID: r.item.ItemID}
+}
+
+// handleTick re-reads the producer's open-item file and reports a local close or
+// an untracked gate.
+func (r *settleRun) handleTick() (settleResult, bool) {
+	state := readGateState(r.stateDir, r.item.ProducerID.String())
+	if !state.Ok {
+		// Fail open: an unreadable file is not a close.
+		return settleResult{}, false
+	}
+	if state.Present {
+		r.seenOpen = true
+		return settleResult{}, false
+	}
+	if r.seenOpen {
+		r.lastReason = localCloseReason
+		return settleResult{ItemID: r.item.ItemID, Reason: localCloseReason}, true
+	}
+	if !r.opts.Clock.Now().Before(r.started.Add(FeedGrace)) {
+		r.lastReason = untrackedReason
+		return settleResult{ItemID: r.item.ItemID, Reason: untrackedReason}, true
+	}
+	return settleResult{}, false
+}
+
+// deadlineLine renders the terminal line a reached deadline prints.
+//
+// ⚠️ The deadline prints in SECONDS: time.Duration.String() renders 540s as
+// `9m0s`, and the required line is `deadline after 540s`.
+func deadlineLine(deadline time.Duration, lastReason string) string {
+	return fmt.Sprintf(
+		"permission-answer-hook: deadline after %.0fs — last: %s",
+		deadline.Seconds(),
+		lastReason,
+	)
+}
+
 // run executes one hook invocation.
 //
 //nolint:unparam // the error return is the fail-open contract later steps use.
@@ -480,25 +878,38 @@ func run(ctx context.Context, opts hookOptions) error {
 		fmt.Fprintln(opts.Stderr, "permission-answer-hook: "+reason)
 		return nil
 	}
-	// One list read, before anything else touches the store: the bounded retry
-	// and the subscription belong to a later step.
-	notBefore := opts.Clock.Now()
-	items, listErr := opts.Client.List(ctx)
-	if listErr != nil {
-		// Fail-open: a non-zero exit or a blocked gate is worse than no answer.
-		wrapped := errors.Wrapf(ctx, listErr, "list attention items failed")
-		fmt.Fprintln(opts.Stderr, "permission-answer-hook: "+wrapped.Error())
+	started := opts.Clock.Now()
+	item, resolveReason := resolveItem(
+		ctx,
+		opts.Client,
+		opts.Clock,
+		input.SessionID,
+		input.Expect,
+		started,
+	)
+	if resolveReason != "" {
+		fmt.Fprintln(opts.Stderr, "permission-answer-hook: "+resolveReason)
 		return nil
 	}
-	item, selectReason := selectItem(items, input.SessionID, input.Expect, notBefore)
-	if selectReason != "" {
-		fmt.Fprintln(opts.Stderr, "permission-answer-hook: "+selectReason)
+	result := settle(ctx, opts, item, started)
+	if result.Decision != "" {
+		// The stdout contract and the delivery-attempt record land in a later
+		// step; the decision is carried no further than this branch for now.
+		glog.V(2).Infof("permission-answer-hook decided %s for %s", result.Decision, item.ItemID)
 		return nil
 	}
-	// The decision and its stdout contract land in a later step; the selected
-	// item is carried no further than this variable for now.
-	glog.V(2).Infof("permission-answer-hook selected item %s", item.ItemID)
+	writeSettleReason(opts, result)
 	return nil
+}
+
+// writeSettleReason prints why no decision was produced: the terminal deadline
+// line when the deadline was reached, the plain reason otherwise.
+func writeSettleReason(opts hookOptions, result settleResult) {
+	if result.Deadline {
+		fmt.Fprintln(opts.Stderr, deadlineLine(opts.Deadline, result.Reason))
+		return
+	}
+	fmt.Fprintln(opts.Stderr, "permission-answer-hook: "+result.Reason)
 }
 
 // main runs the hook and always exits 0: a non-zero exit would block the tool

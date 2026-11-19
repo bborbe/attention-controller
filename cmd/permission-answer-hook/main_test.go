@@ -7,6 +7,11 @@ package main
 import (
 	"bytes"
 	"context"
+	stderrors "errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -29,15 +34,22 @@ type recordedAttempt struct {
 // recordingClient is a storeClient that records every call, so "no store
 // traffic" is a counted assertion rather than a comment.
 type recordingClient struct {
-	items        pkg.Items
-	item         *pkg.Item
-	listErr      error
-	getErr       error
-	attemptErr   error
-	listCalls    int
-	getCalls     int
-	attemptCalls int
-	attempts     []recordedAttempt
+	items pkg.Items
+	item  *pkg.Item
+	// getResults is the sequence Get serves, last entry repeating. It is how a
+	// spec distinguishes the catch-up read from an event read.
+	getResults     []*pkg.Item
+	listErr        error
+	getErr         error
+	attemptErr     error
+	subscribeErr   error
+	events         chan StreamEvent
+	subscribed     chan struct{}
+	listCalls      int
+	getCalls       int
+	attemptCalls   int
+	subscribeCalls int
+	attempts       []recordedAttempt
 }
 
 func (c *recordingClient) List(_ context.Context) (pkg.Items, error) {
@@ -53,7 +65,14 @@ func (c *recordingClient) Get(_ context.Context, _ pkg.ItemID) (*pkg.Item, error
 	if c.getErr != nil {
 		return nil, c.getErr
 	}
-	return c.item, nil
+	if len(c.getResults) == 0 {
+		return c.item, nil
+	}
+	next := c.getResults[0]
+	if len(c.getResults) > 1 {
+		c.getResults = c.getResults[1:]
+	}
+	return next, nil
 }
 
 func (c *recordingClient) RecordAttempt(
@@ -70,6 +89,33 @@ func (c *recordingClient) RecordAttempt(
 	return c.attemptErr
 }
 
+// Subscribe records the call and hands out the spec's event channel.
+func (c *recordingClient) Subscribe(_ context.Context) (Subscription, error) {
+	c.subscribeCalls++
+	if c.subscribed != nil {
+		select {
+		case c.subscribed <- struct{}{}:
+		default:
+		}
+	}
+	if c.subscribeErr != nil {
+		return nil, c.subscribeErr
+	}
+	if c.events == nil {
+		c.events = make(chan StreamEvent, 8)
+	}
+	return &recordingSubscription{events: c.events}, nil
+}
+
+// recordingSubscription is the fake stream the settle specs feed.
+type recordingSubscription struct {
+	events chan StreamEvent
+}
+
+func (s *recordingSubscription) Events() <-chan StreamEvent { return s.events }
+
+func (s *recordingSubscription) Close() {}
+
 // fakeTimer is one timer armed on the fake clock.
 type fakeTimer struct {
 	due time.Time
@@ -80,13 +126,19 @@ type fakeTimer struct {
 // every timer that becomes due, including one re-armed during the advance.
 type fakeClock struct {
 	mu     sync.Mutex
+	cond   *sync.Cond
 	now    time.Time
 	timers []*fakeTimer
+	// armed counts every timer ever armed, so a spec can order an Advance after
+	// the loop has re-armed without sleeping.
+	armed int
 }
 
 // newFakeClock creates a fake clock at the given instant.
 func newFakeClock(now time.Time) *fakeClock {
-	return &fakeClock{now: now}
+	clock := &fakeClock{now: now}
+	clock.cond = sync.NewCond(&clock.mu)
+	return clock
 }
 
 // Now returns the fake clock's current instant.
@@ -99,10 +151,65 @@ func (c *fakeClock) Now() time.Time {
 // Timer arms a one-shot timer that fires once d has elapsed on this clock.
 func (c *fakeClock) Timer(d time.Duration) <-chan time.Time {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	timer := &fakeTimer{due: c.now.Add(d), ch: make(chan time.Time, 1)}
 	c.timers = append(c.timers, timer)
+	c.armed++
+	c.cond.Broadcast()
+	c.mu.Unlock()
 	return timer.ch
+}
+
+// awaitArms blocks until at least n timers have been armed on this clock.
+func (c *fakeClock) awaitArms(n int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for c.armed < n {
+		c.cond.Wait()
+	}
+}
+
+// armedCount returns how many timers have been armed in total. A loop that
+// leaves a closed channel in its select arms one per iteration, so this is how a
+// spec sees a busy-spin that still terminates.
+func (c *fakeClock) armedCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.armed
+}
+
+// ticker drives a loop's one-shot timers one interval at a time, waiting for
+// the loop to re-arm between ticks. No sleep, so a re-armed timer is never
+// missed by an advance that ran ahead of it.
+type ticker struct {
+	clock *fakeClock
+	step  time.Duration
+	armed int
+}
+
+// newTicker creates a ticker stepping by step.
+func newTicker(clock *fakeClock, step time.Duration) *ticker {
+	return &ticker{clock: clock, step: step}
+}
+
+// tick advances one interval, after the loop has armed the next timer.
+func (t *ticker) tick() {
+	t.armed++
+	t.clock.awaitArms(t.armed)
+	t.clock.Advance(t.step)
+}
+
+// awaitNext blocks until the loop has re-armed after the last tick, which is
+// the point at which that tick has been fully processed. It is what orders a
+// file mutation between two ticks.
+func (t *ticker) awaitNext() {
+	t.clock.awaitArms(t.armed + 1)
+}
+
+// ticks advances n intervals.
+func (t *ticker) ticks(n int) {
+	for i := 0; i < n; i++ {
+		t.tick()
+	}
 }
 
 // Advance moves time forward by d, firing every timer that becomes due. A
@@ -161,7 +268,7 @@ func newHookOptions(
 		Stderr: stderr,
 		Getenv: func(key string) string { return env[key] },
 		Client: client,
-		Clock:  newFakeClock(time.Date(2026, 11, 19, 0, 0, 0, 0, time.UTC)),
+		Clock:  newFakeClock(selectionNotBefore),
 		// The deadline is set so a later step's waiting path has one; this
 		// prompt's run never reaches it.
 		Deadline: HookDeadline,
@@ -508,5 +615,469 @@ var _ = Describe("fakeClock", func() {
 			Fail("the timer did not fire once it was due")
 		}
 		Expect(clock.Now()).To(Equal(start.Add(5 * time.Second)))
+	})
+})
+
+// settleFixture is everything one settle spec drives.
+type settleFixture struct {
+	opts   hookOptions
+	clock  *fakeClock
+	dir    string
+	stdout *bytes.Buffer
+	stderr *bytes.Buffer
+}
+
+// newSettleFixture builds options for a spec that drives the settle loop: a
+// temp ATTENTION_STATE_DIR (without one the feed-grace branch exits before the
+// store can settle), a fake clock and a short real deadline so a spec that never
+// settles fails in seconds instead of at the hook's real 540s.
+func newSettleFixture(client *recordingClient) settleFixture {
+	dir := GinkgoT().TempDir()
+	opts, stdout, stderr := newHookOptions(nil, "", map[string]string{
+		"ATTENTION_STATE_DIR": dir,
+	}, client)
+	clock, ok := opts.Clock.(*fakeClock)
+	Expect(ok).To(BeTrue())
+	opts.Deadline = 2 * time.Second
+	return settleFixture{opts: opts, clock: clock, dir: dir, stdout: stdout, stderr: stderr}
+}
+
+// answeredCard is the card as settled with allow.
+func answeredCard() *pkg.Item {
+	item := newItemFixture(func(i *pkg.Item) {
+		i.State = pkg.AnsweredState
+		i.Decision = pkg.AllowDecision
+		i.ResolvedBy = "session-1"
+	})
+	return &item
+}
+
+// openCard is the card as still open.
+func openCard() *pkg.Item {
+	item := newItemFixture(nil)
+	return &item
+}
+
+// writeOpenMarker writes the producer's open-gate marker for a session and
+// returns its path.
+func writeOpenMarker(dir, sessionID, content string) string {
+	path := filepath.Join(dir, sessionID+openItemSuffix)
+	Expect(os.WriteFile(path, []byte(content), 0o600)).To(Succeed())
+	return path
+}
+
+// startSettle runs settle in the background and returns its result channel.
+func startSettle(
+	ctx context.Context,
+	opts hookOptions,
+	item pkg.Item,
+	started time.Time,
+) <-chan settleResult {
+	done := make(chan settleResult, 1)
+	go func() { done <- settle(ctx, opts, item, started) }()
+	return done
+}
+
+var _ = Describe("TestOneSubscriptionNoListRepoll", func() {
+	It("TestOneSubscriptionNoListRepoll decides from one matching event", func() {
+		client := &recordingClient{
+			getResults: []*pkg.Item{openCard(), answeredCard()},
+			events:     make(chan StreamEvent, 8),
+		}
+		client.events <- StreamEvent{Type: "upsert", ItemID: "item-1"}
+		fixture := newSettleFixture(client)
+
+		result := settle(
+			context.Background(),
+			fixture.opts,
+			newItemFixture(nil),
+			fixture.clock.Now(),
+		)
+		Expect(result.Decision).To(Equal(pkg.AllowDecision))
+		Expect(result.ItemID).To(Equal(pkg.ItemID("item-1")))
+		Expect(client.subscribeCalls).To(Equal(1))
+		// Zero list reads inside settle: only the resolve reads the list.
+		Expect(client.listCalls).To(Equal(0))
+		// One catch-up read, then exactly one read for the event.
+		Expect(client.getCalls).To(Equal(2))
+	})
+
+	It("TestOneSubscriptionNoListRepoll reads the list only in the resolve", func() {
+		client := &recordingClient{
+			items:      pkg.Items{newItemFixture(nil)},
+			getResults: []*pkg.Item{openCard(), answeredCard()},
+			events:     make(chan StreamEvent, 8),
+		}
+		client.events <- StreamEvent{Type: "upsert", ItemID: "item-1"}
+		fixture := newSettleFixture(client)
+		fixture.opts.Stdin = strings.NewReader(`{"session_id":"session-1"}`)
+
+		Expect(run(context.Background(), fixture.opts)).To(Succeed())
+		// The whole invocation read the list once — the resolve — and never again.
+		Expect(client.listCalls).To(Equal(1))
+		Expect(client.subscribeCalls).To(Equal(1))
+		Expect(client.getCalls).To(Equal(2))
+		Expect(fixture.stderr.String()).To(BeEmpty())
+	})
+
+	It("TestOneSubscriptionNoListRepoll does not re-subscribe when the stream closes", func() {
+		client := &recordingClient{
+			items:  pkg.Items{newItemFixture(nil)},
+			item:   openCard(),
+			events: make(chan StreamEvent),
+		}
+		close(client.events)
+		fixture := newSettleFixture(client)
+		fixture.opts.Stdin = strings.NewReader(`{"session_id":"session-1"}`)
+		fixture.opts.Deadline = 50 * time.Millisecond
+
+		Expect(run(context.Background(), fixture.opts)).To(Succeed())
+		Expect(client.subscribeCalls).To(Equal(1))
+		Expect(fixture.stderr.String()).To(ContainSubstring("deadline after"))
+	})
+})
+
+var _ = Describe("TestCatchUpReadDecidesWhenAnswerLandedInBaselineGap", func() {
+	It(
+		"TestCatchUpReadDecidesWhenAnswerLandedInBaselineGap decides from the catch-up read",
+		func() {
+			// The card is answered before the subscription is established and NO
+			// stream event is ever emitted for it.
+			client := &recordingClient{
+				getResults: []*pkg.Item{answeredCard()},
+				events:     make(chan StreamEvent),
+			}
+			fixture := newSettleFixture(client)
+			writeOpenMarker(fixture.dir, "session-1", `{"item_id":"item-1"}`)
+
+			result := settle(
+				context.Background(),
+				fixture.opts,
+				newItemFixture(nil),
+				fixture.clock.Now(),
+			)
+			// The OUTCOME, not a call count: a discarded read would pass a counter.
+			Expect(result.Decision).To(Equal(pkg.AllowDecision))
+			Expect(result.ItemID).To(Equal(pkg.ItemID("item-1")))
+			Expect(result.Reason).To(BeEmpty())
+			Expect(result.Deadline).To(BeFalse())
+			Expect(client.getCalls).To(Equal(1))
+		},
+	)
+})
+
+var _ = Describe("TestResolveWindowExpiresQuietly", func() {
+	It("TestResolveWindowExpiresQuietly returns a reason naming the producer", func() {
+		client := &recordingClient{items: pkg.Items{}}
+		fixture := newSettleFixture(client)
+
+		type outcome struct {
+			item   pkg.Item
+			reason string
+		}
+		done := make(chan outcome, 1)
+		go func() {
+			item, reason := resolveItem(
+				context.Background(),
+				fixture.opts.Client,
+				fixture.clock,
+				"session-1",
+				"",
+				fixture.clock.Now(),
+			)
+			done <- outcome{item: item, reason: reason}
+		}()
+		newTicker(fixture.clock, resolveRetryInterval).
+			ticks(int(ResolveGrace / resolveRetryInterval))
+
+		var got outcome
+		Eventually(done).Should(Receive(&got))
+		Expect(got.item.ItemID).To(BeEmpty())
+		Expect(got.reason).To(ContainSubstring("session-1"))
+		// Exactly ResolveGrace elapsed, and nothing was subscribed.
+		Expect(fixture.clock.Now()).To(Equal(selectionNotBefore.Add(ResolveGrace)))
+		Expect(client.subscribeCalls).To(Equal(0))
+		Expect(client.getCalls).To(Equal(0))
+	})
+})
+
+var _ = Describe("TestFirstAnswerWinsOverInPane", func() {
+	It("TestFirstAnswerWinsOverInPane returns a local close when the gate goes away", func() {
+		client := &recordingClient{item: openCard(), events: make(chan StreamEvent, 8)}
+		fixture := newSettleFixture(client)
+		marker := writeOpenMarker(fixture.dir, "session-1", `{"item_id":"item-1"}`)
+		done := startSettle(
+			context.Background(),
+			fixture.opts,
+			newItemFixture(nil),
+			fixture.clock.Now(),
+		)
+		ticker := newTicker(fixture.clock, stateCheckInterval)
+		ticker.tick()      // the file is present: seenOpen becomes true
+		ticker.awaitNext() // that tick is fully processed before the file moves
+		Expect(os.Remove(marker)).To(Succeed())
+		ticker.tick() // the file is gone: the gate closed locally
+
+		var result settleResult
+		Eventually(done).Should(Receive(&result))
+		Expect(result.Decision).To(BeEmpty())
+		Expect(result.Reason).To(ContainSubstring("closed locally"))
+		Expect(result.Deadline).To(BeFalse())
+		Expect(client.attemptCalls).To(Equal(0))
+	})
+
+	It(
+		"TestFirstAnswerWinsOverInPane still decides from an event while the file is present",
+		func() {
+			client := &recordingClient{
+				getResults: []*pkg.Item{openCard(), answeredCard()},
+				events:     make(chan StreamEvent, 8),
+			}
+			fixture := newSettleFixture(client)
+			writeOpenMarker(fixture.dir, "session-1", `{"item_id":"item-1"}`)
+			done := startSettle(
+				context.Background(),
+				fixture.opts,
+				newItemFixture(nil),
+				fixture.clock.Now(),
+			)
+			ticker := newTicker(fixture.clock, stateCheckInterval)
+			ticker.tick()
+			ticker.awaitNext() // seenOpen is true before the event lands
+			client.events <- StreamEvent{Type: "upsert", ItemID: "item-1"}
+
+			var result settleResult
+			Eventually(done).Should(Receive(&result))
+			Expect(result.Decision).To(Equal(pkg.AllowDecision))
+			Expect(result.Reason).To(BeEmpty())
+		},
+	)
+
+	It(
+		"TestFirstAnswerWinsOverInPane suppresses a store decision when the gate went away",
+		func() {
+			// The store event and the in-pane close land close together: the card
+			// was seen open, the file is gone, and the store still carries an answer.
+			client := &recordingClient{
+				getResults: []*pkg.Item{openCard(), answeredCard()},
+				events:     make(chan StreamEvent, 8),
+			}
+			fixture := newSettleFixture(client)
+			marker := writeOpenMarker(fixture.dir, "session-1", `{"item_id":"item-1"}`)
+			done := startSettle(
+				context.Background(),
+				fixture.opts,
+				newItemFixture(nil),
+				fixture.clock.Now(),
+			)
+			ticker := newTicker(fixture.clock, stateCheckInterval)
+			ticker.tick()
+			ticker.awaitNext()
+			Expect(os.Remove(marker)).To(Succeed())
+			client.events <- StreamEvent{Type: "upsert", ItemID: "item-1"}
+
+			var result settleResult
+			Eventually(done).Should(Receive(&result))
+			Expect(result.Decision).To(BeEmpty())
+			Expect(result.Reason).To(Equal(localCloseReason))
+		},
+	)
+})
+
+var _ = Describe("TestUntrackedGateAbandonedAfterGrace", func() {
+	It("TestUntrackedGateAbandonedAfterGrace abandons a gate the feed never tracks", func() {
+		client := &recordingClient{item: openCard(), events: make(chan StreamEvent, 8)}
+		fixture := newSettleFixture(client)
+		started := fixture.clock.Now()
+		done := startSettle(context.Background(), fixture.opts, newItemFixture(nil), started)
+
+		newTicker(fixture.clock, stateCheckInterval).
+			ticks(int(FeedGrace / stateCheckInterval))
+
+		var result settleResult
+		Eventually(done).Should(Receive(&result))
+		Expect(result.Decision).To(BeEmpty())
+		Expect(result.Reason).To(ContainSubstring("feed"))
+		Expect(result.Reason).ToNot(ContainSubstring("deadline"))
+		Expect(result.Deadline).To(BeFalse())
+		// Exactly FeedGrace, not the deadline.
+		Expect(fixture.clock.Now()).To(Equal(started.Add(FeedGrace)))
+	})
+})
+
+var _ = Describe("TestLocalCloseReadsProducerStateFile", func() {
+	It(
+		"TestLocalCloseReadsProducerStateFile sees a local close through the real state dir",
+		func() {
+			client := &recordingClient{item: openCard(), events: make(chan StreamEvent, 8)}
+			fixture := newSettleFixture(client)
+			Expect(fixture.dir).ToNot(BeEmpty())
+			marker := writeOpenMarker(
+				fixture.dir,
+				"session-1",
+				`{"item_id":"item-1","session_id":"session-1"}`,
+			)
+			done := startSettle(
+				context.Background(),
+				fixture.opts,
+				newItemFixture(nil),
+				fixture.clock.Now(),
+			)
+			ticker := newTicker(fixture.clock, stateCheckInterval)
+			ticker.tick()
+			ticker.awaitNext()
+			Expect(os.Remove(marker)).To(Succeed())
+			ticker.tick()
+
+			var result settleResult
+			Eventually(done).Should(Receive(&result))
+			Expect(result.Decision).To(BeEmpty())
+			Expect(result.Reason).To(Equal(localCloseReason))
+		},
+	)
+
+	It("TestLocalCloseReadsProducerStateFile keeps waiting on an unreadable state file", func() {
+		client := &recordingClient{item: openCard(), events: make(chan StreamEvent, 8)}
+		fixture := newSettleFixture(client)
+		writeOpenMarker(fixture.dir, "session-1", "not json at all")
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		done := startSettle(ctx, fixture.opts, newItemFixture(nil), fixture.clock.Now())
+
+		newTicker(fixture.clock, stateCheckInterval).ticks(3)
+		// Fail open: an unreadable file is not a close, so the loop keeps waiting.
+		Consistently(done, 100*time.Millisecond).ShouldNot(Receive())
+
+		cancel()
+		var result settleResult
+		Eventually(done).Should(Receive(&result))
+		Expect(result.Decision).To(BeEmpty())
+		Expect(result.Reason).ToNot(Equal(localCloseReason))
+	})
+})
+
+var _ = Describe("TestFailOpenOnErrorMalformedDeadline", func() {
+	It("TestFailOpenOnErrorMalformedDeadline reports a subscribe error and exits zero", func() {
+		client := &recordingClient{
+			items:        pkg.Items{newItemFixture(nil)},
+			subscribeErr: stderrors.New("board down"),
+		}
+		fixture := newSettleFixture(client)
+		fixture.opts.Stdin = strings.NewReader(`{"session_id":"session-1"}`)
+
+		Expect(run(context.Background(), fixture.opts)).To(Succeed())
+		Expect(fixture.stdout.String()).To(BeEmpty())
+		Expect(fixture.stderr.String()).To(ContainSubstring("subscribe failed"))
+		Expect(fixture.stderr.String()).To(ContainSubstring("board down"))
+	})
+
+	It("TestFailOpenOnErrorMalformedDeadline names the failed condition for an empty item", func() {
+		client := &recordingClient{
+			items:      pkg.Items{newItemFixture(nil)},
+			getResults: []*pkg.Item{{}},
+			events:     make(chan StreamEvent, 8),
+		}
+		fixture := newSettleFixture(client)
+		fixture.opts.Stdin = strings.NewReader(`{"session_id":"session-1"}`)
+		fixture.opts.Deadline = 50 * time.Millisecond
+
+		Expect(run(context.Background(), fixture.opts)).To(Succeed())
+		Expect(fixture.stdout.String()).To(BeEmpty())
+		Expect(fixture.stderr.String()).To(ContainSubstring("state"))
+		Expect(fixture.stderr.String()).To(ContainSubstring("deadline after"))
+	})
+
+	It("TestFailOpenOnErrorMalformedDeadline prints the terminal line at the deadline", func() {
+		client := &recordingClient{
+			items:  pkg.Items{newItemFixture(nil)},
+			item:   openCard(),
+			events: make(chan StreamEvent, 8),
+		}
+		fixture := newSettleFixture(client)
+		fixture.opts.Stdin = strings.NewReader(`{"session_id":"session-1"}`)
+		// A REAL 50ms deadline: the fake clock is frozen, so only a real context
+		// timeout can end this run.
+		fixture.opts.Deadline = 50 * time.Millisecond
+
+		Expect(run(context.Background(), fixture.opts)).To(Succeed())
+		Expect(fixture.stdout.String()).To(BeEmpty())
+		Expect(fixture.stderr.String()).
+			To(ContainSubstring("permission-answer-hook: deadline after"))
+	})
+
+	It("TestFailOpenOnErrorMalformedDeadline renders 540s in seconds, not minutes", func() {
+		Expect(deadlineLine(HookDeadline, "no answer")).
+			To(Equal("permission-answer-hook: deadline after 540s — last: no answer"))
+	})
+
+	It(
+		"TestFailOpenOnErrorMalformedDeadline settles an event arriving before the deadline",
+		func() {
+			client := &recordingClient{
+				items:      pkg.Items{newItemFixture(nil)},
+				getResults: []*pkg.Item{openCard(), answeredCard()},
+				events:     make(chan StreamEvent, 8),
+			}
+			client.events <- StreamEvent{Type: "upsert", ItemID: "item-1"}
+			fixture := newSettleFixture(client)
+			fixture.opts.Stdin = strings.NewReader(`{"session_id":"session-1"}`)
+
+			Expect(run(context.Background(), fixture.opts)).To(Succeed())
+			Expect(fixture.stderr.String()).To(BeEmpty())
+			Expect(client.getCalls).To(Equal(2))
+		},
+	)
+})
+
+var _ = Describe("TestStreamFrameParsed", func() {
+	It("TestStreamFrameParsed decodes the wire frame into a StreamEvent", func() {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`data: {"type":"upsert","item_id":"X"}` + "\n\n"))
+			http.NewResponseController(w).Flush()
+		}))
+		defer server.Close()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		subscription, err := newHTTPStoreClient(server.URL).Subscribe(ctx)
+		Expect(err).ToNot(HaveOccurred())
+		defer subscription.Close()
+
+		var event StreamEvent
+		Eventually(subscription.Events()).Should(Receive(&event))
+		Expect(event).To(Equal(StreamEvent{Type: "upsert", ItemID: "X"}))
+	})
+})
+
+var _ = Describe("TestDroppedStreamRunsToDeadline", func() {
+	It("TestDroppedStreamRunsToDeadline runs to the deadline without re-subscribing", func() {
+		client := &recordingClient{
+			items:      pkg.Items{newItemFixture(nil)},
+			item:       openCard(),
+			events:     make(chan StreamEvent),
+			subscribed: make(chan struct{}, 1),
+		}
+		fixture := newSettleFixture(client)
+		fixture.opts.Stdin = strings.NewReader(`{"session_id":"session-1"}`)
+		fixture.opts.Deadline = 50 * time.Millisecond
+
+		done := make(chan error, 1)
+		go func() { done <- run(context.Background(), fixture.opts) }()
+		Eventually(client.subscribed).Should(Receive())
+		close(client.events)
+		Eventually(done).Should(Receive(BeNil()))
+
+		// Exactly one Subscribe for the whole run: a re-subscribe loop would
+		// climb, and it is the poll under another name.
+		Expect(client.subscribeCalls).To(Equal(1))
+		// Only the catch-up read; the dropped stream never read again.
+		Expect(client.getCalls).To(Equal(1))
+		Expect(fixture.stderr.String()).To(ContainSubstring("deadline after"))
+		// Two timers: one armed before the close was seen, one after. A loop
+		// that left the closed channel in its select arms one per iteration and
+		// spins until the deadline, which is the busy-wait this guards.
+		Expect(fixture.clock.armedCount()).To(BeNumerically("<=", 5))
 	})
 })
