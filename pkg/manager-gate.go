@@ -201,6 +201,9 @@ const (
 	ManagerGateRecordCleared ManagerGateRecordKind = "CLEARED"
 	// ManagerGateRecordHeld is a session leaving it because it is gone.
 	ManagerGateRecordHeld ManagerGateRecordKind = "HELD"
+	// ManagerGateRecordAged is a continuous park crossing one of
+	// ManagerParkAgeThresholds. It fires ONCE per threshold per park.
+	ManagerGateRecordAged ManagerGateRecordKind = "AGED"
 )
 
 // ManagerGateRecord is one transition to emit.
@@ -209,7 +212,10 @@ type ManagerGateRecord struct {
 	Session string
 	Label   string
 	Detail  string
-	Content string // "reason :: detail"; prompt 4 replaces this with a hash
+	// Content is the HUMAN identity of the gate, "reason :: detail". `prev`
+	// stores managerContentKey instead — the hash — while the record keeps the
+	// readable string.
+	Content string
 }
 
 // managerUntrackedDetail marks the lost-sight HELD cause. It is exact-matched so
@@ -261,7 +267,7 @@ func managerTransitions(
 		// already known; a churning one commits nothing and keeps whatever `prev`
 		// held.
 		if state.Decision == ManagerGateGated && managerSessionStable(state.SessionID, stable) {
-			next[state.SessionID] = managerGateContent(state)
+			next[state.SessionID] = managerContentKey(state.Reason, state.Detail)
 		}
 	}
 	for _, session := range managerAbsentSessions(prev, tracked) {
@@ -282,8 +288,8 @@ func managerTransitions(
 // and whether it drops the session's membership.
 //
 // It returns no record for every deferred case: a session that is not stable, a
-// cleared session that was never a member, and a held reason that keeps
-// membership.
+// cleared session that was never a member, a held reason that keeps membership,
+// and a gated member whose content key is unchanged.
 func managerGateStateRecord(
 	state ManagerGateState,
 	prev map[string]string,
@@ -295,8 +301,9 @@ func managerGateStateRecord(
 	_, member := prev[state.SessionID]
 	switch state.Decision {
 	case ManagerGateGated:
-		if member {
-			// Already in the set: a gate raised again is not a new gate.
+		if member && managerContentMatches(prev[state.SessionID], state) {
+			// Already in the set with this exact content: a gate raised again is
+			// not a new gate.
 			return nil, false
 		}
 		return &ManagerGateRecord{
