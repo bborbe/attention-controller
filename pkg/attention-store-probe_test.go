@@ -148,4 +148,29 @@ var _ = Describe("Synthetic probe exclusion", func() {
 		Expect(itemIDs(board)).NotTo(ContainElement(probe.ItemID))
 		Expect(itemIDs(board)).To(ContainElement(card.ItemID))
 	})
+
+	// SC1, answered half. The 2026-11-17 burst was dismissed by its own script
+	// within ~8 s, so an ANSWERED probe is the state the board actually served.
+	// An answered item is part of the board read (includeAnswered), so without
+	// the answered branch a probe reappears as a dimmed record the moment it is
+	// answered. The exclusion must hold after the answer, and the store must
+	// still return the item through Get.
+	It("omits an answered probe from the board without deleting it", func() {
+		probe, err := store.Push(ctx, declaration(
+			"session-a",
+			"probe-answered",
+			probePayload(" #3: synthetic dismissal"),
+		))
+		Expect(err).To(BeNil())
+
+		_, err = store.Answer(ctx, probe.ItemID, "attention-board", "", "", nil, nil, nil)
+		Expect(err).To(BeNil())
+
+		board, err := store.ReadBoard(ctx)
+		Expect(err).To(BeNil())
+		Expect(itemIDs(board)).NotTo(ContainElement(probe.ItemID))
+
+		_, err = store.Get(ctx, probe.ItemID)
+		Expect(err).To(BeNil())
+	})
 })
