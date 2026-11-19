@@ -100,7 +100,7 @@ Reference docs (in-container paths):
 
 ### D. The guard-mutation evidence
 
-7. For **each** of the eighteen guards below, run the procedure and record the result:
+7. For **each** of the twenty guards below, run the procedure and record the result:
 
    ```
    TestHookPayloadReadFromStdin
@@ -119,6 +119,8 @@ Reference docs (in-container paths):
    TestUntrackedGateAbandonedAfterGrace
    TestLocalCloseReadsProducerStateFile
    TestFailOpenOnErrorMalformedDeadline
+   - `TestDroppedStreamRunsToDeadline` (AC11) — delete the branch that keeps waiting after the events channel closes, so the loop re-subscribes; the guard must fail
+   - `TestBoardURLMustBeLoopback` (AC12) — delete the loopback check so a remote base URL is accepted; the guard must fail
    TestStdoutContractGolden
    TestDeliveryAttemptRecordedAfterEmit
    ```

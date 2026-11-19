@@ -164,11 +164,11 @@ The hook reads the local store over loopback and prints a decision to its own in
 
 | # | Prompt focus | Covers DBs | Covers ACs | Depends on |
 |---|---|---|---|---|
-| 1 | The stdin payload and the verdict function plus the two early exits — `TestHookPayloadReadFromStdin`, `TestPermissionAnswerRequiresAnsweredStateDecisionResolvedBy`, `TestDenyNeverInferred`, `TestKillSwitchSupervisorPermissionPollOff`, `TestHeadlessWorkerSkipped` | 1, 5, 6, 7 | AC1, AC2, AC3, AC9 | — |
+| 1 | The stdin payload and the verdict function plus the two early exits — `TestHookPayloadReadFromStdin`, `TestPermissionAnswerRequiresAnsweredStateDecisionResolvedBy`, `TestDenyNeverInferred`, `TestKillSwitchSupervisorPermissionPollOff`, `TestHeadlessWorkerSkipped` — `TestBoardURLMustBeLoopback`| 1, 5, 6, 7 | AC1, AC2, AC3, AC9, AC12| — |
 | 2 | The selection guards — `TestPermissionClassOnly`, `TestTwoPermissionCardsAreAmbiguous`, `TestStaleCardForAnotherGateIsRefused`, `TestCardOlderThanTheHookIsRefused` | 4 | AC8 | prompt 1 |
-| 3 | The stream-driven settle loop: bounded resolve, one subscription, the catch-up read, first-answer-wins, the feed grace (including the producer state-file read) and fail-open — `TestOneSubscriptionNoListRepoll`, `TestCatchUpReadDecidesWhenAnswerLandedInBaselineGap`, `TestResolveWindowExpiresQuietly`, `TestFirstAnswerWinsOverInPane`, `TestUntrackedGateAbandonedAfterGrace`, `TestLocalCloseReadsProducerStateFile`, `TestFailOpenOnErrorMalformedDeadline` | 2, 3, 8, 9, 10, 11 | AC4, AC5, AC6 | prompt 2 |
+| 3 | The stream-driven settle loop: bounded resolve, one subscription, the catch-up read, first-answer-wins, the feed grace (including the producer state-file read) and fail-open — `TestOneSubscriptionNoListRepoll`, `TestCatchUpReadDecidesWhenAnswerLandedInBaselineGap`, `TestResolveWindowExpiresQuietly`, `TestFirstAnswerWinsOverInPane`, `TestUntrackedGateAbandonedAfterGrace`, `TestLocalCloseReadsProducerStateFile`, `TestFailOpenOnErrorMalformedDeadline` — `TestDroppedStreamRunsToDeadline`| 2, 3, 8, 9, 10, 11 | AC4, AC5, AC6, AC11| prompt 2 |
 | 4 | The stdout golden fixtures, the delivery-attempt record — `TestStdoutContractGolden`, `TestDeliveryAttemptRecordedAfterEmit` | 12, 13 | AC7, AC10 | prompt 3 |
-| 5 | The `cmd/` wiring, the `make install` step, `docs/attention-stream.md`, the CHANGELOG bullet, and the guard-mutation evidence per guard | — | — | prompts 1–4 |
+| 5 | The `cmd/` wiring, the `make install` step, `docs/attention-stream.md`, the CHANGELOG bullet, and the guard-mutation evidence for **all 20** guards (AC1–AC12) | — | — | prompts 1–4 |
 
 ## Do-Nothing Option
 

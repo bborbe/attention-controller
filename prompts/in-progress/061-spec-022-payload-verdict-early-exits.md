@@ -274,7 +274,7 @@ Two facts to verify before trusting them: `cmd/import-spawn-ledger/main_suite_te
 
 15. ⚠️ **Every spec's `Describe` text must contain the guard token verbatim**, because the evidence command focuses on that token and `-ginkgo.fail-on-empty` is what turns a non-matching focus into a failure. Name each container `Describe("Test<Guard>", ...)`.
 
-16. Write these five specs:
+16. Write these seven specs:
 
     a. **`TestHookPayloadReadFromStdin`** — given stdin `{"session_id":"S","tool_name":"Write","tool_input":{"file_path":"/tmp/w.txt"}}` and no argv, `parseHookInput` returns `SessionID == "S"` and `Expect == "Write: /tmp/w.txt"`. Given `--session-id S` on argv and empty stdin, it returns `SessionID == "S"` and `Expect == ""`. **Negative half:** given neither, `ok` is false, the reason is non-empty, and driving `run` with the recording client leaves `listCalls == 0`, `getCalls == 0` and `attemptCalls == 0` while stdout stays empty.
 
@@ -285,6 +285,10 @@ Two facts to verify before trusting them: `cmd/import-spawn-ledger/main_suite_te
     d. **`TestKillSwitchSupervisorPermissionPollOff`** — with `SUPERVISOR_PERMISSION_POLL` set to `off`, `OFF` and `Off`, `run` returns nil, stdout is empty, and the recording client records zero calls. **Negative half:** `0`, `false`, `no` and `""` each leave the hook running — assert `skipBeforeConnect` returns false for every one of them.
 
     e. **`TestHeadlessWorkerSkipped`** — with `SUPERVISOR_WORKER_MODE=headless`, `run` returns nil, stdout is empty and the recording client records zero calls. **Negative half:** `interactive`, `HEADLESS` and `""` each leave the hook running.
+
+    f. **`TestStoreClientHTTPContract`** — `client_test.go`, `httptest`, asserting the exact method and path for list / get-by-id / attempt, the JSON body fields `carrier` and `outcome`, a 404 wrapping `pkg.ErrItemNotFound`, and a non-loopback URL disabling the client. ⚠️ This is the only HTTP boundary in the change; the recording fake replaces it everywhere else, so without this spec the real serialization is never exercised.
+
+    g. **`TestBoardURLMustBeLoopback`** — spec AC12: a base URL whose host is not loopback yields a disabled client and makes **no request**, so the hook cannot be repointed at a remote store by configuration. ⚠️ This guard is named in `<verification>`; if this spec is not written the evidence command exits non-zero under `-ginkgo.fail-on-empty`, which is the intended behaviour rather than a flake.
 
 17. Before you finish, re-run the `<verification>` block and confirm every command passes, then walk each requirement above against the change and report any you could not satisfy.
 </requirements>

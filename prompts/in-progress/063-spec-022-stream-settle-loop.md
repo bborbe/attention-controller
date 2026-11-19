@@ -159,7 +159,7 @@ Reference docs (in-container paths):
    ) settleResult
    ```
 
-6. `settle` wraps `ctx` with `context.WithTimeout(ctx, opts.Deadline)` — the deadline is a context timeout, never a hand-rolled ticker — then:
+6. `settle` wraps `ctx` with `context.WithTimeout(ctx, opts.Deadline)` — the deadline is a context timeout, never a hand-rolled ticker — ⚠️ **and it is REAL time, not `opts.Clock`.** A fake clock advancing does not trip a `context.WithTimeout`, so every spec that needs the deadline (15a, 15i, and `TestFailOpenOnErrorMalformedDeadline`'s deadline case) must set a short real `opts.Deadline` (50 ms) on the injected options and wait for it, rather than advancing the fake clock and expecting `ctx.Done()` to fire — then:
 
    a. `sub, err := opts.Client.Subscribe(ctx)`. On error: return no decision with the wrapped error as the reason.
    b. **The catch-up read, immediately after `Subscribe` returns:** `opts.Client.Get(ctx, item.ItemID)`. If it succeeds, run `permissionVerdict` on the result **and decide from it** — if it yields a decision, that read is the decision, not a discarded fetch. If it yields no decision, keep the reason and continue into the loop.
@@ -167,7 +167,7 @@ Reference docs (in-container paths):
       - **A matching event** (`event.ItemID == item.ItemID.String()`): `opts.Client.Get(ctx, item.ItemID)`, then `permissionVerdict`. A decision returns immediately. A `Get` error or a failing verdict keeps the reason and the loop continues. An event for another item id is ignored without a read.
       - **A timer tick:** re-read the gate state (see § E).
       - **`ctx.Done()`:** return `settleResult{Reason: lastReason, Deadline: true}` — the caller prints the terminal line. ⚠️ **Setting `Deadline` is the writer for the field requirement 11 reads**; a loop that returns a bare reason leaves the terminal line unassertable and the field dead.
-      - **The events channel closing** (the stream dropped): ⚠️ **do not re-subscribe and do not return.** Keep waiting on the timer and `ctx.Done()` until the deadline, so a dropped stream runs to the deadline rather than becoming a reconnect loop. Record `"stream closed"` as the last reason.
+      - **The events channel closing** (the stream dropped): ⚠️ **do not re-subscribe and do not return** — and ⚠️ **do not leave the closed channel in the `select` either**, or every iteration takes the receive-ready case and the loop busy-spins until the deadline burning CPU. Set `events = nil` (a nil channel blocks forever in `select`) and keep waiting on the timer and `ctx.Done()` until the deadline, so a dropped stream runs to the deadline rather than becoming a reconnect loop. Record `"stream closed"` as the last reason.
    d. **Before returning any decision derived from a store read**, re-read the gate state once and suppress the decision when the file was **seen open earlier and is now absent** (§ E). This is what makes first-answer-wins hold even when the store event and the pane close land close together.
 
 7. Keep `settle` and its helpers under the repo's `funlen` (80 lines / 50 statements), `gocognit` (20), `nestif` (4) and `maintidx` (20) limits by splitting it: one helper for an event, one for a tick, one for the decide-and-suppress step.
