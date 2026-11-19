@@ -207,7 +207,7 @@ Reference docs (in-container paths):
 
 14. ⚠️ **Every spec's `Describe` text must contain the guard token verbatim**, because the evidence command focuses on that token and `-ginkgo.fail-on-empty` is what turns a non-matching focus into a failure.
 
-15. Write these eight specs:
+15. Write these nine specs:
 
     a. **`TestOneSubscriptionNoListRepoll`** — drive `settle` to a decision delivered by one matching event. Assert: `subscribeCalls == 1`; `listCalls == 0` inside `settle` (the list was read only by the resolve, so drive `run` and assert the total is 1); exactly one `Get` before the event (the catch-up) and exactly one more after it. Then close the events channel and assert the loop does **not** re-subscribe: `subscribeCalls` stays 1 and the hook reaches the deadline instead.
 
@@ -224,6 +224,8 @@ Reference docs (in-container paths):
     g. **`TestFailOpenOnErrorMalformedDeadline`** — three cases: (i) `Subscribe` returns an error → no decision, a reason on stderr, exit 0; (ii) `Get` returns a malformed/empty `&pkg.Item{}` → no decision, a reason naming the failed condition; (iii) a reached deadline with `opts.Deadline = 50 * time.Millisecond` and a frozen fake clock → no decision, exit 0, and stderr carries the terminal line. Assert `deadlineLine(HookDeadline, "no answer")` equals exactly `permission-answer-hook: deadline after 540s — last: no answer` — that is where the 540 s value is asserted without waiting 540 s. **Positive control:** an event arriving before the deadline settles normally.
 
     h. **`TestStreamFrameParsed`** — serve `data: {"type":"upsert","item_id":"X"}\n\n` from an `httptest` server and drive the real `httpStoreClient.Subscribe` through the scanner path, asserting the emitted `StreamEvent` is `{Type:"upsert", ItemID:"X"}`. ⚠️ No extracted parser and no fake event channel: every other spec here injects `StreamEvent` values, so without this one a wrong JSON tag or a wrong frame parser passes them all and fails only against the live board.
+
+    i. **`TestDroppedStreamRunsToDeadline`** — close the fake subscription's event channel mid-run and assert the loop does **not** re-subscribe (exactly one `Subscribe` call for the whole run) and does not spin: it waits on the timer and the deadline, then returns `Deadline: true`. ⚠️ This is spec AC11; DB11 previously had no AC, so a re-subscribing loop passed everything.
 
 16. Before you finish, re-run the `<verification>` block and confirm every command passes, then walk each requirement above against the change and report any you could not satisfy.
 </requirements>
@@ -252,7 +254,8 @@ Run in the repo root. ⚠️ The package is Ginkgo-only: `-run TestSuite` select
 - `go test ./cmd/permission-answer-hook/... -count=1 -run TestSuite -ginkgo.focus='TestOneSubscriptionNoListRepoll' -ginkgo.fail-on-empty`
 - `go test ./cmd/permission-answer-hook/... -count=1 -run TestSuite -ginkgo.focus='TestCatchUpReadDecidesWhenAnswerLandedInBaselineGap' -ginkgo.fail-on-empty`
 - `go test ./cmd/permission-answer-hook/... -count=1 -run TestSuite -ginkgo.focus='TestResolveWindowExpiresQuietly' -ginkgo.fail-on-empty`
-- `go test ./cmd/permission-answer-hook/... -count=1 -run TestSuite -ginkgo.focus='TestStreamFrameParsed' -ginkgo.fail-on-empty` — ⚠️ **the real wire format, not the fake.** Every other spec in this prompt drives the subscription with `StreamEvent` values directly, so a wrong JSON tag or a wrong frame parser passes all of them and fails only in production. This spec must feed a literal `data: {"type":"upsert","item_id":"X"}\n\n` byte stream through the scanner path and assert it decodes to `StreamEvent{Type:"upsert", ItemID:"X"}`.
+- `go test ./cmd/permission-answer-hook/... -count=1 -run TestSuite -ginkgo.focus='TestStreamFrameParsed' -ginkgo.fail-on-empty`
+- `go test ./cmd/permission-answer-hook/... -count=1 -run TestSuite -ginkgo.focus='TestDroppedStreamRunsToDeadline' -ginkgo.fail-on-empty` — ⚠️ **the real wire format, not the fake.** Every other spec in this prompt drives the subscription with `StreamEvent` values directly, so a wrong JSON tag or a wrong frame parser passes all of them and fails only in production. This spec must feed a literal `data: {"type":"upsert","item_id":"X"}\n\n` byte stream through the scanner path and assert it decodes to `StreamEvent{Type:"upsert", ItemID:"X"}`.
 - `go test ./cmd/permission-answer-hook/... -count=1 -run TestSuite -ginkgo.focus='TestFirstAnswerWinsOverInPane' -ginkgo.fail-on-empty`
 - `go test ./cmd/permission-answer-hook/... -count=1 -run TestSuite -ginkgo.focus='TestUntrackedGateAbandonedAfterGrace' -ginkgo.fail-on-empty`
 - `go test ./cmd/permission-answer-hook/... -count=1 -run TestSuite -ginkgo.focus='TestLocalCloseReadsProducerStateFile' -ginkgo.fail-on-empty`
