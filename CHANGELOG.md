@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.104.0
 
 - feat: **a manager's card answer is delivered in the manager's voice, never the operator's.** `answer` gains `answerer` (`operator` | `manager`; absent on earlier answers), validated against `AvailableAnswerers` and stored with the rest of the answer. The pane carrier types a manager answer as `Manager answer, via supervisor: <text> [<item id>]` instead of `Operator answer, via attention board: …`, and `AnswerTurnText` opens a manager's resumed turn with the same prefix instead of "The operator answered on the attention board." The prefix is applied once, so a value that already carries it (the supervisor gate answerer's) is not doubled. Operator and legacy answers render exactly as before. Tests cover both answerers on the store, the pane line and the headless turn.
 
