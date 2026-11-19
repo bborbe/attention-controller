@@ -32,6 +32,14 @@ const (
 	// with the value (`?dedup_key_prefix=park:`).
 	historyDedupPrefixParam = "dedup_key_prefix"
 
+	// historyRatedParam narrows the page to items the operator has rated
+	// (`?rated=true`). It exists for the ratings readout: the read is O(offset),
+	// so walking every page to find the rated rows is what made the daily
+	// readout time out against a 150k-item store. `false` or absent reads as no
+	// filter, and a value that is neither is a 400 — a typo must not silently
+	// return the whole store to a caller that believes it asked for rated rows.
+	historyRatedParam = "rated"
+
 	// historyDefaultLimit bounds the response when the caller names no limit.
 	//
 	// ⚠️ It is sized from the payload rather than from taste. Rows average ~840
@@ -103,9 +111,14 @@ func NewAttentionHistoryHandler(store pkg.AttentionStore) http.Handler {
 				if err != nil {
 					return err
 				}
+				ratedOnly, err := historyBoolParam(ctx, req, historyRatedParam)
+				if err != nil {
+					return err
+				}
 				body, err := store.HistoryJSON(ctx, limit, offset, pkg.HistoryFilter{
 					Producers:      historyProducers(req),
 					DedupKeyPrefix: pkg.DedupKey(req.URL.Query().Get(historyDedupPrefixParam)),
+					RatedOnly:      ratedOnly,
 				})
 				if err != nil {
 					return libhttp.WrapWithCode(
@@ -144,6 +157,32 @@ func historyProducers(req *http.Request) []pkg.ProducerID {
 		}
 	}
 	return producers
+}
+
+// historyBoolParam reads one boolean query parameter, returning false when it is
+// absent or `false`.
+//
+// ⚠️ Like historyIntParam, a present-but-unparseable value is a 400 rather than a
+// fallback. `?rated=ture` reading as "no filter" would answer a caller with the
+// whole store while it believes it asked for rated rows — the failure would
+// surface as a readout that counts 150,000 items instead of a few hundred.
+func historyBoolParam(
+	ctx context.Context,
+	req *http.Request,
+	name string,
+) (bool, error) {
+	switch req.URL.Query().Get(name) {
+	case "", "false":
+		return false, nil
+	case "true":
+		return true, nil
+	default:
+		return false, libhttp.WrapWithCode(
+			errors.New(ctx, name+" must be true or false"),
+			libhttp.ErrorCodeValidation,
+			http.StatusBadRequest,
+		)
+	}
 }
 
 // historyIntParam reads one integer query parameter, returning fallback when it

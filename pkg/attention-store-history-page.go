@@ -174,11 +174,12 @@ func (a *attentionStore) buildHistoryPage(
 	// concurrent requests for one page must add exactly one.
 	key := newHistoryPageKey(limit, offset, filters)
 	glog.V(2).Infof(
-		"history page built: limit=%d offset=%d producers=%q dedup_prefix=%q bytes=%d",
+		"history page built: limit=%d offset=%d producers=%q dedup_prefix=%q rated_only=%t bytes=%d",
 		key.limit,
 		key.offset,
 		key.producers,
 		key.dedupPrefix,
+		key.ratedOnly,
 		len(body),
 	)
 	return body, validUntil, nil
