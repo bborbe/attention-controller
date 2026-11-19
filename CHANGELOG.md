@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.103.3
 
 - fix: **the context-crossing arm raises one `compact:<sid>` card per crossing instead of one per minute.** The card is an `ack`, and an acknowledgement CLOSES the item with `answered_at` unset — which removes it from `ReadBoard`, the only surface the sink's `hasOpenCard` guard reads, and from the store's open-scoped duplicate suppression alike. So every 60 s tick found no card for a session that was still over the threshold and minted another; measured 2026-11-19 on the live store, 1 376 `compact:` cards on 51 keys, 1 325 of them re-mints, the worst key minting 161 at a 1.1 min median gap. The guard now lives where the readings are observed: `contextCrossingJob` keeps a persisted per-session book (`pkg/context-crossing-book.go`, `~/.claude/state/attention/context-crossing-book.json`) and raises only for a session it has not already cued, re-arming on a real sub-threshold reading or on a session that is no longer live. A zero reading re-arms nothing — it is "nothing measured yet", not "the context emptied" — and a dead session is re-armed because a resumed session keeps its id and a resumed run is a new crossing. Persisting the book is what makes the guarantee survive a restart: the controller restarts on every deploy, and an in-memory book would mint one fresh card per live crossing at each one.
 
