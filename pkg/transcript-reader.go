@@ -90,6 +90,31 @@ type TranscriptReader interface {
 	// turn-end. It never fails: a missing or unreadable transcript reports
 	// false, keeping the caller's "no live process" refusal.
 	TurnEnded(sessionID string) bool
+
+	// ModifiedAt returns when the transcript was last written, and whether it
+	// could be read. It never fails: an absent or unreadable transcript reports
+	// false.
+	//
+	// ⚠️ It is the compact trio's only honest "is a turn running?" probe. The
+	// registry cannot answer it — it reads `busy` for a running turn AND for a
+	// session merely holding a background shell, so a shell-holder could never be
+	// compacted. A running turn writes the transcript continuously while a
+	// background shell writes nothing at all (measured 2026-10-18: three
+	// shell-holding sessions kept their mtime frozen over 60 s while every
+	// genuinely mid-turn session advanced).
+	ModifiedAt(sessionID string) (time.Time, bool)
+
+	// CompactionBoundaries returns how many `compact_boundary` records the
+	// transcript holds, and whether it could be read. It never fails: an
+	// unreadable transcript reports false, and the caller then withholds rather
+	// than guessing.
+	//
+	// ⚠️ Every real compaction appends one, so a COUNT is a signal rather than a
+	// timer: the composer clears the instant `/compact` submits while the
+	// compaction is still running, so an emptiness-only gate would fire
+	// `post-compact` into the middle of it and lose exactly what the sequence
+	// exists to preserve.
+	CompactionBoundaries(sessionID string) (int, bool)
 }
 
 // NewTranscriptReader creates the reader the delivery carrier uses.
@@ -155,6 +180,53 @@ func (r *transcriptReader) Offset(sessionID string) (int64, bool) {
 		return 0, false
 	}
 	return info.Size(), true
+}
+
+// ModifiedAt returns when the transcript was last written.
+//
+// ⚠️ The stat is a THIRD syscall on the trio's hot path (glob, stat, read), and
+// it is deliberate rather than folded into Offset: the two answer different
+// questions. Offset bounds a submit check's scan; the mtime answers "is a turn
+// running", which no offset can — an unchanged offset over one tick is one
+// sample, while the mtime carries the quiet period that already elapsed.
+func (r *transcriptReader) ModifiedAt(sessionID string) (time.Time, bool) {
+	path := r.Path(sessionID)
+	if path == "" {
+		return time.Time{}, false
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return info.ModTime(), true
+}
+
+// compactionBoundaryMarker is the substring every compaction record carries.
+//
+// ⚠️ It is a SUBSTRING, not a parsed field, and that is the reference
+// implementation's own rule (`compaction_boundaries` counted lines containing
+// it). The record is a `system` entry whose payload shape is the harness's, and
+// parsing it would make the gate fail closed on any harness change — while the
+// count only has to answer "did one MORE appear since I sent `/compact`".
+const compactionBoundaryMarker = "compact_boundary"
+
+// CompactionBoundaries counts the transcript's compaction records.
+//
+// ⚠️ The whole file is read, not the tail. A compaction boundary older than the
+// tail window is still part of the COUNT, and a count that silently restarted
+// from a partial file would read "a new boundary appeared" on the first poll
+// after any window slide. The file is read once per gate poll, and the gate
+// stops polling the moment the count moves.
+func (r *transcriptReader) CompactionBoundaries(sessionID string) (int, bool) {
+	path := r.Path(sessionID)
+	if path == "" {
+		return 0, false
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return 0, false
+	}
+	return bytes.Count(content, []byte(compactionBoundaryMarker)), true
 }
 
 // HoldsLine reports whether the transcript carries line as a delivered message.

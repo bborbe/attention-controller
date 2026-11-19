@@ -1524,6 +1524,7 @@ func (a *application) addAttentionWatcherJobs(
 	// cluster listener, where panes, the registry and the ledger do not exist.
 	runner.Add(ctx, pkg.NewManagerWakeJob(store, sessionLedger, provenance, carrier, notifier,
 		libtime.NewCurrentDateTime(), pkg.NewManagerWakeEmissionLog()).Run)
+	registerCompactTrio(ctx, runner, store, carrier, writer, transcriptRoot)
 
 	a.logAttentionWatcherRegistration()
 	return nil
@@ -1538,7 +1539,7 @@ func (a *application) addAttentionWatcherJobs(
 // items and panes.
 func (a *application) logAttentionWatcherRegistration() {
 	glog.V(2).Infof(
-		"job=attention-watcher action=registered arms=prune,ingest,deliver,menu,headless,crossing,wake settle=%t",
+		"job=attention-watcher action=registered arms=prune,ingest,deliver,menu,headless,crossing,wake,compact-trio settle=%t",
 		a.AttentionWrapperURL != "",
 	)
 }
