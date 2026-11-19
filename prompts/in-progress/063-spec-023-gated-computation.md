@@ -172,17 +172,28 @@ func managerTransitions(
 ) ([]ManagerGateRecord, map[string]string)
 ```
 
+⚠️ **The membership rule — stated here, ONCE; requirement 7, requirement 9 and prompt 4 defer to it instead of restating it.** The map `managerTransitions` returns is `prev` **minus exactly the sessions it emitted a `CLEARED` or `HELD` record for this pass**, plus the content key of every `stable` gated member. Everything else already in `prev` is carried forward **unchanged** — a churning gated member, and every `cleared` / `held` / lost-sight session that is not yet `stable`. A non-stable departure is therefore **DEFERRED, never forgotten**: it stays in `prev`, so the pass on which it becomes `stable` (requirement 7) still finds it and emits the `CLEARED` or lost-sight `HELD` it owes. Dropping it here instead is what makes a deferred transition unreachable — the session is gone from `prev`, so no later pass can emit it.
+
 Rules, in this order:
    - a `gated` state whose session is in `stable`: absent from `prev` → `NEW GATE`; present → no record. Commit the session with content `reason + " :: " + detail`.
-   - a `gated` state **not** in `stable`: no record; do **not** commit it (it is churning).
+   - a `gated` state **not** in `stable`: no record and no new content key (it is churning); a session already in `prev` keeps its existing entry under the membership rule, one absent from `prev` is not added.
    - a session in `prev` that is now `cleared` and in `stable` → `CLEARED`, dropped from the new map.
+   - a session in `prev` that is now `cleared` but **not** in `stable` → no record; kept in the new map under the membership rule (the deferred `CLEARED`).
    - a session in `prev` that is now `held` and in `stable`:
      - `managerHoldKeepsMembership(reason)` → **no record**, kept in the new map with its existing content (this is what lets the eventual settle emit the one `CLEARED`);
      - otherwise (`unregistered`) → `HELD` with detail `reason + "; no CLEARED emitted"`, dropped.
+   - a session in `prev` that is now `held` but **not** in `stable` → no record; kept (the deferred `HELD`).
    - a session in `prev` **absent from `states`** and in `stable` → lost-sight `HELD` with detail `managerUntrackedDetail`, dropped.
-   - anything else → nothing.
+   - a session in `prev` **absent from `states`** and **not** in `stable` → no record; kept (the deferred lost-sight `HELD`).
+   - anything else → nothing emitted; the membership rule above decides what the new map carries.
 
-7. `managerStableSessions(prev, pending, key []string) map[string]struct{}` — the per-session stability gate. A session is stable when its gated membership is the **same** in `pending` (the previous poll) and `key` (this poll), including a departure that is two polls old. ⚠️ **Per session, never whole-set**: a whole-set equality test withholds every session's transition while any one churns.
+7. `managerStableSessions(prev, pending, key []string) map[string]struct{}` — the per-session stability gate, and the **single definition** of `stable` that requirement 6 and prompt 4 read. A session is stable when its gated membership is the **same** in `pending` (the previous poll) and `key` (this poll), evaluated over the universe `key ∪ pending ∪ prev`:
+
+```go
+stable = { s ∈ key ∪ pending ∪ prev : (s ∈ key) == (s ∈ pending) }
+```
+
+   `prev` is in the universe on purpose: a departure is only stable once the absence is **two polls old**, and a session that has left both `key` and `pending` is still in `prev` and still owes its transition. ⚠️ **A session answered on this poll is therefore NOT stable on this poll** — it is in `pending` and not in `key` — so its `CLEARED` is **deferred** to the next pass, where it is absent from both and so stable; requirement 6's membership rule is what keeps it in `prev` until then, and that deferral is the design (the source's own predicate is `(s in key) == (s in pending)` over the same union), not a gap. ⚠️ **Per session, never whole-set**: a whole-set equality test withholds every session's transition while any one churns.
 
 8. Add the `Status` field to `sessionRegistryEntry` in `pkg/session-liveness-checker.go`:
 
@@ -203,8 +214,8 @@ and `readSessionStatuses(ctx context.Context, sessionsDir string) (map[string]st
    - `It("HeldCausesAreDistinct", ...)` — via `managerTransitions`: `unregistered` emits one `HELD` and drops membership; lost-sight emits one `HELD` with `managerUntrackedDetail` and drops; `held:busy` and `closer-unknown` emit **zero** records and keep membership (assert `len(records) == 0` for each of the two silent causes).
    - `It("BusyParkedModalIsGated", ...)` — `busy` + pending `AskUserQuestion` + frozen → gated `busy+parked-modal`; `busy` + pending `Bash` → not gated; `CloserKnown=false` does not demote the first case to held; `managerTranscriptFrozen(t, false, now, w)` is false (an unreadable mtime refuses the freeze).
    - `It("CloserAskIsNormalized", ...)` — `👤 You: &nbsp;&nbsp;&nbsp;&nbsp;nothing` is not an ask; `later (on <trigger>): …` is not an ask; `approve: …`, `pick — …`, `ack` are asks (positive control, so normalization is not refuse-all).
-   - `It("StabilityGateSuppressesChurn", ...)` — a session gated, then absent, then gated again emits neither `NEW GATE` nor `CLEARED` until two consecutive polls agree.
-   - `It("StabilityGateIsPerSession", ...)` — a set alternating `{A}` / `{A,B}`: A's own `CLEARED` is still emitted when A is answered, because B's churn must not withhold A.
+   - `It("StabilityGateSuppressesChurn", ...)` — a session gated, then absent, then gated again emits neither `NEW GATE` nor `CLEARED` until two consecutive polls agree. **Plus the deferral — the same gate read the other way, so the deferred transitions are provably reachable:** a session in `prev` that is answered on this pass (present in `pending`, absent from `key`) emits **no** `CLEARED` on that pass and is still present in the returned membership; the next pass, absent from both, emits exactly one `CLEARED`. A session in `prev` that leaves the tracked set (absent from `states`) defers its lost-sight `HELD` the same way: none on the pass it disappears, one `managerUntrackedDetail` `HELD` on the next. Both assertions are what prove requirement 6's membership rule, and both go red under the whole-set mutation.
+   - `It("StabilityGateIsPerSession", ...)` — a set alternating `{A}` / `{A,B}`: A's own `CLEARED` is still emitted on the pass after A is answered (the deferral requirement 7 defines), because B's churn must not withhold A.
 
 10. Before finishing: re-run `<verification>` and confirm each line passes; walk AC1, AC2, AC3, AC6, AC9 and AC15 against the change.
 </requirements>

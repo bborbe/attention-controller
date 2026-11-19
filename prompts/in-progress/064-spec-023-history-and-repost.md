@@ -42,12 +42,12 @@ Read before changing anything:
 // session+reason: a session already in the set never re-emits, and a body
 // change under a stable reason must.
 func managerContentKey(reason, detail string) string {
-	sum := sha1.Sum([]byte(reason + " :: " + detail))
+	sum := sha256.Sum256([]byte(reason + " :: " + detail))
 	return hex.EncodeToString(sum[:])[:16]
 }
 ```
 
-(Use `crypto/sha1` + `encoding/hex`; the truncation is the identity, not a security measure.)
+(Use `crypto/sha256` + `encoding/hex`; the truncation is the identity, not a security measure. ⚠️ **`crypto/sha256`, never `crypto/sha1`**: gosec runs via golangci-lint inside `make precommit` (`.golangci.yml` excludes only G104) and flags `crypto/sha1` under G505/G401, so a sha1 here makes the prompt's own `make precommit` verification unpassable; nothing here needs sha1 — the source's `content_key` is already `hashlib.sha256`, and the truncation is what makes the key, not the digest's strength.)
 
 2. Upgrade `managerTransitions` so `NEW GATE` is content-keyed:
    - `prev[session]` stores `managerContentKey(reason, detail)`.
@@ -94,8 +94,9 @@ func managerAgedEvents(ages map[string]managerParkAge, now libtime.DateTime, thr
 5. New file `pkg/manager-gate-state.go`:
 
 ```go
-// managerScope is the state-file scope key for one manager. sha1 of the
-// manager's session id, first 8 hex characters.
+// managerScope is the state-file scope key for one manager. sha256 of the
+// manager's session id, first 8 hex characters (sha256, not sha1 — see
+// managerContentKey; the scope is an opaque filename, never a security primitive).
 func managerScope(manager string) string
 
 // managerStatePath returns state-<scope>.json under stateDir.
@@ -208,7 +209,19 @@ type ManagerGateOutcome struct {
 func NewManagerGateTracker(stateDir string, currentDateTimeGetter libtime.CurrentDateTimeGetter) ManagerGateTracker
 ```
 
-`Observe` runs one pass: load `prev` and the park ages for `in.Manager`; on an absent or corrupt file log a warning and treat the pass as a first run: the FIRST pass writes the state and emits nothing (with `pending` empty no session is `stable`, so prompt 3's stability gate suppresses it), and the SECOND pass emits the current gated set once. ⚠️ Do not emit on the first pass — that contradicts the stability gate and would make the restart spec pass for the wrong reason; compute `gatedNow` and `parkedNow` from `in.States`; `stable := managerStableSessions(prevKeys, t.pending[manager], gatedNow)`; `records, nextPrev := managerTransitions(prev, in.States, stable)`; advance and age the park clock; append the `AGED` records; compute the re-post plan; save `nextPrev` and the ages atomically; record `gatedNow` as `t.pending[manager]`; return the outcome. Guard the tracker's in-memory `pending` map with a mutex.
+   `Observe` runs one pass, in this order:
+
+   1. Load `prev` (`managerLoadPrevState`) and the park ages for `in.Manager`. An absent file is a first run (`prev` empty); an unreadable or corrupt one logs a warning and is treated the same way.
+   2. `gatedNow` (the `ManagerGateGated` sessions, sorted) and `parkedNow` (the gated reasons in `ManagerParkedReasons`) from `in.States`.
+   3. `prior, hadPending := t.pending[in.Manager]`.
+   4. **No prior poll (`!hadPending`): emit NO transition.** `nextPrev = prev` **exactly as loaded** — no `NEW GATE`, no `CLEARED`, no `HELD`. ⚠️ Do **not** run `managerTransitions` here with an empty `stable` set and persist its result: prompt 3's membership rule keeps a loaded map intact under that call, but any version that rebuilt the map from `stable` alone would save an **empty** map on the first pass after a restart, and the next pass would then re-emit the whole gated set as `NEW GATE` — exactly the restart burst AC12 and this spec's summary forbid. Carry the loaded map through untouched; emitting on the first pass would contradict the stability gate and make the restart spec pass for the wrong reason.
+   5. **Prior poll exists (`hadPending`):** `stable := managerStableSessions(prevKeys, prior, gatedNow)`, `prevKeys` being `prev`'s session ids; `records, nextPrev := managerTransitions(prev, in.States, stable)`. A session that entered while the process was down is absent from the loaded `prev`, in both `prior` and `gatedNow`, and so stable — it re-emits as the one entered entry, and nothing else does.
+   6. Advance and age the park clock (`managerAdvanceParkAges`, then `managerAgedEvents`) on **every** pass, first one included, and append the `AGED` records: a park that crossed a threshold while the process was down must still escalate once, at its original age.
+   7. Compute the re-post plan (`managerRepostPlan`) on every pass.
+   8. Save `nextPrev` and the ages atomically — on a first run write only when `nextPrev` differs from what was loaded, so a restart with a readable state file writes nothing.
+   9. Record `gatedNow` as `t.pending[in.Manager]`; return the outcome.
+
+   Guard the tracker's in-memory `pending` map with a mutex.
 
 8. Specs (package `pkg`, one `_test.go` per concern, or one `pkg/manager-gate-history_internal_test.go`):
    - `It("NewGateIsContentKeyed", ...)` — a session held at `idle+closer` whose detail changes from `approve: …` to `pick — …` re-emits `NEW GATE`; an unchanged detail emits nothing on the second pass.
@@ -217,7 +230,7 @@ func NewManagerGateTracker(stateDir string, currentDateTimeGetter libtime.Curren
    - `It("RepostOnlyWhenNoCardOpen", ...)` — (a) parked, no open card, no answer → one request; (b) an open card (`park:<sid8>` in dedup keys, or the producer in producers) → none; (c) a permission-class reason → `AckAnswerMechanism` with `len(Options) == 0`.
    - `It("AnswerPredatingParkDoesNotSuppress", ...)` — an answered row **after** `park_since` suppresses; the same row **before** `park_since` re-posts; a nil `since` re-posts.
    - `It("StoreReadFailureSuppressesRepost", ...)` — `Open == nil` → none; `Answered == nil` → none.
-   - `It("StatePersistsAcrossRestart", ...)` — tracker A over a state dir emits `NEW GATE`s and writes the state; tracker B (new instance, same dir) over the same states emits **no** `NEW GATE`; with the state file removed tracker C re-emits once and a fourth run emits none; a park open across the restart keeps its age so its next `AGED` lands at the original age.
+   - `It("StatePersistsAcrossRestart", ...)` — tracker A over a state dir emits **nothing** on its first pass and the full `NEW GATE` set on its second, and writes the state; tracker B (new instance, same dir) over the same states emits **no** `NEW GATE` on either pass **and leaves the state file byte-identical** (a restart must not wipe the loaded set — assert the file still lists every member after B's first pass); a session that entered while the process was down re-emits exactly that one entry on B's second pass; with the state file removed tracker C re-emits the set once (on its second pass) and a fourth run emits none; a park open across the restart keeps its age so its next `AGED` lands at the original age.
    - `It("StateIsScopedPerManager", ...)` — two trackers over two different tracked sets, one state dir: after a first poll by each, neither emits a `CLEARED` for the other's sessions, and two distinct `state-<scope>.json` files exist.
 
 9. Before finishing: re-run `<verification>` and confirm each line passes; walk AC4, AC5, AC8, AC12 and AC14 against the change.
