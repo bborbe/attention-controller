@@ -10,6 +10,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 
 ## Unreleased
 
+- fix: **a card whose target pane and session are both gone is retired instead of reopened forever.** Reopening it asked the operator to type into a pane that no longer exists — "more useless attention cards". The evidence sweep now checks the target before the reopen: `targetGone` requires BOTH reads to succeed and both to say gone — the pane listing returns without error and no pane's glyph-stripped title matches the session's name, and `IsLive` is false. A nil lister, a listing error, an unresolvable session name or a non-session liveness model all answer *unprovable*, and unprovable reopens exactly as before: the pane lister's own contract is that an empty listing read successfully proves a pane is gone while a failed read proves nothing. Retirement closes with `ResolvedBy="retired: target pane and session are gone"` and a `retired: …` context line. Opt-in via `WithPaneLister` + `WithSessionsDir`.
 - fix: **a card that reopens repeatedly shows one counted line instead of N identical ones.** The evidence-deadline reopen appended `reopened: the work this answer claimed was not observed before the evidence deadline` on every bounce, so the "Verify the Two Attention-Delivery Fixes" card carried 34 identical lines in its subtitle. `appendEvidenceNote` now replaces that line with `reopened ×N, last HH:MM`, counting the legacy bare note as one reopen and preserving every unrelated context line.
 
 ## v0.103.0

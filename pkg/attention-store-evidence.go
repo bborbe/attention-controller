@@ -175,6 +175,13 @@ func (a *attentionStore) applyEvidenceVerdict(
 	if item.EvidenceDeadline == nil || now.Before(*item.EvidenceDeadline) {
 		return false, nil
 	}
+	// ⚠️ A card whose target pane AND session are both provably gone is retired,
+	// not reopened. Reopening it puts a question on the board whose only action
+	// is "type into a pane that no longer exists" — the operator's "more useless
+	// attention cards". Unprovable is NOT gone: see targetGone.
+	if a.targetGone(ctx, item) {
+		return a.retireDeadTarget(ctx, tx, item, now)
+	}
 	// The claim was never observed in time. The card goes back on the board with
 	// the claim intact and a note saying why, because an answer nobody can
 	// verify is a question the operator still has to settle.
@@ -235,6 +242,80 @@ func (a *attentionStore) awaitingEvidenceKeys(
 		return nil, errors.Wrap(ctx, err, "scan live index for awaiting evidence failed")
 	}
 	return keys, nil
+}
+
+// RetiredNote is appended to a card closed because its target is gone, so the
+// board's history says why it will not come back.
+const RetiredNote = "retired: the pane and session this card was waiting on are both gone"
+
+// targetGone reports whether the item's target pane and session are BOTH
+// provably gone.
+//
+// ⚠️ Every read must SUCCEED for this to answer true, and that asymmetry is the
+// whole rule. The pane lister's own contract draws it: an empty listing read
+// successfully proves a recorded pane is gone, while a failed read proves
+// nothing. So a nil lister, a listing error, an unresolvable session name, or a
+// non-session liveness model all answer "unprovable" — and unprovable reopens
+// exactly as before. Retiring on a failed read would delete a live question.
+func (a *attentionStore) targetGone(ctx context.Context, item *Item) bool {
+	if a.paneLister == nil || a.sessionsDir == "" {
+		return false
+	}
+	model, sessionID, err := item.LivenessRef.Parse(ctx)
+	if err != nil || model != SessionLivenessModel {
+		// `owner:` is deliberately always-live, and `heartbeat:` has its own
+		// clock — neither is a pane target.
+		return false
+	}
+	if a.sessionLivenessChecker.IsLive(ctx, sessionID) {
+		return false
+	}
+	names, err := readSessionNamesWithError(ctx, a.sessionsDir)
+	if err != nil {
+		return false
+	}
+	record, ok := names[sessionID]
+	if !ok || record.Name == "" {
+		return false
+	}
+	panes, err := a.paneLister.List(ctx)
+	if err != nil {
+		return false
+	}
+	for paneID := range panes {
+		if OwnsPane(panes, paneID, record.Name) {
+			return false
+		}
+	}
+	return true
+}
+
+// retireDeadTarget closes a card whose target is gone, instead of reopening it.
+func (a *attentionStore) retireDeadTarget(
+	ctx context.Context,
+	tx libkv.Tx,
+	item *Item,
+	now libtime.DateTime,
+) (bool, error) {
+	closedAt := now
+	item.State = ClosedState
+	item.ClosedAt = &closedAt
+	item.EvidenceDeadline = nil
+	item.ResolvedBy = "retired: target pane and session are gone"
+	item.Context = ItemContext(appendNote(string(item.Context), RetiredNote))
+	if err := a.putItem(ctx, tx, *item); err != nil {
+		return false, errors.Wrap(ctx, err, "retire dead-target item failed")
+	}
+	return true, nil
+}
+
+// appendNote appends one line to an item's context, keeping an empty note empty
+// rather than starting it with a newline.
+func appendNote(note string, line string) string {
+	if note == "" {
+		return line
+	}
+	return note + "\n" + line
 }
 
 // evidenceNotePrefix opens the one line a reopen leaves behind.

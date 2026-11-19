@@ -115,6 +115,38 @@ func (o expiryCloseOption) applyAttentionStoreOption(store *attentionStore) {
 	}
 }
 
+// WithPaneLister attaches the pane listing the evidence sweep reads before it
+// reopens a card whose target may be gone.
+func WithPaneLister(lister PaneLister) AttentionStoreOption {
+	return paneListerOption{lister: lister}
+}
+
+type paneListerOption struct {
+	lister PaneLister
+}
+
+func (o paneListerOption) applyAttentionStoreOption(store *attentionStore) {
+	if store.paneLister == nil {
+		store.paneLister = o.lister
+	}
+}
+
+// WithSessionsDir attaches the session registry the sweep reads to turn a
+// session id into the name a pane title carries.
+func WithSessionsDir(dir string) AttentionStoreOption {
+	return sessionsDirOption{dir: dir}
+}
+
+type sessionsDirOption struct {
+	dir string
+}
+
+func (o sessionsDirOption) applyAttentionStoreOption(store *attentionStore) {
+	if store.sessionsDir == "" {
+		store.sessionsDir = o.dir
+	}
+}
+
 type attentionStore struct {
 	store                  libkv.StoreTx[string, Item]
 	liveIndex              libkv.StoreTx[string, Item]
@@ -144,6 +176,14 @@ type attentionStore struct {
 	// the store was built without one, in which case a prune still deletes the
 	// row and simply writes no event — the pre-fix behaviour.
 	expiryCloseWriter ExpiryCloseWriter
+	// paneLister resolves the panes on this host, so a reopen can tell whether
+	// the card's target pane still exists. Nil means the question cannot be
+	// asked, and a reopen then behaves exactly as it did before this field.
+	paneLister PaneLister
+	// sessionsDir is the Claude Code session registry, read only to turn a
+	// session id into the name a pane title is compared against. Empty means
+	// the name cannot be resolved, which is treated as unprovable.
+	sessionsDir string
 }
 
 func (a *attentionStore) Push(ctx context.Context, request PushRequest) (*Item, error) {
