@@ -1455,6 +1455,10 @@ var _ = Describe("AttentionStore", func() {
 			Expect(board[0].State).To(Equal(pkg.OpenState))
 		})
 
+		// ⚠️ The synthetic-probe specs live in attention-store-probe_test.go:
+		// this file is at its 2000-line lint ceiling, and those cases need their
+		// own fixture set anyway. See docs/probe-tag.md.
+
 		// The `closed` item leaves the queue and the card leaves with it, in both
 		// readers. The pair is a table because the rule is about the readers, not
 		// about either one alone.
