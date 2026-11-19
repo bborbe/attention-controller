@@ -330,6 +330,25 @@ var _ = Describe("attention watcher delivery job", func() {
 			"a headless delivery of a held card must settle it")
 	})
 
+	It("settles a delivered-but-open held card past the bound", func() {
+		// The arm can record `delivered` and die before settling. Without settling
+		// here the card is skipped every tick and stays open forever.
+		held := answeredItem("item-1", "operator", pkg.Decision("allow"))
+		held.State = pkg.OpenState
+		old := libtime.DateTime(time.Now().Add(-10 * time.Minute))
+		held.AnsweredAt = &old
+		store.ReadBoardReturns(pkg.Items{held}, nil)
+		store.DeliveryReportsReturns(map[pkg.ItemID]*pkg.DeliveryReport{
+			"item-1": {ItemID: "item-1", Status: pkg.DeliveredStatus},
+		}, nil)
+		store.DeliveryReturns(&pkg.DeliveryReport{
+			ItemID: pkg.ItemID("item-1"), Status: pkg.DeliveredStatus,
+		}, nil)
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+		Expect(store.SettleAnswerCallCount()).To(Equal(1),
+			"a delivered-but-open card must settle, not be skipped forever")
+	})
+
 	It("keeps the pane path for a tab session", func() {
 		// A tab session's answer still goes through the carrier: the headless arm
 		// must not take a card that has a pane.

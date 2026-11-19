@@ -181,6 +181,35 @@ var _ = Describe("Answer hold", func() {
 		Expect(got.State).To(Equal(pkg.OpenState), "a held card must not be closed as a redundant re-raise")
 	})
 
+	It("keeps a held card on the board even past its own expires_at", func() {
+		past := libtime.DateTime(time.Now().Add(-1 * time.Hour))
+		item, err := store.Push(ctx, pkg.PushRequest{
+			ProducerID:      "session-a",
+			ProducerKind:    pkg.SessionProducerKind,
+			LivenessRef:     pkg.LivenessRef("session:session-a"),
+			DedupKey:        "hold-expiry",
+			InterruptClass:  "approve",
+			Payload:         "deploy prod?",
+			AnswerMechanism: pkg.PermissionAnswerMechanism,
+			ExpiresAt:       &past,
+		})
+		Expect(err).To(BeNil())
+		answer(item)
+
+		// The expiry prune must not drop a held card before the watcher closes it with
+		// the undeliverable marker; otherwise a producer TTL shorter than the bound
+		// would strand the card with no marker.
+		board, err := store.ReadBoard(ctx)
+		Expect(err).To(BeNil())
+		found := false
+		for _, row := range board {
+			if row.ItemID == item.ItemID {
+				found = true
+			}
+		}
+		Expect(found).To(BeTrue(), "a held card must not be pruned past expires_at")
+	})
+
 	It("keeps a held card in the board's open set", func() {
 		item := push()
 		answer(item)

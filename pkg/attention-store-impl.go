@@ -363,6 +363,15 @@ func classifyForRead(
 	if item.State != OpenState {
 		return readDisposition{}
 	}
+	// ⚠️ A HELD card (open + AnsweredAt != nil) is kept even past expires_at: it is
+	// the answered card the hold keeps open until delivery, and the watcher closes
+	// it with the undeliverable marker past AttentionDeliveryBound. Pruning it here
+	// would drop it silently with no marker, so the expiry rule does not apply to a
+	// held card. (The default 24 h expiry already outlasts the 5 min bound; this
+	// guard covers a producer-declared expires_at shorter than the bound.)
+	if item.AnsweredAt != nil {
+		return readDisposition{keep: true}
+	}
 	if isExpired(&item, now) {
 		glog.V(2).
 			Infof("removing item %s: expires_at %s has passed", item.ItemID, effectiveExpiresAt(&item).Time())

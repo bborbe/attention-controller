@@ -264,6 +264,10 @@ func (j *attentionWatcherJob) closeOverdueHeld(ctx context.Context, items Items)
 			continue
 		}
 		if report != nil && report.Status == DeliveredStatus {
+			// ⚠️ Delivered but still OPEN: the arm recorded delivery but did not
+			// settle (it can die between the two writes). Settle now so the card
+			// leaves the open set instead of being skipped here forever.
+			j.settleAnswer(ctx, item)
 			continue
 		}
 		j.markUndeliverableIfOverdue(ctx, item, report, "delivery bound exceeded")
