@@ -115,6 +115,38 @@ func (o expiryCloseOption) applyAttentionStoreOption(store *attentionStore) {
 	}
 }
 
+// WithPaneLister attaches the pane listing the evidence sweep reads before it
+// reopens a card whose target may be gone.
+func WithPaneLister(lister PaneLister) AttentionStoreOption {
+	return paneListerOption{lister: lister}
+}
+
+type paneListerOption struct {
+	lister PaneLister
+}
+
+func (o paneListerOption) applyAttentionStoreOption(store *attentionStore) {
+	if store.paneLister == nil {
+		store.paneLister = o.lister
+	}
+}
+
+// WithSessionPaneLookup attaches the resolver the sweep reads to turn a session
+// id into the pane id and label it was spawned with.
+func WithSessionPaneLookup(lookup SessionPaneLookup) AttentionStoreOption {
+	return sessionPaneLookupOption{lookup: lookup}
+}
+
+type sessionPaneLookupOption struct {
+	lookup SessionPaneLookup
+}
+
+func (o sessionPaneLookupOption) applyAttentionStoreOption(store *attentionStore) {
+	if store.sessionPaneLookup == nil {
+		store.sessionPaneLookup = o.lookup
+	}
+}
+
 type attentionStore struct {
 	store                  libkv.StoreTx[string, Item]
 	liveIndex              libkv.StoreTx[string, Item]
@@ -144,6 +176,19 @@ type attentionStore struct {
 	// the store was built without one, in which case a prune still deletes the
 	// row and simply writes no event — the pre-fix behaviour.
 	expiryCloseWriter ExpiryCloseWriter
+	// paneLister resolves the panes on this host, so a reopen can tell whether
+	// the card's target pane still exists. Nil means the question cannot be
+	// asked, and a reopen then behaves exactly as it did before this field.
+	paneLister PaneLister
+	// sessionPaneLookup resolves the pane a session was spawned in. Nil means
+	// the question cannot be asked, and a reopen then behaves as before.
+	//
+	// ⚠️ It reads the LIVE session-ledger store, never the retired file-backed
+	// spawn directory (`~/.local/state/claude-supervisor/sessions` holds no row
+	// after 2026-10-14) and never the Claude Code session registry (which
+	// deletes an entry on exit, so a dead session's name is gone exactly when
+	// this question is asked).
+	sessionPaneLookup SessionPaneLookup
 }
 
 func (a *attentionStore) Push(ctx context.Context, request PushRequest) (*Item, error) {
