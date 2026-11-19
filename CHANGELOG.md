@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.103.0
 
 - feat: **a parked permission gate's answer is delivered by a stream subscription instead of a 2 s poll.** The `PermissionRequest` hook is now a Go binary in this repo at `cmd/permission-answer-hook/`, replacing `permission-answer-poll.py` — installed by the same `install-bin` recipe as the service, at `~/.local/bin/attention-controller-permission-answer-hook`. It resolves its session's card in a bounded window, opens exactly one `/api/1.0/attention/stream` subscription, reads the item once after the baseline and once per matching event, and never reads the list again. All six guards from the task's guard table survive (state/decision/resolved-by, first-answer-wins, the kill switch, the headless skip, `deny` never inferred, the terminal timeout line) plus the four selection guards (permission-class only, the ambiguity refusal, the `expect` payload prefix and `not_before`); an in-pane answer is recognised from the producer's state file and the hook exits without racing it; the delivery-attempt record the tab path's `received_at` reads is written after the decision; and the stdout contract is byte-identical, proven by golden fixtures. The `pgrep … permission-answer-poll.py` count reaches zero only once `bborbe/claude-supervisor` repoints its `PermissionRequest` hook at the new binary.
 
