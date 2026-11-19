@@ -82,7 +82,20 @@ var _ = Describe("AttentionStore lost-answer counter", func() {
 
 	answer := func(producer pkg.ProducerID, dedup pkg.DedupKey) pkg.ItemID {
 		id := push(producer, dedup)
-		_, err := store.Answer(ctx, id, "arm", "session", pkg.Decision(""), nil, nil, nil)
+		// ⚠️ The answer must carry something to deliver. An empty answer is the
+		// nothing-to-deliver shape, excluded from the count by
+		// answerCarriesDelivery, so answering empty here would make every spec
+		// pass for the wrong reason.
+		_, err := store.Answer(
+			ctx,
+			id,
+			"arm",
+			"session",
+			pkg.Decision(""),
+			&pkg.Answer{Kind: pkg.OptionAnswerKind, Value: "Yes"},
+			nil,
+			nil,
+		)
 		Expect(err).To(BeNil())
 		return id
 	}
