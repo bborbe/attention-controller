@@ -442,6 +442,16 @@ func (j *attentionWatcherJob) deliver(
 		// `resolved`: the gate was already gone — nothing left to deliver. It is
 		// still counted and still parked at the threshold, because a verdict that
 		// never resolves is the same hot loop under another name.
+		//
+		// ⚠️ It is also RECORDED, because the arm DID look. Without a record the
+		// card closed carrying nothing but the close's own `watcher:gate-resolved`
+		// backfill, and `countLostAnswer` read that as an answer no arm ever picked
+		// up — so a cleared gate was counted as a lost answer. `held` is the honest
+		// outcome (nothing went wrong; there was nothing left to deliver) and it is
+		// the outcome the menu arm writes for this same verdict, so the two arms do
+		// not disagree about what `resolved` means. Measured 2026-11-19: two live
+		// closes, 3a5a4ab9… and f3a96f81….
+		j.recordAttempt(ctx, item, HeldOutcome)
 		j.maybePark(ctx, item, count, verdict, reason)
 	}
 }

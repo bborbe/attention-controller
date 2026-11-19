@@ -157,6 +157,31 @@ var _ = Describe("attention watcher delivery job", func() {
 		Expect(store.RecordAttemptCallCount()).To(Equal(1))
 	})
 
+	It(
+		"records the resolved verdict as a held attempt so a cleared gate is not counted lost",
+		func() {
+			// ⚠️ The defect this pins: the prose arm's `resolved` branch — the gate was
+			// already gone when the arm looked — recorded nothing, while the menu arm
+			// records `held` for the same verdict (`menu-answer.go` case
+			// DeliveryResolved). An answered card whose only verdict was `resolved` then
+			// closed with just the close's `watcher:gate-resolved` backfill, so
+			// `countLostAnswer` counted a look as a loss. Measured 2026-11-19: two live
+			// closes, 3a5a4ab9… and f3a96f81….
+			carrier.verdict = pkg.DeliveryResolved
+			store.ReadBoardReturns(pkg.Items{
+				answeredItem("item-1", "operator", pkg.Decision("allow")),
+			}, nil)
+			Expect(job.DeliverOnce(context.Background())).To(Succeed())
+
+			Expect(store.RecordAttemptCallCount()).To(Equal(1))
+			_, _, attemptCarrier, outcome := store.RecordAttemptArgsForCall(0)
+			Expect(outcome).To(Equal(pkg.HeldOutcome),
+				"a resolved verdict is an arm that looked — not a failure, and not silence")
+			Expect(attemptCarrier).To(Equal("watcher:attention-watcher"),
+				"the record must be the arm's own carrier, not the close's backfill")
+		},
+	)
+
 	It("skips an open card", func() {
 		item := answeredItem("item-1", "operator", pkg.Decision("allow"))
 		item.State = pkg.OpenState
