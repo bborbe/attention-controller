@@ -34,24 +34,7 @@ type historyMatcher struct {
 func newHistoryMatcher(filters []HistoryFilter) historyMatcher {
 	m := historyMatcher{}
 	for _, f := range filters {
-		for _, p := range f.Producers {
-			if p == "" {
-				continue
-			}
-			if m.ids == nil {
-				m.ids = map[ProducerID]struct{}{}
-			}
-			if _, seen := m.ids[p]; seen {
-				continue
-			}
-			m.ids[p] = struct{}{}
-			if value, err := json.Marshal(string(p)); err == nil {
-				m.producerNeedles = append(
-					m.producerNeedles,
-					append([]byte(`"producer_id":`), value...),
-				)
-			}
-		}
+		m.addProducers(f.Producers)
 		if f.DedupKeyPrefix != "" {
 			m.prefix = f.DedupKeyPrefix
 		}
@@ -59,12 +42,47 @@ func newHistoryMatcher(filters []HistoryFilter) historyMatcher {
 			m.ratedOnly = true
 		}
 	}
-	if m.prefix != "" {
-		if value, err := json.Marshal(string(m.prefix)); err == nil {
-			m.prefixNeedle = append([]byte(`"dedup_key":`), value[:len(value)-1]...)
+	m.prefixNeedle = dedupKeyPrefixNeedle(m.prefix)
+	return m
+}
+
+// addProducers folds one filter's producer ids into the matcher, skipping an
+// empty id (it would match every item whose producer declared none) and a
+// duplicate. Split out of newHistoryMatcher for the same reason the store's walk
+// was split from its bounds: the loop is one rule, and the merged function's
+// cognitive budget is spent on the filter merge.
+func (m *historyMatcher) addProducers(producers []ProducerID) {
+	for _, p := range producers {
+		if p == "" {
+			continue
+		}
+		if m.ids == nil {
+			m.ids = map[ProducerID]struct{}{}
+		}
+		if _, seen := m.ids[p]; seen {
+			continue
+		}
+		m.ids[p] = struct{}{}
+		if value, err := json.Marshal(string(p)); err == nil {
+			m.producerNeedles = append(
+				m.producerNeedles,
+				append([]byte(`"producer_id":`), value...),
+			)
 		}
 	}
-	return m
+}
+
+// dedupKeyPrefixNeedle is the marshalled prefix with its closing quote removed,
+// so it matches any value that STARTS with the prefix.
+func dedupKeyPrefixNeedle(prefix DedupKey) []byte {
+	if prefix == "" {
+		return nil
+	}
+	value, err := json.Marshal(string(prefix))
+	if err != nil {
+		return nil
+	}
+	return append([]byte(`"dedup_key":`), value[:len(value)-1]...)
 }
 
 // mayMatch reports whether the raw entry could pass every set filter. It can
