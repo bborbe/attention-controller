@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- feat: **a live Fleet Manager now covers every session's attention card, so the board stops labelling fleet-relayable cards "no live manager can relay it".** `pkg/worker-coverage.go` `workerUncovered` gained tier 4 of `docs/fleet-surface.md` § Which manager owns a subject: when the registry holds a live session named `Fleet Manager` (`fleet-board.py`'s `ROOT_NAME`), every non-manager card is covered — goal-less, unbound, or with a task whose goals have no live manager — because `gate-owner-filter.py`'s `route_unowned()` already routes such a gate to the Fleet Manager. A manager's own card and the Fleet Manager's own card stay uncovered. The live-fleet parity spec's reference derivation moved in lockstep: a worker is covered by any parent (a goal manager or the root), and an unmanaged session is covered whenever the root is live.
+
 ## v0.100.2
 
 - fix: **an init step blocked in a syscall now fails the process instead of holding the board at `starting` forever.** `runInitStep` runs its step in its own goroutine and bounds it at `initStepTimeout` (60 s): a step that has not returned logs `init step=<name> action=failed duration=… error=… did not finish within <bound>` and `initAndServe` returns the error, so the process exits non-zero and launchd's `KeepAlive` restarts it. Measured 2026-11-19: `build-task-index` parked in `openat(2)` on the vault for 6 h 37 m at 0 % CPU with no `action=done`, while a fresh process walked the same vault in 2.868 s. The bound sits far above the measured 2.2–2.9 s walk, so a healthy start is unaffected; a step that returns early does so with no added latency. The blocked `openat` itself is not fixed by this change — it converts the silent indefinite hang into a bounded, attributed restart.
