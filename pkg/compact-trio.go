@@ -172,7 +172,11 @@ func (j *compactTrioJob) Run(ctx context.Context) error {
 
 // AdvanceOnce advances every live sequence by at most one step.
 func (j *compactTrioJob) AdvanceOnce(ctx context.Context) error {
-	items, err := j.store.ReadBoard(ctx)
+	// ⚠️ Bounded like the delivery arm's own board read: this runs on a 2 s tick
+	// and a store that stalls would otherwise hold the whole trio behind it.
+	readCtx, cancel := context.WithTimeout(ctx, storeReadTimeout)
+	defer cancel()
+	items, err := j.store.ReadBoard(readCtx)
 	if err != nil {
 		return errors.Wrap(ctx, err, "read board failed")
 	}

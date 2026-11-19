@@ -137,6 +137,19 @@ type transcriptReader struct {
 
 	mu    sync.Mutex
 	cache map[string]*transcriptAbsence
+	// boundaries caches one count per transcript path, keyed on (size, mtime).
+	// ⚠️ The trio polls its gate every 2 s for up to 600 s while `/compact`
+	// runs, and a transcript measured at 675 MB would otherwise be re-read
+	// hundreds of times. An append changes both size and mtime, so a stale count
+	// can never mask the boundary the gate is waiting for.
+	boundaries map[string]transcriptBoundaryCount
+}
+
+// transcriptBoundaryCount is one cached count and the file state it describes.
+type transcriptBoundaryCount struct {
+	size  int64
+	mtime time.Time
+	count int
 }
 
 // transcriptAbsence is the proof, for ONE transcript path, that a set of lines
@@ -217,16 +230,55 @@ const compactionBoundaryMarker = "compact_boundary"
 // from a partial file would read "a new boundary appeared" on the first poll
 // after any window slide. The file is read once per gate poll, and the gate
 // stops polling the moment the count moves.
+//
+// ⚠️ The count is CACHED against (size, mtime). The trio asks this every 2 s for
+// up to ten minutes; on a 675 MB transcript an uncached read would be a
+// multi-hundred-megabyte scan per poll. An append moves both fields, so the
+// cache can never hide the boundary being waited for.
 func (r *transcriptReader) CompactionBoundaries(sessionID string) (int, bool) {
 	path := r.Path(sessionID)
 	if path == "" {
 		return 0, false
 	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0, false
+	}
+	if cached, ok := r.cachedBoundaries(path, info); ok {
+		return cached, true
+	}
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return 0, false
 	}
-	return bytes.Count(content, []byte(compactionBoundaryMarker)), true
+	count := bytes.Count(content, []byte(compactionBoundaryMarker))
+	r.rememberBoundaries(path, info, count)
+	return count, true
+}
+
+// cachedBoundaries returns the cached count for exactly this file state.
+func (r *transcriptReader) cachedBoundaries(path string, info os.FileInfo) (int, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cached, ok := r.boundaries[path]
+	if !ok || cached.size != info.Size() || !cached.mtime.Equal(info.ModTime()) {
+		return 0, false
+	}
+	return cached.count, true
+}
+
+// rememberBoundaries stores one count against the file state it was taken at.
+func (r *transcriptReader) rememberBoundaries(path string, info os.FileInfo, count int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.boundaries == nil {
+		r.boundaries = map[string]transcriptBoundaryCount{}
+	}
+	r.boundaries[path] = transcriptBoundaryCount{
+		size:  info.Size(),
+		mtime: info.ModTime(),
+		count: count,
+	}
 }
 
 // HoldsLine reports whether the transcript carries line as a delivered message.
