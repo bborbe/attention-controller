@@ -86,6 +86,11 @@ type PaneDelivery struct {
 	HasPendingAt bool
 	// BoundText is the answer text the delivery clock was started for.
 	BoundText string
+	// Answerer is whose answer the text is. A manager's answer is typed in its
+	// own voice — ManagerAnswerPrefix, never the operator's deliverPrefix — so
+	// the worker is never told the operator answered when a manager did. Empty
+	// renders as the operator's, as every delivery before this field did.
+	Answerer Answerer
 }
 
 // PaneCarrier types an answer into a session's pane and proves it landed.
@@ -213,6 +218,9 @@ func (c *paneCarrier) renderLine(delivery *PaneDelivery, text string, bare bool)
 		return strings.NewReplacer("\r", " ", "\n", " ").Replace(text)
 	}
 	line := deliverPrefix + " " + text + " [" + delivery.StoreItemID + "]"
+	if delivery.Answerer == ManagerAnswerer {
+		line = ManagerAnswerText(text) + " [" + delivery.StoreItemID + "]"
+	}
 	return strings.NewReplacer("\r", " ", "\n", " / ").Replace(line)
 }
 
