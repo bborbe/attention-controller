@@ -50,7 +50,6 @@ const (
 	attemptCarrier = "supervisor:permission-answer-poll"
 	// notBeforeTolerance widens the hook's start time so a card created a moment
 	// before it is not mistaken for a stale one.
-	//nolint:unused // consumed by the selection guards in a later step.
 	notBeforeTolerance = 5 * time.Second
 	// resolveRetryInterval paces the bounded resolve window.
 	//nolint:unused // consumed by the settle loop in a later step.
@@ -380,6 +379,69 @@ func permissionVerdict(item *pkg.Item) (pkg.Decision, string) {
 	return item.Decision, ""
 }
 
+// selectItem returns the one card this hook invocation answers, or a zero item
+// and a reason naming why no single card could be chosen.
+//
+// notBefore is when this hook invocation started; a card created before
+// notBefore minus notBeforeTolerance is from an earlier gate and is refused.
+// expect is the "<tool>: <detail>" prefix from the stdin payload, or "" when
+// the invocation carried none.
+//
+// ⚠️ More than one survivor settles nothing: an in-pane approval can leave its
+// store card open, and answering THIS gate under that card's subject is the
+// failure the ambiguity refusal exists to prevent. The newest card is never
+// evidence that it is the right one.
+func selectItem(
+	items pkg.Items,
+	producerID string,
+	expect string,
+	notBefore time.Time,
+) (pkg.Item, string) {
+	earliest := notBefore.Add(-notBeforeTolerance)
+	candidates := make([]pkg.Item, 0, len(items))
+	for _, item := range items {
+		if isSelectionCandidate(item, pkg.ProducerID(producerID), expect, earliest) {
+			candidates = append(candidates, item)
+		}
+	}
+	switch len(candidates) {
+	case 1:
+		return candidates[0], ""
+	case 0:
+		return pkg.Item{}, "no matching permission item found for producer " + producerID
+	default:
+		return pkg.Item{}, fmt.Sprintf(
+			"ambiguous: %d permission items match producer %s",
+			len(candidates),
+			producerID,
+		)
+	}
+}
+
+// isSelectionCandidate reports whether the item survives all four selection
+// guards, applied in order: permission class, producer, the expect prefix and
+// the not-before instant.
+//
+// An empty expect leaves the prefix guard inactive — that is the --session-id
+// re-run path, which carries no prefix, and it must not become a refuse-all.
+func isSelectionCandidate(
+	item pkg.Item,
+	producerID pkg.ProducerID,
+	expect string,
+	earliest time.Time,
+) bool {
+	if item.AnswerMechanism != pkg.PermissionAnswerMechanism {
+		return false
+	}
+	if item.ProducerID != producerID {
+		return false
+	}
+	if expect != "" && !strings.HasPrefix(string(item.Payload), expect) {
+		return false
+	}
+	return !item.CreatedAt.Time().Before(earliest)
+}
+
 // skipBeforeConnect reports whether the hook must exit before opening any
 // connection, and the reason to print.
 func skipBeforeConnect(getenv func(string) string) (bool, string) {
@@ -418,6 +480,24 @@ func run(ctx context.Context, opts hookOptions) error {
 		fmt.Fprintln(opts.Stderr, "permission-answer-hook: "+reason)
 		return nil
 	}
+	// One list read, before anything else touches the store: the bounded retry
+	// and the subscription belong to a later step.
+	notBefore := opts.Clock.Now()
+	items, listErr := opts.Client.List(ctx)
+	if listErr != nil {
+		// Fail-open: a non-zero exit or a blocked gate is worse than no answer.
+		wrapped := errors.Wrapf(ctx, listErr, "list attention items failed")
+		fmt.Fprintln(opts.Stderr, "permission-answer-hook: "+wrapped.Error())
+		return nil
+	}
+	item, selectReason := selectItem(items, input.SessionID, input.Expect, notBefore)
+	if selectReason != "" {
+		fmt.Fprintln(opts.Stderr, "permission-answer-hook: "+selectReason)
+		return nil
+	}
+	// The decision and its stdout contract land in a later step; the selected
+	// item is carried no further than this variable for now.
+	glog.V(2).Infof("permission-answer-hook selected item %s", item.ItemID)
 	return nil
 }
 

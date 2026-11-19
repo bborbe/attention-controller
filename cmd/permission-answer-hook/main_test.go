@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	libtime "github.com/bborbe/time"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -340,6 +341,150 @@ var _ = Describe("TestHeadlessWorkerSkipped", func() {
 			})
 			Expect(skip).To(BeFalse(), "value %q must not be headless", value)
 		}
+	})
+})
+
+// selectionNotBefore is the fixed instant every selection spec treats as the
+// hook's start. Fixed, never a live clock, so each case names its own gap.
+var selectionNotBefore = time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC)
+
+// newItemFixture builds a pkg.Item with every field Item.Validate requires
+// populated, so a case overrides only the fields it cares about.
+func newItemFixture(mutate func(*pkg.Item)) pkg.Item {
+	item := pkg.Item{
+		ItemID:          pkg.ItemID("item-1"),
+		ProducerID:      pkg.ProducerID("session-1"),
+		ProducerKind:    pkg.SessionProducerKind,
+		LivenessRef:     pkg.LivenessRef("session:session-1"),
+		DedupKey:        pkg.DedupKey("dedup-1"),
+		InterruptClass:  pkg.InterruptClass("approve"),
+		Payload:         pkg.Payload("Write: /tmp/w.txt — create the file"),
+		AnswerMechanism: pkg.PermissionAnswerMechanism,
+		State:           pkg.OpenState,
+		CreatedAt:       libtime.DateTime(selectionNotBefore),
+	}
+	if mutate != nil {
+		mutate(&item)
+	}
+	return item
+}
+
+var _ = Describe("TestPermissionClassOnly", func() {
+	It("TestPermissionClassOnly refuses a message-class card for the session", func() {
+		item := newItemFixture(func(i *pkg.Item) {
+			i.AnswerMechanism = pkg.MessageAnswerMechanism
+		})
+		selected, reason := selectItem(
+			pkg.Items{item}, "session-1", "Write: /tmp/w.txt", selectionNotBefore,
+		)
+		Expect(selected.ItemID).To(BeEmpty())
+		Expect(reason).ToNot(BeEmpty())
+	})
+
+	It("TestPermissionClassOnly selects the same card once it is permission-class", func() {
+		item := newItemFixture(nil)
+		selected, reason := selectItem(
+			pkg.Items{item}, "session-1", "Write: /tmp/w.txt", selectionNotBefore,
+		)
+		Expect(reason).To(BeEmpty())
+		Expect(selected.ItemID).To(Equal(pkg.ItemID("item-1")))
+	})
+})
+
+var _ = Describe("TestTwoPermissionCardsAreAmbiguous", func() {
+	twoCards := func() pkg.Items {
+		return pkg.Items{
+			newItemFixture(func(i *pkg.Item) { i.DedupKey = pkg.DedupKey("dedup-1") }),
+			newItemFixture(func(i *pkg.Item) {
+				i.ItemID = pkg.ItemID("item-2")
+				i.DedupKey = pkg.DedupKey("dedup-2")
+			}),
+		}
+	}
+
+	It("TestTwoPermissionCardsAreAmbiguous settles neither card", func() {
+		selected, reason := selectItem(
+			twoCards(), "session-1", "Write: /tmp/w.txt", selectionNotBefore,
+		)
+		Expect(selected.ItemID).To(BeEmpty())
+		Expect(reason).To(ContainSubstring("ambiguous"))
+		Expect(reason).To(ContainSubstring("2"))
+	})
+
+	It("TestTwoPermissionCardsAreAmbiguous selects the survivor once one is dropped", func() {
+		selected, reason := selectItem(
+			twoCards()[:1], "session-1", "Write: /tmp/w.txt", selectionNotBefore,
+		)
+		Expect(reason).To(BeEmpty())
+		Expect(selected.ItemID).To(Equal(pkg.ItemID("item-1")))
+	})
+})
+
+var _ = Describe("TestStaleCardForAnotherGateIsRefused", func() {
+	It("TestStaleCardForAnotherGateIsRefused refuses a payload from another gate", func() {
+		item := newItemFixture(func(i *pkg.Item) {
+			i.Payload = pkg.Payload("Bash: rm -rf /tmp/x")
+		})
+		selected, reason := selectItem(
+			pkg.Items{item}, "session-1", "Write: /tmp/w.txt", selectionNotBefore,
+		)
+		Expect(selected.ItemID).To(BeEmpty())
+		Expect(reason).ToNot(BeEmpty())
+	})
+
+	It("TestStaleCardForAnotherGateIsRefused selects a payload carrying the prefix", func() {
+		item := newItemFixture(nil)
+		selected, reason := selectItem(
+			pkg.Items{item}, "session-1", "Write: /tmp/w.txt", selectionNotBefore,
+		)
+		Expect(reason).To(BeEmpty())
+		Expect(selected.ItemID).To(Equal(pkg.ItemID("item-1")))
+	})
+
+	It("TestStaleCardForAnotherGateIsRefused is inactive when no prefix was carried", func() {
+		item := newItemFixture(func(i *pkg.Item) {
+			i.Payload = pkg.Payload("Bash: rm -rf /tmp/x")
+		})
+		selected, reason := selectItem(pkg.Items{item}, "session-1", "", selectionNotBefore)
+		Expect(reason).To(BeEmpty())
+		Expect(selected.ItemID).To(Equal(pkg.ItemID("item-1")))
+	})
+})
+
+var _ = Describe("TestCardOlderThanTheHookIsRefused", func() {
+	It("TestCardOlderThanTheHookIsRefused refuses a card from 30s before the hook", func() {
+		item := newItemFixture(func(i *pkg.Item) {
+			i.CreatedAt = libtime.DateTime(selectionNotBefore.Add(-30 * time.Second))
+		})
+		selected, reason := selectItem(
+			pkg.Items{item}, "session-1", "Write: /tmp/w.txt", selectionNotBefore,
+		)
+		Expect(selected.ItemID).To(BeEmpty())
+		Expect(reason).ToNot(BeEmpty())
+	})
+
+	It("TestCardOlderThanTheHookIsRefused selects a card exactly at the tolerance", func() {
+		item := newItemFixture(func(i *pkg.Item) {
+			i.CreatedAt = libtime.DateTime(selectionNotBefore.Add(-notBeforeTolerance))
+		})
+		selected, reason := selectItem(
+			pkg.Items{item}, "session-1", "Write: /tmp/w.txt", selectionNotBefore,
+		)
+		Expect(reason).To(BeEmpty())
+		Expect(selected.ItemID).To(Equal(pkg.ItemID("item-1")))
+	})
+
+	It("TestCardOlderThanTheHookIsRefused refuses a card one second past the tolerance", func() {
+		item := newItemFixture(func(i *pkg.Item) {
+			i.CreatedAt = libtime.DateTime(
+				selectionNotBefore.Add(-notBeforeTolerance - time.Second),
+			)
+		})
+		selected, reason := selectItem(
+			pkg.Items{item}, "session-1", "Write: /tmp/w.txt", selectionNotBefore,
+		)
+		Expect(selected.ItemID).To(BeEmpty())
+		Expect(reason).ToNot(BeEmpty())
 	})
 })
 
