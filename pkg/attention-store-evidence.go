@@ -192,7 +192,7 @@ func (a *attentionStore) applyEvidenceVerdict(
 	// attention cards". The verdict was computed in the PROBE phase: see
 	// evidenceVerdict.targetGone for why it must not be resolved here.
 	if verdict.targetGone {
-		return a.retireDeadTarget(ctx, tx, item, now)
+		return a.retireDeadTarget(ctx, tx, item)
 	}
 	// The claim was never observed in time. The card goes back on the board with
 	// the claim intact and a note saying why, because an answer nobody can
@@ -303,19 +303,21 @@ func (a *attentionStore) targetGone(ctx context.Context, ref LivenessRef) bool {
 }
 
 // retireDeadTarget closes a card whose target is gone, instead of reopening it.
+//
+// ⚠️ The close goes through `closeItem`, never a hand-rolled state flip. That
+// helper is the ONE close site for the lost-answer counter and the terminal
+// delivery record; a fourth close path that set `ClosedState` itself would skip
+// both and leave a retired card reading `never_attempted` — the false alarm
+// `recordCloseAttempt` exists to remove.
 func (a *attentionStore) retireDeadTarget(
 	ctx context.Context,
 	tx libkv.Tx,
 	item *Item,
-	now libtime.DateTime,
 ) (bool, error) {
-	closedAt := now
-	item.State = ClosedState
-	item.ClosedAt = &closedAt
 	item.EvidenceDeadline = nil
 	item.ResolvedBy = "retired: target pane and session are gone"
 	item.Context = ItemContext(appendNote(string(item.Context), RetiredNote))
-	if err := a.putItem(ctx, tx, *item); err != nil {
+	if err := a.closeItem(ctx, tx, item); err != nil {
 		return false, errors.Wrap(ctx, err, "retire dead-target item failed")
 	}
 	return true, nil
