@@ -57,6 +57,19 @@ var _ = Describe("StartupGate", func() {
 			Expect(resp.Body.String()).To(ContainSubstring(`http-equiv="refresh" content="2"`))
 		})
 
+		// The starting page is the operator's first sight of the service on
+		// every restart, so it carries the board's own palette rather than a
+		// light default that flashes white before the dark board appears. These
+		// two assertions are the anti-regression pair: without them the page
+		// silently returns to a white document and no other test notices.
+		It("renders the starting page in the board's dark palette", func() {
+			resp := serve(http.MethodGet, "/")
+			Expect(resp.Body.String()).To(ContainSubstring("color-scheme:dark"))
+			Expect(resp.Body.String()).To(ContainSubstring("--bg:#111418"))
+			Expect(resp.Body.String()).To(ContainSubstring("--panel:#1a1f26"))
+			Expect(resp.Body.String()).NotTo(ContainSubstring("color:#333"))
+		})
+
 		It("answers an API route with 503 starting JSON", func() {
 			resp := serve(http.MethodGet, "/api/1.0/attention")
 			Expect(resp.Code).To(Equal(http.StatusServiceUnavailable))

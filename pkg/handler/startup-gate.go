@@ -123,18 +123,46 @@ func writeStartingJSON(resp http.ResponseWriter, step string) {
 	}
 }
 
+// ⚠️ The starting page carries the BOARD's own palette, font stack and width
+// rather than a generic light document. The gate is what the operator sees on
+// every restart, and it used to render a white page that flashed before the
+// dark board appeared — one surface announcing itself in two different designs.
+// The tokens below mirror attentionPageStyles on purpose: the two documents
+// must read as one surface, and a value changed in one without the other is
+// the drift this comment exists to name.
+//
+// ⚠️ Nothing inside the style block may carry a backtick: the whole document
+// is one Go raw-string literal, so a backtick closes it.
 var startingPageTemplate = template.Must(template.New("starting").Parse(`<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta http-equiv="refresh" content="{{.Refresh}}">
-<title>attention-controller starting</title>
-<style>body{font-family:-apple-system,system-ui,sans-serif;margin:3em;color:#333}code{background:#eee;padding:0 .3em}</style>
+<title>Attention</title>
+<style>
+:root{color-scheme:dark;--bg:#111418;--panel:#1a1f26;--border:#2a3038;--text:#e8edf2;--muted:#8b95a3;--warn:#d08b5b}
+*{box-sizing:border-box}
+body{margin:0 auto;max-width:760px;padding:24px;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+h1{font-size:20px;margin:0 0 16px}
+.starting{background:var(--panel);border:1px solid var(--border);border-left:4px solid var(--warn);border-radius:10px;padding:16px}
+.starting-title{margin:0 0 6px;font-size:15px;font-weight:600}
+.starting-step{margin:0 0 8px;color:var(--muted);font-size:13px}
+.starting-step code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:var(--text);background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:1px 6px}
+.starting-note{margin:0;color:var(--muted);font-size:13px;line-height:1.45}
+.bar{margin-top:14px;height:3px;border-radius:2px;background:var(--border);overflow:hidden}
+.bar::after{content:"";display:block;width:30%;height:100%;background:var(--warn);animation:sweep 1.4s ease-in-out infinite}
+@keyframes sweep{0%{transform:translateX(-100%)}100%{transform:translateX(340%)}}
+@media (prefers-reduced-motion:reduce){.bar::after{animation:none;width:100%}}
+</style>
 </head>
 <body>
-<h1>attention-controller is starting</h1>
-<p>Pending step: <code>{{.Step}}</code></p>
-<p>This page reloads every {{.Refresh}} seconds and shows the board once initialization finishes.</p>
+<h1>Attention</h1>
+<div class="starting">
+<p class="starting-title">attention-controller is starting</p>
+<p class="starting-step">Pending step: <code>{{.Step}}</code></p>
+<p class="starting-note">This page reloads every {{.Refresh}} seconds and shows the board once initialization finishes.</p>
+<div class="bar"></div>
+</div>
 </body>
 </html>
 `))
