@@ -24,6 +24,9 @@ type parkedItem struct {
 	key      string
 	claims   []string
 	deadline *libtime.DateTime
+	// livenessRef is carried so the probe pass can resolve the target's pane and
+	// session with no write transaction open.
+	livenessRef LivenessRef
 }
 
 // evidenceVerdict is one parked item's probe result, computed OUTSIDE the write
@@ -31,6 +34,13 @@ type parkedItem struct {
 type evidenceVerdict struct {
 	key      string
 	observed bool
+	// targetGone is whether the card's pane and session are BOTH provably gone.
+	// ⚠️ It is computed in the PROBE phase, never in the apply phase: resolving
+	// it shells out to `wezterm cli list`, and bbolt admits one writer, so doing
+	// it inside the write transaction would hold the store's write lock across a
+	// subprocess and block every Push/Answer/Close for the duration — the same
+	// defect this file's two-phase split exists to prevent for `gh` probes.
+	targetGone bool
 	// deadline is the deadline the item carried when it was probed. The apply
 	// pass re-checks it so a RE-ANSWER of the parked item during the probe
 	// window — which stamps a new deadline and possibly new claims — cannot be
@@ -92,9 +102,10 @@ func (a *attentionStore) evaluateParkedEvidence(ctx context.Context) ([]evidence
 				continue
 			}
 			items = append(items, parkedItem{
-				key:      key,
-				claims:   item.EvidenceClaims,
-				deadline: item.EvidenceDeadline,
+				key:         key,
+				claims:      item.EvidenceClaims,
+				deadline:    item.EvidenceDeadline,
+				livenessRef: item.LivenessRef,
 			})
 		}
 		return nil
@@ -178,8 +189,9 @@ func (a *attentionStore) applyEvidenceVerdict(
 	// ⚠️ A card whose target pane AND session are both provably gone is retired,
 	// not reopened. Reopening it puts a question on the board whose only action
 	// is "type into a pane that no longer exists" — the operator's "more useless
-	// attention cards". Unprovable is NOT gone: see targetGone.
-	if a.targetGone(ctx, item) {
+	// attention cards". The verdict was computed in the PROBE phase: see
+	// evidenceVerdict.targetGone for why it must not be resolved here.
+	if verdict.targetGone {
 		return a.retireDeadTarget(ctx, tx, item, now)
 	}
 	// The claim was never observed in time. The card goes back on the board with
@@ -257,11 +269,11 @@ const RetiredNote = "retired: the pane and session this card was waiting on are 
 // nothing. So a nil lister, a listing error, an unresolvable session name, or a
 // non-session liveness model all answer "unprovable" — and unprovable reopens
 // exactly as before. Retiring on a failed read would delete a live question.
-func (a *attentionStore) targetGone(ctx context.Context, item *Item) bool {
+func (a *attentionStore) targetGone(ctx context.Context, ref LivenessRef) bool {
 	if a.paneLister == nil || a.sessionsDir == "" {
 		return false
 	}
-	model, sessionID, err := item.LivenessRef.Parse(ctx)
+	model, sessionID, err := ref.Parse(ctx)
 	if err != nil || model != SessionLivenessModel {
 		// `owner:` is deliberately always-live, and `heartbeat:` has its own
 		// clock — neither is a pane target.
@@ -419,9 +431,10 @@ func (a *attentionStore) probeWithinBudget(
 			budget = 0
 		}
 		verdicts = append(verdicts, evidenceVerdict{
-			key:      item.key,
-			observed: EvidenceAllObserved(ctx, item.claims, a.evidenceRunner),
-			deadline: item.deadline,
+			key:        item.key,
+			observed:   EvidenceAllObserved(ctx, item.claims, a.evidenceRunner),
+			targetGone: a.targetGone(ctx, item.livenessRef),
+			deadline:   item.deadline,
 		})
 	}
 	return verdicts
