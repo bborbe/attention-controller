@@ -489,24 +489,22 @@ func (a *application) createAttentionStore(
 			pkg.WithExpiryCloseWriter(attnlog.NewExpiryCloseWriter(stateDir)),
 		)
 	}
-	// ⚠️ The pane lister and the session registry are what let the evidence
-	// sweep tell a DEAD target from an UNPROVABLE one. Without both, `targetGone`
+	// ⚠️ The pane lister and the SPAWN LEDGER are what let the evidence sweep
+	// tell a DEAD target from an UNPROVABLE one. Without both, `targetGone`
 	// answers false forever and the retirement never fires in this process — the
 	// change would ship as a no-op while its tests passed. A host with no
 	// WezTerm (a cluster backend) simply gets a lister whose listing fails, which
 	// is unprovable, which reopens exactly as before.
-	sessionsDir := a.SessionsDir
-	if sessionsDir == "" {
-		resolved, resolveErr := defaultSessionsDir(ctx)
-		if resolveErr != nil {
-			glog.Warningf("resolve sessions dir failed: %v", resolveErr)
-		}
-		sessionsDir = resolved
-	}
-	if sessionsDir != "" {
+	//
+	// ⚠️ The ledger is NOT the session registry: the registry deletes an entry on
+	// exit, so a dead session's name is gone exactly when this question is asked.
+	// The ledger records the pane id at spawn time and outlives the session.
+	if spawnLedgerDir, resolveErr := defaultSpawnLedgerDir(ctx); resolveErr != nil {
+		glog.Warningf("resolve spawn ledger dir failed: %v", resolveErr)
+	} else if spawnLedgerDir != "" {
 		options = append(
 			options,
-			pkg.WithSessionsDir(sessionsDir),
+			pkg.WithSpawnLedgerDir(spawnLedgerDir),
 			pkg.WithPaneLister(pkg.NewWeztermPaneLister(libtime.NewCurrentDateTime())),
 		)
 	}
@@ -708,6 +706,16 @@ func defaultSessionsDir(ctx context.Context) (string, error) {
 		return "", errors.Wrap(ctx, err, "resolve home dir failed")
 	}
 	return filepath.Join(home, ".claude", "sessions"), nil
+}
+
+// defaultSpawnLedgerDir resolves the supervisor's spawn ledger, which records
+// the pane each session was spawned in and outlives the session.
+func defaultSpawnLedgerDir(ctx context.Context) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", errors.Wrap(ctx, err, "resolve home dir failed")
+	}
+	return filepath.Join(home, ".local", "state", "claude-supervisor", "sessions"), nil
 }
 
 // createProvenanceResolver builds the resolver the page joins item provenance

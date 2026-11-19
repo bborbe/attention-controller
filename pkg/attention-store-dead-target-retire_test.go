@@ -41,7 +41,7 @@ var _ = Describe("Dead-target retire", func() {
 		sessionsDir = GinkgoT().TempDir()
 		Expect(os.WriteFile(
 			filepath.Join(sessionsDir, "session-a.json"),
-			[]byte(`{"sessionId":"session-a","name":"Attention Cards Retire"}`),
+			[]byte(`{"session_id":"session-a","pane_id":"294"}`),
 			0o600,
 		)).To(Succeed())
 
@@ -60,7 +60,7 @@ var _ = Describe("Dead-target retire", func() {
 			clock,
 			libtime.Duration(15*60*1e9),
 			pkg.WithPaneLister(panes),
-			pkg.WithSessionsDir(sessionsDir),
+			pkg.WithSpawnLedgerDir(sessionsDir),
 		)
 	})
 
@@ -117,7 +117,7 @@ var _ = Describe("Dead-target retire", func() {
 		Expect(got.State).To(Equal(pkg.OpenState), "one live half is not a dead target")
 	})
 
-	It("reopens when a pane still carries the session's name", func() {
+	It("reopens when the recorded pane still exists", func() {
 		panes.ListReturns(map[int]pkg.Pane{
 			294: {PaneID: 294, Title: "✳ Attention Cards Retire"},
 		}, nil)
@@ -139,13 +139,16 @@ var _ = Describe("Dead-target retire", func() {
 		Expect(got.State).To(Equal(pkg.OpenState), "an unreadable listing must never retire a card")
 	})
 
-	It("reopens when the session name cannot be resolved", func() {
+	It("reopens when the spawn ledger has no row for the session", func() {
+		// ⚠️ The real dead-session state: the session registry deletes its entry
+		// on exit, and the ledger row is the only thing that survives. No row
+		// means the pane is unknown, which is unprovable, not gone.
 		Expect(os.Remove(filepath.Join(sessionsDir, "session-a.json"))).To(Succeed())
 		item := park()
 		sweepPastDeadline()
 
 		got, err := store.Get(ctx, item.ItemID)
 		Expect(err).To(BeNil())
-		Expect(got.State).To(Equal(pkg.OpenState), "an unresolvable name is unprovable, not gone")
+		Expect(got.State).To(Equal(pkg.OpenState), "an unknown pane is unprovable, not gone")
 	})
 })

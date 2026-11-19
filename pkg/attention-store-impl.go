@@ -131,19 +131,19 @@ func (o paneListerOption) applyAttentionStoreOption(store *attentionStore) {
 	}
 }
 
-// WithSessionsDir attaches the session registry the sweep reads to turn a
-// session id into the name a pane title carries.
-func WithSessionsDir(dir string) AttentionStoreOption {
-	return sessionsDirOption{dir: dir}
+// WithSpawnLedgerDir attaches the supervisor spawn ledger the sweep reads to
+// turn a session id into the pane id it was spawned in.
+func WithSpawnLedgerDir(dir string) AttentionStoreOption {
+	return spawnLedgerDirOption{dir: dir}
 }
 
-type sessionsDirOption struct {
+type spawnLedgerDirOption struct {
 	dir string
 }
 
-func (o sessionsDirOption) applyAttentionStoreOption(store *attentionStore) {
-	if store.sessionsDir == "" {
-		store.sessionsDir = o.dir
+func (o spawnLedgerDirOption) applyAttentionStoreOption(store *attentionStore) {
+	if store.spawnLedgerDir == "" {
+		store.spawnLedgerDir = o.dir
 	}
 }
 
@@ -180,10 +180,16 @@ type attentionStore struct {
 	// the card's target pane still exists. Nil means the question cannot be
 	// asked, and a reopen then behaves exactly as it did before this field.
 	paneLister PaneLister
-	// sessionsDir is the Claude Code session registry, read only to turn a
-	// session id into the name a pane title is compared against. Empty means
-	// the name cannot be resolved, which is treated as unprovable.
-	sessionsDir string
+	// spawnLedgerDir is the supervisor's spawn ledger
+	// (`~/.local/state/claude-supervisor/sessions/<sid>.json`), read only to
+	// turn a session id into the pane id it was spawned in.
+	//
+	// ⚠️ NOT the Claude Code session registry. That registry deletes an entry
+	// when the session exits, so whenever a session is dead its name is gone
+	// too — a lookup there can never prove a pane is gone. The spawn ledger
+	// records the pane id at spawn time and outlives the session, which is what
+	// makes the proof possible at all.
+	spawnLedgerDir string
 }
 
 func (a *attentionStore) Push(ctx context.Context, request PushRequest) (*Item, error) {

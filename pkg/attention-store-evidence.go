@@ -6,6 +6,9 @@ package pkg
 
 import (
 	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -270,7 +273,7 @@ const RetiredNote = "retired: the pane and session this card was waiting on are 
 // non-session liveness model all answer "unprovable" — and unprovable reopens
 // exactly as before. Retiring on a failed read would delete a live question.
 func (a *attentionStore) targetGone(ctx context.Context, ref LivenessRef) bool {
-	if a.paneLister == nil || a.sessionsDir == "" {
+	if a.paneLister == nil || a.spawnLedgerDir == "" {
 		return false
 	}
 	model, sessionID, err := ref.Parse(ctx)
@@ -282,24 +285,46 @@ func (a *attentionStore) targetGone(ctx context.Context, ref LivenessRef) bool {
 	if a.sessionLivenessChecker.IsLive(ctx, sessionID) {
 		return false
 	}
-	names, err := readSessionNamesWithError(ctx, a.sessionsDir)
-	if err != nil {
-		return false
-	}
-	record, ok := names[sessionID]
-	if !ok || record.Name == "" {
+	// ⚠️ The pane id comes from the SPAWN LEDGER, never from the session
+	// registry. The registry deletes an entry when a session exits, so at the
+	// one moment this question matters the name is already gone; the ledger
+	// records the pane at spawn time and outlives the session.
+	paneID, ok := readSpawnLedgerPaneID(a.spawnLedgerDir, sessionID)
+	if !ok {
 		return false
 	}
 	panes, err := a.paneLister.List(ctx)
 	if err != nil {
 		return false
 	}
-	for paneID := range panes {
-		if OwnsPane(panes, paneID, record.Name) {
-			return false
-		}
+	_, alive := panes[paneID]
+	return !alive
+}
+
+// spawnLedgerRecord is the one field this package reads out of the supervisor's
+// spawn ledger row.
+type spawnLedgerRecord struct {
+	PaneID string `json:"pane_id"`
+}
+
+// readSpawnLedgerPaneID reads the pane id a session was spawned in.
+//
+// Any failure — a missing row, an unparseable one, an empty or non-numeric
+// `pane_id` — reports "not known", which the caller treats as unprovable.
+func readSpawnLedgerPaneID(dir string, sessionID string) (int, bool) {
+	content, err := os.ReadFile(filepath.Join(dir, sessionID+".json"))
+	if err != nil {
+		return 0, false
 	}
-	return true
+	var record spawnLedgerRecord
+	if err := json.Unmarshal(content, &record); err != nil {
+		return 0, false
+	}
+	id, err := strconv.Atoi(record.PaneID)
+	if err != nil || id <= 0 {
+		return 0, false
+	}
+	return id, true
 }
 
 // retireDeadTarget closes a card whose target is gone, instead of reopening it.
@@ -317,6 +342,9 @@ func (a *attentionStore) retireDeadTarget(
 	item.EvidenceDeadline = nil
 	item.ResolvedBy = "retired: target pane and session are gone"
 	item.Context = ItemContext(appendNote(string(item.Context), RetiredNote))
+	if err := ValidateTransition(ctx, AwaitingEvidenceState, ClosedState); err != nil {
+		return false, errors.Wrap(ctx, err, "validate retire transition failed")
+	}
 	if err := a.closeItem(ctx, tx, item); err != nil {
 		return false, errors.Wrap(ctx, err, "retire dead-target item failed")
 	}
