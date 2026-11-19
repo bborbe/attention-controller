@@ -688,17 +688,11 @@ var _ = Describe("AttentionStore", func() {
 
 			answered, err := store.Answer(ctx, item.ItemID, "telegram", "", "", nil, nil, nil)
 			Expect(err).To(BeNil())
-			// The hold: the answer is recorded but the card stays open until an
-			// arm observes delivery and settles it.
-			Expect(answered.State).To(Equal(pkg.OpenState))
+			// A `message` card is not held: it moves open -> answered immediately.
+			// (The hold applies only to `permission` cards.)
+			Expect(answered.State).To(Equal(pkg.AnsweredState))
 			Expect(answered.AnsweredBy).To(Equal("telegram"))
 			Expect(answered.AnsweredAt).NotTo(BeNil())
-
-			settled, err := store.SettleAnswer(ctx, item.ItemID)
-			Expect(err).To(BeNil())
-			Expect(settled.State).To(Equal(pkg.AnsweredState))
-			Expect(settled.AnsweredBy).To(Equal("telegram"))
-			Expect(settled.AnsweredAt).NotTo(BeNil())
 		})
 
 		It("rejects a second answer as already-answered", func() {

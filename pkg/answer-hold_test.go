@@ -166,6 +166,21 @@ var _ = Describe("Answer hold", func() {
 		Expect(pkg.AttentionDeliveryBound).To(BeNumerically("<=", 600*time.Second))
 	})
 
+	It("survives the answered sweep's redundant-re-raise pass", func() {
+		item := push()
+		answer(item)
+
+		// SweepAnswered's redundant-re-raise pass closes an open item whose ask is
+		// in the durable answered index. A held card's own Answer wrote that entry,
+		// so without the AnsweredAt guard it would be closed here, before delivery.
+		_, err := store.SweepAnswered(ctx, libtime.Duration(1*3600*1e9))
+		Expect(err).To(BeNil())
+
+		got, err := store.Get(ctx, item.ItemID)
+		Expect(err).To(BeNil())
+		Expect(got.State).To(Equal(pkg.OpenState), "a held card must not be closed as a redundant re-raise")
+	})
+
 	It("keeps a held card in the board's open set", func() {
 		item := push()
 		answer(item)

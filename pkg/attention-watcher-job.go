@@ -472,8 +472,12 @@ func (j *attentionWatcherJob) deliver(
 		// shape for every headless `sdk-cli` worker, which has no pane by
 		// construction. Recording nothing here is what dropped the operator's
 		// answer; the wrapper owns that child's stdin, so the turn goes there.
-		if j.headless != nil {
-			j.headless.DeliverHeadless(ctx, item)
+		if j.headless != nil && j.headless.DeliverHeadless(ctx, item) {
+			// ⚠️ Settle on a successful headless delivery too: the hold keeps a
+			// permission card open until delivery, and the headless arm is the one
+			// that reaches a pane-less worker. Without this the held card would stay
+			// open forever after the wrapper delivered it.
+			j.settleAnswer(ctx, item)
 		}
 	case DeliveryRetry:
 		// A busy or unreadable composer has not failed yet, so it is not marked
@@ -519,11 +523,16 @@ func (j *attentionWatcherJob) refuse(
 	reason string,
 ) {
 	if j.headless != nil && j.headless.CanResume(ctx, sessionID) {
-		if !j.headless.DeliverHeadless(ctx, item) {
-			// Still pending: the headless arm logged why. The attempt is already
-			// counted, so the park bound applies here too.
-			j.maybePark(ctx, item, count, DeliveryRetry, "headless resume pending: "+reason)
+		if j.headless.DeliverHeadless(ctx, item) {
+			// Settle on a successful resume-delivery, for the same reason the
+			// DeliveryNoPane branch does: a held permission card must leave the open
+			// set once the headless arm carried it.
+			j.settleAnswer(ctx, item)
+			return
 		}
+		// Still pending: the headless arm logged why. The attempt is already
+		// counted, so the park bound applies here too.
+		j.maybePark(ctx, item, count, DeliveryRetry, "headless resume pending: "+reason)
 		return
 	}
 	reason += " — and the session cannot be resumed through the headless path"

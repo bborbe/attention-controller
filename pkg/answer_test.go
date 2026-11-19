@@ -215,10 +215,7 @@ var _ = Describe("Board answers", func() {
 			}, nil, nil)
 			Expect(err).To(BeNil())
 			Expect(answered.Answer).NotTo(BeNil())
-			Expect(answered.State).To(Equal(pkg.OpenState))
-
-			_, err = store.SettleAnswer(ctx, item.ItemID)
-			Expect(err).To(BeNil())
+			Expect(answered.State).To(Equal(pkg.AnsweredState))
 			got, err := store.Get(ctx, item.ItemID)
 			Expect(err).To(BeNil())
 			Expect(got.State).To(Equal(pkg.AnsweredState))

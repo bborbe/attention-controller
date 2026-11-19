@@ -1213,15 +1213,20 @@ func (a *attentionStore) Answer(
 			return err
 		}
 		now := a.currentDateTimeGetter.Now()
-		// ⚠️ The HOLD, continued: the card stays OPEN here. The schema's
-		// open→answered trigger is "the answer-return path DELIVERS an answer to
-		// producer_id" — delivery, not the click — so the transition is taken by
-		// SettleAnswer once a `delivered` attempt is on record. Setting AnsweredState
-		// here is the defect this hold removes: the board read the card as resolved
-		// while the worker was still parked. A `done`-class claim still parks in
-		// awaiting_evidence via parkForEvidence below.
+		// ⚠️ The HOLD, continued — scoped to PERMISSION cards, the class the parked
+		// worker waits on. A permission card stays OPEN here (the schema's
+		// open→answered trigger is delivery, not the click), so the board cannot
+		// show a parked worker as unblocked before the answer lands; SettleAnswer
+		// takes open→answered once a `delivered` attempt is on record. Every other
+		// class keeps the original immediate AnsweredState: `message` / `ack` cards
+		// are not parked on a worker, and holding them would break the compact-trio,
+		// hook-menu and done-class paths that key on AnsweredState. A `done`-class
+		// claim still parks in awaiting_evidence via parkForEvidence below.
 		if item.AnsweredAt == nil {
 			item.AnsweredAt = &now
+		}
+		if item.AnswerMechanism != PermissionAnswerMechanism {
+			item.State = AnsweredState
 		}
 		item.AnsweredBy = answeredBy
 		// Stamped from the caller's declaration, never derived and never

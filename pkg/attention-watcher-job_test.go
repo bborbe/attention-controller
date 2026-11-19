@@ -312,6 +312,24 @@ var _ = Describe("attention watcher delivery job", func() {
 		Expect(store.RecordAttemptCallCount()).To(Equal(0))
 	})
 
+	It("settles a held card after the headless arm delivers it", func() {
+		// A held permission card (open + answered) must leave the open set once the
+		// headless arm carries it — the pane-less path is the one a parked sdk-cli
+		// worker takes, and without this settle the card would stay open forever.
+		headless := &fakeHeadlessDeliverer{terminal: true}
+		job = pkg.NewAttentionWatcherJob(
+			store, carrier, headless, time.Hour, libtime.NewCurrentDateTime(),
+		)
+		carrier.verdict = pkg.DeliveryNoPane
+		held := answeredItem("item-1", "operator", pkg.Decision("allow"))
+		held.State = pkg.OpenState
+		store.ReadBoardReturns(pkg.Items{held}, nil)
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+		Expect(headless.calls).To(Equal([]pkg.ItemID{"item-1"}))
+		Expect(store.SettleAnswerCallCount()).To(Equal(1),
+			"a headless delivery of a held card must settle it")
+	})
+
 	It("keeps the pane path for a tab session", func() {
 		// A tab session's answer still goes through the carrier: the headless arm
 		// must not take a card that has a pane.
