@@ -90,6 +90,31 @@ type TranscriptReader interface {
 	// turn-end. It never fails: a missing or unreadable transcript reports
 	// false, keeping the caller's "no live process" refusal.
 	TurnEnded(sessionID string) bool
+
+	// ModifiedAt returns when the transcript was last written, and whether it
+	// could be read. It never fails: an absent or unreadable transcript reports
+	// false.
+	//
+	// ⚠️ It is the compact trio's only honest "is a turn running?" probe. The
+	// registry cannot answer it — it reads `busy` for a running turn AND for a
+	// session merely holding a background shell, so a shell-holder could never be
+	// compacted. A running turn writes the transcript continuously while a
+	// background shell writes nothing at all (measured 2026-10-18: three
+	// shell-holding sessions kept their mtime frozen over 60 s while every
+	// genuinely mid-turn session advanced).
+	ModifiedAt(sessionID string) (time.Time, bool)
+
+	// CompactionBoundaries returns how many `compact_boundary` records the
+	// transcript holds, and whether it could be read. It never fails: an
+	// unreadable transcript reports false, and the caller then withholds rather
+	// than guessing.
+	//
+	// ⚠️ Every real compaction appends one, so a COUNT is a signal rather than a
+	// timer: the composer clears the instant `/compact` submits while the
+	// compaction is still running, so an emptiness-only gate would fire
+	// `post-compact` into the middle of it and lose exactly what the sequence
+	// exists to preserve.
+	CompactionBoundaries(sessionID string) (int, bool)
 }
 
 // NewTranscriptReader creates the reader the delivery carrier uses.
@@ -112,6 +137,19 @@ type transcriptReader struct {
 
 	mu    sync.Mutex
 	cache map[string]*transcriptAbsence
+	// boundaries caches one count per transcript path, keyed on (size, mtime).
+	// ⚠️ The trio polls its gate every 2 s for up to 600 s while `/compact`
+	// runs, and a transcript measured at 675 MB would otherwise be re-read
+	// hundreds of times. An append changes both size and mtime, so a stale count
+	// can never mask the boundary the gate is waiting for.
+	boundaries map[string]transcriptBoundaryCount
+}
+
+// transcriptBoundaryCount is one cached count and the file state it describes.
+type transcriptBoundaryCount struct {
+	size  int64
+	mtime time.Time
+	count int
 }
 
 // transcriptAbsence is the proof, for ONE transcript path, that a set of lines
@@ -155,6 +193,138 @@ func (r *transcriptReader) Offset(sessionID string) (int64, bool) {
 		return 0, false
 	}
 	return info.Size(), true
+}
+
+// ModifiedAt returns when the transcript was last written.
+//
+// ⚠️ The stat is a THIRD syscall on the trio's hot path (glob, stat, read), and
+// it is deliberate rather than folded into Offset: the two answer different
+// questions. Offset bounds a submit check's scan; the mtime answers "is a turn
+// running", which no offset can — an unchanged offset over one tick is one
+// sample, while the mtime carries the quiet period that already elapsed.
+func (r *transcriptReader) ModifiedAt(sessionID string) (time.Time, bool) {
+	path := r.Path(sessionID)
+	if path == "" {
+		return time.Time{}, false
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return info.ModTime(), true
+}
+
+// compactionBoundaryMarker is the substring every compaction record carries.
+//
+// ⚠️ It is only a PRE-FILTER. The record is a `system` entry with
+// `subtype: compact_boundary`; the string also appears inside ordinary user and
+// tool-result records that merely mention it (measured on this machine: a
+// `toolUseResult` quoting a compaction, and a `user` record carrying
+// `compactMetadata` in nested text). Counting raw occurrences therefore reports
+// a boundary that never happened — and a false boundary is the worst kind here,
+// because it is what licenses `post-compact` to fire into a running compaction.
+const compactionBoundaryMarker = "compact_boundary"
+
+// compactionBoundarySubtype is the record's own declaration that it IS a
+// boundary, matched at the TOP LEVEL of the line's JSON.
+const compactionBoundarySubtype = "compact_boundary"
+
+// compactionBoundaryCacheMax bounds the per-path count cache. One entry per
+// session ever polled is tiny, but the map must not grow without limit in a
+// process that lives for weeks.
+const compactionBoundaryCacheMax = 64
+
+// CompactionBoundaries counts the transcript's compaction records.
+//
+// ⚠️ The whole file is read, not the tail. A compaction boundary older than the
+// tail window is still part of the COUNT, and a count that silently restarted
+// from a partial file would read "a new boundary appeared" on the first poll
+// after any window slide. The file is read once per gate poll, and the gate
+// stops polling the moment the count moves.
+//
+// ⚠️ The count is CACHED against (size, mtime). The trio asks this every 2 s for
+// up to ten minutes; on a 675 MB transcript an uncached read would be a
+// multi-hundred-megabyte scan per poll. An append moves both fields, so the
+// cache can never hide the boundary being waited for.
+func (r *transcriptReader) CompactionBoundaries(sessionID string) (int, bool) {
+	path := r.Path(sessionID)
+	if path == "" {
+		return 0, false
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0, false
+	}
+	if cached, ok := r.cachedBoundaries(path, info); ok {
+		return cached, true
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return 0, false
+	}
+	count := countCompactionBoundaries(content)
+	r.rememberBoundaries(path, info, count)
+	return count, true
+}
+
+// countCompactionBoundaries counts the transcript's real compaction records.
+//
+// ⚠️ A line counts only when its TOP-LEVEL JSON declares
+// `subtype: compact_boundary`. The marker string also occurs inside tool
+// results and message text that merely quote a compaction, and those are nested
+// rather than top-level — counting them would fabricate the very boundary the
+// gate waits for.
+func countCompactionBoundaries(content []byte) int {
+	count := 0
+	for _, line := range bytes.Split(content, []byte("\n")) {
+		if !bytes.Contains(line, []byte(compactionBoundaryMarker)) {
+			continue
+		}
+		var record struct {
+			Subtype string `json:"subtype"`
+		}
+		if err := json.Unmarshal(line, &record); err != nil {
+			continue
+		}
+		if record.Subtype == compactionBoundarySubtype {
+			count++
+		}
+	}
+	return count
+}
+
+// cachedBoundaries returns the cached count for exactly this file state.
+func (r *transcriptReader) cachedBoundaries(path string, info os.FileInfo) (int, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cached, ok := r.boundaries[path]
+	if !ok || cached.size != info.Size() || !cached.mtime.Equal(info.ModTime()) {
+		return 0, false
+	}
+	return cached.count, true
+}
+
+// rememberBoundaries stores one count against the file state it was taken at.
+func (r *transcriptReader) rememberBoundaries(path string, info os.FileInfo, count int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.boundaries == nil {
+		r.boundaries = map[string]transcriptBoundaryCount{}
+	}
+	if len(r.boundaries) >= compactionBoundaryCacheMax {
+		// Forget one arbitrary entry rather than grow without bound. A dropped
+		// entry costs one re-read on its next poll; it can never hide a boundary,
+		// because the count is always recomputed from the file's current state.
+		for stale := range r.boundaries {
+			delete(r.boundaries, stale)
+			break
+		}
+	}
+	r.boundaries[path] = transcriptBoundaryCount{
+		size:  info.Size(),
+		mtime: info.ModTime(),
+		count: count,
+	}
 }
 
 // HoldsLine reports whether the transcript carries line as a delivered message.

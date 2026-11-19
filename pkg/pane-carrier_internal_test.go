@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -86,6 +87,8 @@ type fakeTranscriptReader struct {
 	holds      map[string]bool
 	holdsAny   map[string]bool
 	turnEnded  map[string]bool
+	modifiedAt map[string]time.Time
+	boundaries map[string]int
 	holdCalls  []string
 	pathBySess map[string]string
 }
@@ -106,6 +109,16 @@ func (f *fakeTranscriptReader) HoldsLine(sessionID string, line string, since *i
 }
 
 func (f *fakeTranscriptReader) TurnEnded(sessionID string) bool { return f.turnEnded[sessionID] }
+
+func (f *fakeTranscriptReader) ModifiedAt(sessionID string) (time.Time, bool) {
+	modified, ok := f.modifiedAt[sessionID]
+	return modified, ok
+}
+
+func (f *fakeTranscriptReader) CompactionBoundaries(sessionID string) (int, bool) {
+	boundaries, ok := f.boundaries[sessionID]
+	return boundaries, ok
+}
 
 var _ = Describe("pane carrier", func() {
 	const (

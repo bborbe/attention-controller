@@ -196,6 +196,22 @@ var _ = Describe("attention watcher delivery job", func() {
 		Expect(outcome).To(Equal(pkg.DeliveredOutcome))
 	})
 
+	It("leaves an approved compact card to the trio arm", func() {
+		// An approved compact card's answer is three commands, not prose. Typing
+		// the picked label here would send a message that starts with "Operator"
+		// rather than "/", so the session would dispatch nothing — while the trio
+		// compacted it underneath. A DECLINED compact card is still prose.
+		item := answeredItem("item-1", "operator", pkg.Decision(""))
+		item.DedupKey = pkg.DedupKey("compact-approval:11111111-2222-3333-4444-555555555555")
+		item.AnswerMechanism = pkg.MessageAnswerMechanism
+		item.Options = pkg.AnswerOptions{{Label: "Compact now", Recommended: true}}
+		item.Answer = &pkg.Answer{Kind: pkg.OptionAnswerKind, Value: "Compact now"}
+		store.ReadBoardReturns(pkg.Items{item}, nil)
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+
+		Expect(carrier.calls).To(BeEmpty())
+	})
+
 	It("delivers a dismissed compact card as prose, never the approve label", func() {
 		// A compact card's approve signal is its recommended option label, so a
 		// decline must carry prose that matches none of the options — anything

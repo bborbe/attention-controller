@@ -329,6 +329,14 @@ func (j *attentionWatcherJob) deliverable(
 	if item.State != AnsweredState || item.AnsweredAt == nil {
 		return false
 	}
+	// An approved compact card is the TRIO's answer, not prose. This arm would
+	// type the picked label as a message ("Operator answer, … Compact now [id]"),
+	// which starts with "Operator" rather than "/", so the session would read it
+	// as a message and dispatch nothing while the trio compacted underneath it.
+	// A DECLINED compact card is not owned here and still delivers as prose.
+	if compactTrioOwns(item) {
+		return false
+	}
 	// The originate arm settled this one; the session has already moved on.
 	if item.AnsweredBy == attentionWatcherAnsweredBy {
 		return false
