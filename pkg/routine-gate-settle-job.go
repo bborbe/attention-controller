@@ -49,8 +49,9 @@ type RoutineGateSessionReader interface {
 //
 // ⚠️ It is the arm that answers a gate the operator never sees, and it is
 // deliberately minimal: only a `Read`/`NotebookRead` whose own path arguments
-// resolve inside the session's workspace, and only for a session the wrapper
-// owns. Everything else is left open with the refusing rule recorded, which is
+// resolve inside the session's workspace, or a `Bash` command claude-supervisor's
+// permission classifier rates `allowlist` from a workspace cwd, and only for a
+// session the wrapper owns. Everything else is left open with the refusing rule recorded, which is
 // what the operator reads as "a policy decided, and it declined".
 //
 // It exists because a wrapper-spawned child has no pane: the wrapper owns its
@@ -160,7 +161,37 @@ func (j *routineGateSettleJob) SettleOnce(ctx context.Context) error {
 		}
 		j.settle(ctx, item, reports)
 	}
+	j.retainOpen(items)
 	return nil
+}
+
+// retainOpen lets an item-aware policy drop the verdicts of items that are no
+// longer open, so its cache holds only what the next cycle can still ask about.
+func (j *routineGateSettleJob) retainOpen(items Items) {
+	itemPolicy, ok := j.policy.(RoutineItemPolicy)
+	if !ok {
+		return
+	}
+	open := make(map[ItemID]struct{}, len(items))
+	for _, item := range items {
+		if item.State == OpenState {
+			open[item.ItemID] = struct{}{}
+		}
+	}
+	itemPolicy.RetainItems(open)
+}
+
+// rule asks the policy, through its item-aware entry point when it has one.
+func (j *routineGateSettleJob) rule(
+	ctx context.Context,
+	item Item,
+	question *WrapperQuestion,
+	cwd string,
+) (string, bool) {
+	if itemPolicy, ok := j.policy.(RoutineItemPolicy); ok {
+		return itemPolicy.RoutineRuleForItem(ctx, item.ItemID, question.Raw, cwd)
+	}
+	return j.policy.RoutineRule(question.Raw, cwd)
 }
 
 // settle decides and delivers one gate.
@@ -189,7 +220,7 @@ func (j *routineGateSettleJob) settle(
 		return
 	}
 	question := session.Question
-	rule, allowed := j.policy.RoutineRule(question.Raw, entry.CWD)
+	rule, allowed := j.rule(ctx, item, question, entry.CWD)
 	if !allowed {
 		// Recorded, not silent: the refusal half of the criterion reads the
 		// rule that declined, and a policy that only ever said yes would
