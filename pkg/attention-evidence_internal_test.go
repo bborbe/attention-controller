@@ -178,7 +178,7 @@ var _ = Describe("Evidence-backed close", func() {
 			}
 		}
 		Expect(visible).To(BeTrue(), "a reopened card must reappear on the board")
-		Expect(string(got.Context)).To(ContainSubstring(EvidenceNote))
+		Expect(string(got.Context)).To(MatchRegexp(`reopened ×\d+, last \d{2}:\d{2}`))
 	})
 
 	// The window matters: a sweep that reopened everything parked would pass the

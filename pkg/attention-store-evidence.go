@@ -7,6 +7,8 @@ package pkg
 import (
 	"context"
 	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/bborbe/errors"
 	libkv "github.com/bborbe/kv"
@@ -206,7 +208,7 @@ func (a *attentionStore) applyEvidenceVerdict(
 	item.Decision = ""
 	item.Answer = nil
 	item.Answers = nil
-	item.Context = ItemContext(appendNote(string(item.Context), EvidenceNote))
+	item.Context = ItemContext(appendEvidenceNote(string(item.Context), now))
 	if err := a.putItem(ctx, tx, *item); err != nil {
 		return false, errors.Wrap(ctx, err, "reopen unverified item failed")
 	}
@@ -235,13 +237,65 @@ func (a *attentionStore) awaitingEvidenceKeys(
 	return keys, nil
 }
 
-// appendNote appends one line to an item's context, keeping an empty note empty
-// rather than starting it with a newline.
-func appendNote(note string, line string) string {
-	if note == "" {
-		return line
+// evidenceNotePrefix opens the one line a reopen leaves behind.
+//
+// ⚠️ The line is REPLACED on each reopen, never appended. An item that bounced
+// N times used to carry N identical `reopened: …` lines, which is what the
+// operator saw as "some cards in the subtitle multiple times the same line".
+const evidenceNotePrefix = "reopened ×"
+
+// appendEvidenceNote records one more reopen on an item's context, keeping a
+// single line that carries the count and the time of the last reopen.
+//
+// An item written before this change carries the bare EvidenceNote; it counts
+// as one reopen, so its next one renders `reopened ×2, …`.
+func appendEvidenceNote(note string, now libtime.DateTime) string {
+	if strings.TrimSpace(note) == "" {
+		return evidenceReopenLine(1, now)
 	}
-	return note + "\n" + line
+	count := 0
+	kept := make([]string, 0, 1)
+	for _, line := range strings.Split(note, "\n") {
+		if n, ok := evidenceReopenCount(line); ok {
+			// ⚠️ ACCUMULATE, never assign. The defect this replaces left N
+			// identical bare notes on one item; assigning would collapse 34 of
+			// them to `×2` and throw away the very count the operator wanted.
+			count += n
+			continue
+		}
+		kept = append(kept, line)
+	}
+	count++
+	kept = append(kept, evidenceReopenLine(count, now))
+	return strings.Join(kept, "\n")
+}
+
+// evidenceReopenCount reads the reopen count out of a context line. It returns
+// true for both the counted line and the legacy bare EvidenceNote, which counts
+// as one reopen.
+func evidenceReopenCount(line string) (int, bool) {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == EvidenceNote {
+		return 1, true
+	}
+	if !strings.HasPrefix(trimmed, evidenceNotePrefix) {
+		return 0, false
+	}
+	rest := strings.TrimPrefix(trimmed, evidenceNotePrefix)
+	countText, _, found := strings.Cut(rest, ",")
+	if !found {
+		return 0, false
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(countText))
+	if err != nil || n < 1 {
+		return 0, false
+	}
+	return n, true
+}
+
+// evidenceReopenLine renders the one counted reopen line.
+func evidenceReopenLine(count int, now libtime.DateTime) string {
+	return evidenceNotePrefix + strconv.Itoa(count) + ", last " + now.Time().Format("15:04")
 }
 
 // sameDeadline reports whether two optional deadlines are the same instant,
