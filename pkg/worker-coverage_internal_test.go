@@ -64,6 +64,7 @@ var _ = Describe("worker coverage", func() {
 			worker  = "worker-session"
 			manager = "manager-session"
 			topicM  = "topic-manager-session"
+			fleet   = "fleet-manager-session"
 		)
 		var (
 			names    map[string]string
@@ -87,40 +88,83 @@ var _ = Describe("worker coverage", func() {
 		})
 
 		It("is covered when a live manager names the task's goal", func() {
-			Expect(workerUncovered(worker, task, true, names, index, managers)).To(BeFalse())
+			Expect(workerUncovered(worker, task, true, names, index, managers, "")).To(BeFalse())
 		})
 		It("is covered by a later goal in the task's goals list", func() {
 			task.Goals = []string{otherGoal, goalTitle}
-			Expect(workerUncovered(worker, task, true, names, index, managers)).To(BeFalse())
+			Expect(workerUncovered(worker, task, true, names, index, managers, "")).To(BeFalse())
 		})
 		It("is uncovered when the only live manager is the goal's TOPIC manager", func() {
 			// fleet-board's manager_on_chain: a topic manager never parents a
 			// worker, so the goal's topic is not a covering rung.
 			delete(managers, manager)
-			Expect(workerUncovered(worker, task, true, names, index, managers)).To(BeTrue())
+			Expect(workerUncovered(worker, task, true, names, index, managers, "")).To(BeTrue())
 		})
 		It("is uncovered when the goal's manager is not live", func() {
 			dead := func(_ context.Context, id string) bool { return id != manager }
 			managers = liveManagerSubjects(context.Background(), names, index, dead)
-			Expect(workerUncovered(worker, task, true, names, index, managers)).To(BeTrue())
+			Expect(workerUncovered(worker, task, true, names, index, managers, "")).To(BeTrue())
 		})
 		It("is uncovered when the session anchors no task", func() {
-			Expect(workerUncovered(worker, Task{}, false, names, index, managers)).To(BeTrue())
+			Expect(workerUncovered(worker, Task{}, false, names, index, managers, "")).To(BeTrue())
 		})
 		It("is uncovered when the task declares no existing goal", func() {
 			task.Goals = nil
-			Expect(workerUncovered(worker, task, true, names, index, managers)).To(BeTrue())
+			Expect(workerUncovered(worker, task, true, names, index, managers, "")).To(BeTrue())
 		})
 		It("is uncovered for a manager's own card — no manager sits above it", func() {
-			Expect(workerUncovered(manager, task, true, names, index, managers)).To(BeTrue())
+			Expect(workerUncovered(manager, task, true, names, index, managers, "")).To(BeTrue())
 		})
 		It("is covered when the registry is unreadable, so the board is never flooded", func() {
 			Expect(
-				workerUncovered(worker, task, true, map[string]string{}, index, managers),
+				workerUncovered(worker, task, true, map[string]string{}, index, managers, ""),
 			).To(BeFalse())
 		})
 		It("is covered for an item naming no session", func() {
-			Expect(workerUncovered("", task, true, names, index, managers)).To(BeFalse())
+			Expect(workerUncovered("", task, true, names, index, managers, "")).To(BeFalse())
+		})
+
+		// SC1 — tier 4: a live Fleet Manager covers a goal-less worker.
+		It("is covered by a live Fleet Manager even when the task declares no goal", func() {
+			goalLess := Task{Name: "Fix the Board"}
+			names[fleet] = fleetManagerName
+			alive := func(context.Context, string) bool { return true }
+			fleetSessionID := liveFleetManagerSessionID(context.Background(), names, alive)
+			Expect(fleetSessionID).To(Equal(fleet))
+			Expect(workerUncovered(worker, goalLess, true, names, index, managers, fleetSessionID)).
+				To(BeFalse())
+		})
+		It("is uncovered with no Fleet Manager entry — the same goal-less worker", func() {
+			goalLess := Task{Name: "Fix the Board"}
+			alive := func(context.Context, string) bool { return true }
+			fleetSessionID := liveFleetManagerSessionID(context.Background(), names, alive)
+			Expect(fleetSessionID).To(BeEmpty())
+			Expect(workerUncovered(worker, goalLess, true, names, index, managers, fleetSessionID)).
+				To(BeTrue())
+		})
+		It("is uncovered when the Fleet Manager entry is present but not live", func() {
+			goalLess := Task{Name: "Fix the Board"}
+			names[fleet] = fleetManagerName
+			dead := func(_ context.Context, id string) bool { return id != fleet }
+			fleetSessionID := liveFleetManagerSessionID(context.Background(), names, dead)
+			Expect(fleetSessionID).To(BeEmpty())
+			Expect(workerUncovered(worker, goalLess, true, names, index, managers, fleetSessionID)).
+				To(BeTrue())
+		})
+		It("keeps the Fleet Manager's own card uncovered", func() {
+			goalLess := Task{Name: "Fix the Board"}
+			names[fleet] = fleetManagerName
+			alive := func(context.Context, string) bool { return true }
+			fleetSessionID := liveFleetManagerSessionID(context.Background(), names, alive)
+			Expect(workerUncovered(fleet, goalLess, true, names, index, managers, fleetSessionID)).
+				To(BeTrue())
+		})
+		It("keeps a manager's own card uncovered while the Fleet Manager is live", func() {
+			names[fleet] = fleetManagerName
+			alive := func(context.Context, string) bool { return true }
+			fleetSessionID := liveFleetManagerSessionID(context.Background(), names, alive)
+			Expect(workerUncovered(manager, task, true, names, index, managers, fleetSessionID)).
+				To(BeTrue())
 		})
 	})
 })

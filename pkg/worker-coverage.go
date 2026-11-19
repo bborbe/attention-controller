@@ -42,8 +42,20 @@ import (
 //   - A worker is covered when a live manager's subject is one of its task's
 //     declared goals (`manager_on_chain`). The goal's TOPIC is deliberately not
 //     a rung — a topic manager never parents a worker.
-//   - A manager's own card, and a session with no task, have no relaying parent
-//     above them, so both are uncovered.
+//   - A live **Fleet Manager** — `fleet-board.py`'s `ROOT_NAME`, the root of
+//     the grouping — covers any session with no live ancestor, per
+//     `docs/fleet-surface.md` § Which manager owns a subject, tier 4. The
+//     supervisor's gate relay already routes an unowned gate there
+//     (`gate-owner-filter.py` `route_unowned()`), so a card it can relay must
+//     not be labelled "no live manager can relay it". With the Fleet Manager
+//     live, every card is covered except a manager's own card and the Fleet
+//     Manager's own card.
+//     ⚠️ "Manager" here means a session whose NAME resolves to a goal or topic.
+//     A manager `fleet-board.py` detects only by TAB COLOUR is indistinguishable
+//     from a worker to a name-reading rule, so its card is covered too — the
+//     known gap the parity spec counts rather than hides.
+//   - A manager's own card, and the Fleet Manager's own card, have no relaying
+//     parent above them, so both are uncovered.
 //
 // Known gaps, each counted by the parity spec rather than assumed harmless:
 // a task's hand-authored `managed_by`, a task listed directly in a topic's
@@ -89,13 +101,49 @@ func (c *workerCoverage) Uncovered(
 	}
 	index := newSubjectIndex(c.tasks.SubjectTitles())
 	managers := liveManagerSubjects(ctx, registry, index, c.liveness.IsLive)
+	fleetSessionID := liveFleetManagerSessionID(ctx, registry, c.liveness.IsLive)
 	for _, sessionID := range sessionIDs {
 		task, hasTask := c.tasks.Lookup(sessionID)
-		if workerUncovered(sessionID, task, hasTask, registry, index, managers) {
+		if workerUncovered(sessionID, task, hasTask, registry, index, managers, fleetSessionID) {
 			uncovered[sessionID] = true
 		}
 	}
 	return uncovered
+}
+
+// fleetManagerName mirrors `ROOT_NAME` in `fleet-board.py`: the registry name of
+// the session that is the fleet's root manager — the fallback owner of any
+// subject with no live ancestor (`docs/fleet-surface.md` § Which manager owns a
+// subject, tier 4).
+const fleetManagerName = "Fleet Manager"
+
+// liveFleetManagerSessionID returns the session id of the live Fleet Manager,
+// or "" when the registry holds none.
+//
+// ⚠️ A name match alone is not enough. The registry map is a snapshot the caller
+// passes in, so the entry is re-checked through the liveness checker — reading a
+// stale entry as a live fallback would cover a card nothing can relay.
+func liveFleetManagerSessionID(
+	ctx context.Context,
+	registry map[string]string,
+	isLive func(ctx context.Context, sessionID string) bool,
+) string {
+	for sessionID, name := range registry {
+		// ⚠️ Checked per entry, like liveManagerSubjects: isLive may stat the
+		// registry, and this runs once per page across every registered session.
+		select {
+		case <-ctx.Done():
+			return ""
+		default:
+		}
+		if strings.TrimSpace(name) != fleetManagerName {
+			continue
+		}
+		if isLive(ctx, sessionID) {
+			return sessionID
+		}
+	}
+	return ""
 }
 
 // workerCoverageTruncationMinPrefix is the length below which a registry name
@@ -214,6 +262,7 @@ func workerUncovered(
 	registry map[string]string,
 	index subjectIndex,
 	managers map[string]string,
+	fleetSessionID string,
 ) bool {
 	if sessionID == "" || len(registry) == 0 {
 		return false
@@ -221,6 +270,19 @@ func workerUncovered(
 	if name, ok := registry[sessionID]; ok && index.subject(name) != "" {
 		// A manager is parented to the root, never to a peer manager.
 		return true
+	}
+	if name, ok := registry[sessionID]; ok && strings.TrimSpace(name) == fleetManagerName {
+		// The Fleet Manager is the root; nothing sits above it to relay its own
+		// card, so it stays uncovered. ⚠️ Checked by NAME, not by comparing to
+		// the resolved fleet id: more than one live session can carry this name
+		// (measured 2026-11-19 — two), and each is the root of its own tree.
+		return true
+	}
+	if fleetSessionID != "" {
+		// Tier 4: a live Fleet Manager is the fallback manager for any session
+		// with no live ancestor, so it can relay this card — goal-less,
+		// unbound, or with a task whose goals have no live manager.
+		return false
 	}
 	if !hasTask || len(task.Goals) == 0 {
 		return true
