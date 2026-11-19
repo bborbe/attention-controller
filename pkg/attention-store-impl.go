@@ -131,19 +131,19 @@ func (o paneListerOption) applyAttentionStoreOption(store *attentionStore) {
 	}
 }
 
-// WithSpawnLedgerDir attaches the supervisor spawn ledger the sweep reads to
-// turn a session id into the pane id it was spawned in.
-func WithSpawnLedgerDir(dir string) AttentionStoreOption {
-	return spawnLedgerDirOption{dir: dir}
+// WithSessionPaneLookup attaches the resolver the sweep reads to turn a session
+// id into the pane id and label it was spawned with.
+func WithSessionPaneLookup(lookup SessionPaneLookup) AttentionStoreOption {
+	return sessionPaneLookupOption{lookup: lookup}
 }
 
-type spawnLedgerDirOption struct {
-	dir string
+type sessionPaneLookupOption struct {
+	lookup SessionPaneLookup
 }
 
-func (o spawnLedgerDirOption) applyAttentionStoreOption(store *attentionStore) {
-	if store.spawnLedgerDir == "" {
-		store.spawnLedgerDir = o.dir
+func (o sessionPaneLookupOption) applyAttentionStoreOption(store *attentionStore) {
+	if store.sessionPaneLookup == nil {
+		store.sessionPaneLookup = o.lookup
 	}
 }
 
@@ -180,16 +180,15 @@ type attentionStore struct {
 	// the card's target pane still exists. Nil means the question cannot be
 	// asked, and a reopen then behaves exactly as it did before this field.
 	paneLister PaneLister
-	// spawnLedgerDir is the supervisor's spawn ledger
-	// (`~/.local/state/claude-supervisor/sessions/<sid>.json`), read only to
-	// turn a session id into the pane id it was spawned in.
+	// sessionPaneLookup resolves the pane a session was spawned in. Nil means
+	// the question cannot be asked, and a reopen then behaves as before.
 	//
-	// ⚠️ NOT the Claude Code session registry. That registry deletes an entry
-	// when the session exits, so whenever a session is dead its name is gone
-	// too — a lookup there can never prove a pane is gone. The spawn ledger
-	// records the pane id at spawn time and outlives the session, which is what
-	// makes the proof possible at all.
-	spawnLedgerDir string
+	// ⚠️ It reads the LIVE session-ledger store, never the retired file-backed
+	// spawn directory (`~/.local/state/claude-supervisor/sessions` holds no row
+	// after 2026-10-14) and never the Claude Code session registry (which
+	// deletes an entry on exit, so a dead session's name is gone exactly when
+	// this question is asked).
+	sessionPaneLookup SessionPaneLookup
 }
 
 func (a *attentionStore) Push(ctx context.Context, request PushRequest) (*Item, error) {

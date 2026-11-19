@@ -7,8 +7,6 @@ package pkg_test
 import (
 	"context"
 	"errors"
-	"os"
-	"path/filepath"
 
 	libboltkv "github.com/bborbe/boltkv"
 	libtime "github.com/bborbe/time"
@@ -19,17 +17,37 @@ import (
 	"github.com/bborbe/attention-controller/pkg"
 )
 
+// fakePaneLookup stands in for the live session-ledger store.
+type fakePaneLookup struct {
+	paneID int
+	label  string
+	ok     bool
+}
+
+func (f fakePaneLookup) Lookup(context.Context, string) (int, string, bool) {
+	return f.paneID, f.label, f.ok
+}
+
+// freshDB opens a temp store and registers its close, for the specs that build a
+// second store with a different lookup.
+func freshDB(ctx context.Context) libboltkv.DB {
+	db, err := libboltkv.OpenTemp(ctx)
+	Expect(err).To(BeNil())
+	DeferCleanup(func() { Expect(db.Close()).To(BeNil()) })
+	return db
+}
+
 // A card whose target pane AND session are both provably gone is retired
 // instead of reopened. Reopening it asks the operator to type into a pane that
 // no longer exists — "more useless attention cards". Unprovable is never gone.
 var _ = Describe("Dead-target retire", func() {
 	var (
-		ctx         context.Context
-		store       pkg.AttentionStore
-		checker     *mocks.SessionLivenessChecker
-		panes       *mocks.PaneLister
-		sessionsDir string
-		now         libtime.DateTime
+		ctx     context.Context
+		store   pkg.AttentionStore
+		checker *mocks.SessionLivenessChecker
+		panes   *mocks.PaneLister
+		lookup  fakePaneLookup
+		now     libtime.DateTime
 	)
 
 	BeforeEach(func() {
@@ -38,13 +56,6 @@ var _ = Describe("Dead-target retire", func() {
 		Expect(err).To(BeNil())
 		DeferCleanup(func() { Expect(db.Close()).To(BeNil()) })
 
-		sessionsDir = GinkgoT().TempDir()
-		Expect(os.WriteFile(
-			filepath.Join(sessionsDir, "session-a.json"),
-			[]byte(`{"session_id":"session-a","pane_id":"294"}`),
-			0o600,
-		)).To(Succeed())
-
 		now = libtime.NewCurrentDateTime().Now()
 		clock := libtime.CurrentDateTimeGetterFunc(func() libtime.DateTime { return now })
 
@@ -52,6 +63,7 @@ var _ = Describe("Dead-target retire", func() {
 		checker.IsLiveReturns(false)
 		panes = &mocks.PaneLister{}
 		panes.ListReturns(map[int]pkg.Pane{}, nil)
+		lookup = fakePaneLookup{paneID: 294, label: "Attention Cards Retire", ok: true}
 
 		store = pkg.NewAttentionStore(
 			db,
@@ -59,8 +71,8 @@ var _ = Describe("Dead-target retire", func() {
 			checker,
 			clock,
 			libtime.Duration(15*60*1e9),
+			pkg.WithSessionPaneLookup(lookup),
 			pkg.WithPaneLister(panes),
-			pkg.WithSpawnLedgerDir(sessionsDir),
 		)
 	})
 
@@ -117,7 +129,7 @@ var _ = Describe("Dead-target retire", func() {
 		Expect(got.State).To(Equal(pkg.OpenState), "one live half is not a dead target")
 	})
 
-	It("reopens when the recorded pane still exists", func() {
+	It("reopens when the recorded pane still belongs to the session", func() {
 		panes.ListReturns(map[int]pkg.Pane{
 			294: {PaneID: 294, Title: "✳ Attention Cards Retire"},
 		}, nil)
@@ -127,6 +139,21 @@ var _ = Describe("Dead-target retire", func() {
 		got, err := store.Get(ctx, item.ItemID)
 		Expect(err).To(BeNil())
 		Expect(got.State).To(Equal(pkg.OpenState), "a live pane is not a dead target")
+	})
+
+	It("retires when the pane id was recycled by another session", func() {
+		// ⚠️ The recycled-lease case: the id exists but the title names somebody
+		// else, so `OwnsPane` is false — this session's pane is gone. Membership
+		// alone would have kept the dead card alive forever.
+		panes.ListReturns(map[int]pkg.Pane{
+			294: {PaneID: 294, Title: "✳ Some Other Session"},
+		}, nil)
+		item := park()
+		sweepPastDeadline()
+
+		got, err := store.Get(ctx, item.ItemID)
+		Expect(err).To(BeNil())
+		Expect(got.State).To(Equal(pkg.ClosedState), "a recycled id is not this session's pane")
 	})
 
 	It("reopens when the pane listing fails, because that proves nothing", func() {
@@ -139,16 +166,58 @@ var _ = Describe("Dead-target retire", func() {
 		Expect(got.State).To(Equal(pkg.OpenState), "an unreadable listing must never retire a card")
 	})
 
-	It("reopens when the spawn ledger has no row for the session", func() {
-		// ⚠️ The real dead-session state: the session registry deletes its entry
-		// on exit, and the ledger row is the only thing that survives. No row
-		// means the pane is unknown, which is unprovable, not gone.
-		Expect(os.Remove(filepath.Join(sessionsDir, "session-a.json"))).To(Succeed())
+	It("reopens when the session ledger has no row", func() {
+		lookup = fakePaneLookup{ok: false}
+		store = pkg.NewAttentionStore(
+			freshDB(ctx),
+			pkg.NewItemIDGenerator(),
+			checker,
+			libtime.CurrentDateTimeGetterFunc(func() libtime.DateTime { return now }),
+			libtime.Duration(15*60*1e9),
+			pkg.WithSessionPaneLookup(lookup),
+			pkg.WithPaneLister(panes),
+		)
 		item := park()
 		sweepPastDeadline()
 
 		got, err := store.Get(ctx, item.ItemID)
 		Expect(err).To(BeNil())
 		Expect(got.State).To(Equal(pkg.OpenState), "an unknown pane is unprovable, not gone")
+	})
+
+	It("reopens for a non-session liveness model", func() {
+		store = pkg.NewAttentionStore(
+			freshDB(ctx),
+			pkg.NewItemIDGenerator(),
+			checker,
+			libtime.CurrentDateTimeGetterFunc(func() libtime.DateTime { return now }),
+			libtime.Duration(15*60*1e9),
+			pkg.WithSessionPaneLookup(lookup),
+			pkg.WithPaneLister(panes),
+		)
+		item, err := store.Push(ctx, pkg.PushRequest{
+			ProducerID:      "owner-a",
+			ProducerKind:    pkg.SessionProducerKind,
+			LivenessRef:     pkg.LivenessRef("owner:owner-a"),
+			DedupKey:        "owner-target",
+			InterruptClass:  "pick",
+			Payload:         "Approve?",
+			AnswerMechanism: pkg.MessageAnswerMechanism,
+			Options: pkg.AnswerOptions{
+				{Label: "done — approved", Recommended: true},
+				{Label: "not yet"},
+			},
+		})
+		Expect(err).To(BeNil())
+		_, err = store.Answer(ctx, item.ItemID, "attention-board", "", "", &pkg.Answer{
+			Kind:  pkg.OptionAnswerKind,
+			Value: "done — approved",
+		}, nil, nil)
+		Expect(err).To(BeNil())
+		sweepPastDeadline()
+
+		got, getErr := store.Get(ctx, item.ItemID)
+		Expect(getErr).To(BeNil())
+		Expect(got.State).To(Equal(pkg.OpenState), "an owner ref is never a pane target")
 	})
 })

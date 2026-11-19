@@ -6,9 +6,6 @@ package pkg
 
 import (
 	"context"
-	"encoding/json"
-	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -273,7 +270,7 @@ const RetiredNote = "retired: the pane and session this card was waiting on are 
 // non-session liveness model all answer "unprovable" — and unprovable reopens
 // exactly as before. Retiring on a failed read would delete a live question.
 func (a *attentionStore) targetGone(ctx context.Context, ref LivenessRef) bool {
-	if a.paneLister == nil || a.spawnLedgerDir == "" {
+	if a.paneLister == nil || a.sessionPaneLookup == nil {
 		return false
 	}
 	model, sessionID, err := ref.Parse(ctx)
@@ -285,11 +282,11 @@ func (a *attentionStore) targetGone(ctx context.Context, ref LivenessRef) bool {
 	if a.sessionLivenessChecker.IsLive(ctx, sessionID) {
 		return false
 	}
-	// ⚠️ The pane id comes from the SPAWN LEDGER, never from the session
-	// registry. The registry deletes an entry when a session exits, so at the
-	// one moment this question matters the name is already gone; the ledger
-	// records the pane at spawn time and outlives the session.
-	paneID, ok := readSpawnLedgerPaneID(a.spawnLedgerDir, sessionID)
+	// ⚠️ The pane comes from the LIVE session-ledger store: it records the pane
+	// AND the label at spawn time and outlives the session. The retired
+	// file-backed directory has no row after 2026-10-14, and the session
+	// registry deletes its entry on exit.
+	paneID, label, ok := a.sessionPaneLookup.Lookup(ctx, sessionID)
 	if !ok {
 		return false
 	}
@@ -297,34 +294,44 @@ func (a *attentionStore) targetGone(ctx context.Context, ref LivenessRef) bool {
 	if err != nil {
 		return false
 	}
-	_, alive := panes[paneID]
-	return !alive
+	// ⚠️ Membership alone is NOT proof. A pane id is a recycled lease, so the
+	// title must still name this session — `OwnsPane` is the rule, and it
+	// answers false when the id was reused by somebody else.
+	return !OwnsPane(panes, paneID, label)
 }
 
-// spawnLedgerRecord is the one field this package reads out of the supervisor's
-// spawn ledger row.
-type spawnLedgerRecord struct {
-	PaneID string `json:"pane_id"`
+// SessionPaneLookup resolves the pane a session was spawned in and the label it
+// was spawned with. Both come from the live session-ledger store; `ok` is false
+// when the session has no row, which the caller treats as unprovable.
+type SessionPaneLookup interface {
+	Lookup(ctx context.Context, sessionID string) (paneID int, label string, ok bool)
 }
 
-// readSpawnLedgerPaneID reads the pane id a session was spawned in.
-//
-// Any failure — a missing row, an unparseable one, an empty or non-numeric
-// `pane_id` — reports "not known", which the caller treats as unprovable.
-func readSpawnLedgerPaneID(dir string, sessionID string) (int, bool) {
-	content, err := os.ReadFile(filepath.Join(dir, sessionID+".json"))
-	if err != nil {
-		return 0, false
+// NewLedgerSessionPaneLookup adapts a SessionLedgerStore to SessionPaneLookup.
+func NewLedgerSessionPaneLookup(store SessionLedgerStore) SessionPaneLookup {
+	return &ledgerSessionPaneLookup{store: store}
+}
+
+type ledgerSessionPaneLookup struct {
+	store SessionLedgerStore
+}
+
+func (l *ledgerSessionPaneLookup) Lookup(
+	ctx context.Context,
+	sessionID string,
+) (int, string, bool) {
+	if l.store == nil {
+		return 0, "", false
 	}
-	var record spawnLedgerRecord
-	if err := json.Unmarshal(content, &record); err != nil {
-		return 0, false
+	entry, found, err := l.store.Get(ctx, sessionID)
+	if err != nil || !found {
+		return 0, "", false
 	}
-	id, err := strconv.Atoi(record.PaneID)
-	if err != nil || id <= 0 {
-		return 0, false
+	paneID, convErr := strconv.Atoi(entry.PaneID)
+	if convErr != nil || paneID <= 0 || entry.Label == "" {
+		return 0, "", false
 	}
-	return id, true
+	return paneID, entry.Label, true
 }
 
 // retireDeadTarget closes a card whose target is gone, instead of reopening it.
