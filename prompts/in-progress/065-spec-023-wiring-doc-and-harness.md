@@ -60,7 +60,7 @@ func NewManagerTranscriptSource(
 `GateStates` runs one pass over the given session ids and returns one `ManagerGateState` per session, in the order given. For each session:
    - `statuses, err := readSessionStatuses(ctx, registryDir)` (once per pass, not per session); `registryReadable := err == nil`; `status := statuses[sessionID]`; pass `Status = &status` only when `registryReadable` **and** the session is present, else `nil`.
    - `headlessLive := managerHeartbeatLive(ctx, heartbeats, sessionID, now)`.
-   - `closerKnown, closerBody`: read `transcripts.LastAssistantText(sessionID)`; `!ok` → `closerKnown = false`.
+   - `closerKnown, closerBody`: read `transcripts.LastAssistantText(sessionID)`; `!ok` → `closerKnown = false`. ⚠️ **`closerBody` is the body half of `managerCloserBody(text)` (it returns `(string, bool)`), NOT the raw text** — the raw assistant message contains the `👤 You:` heading and surrounding prose, so feeding it to `managerIsAsk` (which prompt 063 does) reads every panel as an ask and a cleanly-closed session is gated instead of `CLEARED`. The unit specs in 062 feed a bare body and would still pass, so only this wiring line decides it.
    - `pending := transcripts.PendingToolCall(sessionID)` (ignore its bool; an absent call is `""`).
    - `modifiedAt, mtimeOK := transcripts.ModifiedAt(sessionID)`; `frozen := managerTranscriptFrozen(modifiedAt, mtimeOK, now.Time(), managerLiveWindow)`.
    - `tail, _ := readTranscriptWindow(transcripts.Path(sessionID), nil)`; `channelTail, _ := readRecentTail(transcripts.Path(sessionID), managerStuckPermChannelWindow, managerStuckReadMaxBytes)`; `stuck := managerStuckReason(closerBody, tail, channelTail)`.
