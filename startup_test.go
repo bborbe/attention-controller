@@ -17,6 +17,7 @@ import (
 	"github.com/bborbe/errors"
 	libkv "github.com/bborbe/kv"
 	libtime "github.com/bborbe/time"
+	"github.com/golang/glog"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -53,6 +54,50 @@ var _ = Describe("runInitStep", func() {
 			})
 		Expect(err).To(MatchError(ContainSubstring("init step open-db failed")))
 		Expect(err).To(MatchError(ContainSubstring("boom")))
+	})
+
+	It("fails a step that never returns at the bound", func() {
+		old := initStepTimeout
+		initStepTimeout = 50 * time.Millisecond
+		DeferCleanup(func() { initStepTimeout = old })
+
+		block := make(chan struct{})
+		DeferCleanup(func() { close(block) })
+		err := runInitStep(ctx, gate, libtime.NewCurrentDateTime(), "build-task-index",
+			func(context.Context) error {
+				<-block
+				return nil
+			})
+		Expect(err).To(MatchError(
+			ContainSubstring("init step build-task-index did not finish within"),
+		))
+	})
+
+	It("logs action=failed naming the step and the bound", func() {
+		old := initStepTimeout
+		initStepTimeout = 50 * time.Millisecond
+		DeferCleanup(func() { initStepTimeout = old })
+
+		oldStderr := os.Stderr
+		r, w, err := os.Pipe()
+		Expect(err).NotTo(HaveOccurred())
+		os.Stderr = w
+		DeferCleanup(func() { os.Stderr = oldStderr })
+
+		block := make(chan struct{})
+		DeferCleanup(func() { close(block) })
+		_ = runInitStep(ctx, gate, libtime.NewCurrentDateTime(), "build-task-index",
+			func(context.Context) error {
+				<-block
+				return nil
+			})
+		glog.Flush()
+		Expect(w.Close()).To(Succeed())
+		os.Stderr = oldStderr
+		data, err := io.ReadAll(r)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(data)).To(ContainSubstring("init step=build-task-index action=failed"))
+		Expect(string(data)).To(ContainSubstring("did not finish within"))
 	})
 })
 
@@ -134,6 +179,30 @@ var _ = Describe("startup ordering", func() {
 		err := app.initAndServe(nil, gate, func(db libkv.DB) { opened = db })(context.Background())
 		Expect(opened).To(BeNil())
 		Expect(err).To(MatchError(ContainSubstring("init step open-db failed")))
+		isReady, _ := gate.Status()
+		Expect(isReady).To(BeFalse())
+	})
+
+	It("fails the process on a timeout", func() {
+		// Hold the bolt file lock so open-db blocks in bbolt's flock retry loop —
+		// the same shape as a step blocked in a syscall — and prove the bound cuts
+		// it: initAndServe returns, the gate never opens, and the caller exits
+		// non-zero instead of serving "starting" forever.
+		dir := GinkgoT().TempDir()
+		holder, err := libboltkv.OpenDir(context.Background(), dir, boltOpenOptions())
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { _ = holder.Close() })
+
+		old := initStepTimeout
+		initStepTimeout = 50 * time.Millisecond
+		DeferCleanup(func() { initStepTimeout = old })
+
+		app := &application{DataDir: dir}
+		gate := factory.CreateStartupGate(factory.CreateHealthzHandler(), http.NotFoundHandler())
+		var opened libkv.DB
+		err = app.initAndServe(nil, gate, func(db libkv.DB) { opened = db })(context.Background())
+		Expect(opened).To(BeNil())
+		Expect(err).To(MatchError(ContainSubstring("did not finish within")))
 		isReady, _ := gate.Status()
 		Expect(isReady).To(BeFalse())
 	})

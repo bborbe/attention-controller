@@ -330,33 +330,6 @@ func closeDBBounded(db libkv.DB, timeout time.Duration) {
 	}
 }
 
-// runInitStep runs one init step under its name: the gate names it as pending,
-// and its start, finish and duration are logged at default verbosity so a step
-// that hangs is the last `action=start` line in the stderr log.
-func runInitStep(
-	ctx context.Context,
-	gate handler.StartupGate,
-	now libtime.CurrentDateTimeGetter,
-	name string,
-	fn func(ctx context.Context) error,
-) error {
-	gate.Step(name)
-	glog.V(0).Infof("init step=%s action=start", name)
-	start := now.Now()
-	if err := fn(ctx); err != nil {
-		glog.Errorf(
-			"init step=%s action=failed duration=%s error=%v",
-			name, time.Duration(now.Now().Sub(start)), err,
-		)
-		return errors.Wrapf(ctx, err, "init step %s failed", name)
-	}
-	glog.V(0).Infof(
-		"init step=%s action=done duration=%s",
-		name, time.Duration(now.Now().Sub(start)),
-	)
-	return nil
-}
-
 // beginStartJobs marks the last init step, which registers the runner's jobs.
 // Unlike the other steps it is not wrapped in runInitStep: its end is the gate
 // opening, logged by openGate.

@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- fix: **an init step blocked in a syscall now fails the process instead of holding the board at `starting` forever.** `runInitStep` runs its step in its own goroutine and bounds it at `initStepTimeout` (60 s): a step that has not returned logs `init step=<name> action=failed duration=… error=… did not finish within <bound>` and `initAndServe` returns the error, so the process exits non-zero and launchd's `KeepAlive` restarts it. Measured 2026-11-19: `build-task-index` parked in `openat(2)` on the vault for 6 h 37 m at 0 % CPU with no `action=done`, while a fresh process walked the same vault in 2.868 s. The bound sits far above the measured 2.2–2.9 s walk, so a healthy start is unaffected; a step that returns early does so with no added latency. The blocked `openat` itself is not fixed by this change — it converts the silent indefinite hang into a bounded, attributed restart.
+
 ## v0.100.1
 
 - fix: **the starting page renders in the board's dark palette instead of a white document.** The startup gate's `GET /` page is the operator's first sight of the service on every restart, and it served a bare light page (`margin:3em; color:#333` on white) that flashed before the dark board appeared — one surface announcing itself in two different designs. It now carries the board's own tokens (`--bg #111418`, `--panel #1a1f26`, `--border #2a3038`, `--text #e8edf2`, `--muted #8b95a3`), the board's font stack and its 760px column, with the pending init step as a monospace chip in a warn-banded panel and an indeterminate progress bar (suppressed under `prefers-reduced-motion`). The 503 status, the `Retry-After` header, the 2 s meta-refresh and the `starting` JSON body on API routes are unchanged, and the page still names the pending step. Two assertions pin the palette so the page cannot silently return to white.
