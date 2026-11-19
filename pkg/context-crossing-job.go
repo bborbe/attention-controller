@@ -149,7 +149,7 @@ func (j *contextCrossingJob) ScanOnce(ctx context.Context) error {
 	}
 	if !j.book.loaded {
 		if err := j.book.load(ctx); err != nil {
-			return err
+			return errors.Wrap(ctx, err, "load crossing book failed")
 		}
 	}
 	names, err := contextStateNames(ctx, j.contextDir)

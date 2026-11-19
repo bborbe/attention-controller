@@ -149,6 +149,9 @@ func (b *contextCrossingBook) prune(
 ) error {
 	removed := false
 	for sessionID := range b.entries {
+		if err := ctx.Err(); err != nil {
+			return nil
+		}
 		if present[sessionID] {
 			continue
 		}
