@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bborbe/errors"
+	librun "github.com/bborbe/run"
 	libtime "github.com/bborbe/time"
 	"github.com/golang/glog"
 
@@ -31,11 +32,11 @@ var initStepTimeout = 60 * time.Second
 // and its start, finish and duration are logged at default verbosity so a step
 // that hangs is the last `action=start` line in the stderr log.
 //
-// ⚠️ The step runs in its own goroutine so a step that never returns — a
-// syscall the kernel will not release, which no context can cancel — still
-// fails the process at initStepTimeout instead of holding the gate at
-// `starting` forever. The abandoned goroutine is deliberate: the process is
-// exiting, so nothing reads what it would have written.
+// ⚠️ The step runs under librun.Run so a step that never returns — a syscall
+// the kernel will not release, which no context can cancel — still fails the
+// process at initStepTimeout instead of holding the gate at `starting` forever.
+// The abandoned goroutine is deliberate: the process is exiting, so nothing
+// reads what it would have written.
 func runInitStep(
 	ctx context.Context,
 	gate handler.StartupGate,
@@ -46,12 +47,11 @@ func runInitStep(
 	gate.Step(name)
 	glog.V(0).Infof("init step=%s action=start", name)
 	start := now.Now()
-	done := make(chan error, 1)
-	go func() { done <- fn(ctx) }()
+	results := librun.Run(ctx, fn)
 	timer := time.NewTimer(initStepTimeout)
 	defer timer.Stop()
 	select {
-	case err := <-done:
+	case err := <-results:
 		if err != nil {
 			glog.Errorf(
 				"init step=%s action=failed duration=%s error=%v",
