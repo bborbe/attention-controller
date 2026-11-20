@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.106.1
 
 - fix: **the routine-gate settle arm decides a live gate instead of refusing it as `no-routine-rule`.** The policy parsed `question.input.arguments`, a nesting no wrapper sends — the wrapper publishes a FLAT `{"tool_name": ..., "input": {...}}` — so `routineArguments` failed for every gate and `RoutineRule` refused it before the tool was ever looked at. The item-aware Bash rule was therefore unreachable: measured 2026-11-20 on the running daemon, 228,759 `action=hold_routine_gate` lines, every one `rule=no-routine-rule`, zero `tier-*` and zero `bash-*`. `routineArguments` now accepts the flat shape first and keeps the nested one for an older wrapper, the settle-job fixtures build the flat shape, and a spec fails if an item-carrying gate is ever recorded as `no-routine-rule` again
 
