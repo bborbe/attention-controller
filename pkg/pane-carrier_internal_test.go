@@ -221,6 +221,16 @@ var _ = Describe("pane carrier", func() {
 			"Operator answer, via attention board: allow [" + storeID + "]"))
 	})
 
+	It("carries the answer's own answered_at so a re-delivery is distinguishable", func() {
+		delivery.AnswerStamp = "2026-11-19T16:19:12Z"
+		verdict, _ := carrier.TypeIntoPane(ctx, delivery, "run it", false)
+		Expect(verdict).To(Equal(DeliveryOK))
+		Expect(writer.sent[0].text).To(Equal(
+			"Operator answer, via attention board: run it ["+storeID+
+				" @ 2026-11-19T16:19:12Z]"),
+			"the stamp belongs to the answer, so two arrivals of one answer render identically")
+	})
+
 	It("refuses to type into a busy composer", func() {
 		writer.composer[7] = ComposerBusy
 		verdict, reason := carrier.TypeIntoPane(ctx, delivery, "allow", false)
