@@ -311,20 +311,6 @@ func (n *notifyingAttentionStore) SettleAnswer(ctx context.Context, itemID ItemI
 	return item, nil
 }
 
-// CloseUndelivered delegates and signals on success: the card leaving the open
-// set is a board-visible change.
-func (n *notifyingAttentionStore) CloseUndelivered(
-	ctx context.Context,
-	itemID ItemID,
-) (*Item, error) {
-	item, err := n.store.CloseUndelivered(ctx, itemID)
-	if err != nil {
-		return nil, err
-	}
-	n.notifier.Notify()
-	return item, nil
-}
-
 // SweepAnswered delegates and signals ONLY when it closed something.
 //
 // ⚠️ The conditional is the point, not a micro-optimisation. Every other write

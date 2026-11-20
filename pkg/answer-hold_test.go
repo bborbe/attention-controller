@@ -115,15 +115,14 @@ var _ = Describe("Answer hold", func() {
 		Expect(errors.Is(err, pkg.ErrAlreadyAnswered)).To(BeTrue())
 	})
 
-	It("closes an undelivered open card carrying the FAILED marker", func() {
+	It("settles an undelivered card to answered, carrying the FAILED marker", func() {
 		item := push()
 		answer(item)
 
-		// The arm writes the undeliverable `failed` record at the bound, then
-		// closes — the board renders the visible marker only for `failed`
-		// (DeliveryReport.Status == failed), never for `held`. So the close must
-		// keep the `failed` record, which recordCloseAttempt does (it never
-		// overwrites an existing attempt).
+		// The arm writes the undeliverable `failed` record at the bound, then the
+		// card is SETTLED to answered (not closed) — the board renders the visible
+		// marker only for a dimmed answered record with DeliveryReport.Status ==
+		// failed, and a closed card is not on the board at all.
 		_, err := store.RecordAttempt(
 			ctx,
 			item.ItemID,
@@ -132,30 +131,15 @@ var _ = Describe("Answer hold", func() {
 		)
 		Expect(err).To(BeNil())
 
-		closed, err := store.CloseUndelivered(ctx, item.ItemID)
+		settled, err := store.SettleAnswer(ctx, item.ItemID)
 		Expect(err).To(BeNil())
-		Expect(closed.State).To(Equal(pkg.ClosedState))
+		Expect(settled.State).To(Equal(pkg.AnsweredState))
 
 		report, err := store.Delivery(ctx, item.ItemID)
 		Expect(err).To(BeNil())
 		Expect(
 			report.Status,
-		).To(Equal(pkg.FailedStatus), "SC4: the close must carry the visible undeliverable marker")
-	})
-
-	It("records held on a bare close with no prior attempt", func() {
-		item := push()
-		answer(item)
-
-		closed, err := store.CloseUndelivered(ctx, item.ItemID)
-		Expect(err).To(BeNil())
-		Expect(closed.State).To(Equal(pkg.ClosedState))
-
-		// No arm looked, so the close backfills `held` — an honest record, but NOT
-		// the SC4 marker. The bound path writes `failed` first (the spec above).
-		report, err := store.Delivery(ctx, item.ItemID)
-		Expect(err).To(BeNil())
-		Expect(report.Status).To(Equal(pkg.HeldStatus))
+		).To(Equal(pkg.FailedStatus), "SC4: the settled card must carry the visible undeliverable marker")
 	})
 
 	It("pins the delivery bound inside SC4's range", func() {

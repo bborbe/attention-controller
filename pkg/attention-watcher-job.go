@@ -241,12 +241,16 @@ func (j *attentionWatcherJob) DeliverOnce(ctx context.Context) error {
 }
 
 // closeOverdueHeld is the hold's bounded fallback: an open, answered card whose
-// delivery never succeeded must leave the open set past AttentionDeliveryBound,
-// carrying the undeliverable marker the trail writes. It runs over EVERY open
-// answered item, not only the deliverable ones, because a parked card (exhausted
-// attempts) is exactly the population that will never deliver and would otherwise
-// sit on the board forever. The delivery report is re-read so a card that settled
-// in THIS tick is never closed as undelivered.
+// delivery never succeeded must leave the open set past AttentionDeliveryBound.
+//
+// ⚠️ It SETTLES the card to answered, it does not CLOSE it. Settling satisfies
+// both constraints at once: the card leaves the open set (SC4) and the `failed`
+// marker renders on the dimmed answered record — a CLOSED card is not on the board
+// at all, so closing here would hide the very marker SC4 requires. Settling also
+// keeps the answer DELIVERABLE: an answered card is still carried by the retry
+// loop, so a late delivery lands and the answer is not dropped while the worker's
+// gate is still open — which is what closing would do, contradicting
+// AttentionDeliveryBound's own "retry past the bound" contract.
 func (j *attentionWatcherJob) closeOverdueHeld(ctx context.Context, items Items) {
 	for _, item := range items {
 		if err := ctx.Err(); err != nil {
@@ -270,14 +274,15 @@ func (j *attentionWatcherJob) closeOverdueHeld(ctx context.Context, items Items)
 			continue
 		}
 		if report != nil && report.Status == DeliveredStatus {
-			// ⚠️ Delivered but still OPEN: the arm recorded delivery but did not
-			// settle (it can die between the two writes). Settle now so the card
-			// leaves the open set instead of being skipped here forever.
+			// Delivered but still OPEN: the arm recorded delivery but died before
+			// settling. Settle it so the card leaves the open set.
 			j.settleAnswer(ctx, item)
 			continue
 		}
 		j.markUndeliverableIfOverdue(ctx, item, report, "delivery bound exceeded")
-		j.closeUndelivered(ctx, item)
+		// Settle to answered (not close): leaves the open set, renders the failed
+		// marker, and keeps the card deliverable for a late retry.
+		j.settleAnswer(ctx, item)
 	}
 }
 
@@ -669,20 +674,6 @@ func (j *attentionWatcherJob) settleAnswer(ctx context.Context, item Item) {
 		return
 	}
 	glog.V(2).Infof("job=attention-watcher action=settled item=%s", item.ItemID)
-}
-
-// closeUndelivered closes a held card whose delivery never succeeded, logging
-// rather than failing for the same reason settleAnswer does.
-func (j *attentionWatcherJob) closeUndelivered(ctx context.Context, item Item) {
-	if _, err := j.store.CloseUndelivered(ctx, item.ItemID); err != nil {
-		glog.Warningf(
-			"job=attention-watcher action=close_undelivered_error item=%s error=%v",
-			item.ItemID,
-			err,
-		)
-		return
-	}
-	glog.V(2).Infof("job=attention-watcher action=closed_undelivered item=%s", item.ItemID)
 }
 
 // recordRetry writes the trail entry for an answer this arm looked at and could

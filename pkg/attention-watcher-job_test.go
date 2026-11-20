@@ -351,9 +351,10 @@ var _ = Describe("attention watcher delivery job", func() {
 
 	It("closes an overdue undelivered held card and writes the failed marker", func() {
 		// Job-level coverage for closeOverdueHeld: an open answered card past the
-		// bound with no delivered attempt must get the failed marker and be closed.
-		// LivenessRef is cleared so the deliver path skips it and only the overdue
-		// fallback acts.
+		// bound with no delivered attempt must get the failed marker and be SETTLED
+		// to answered (leaving the open set, keeping the answer deliverable), not
+		// closed. LivenessRef is cleared so the deliver path skips it and only the
+		// overdue fallback acts.
 		held := answeredItem("item-1", "operator", pkg.Decision("allow"))
 		held.State = pkg.OpenState
 		held.LivenessRef = ""
@@ -375,8 +376,8 @@ var _ = Describe("attention watcher delivery job", func() {
 			}
 		}
 		Expect(wroteFailed).To(BeTrue(), "the visible failed marker must be written")
-		Expect(store.CloseUndeliveredCallCount()).To(Equal(1),
-			"the overdue undelivered card must be closed")
+		Expect(store.SettleAnswerCallCount()).To(Equal(1),
+			"the overdue undelivered card must be settled to answered, not closed")
 	})
 
 	It("keeps the pane path for a tab session", func() {
