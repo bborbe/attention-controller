@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.107.1
 
 - fix: **a `sweep-gate` card names a manager only when that manager is live.** Route (b) made the card carry its subject page's `claude_session_id` as `--producer-id`, which is right when the manager is running and useless when it is not: `gate-owner-filter.py`'s hop 3b drops a card as `peer-manager-own` only when the named session is a manager **and** is in the supervisor's live set, so a named-but-dead manager falls through to `route_to_fleet()` and reads `unowned-fleet` — deliberately, because a dead manager cannot act on its own gate. Measured 2026-11-19: three real cards named `956f6f82…` and `2d775733…`, neither of which had a heartbeat, so all three still reached the fleet tier while the log claimed an owner. The job now checks the **same session registry the filter reads** (`~/.claude/sessions/*.json`, matched on `sessionId`/`session_id` exactly as `live_ids()` does) and falls back to the constant `sweep-gate` when the session is not registered, which is the honest unroutable class. Deliberately the same source, not the supervisor's heartbeat store: a live tab manager can have no heartbeat, and a liveness rule that disagreed with the filter's would clear owners the filter considers live. The filter's fail-open is untouched.
 
