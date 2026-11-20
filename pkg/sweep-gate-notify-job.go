@@ -465,8 +465,12 @@ type sweepGateNotifyJob struct {
 	poster     SweepGateCardPoster
 	waker      SweepGateWaker
 	stateDir   string
-	interval   time.Duration
-	now        libtime.CurrentDateTimeGetter
+	// liveRegistryDir is the session registry the owner filter reads. Empty
+	// falls back to sweepGateLiveRegistryDir(); it is a field so a spec can
+	// point it at a temp dir instead of the machine's own registry.
+	liveRegistryDir string
+	interval        time.Duration
+	now             libtime.CurrentDateTimeGetter
 }
 
 // run is the loop shape every in-process job in this repo shares: a ticker and
@@ -1016,6 +1020,23 @@ func (j *sweepGateNotifyJob) postCard(
 	)
 
 	owner := sweepGateOwnerSession(subject)
+	registryDir := j.liveRegistryDir
+	if registryDir == "" {
+		registryDir = sweepGateLiveRegistryDir()
+	}
+	if !sweepGateLiveSession(registryDir, owner) {
+		// A resolved-but-dead owner is worse than none: the filter would read the
+		// card as unowned anyway, and the log would claim an owner that cannot act.
+		if owner != "" {
+			sweepGateNotifyInfof(
+				"job=%s action=owner_not_live subject=%s owner=%s",
+				sweepGateNotifyJobName,
+				subject.Name,
+				owner,
+			)
+		}
+		owner = ""
+	}
 	output, err := j.poster.Post(ctx, card, owner)
 	if err != nil {
 		sweepGateNotifyErrorf(
@@ -1697,81 +1718,6 @@ func (p *sweepGateCommandAdhocPass) Run(
 		"run sweep gate ad-hoc pass '%s' failed",
 		p.script,
 	)
-}
-
-// sweepGateOwnerSession resolves the session that owns `subject`: the
-// `claude_session_id` on the subject's own page.
-//
-// ⚠️ Why it exists. The owner filter routes a card by the session the item
-// names — `evaluate()` calls `session_for_pane()`, then `verdict()` — and a
-// `sweep-gate` card names the cron, which resolves no owner. The class is
-// therefore fixed by the producer's identity: every such card is routed to the
-// Fleet Manager, which can act on none of them, and no property of the subject
-// can change it. Naming the subject's goal manager instead is what puts the
-// card in front of the manager who can act on it.
-//
-// An empty result is a real answer, not a failure: a topic page, or a goal page
-// carrying no `claude_session_id`, resolves no owner, and the card then posts
-// under the constant `sweep-gate` and reads `unowned-fleet` — the degrade the
-// board shows rather than a silence.
-//
-// ⚠️ It reads the id and does not judge it: a stale id left by a manager that
-// has since exited is passed through as-is, and the liveness decision stays
-// where it already lives — the owner filter, which resolves the named session
-// against the ledger. Second-guessing it here would put a second liveness rule
-// in a second language.
-func sweepGateOwnerSession(subject SweepGateSubject) string {
-	// ⚠️ The two page folders, not `subject.Branch`: the enumerator reports the
-	// branch as a KIND (`topic`), which is not a directory name.
-	for _, dir := range []string{goalDirName, topicDirName} {
-		content, err := os.ReadFile(filepath.Join(subject.Vault, dir, subject.Name+".md"))
-		if err != nil {
-			continue
-		}
-		if id := sweepGateOwnerID(frontmatterValue(content, taskSessionKey)); id != "" {
-			return id
-		}
-	}
-	return ""
-}
-
-// sweepGateOwnerID accepts a frontmatter scalar only when it is plausibly a
-// session id.
-//
-// `frontmatterValue` returns the raw scalar, so an explicit YAML null reads as
-// the literal `null` and a tilde as `~`; either would otherwise be posted as a
-// producer id and route the card to a session that never existed. The check is
-// deliberately loose — reject the null spellings, a leading `-` (which an
-// argument parser would read as a flag) and any embedded whitespace — rather
-// than pinning a UUID shape, because the id's shape is the vault's to define.
-func sweepGateOwnerID(value string) string {
-	id := strings.Trim(strings.TrimSpace(value), `"'`)
-	switch strings.ToLower(id) {
-	case "", "null", "~":
-		return ""
-	}
-	if strings.HasPrefix(id, "-") || strings.ContainsAny(id, " \t\r\n") {
-		return ""
-	}
-	return id
-}
-
-// sweepGateProducerID is the producer id a card is posted under: the owner
-// session when the subject resolves one, the constant otherwise.
-func sweepGateProducerID(owner string) string {
-	if owner != "" {
-		return owner
-	}
-	return sweepGateCardProducerID
-}
-
-// sweepGateOwnerLabel renders an owner for the log line, so an unresolved
-// subject is named rather than leaving an empty field that reads as truncation.
-func sweepGateOwnerLabel(owner string) string {
-	if owner == "" {
-		return "unresolved"
-	}
-	return owner
 }
 
 // NewSweepGateCommandCardPoster builds the poster over attention-ask.py.
