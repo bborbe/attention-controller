@@ -26,16 +26,16 @@ import (
 
 const bashSessionID = "11111111-2222-3333-4444-555555555555"
 
-// bashQuestion builds the wrapper question for a Bash gate.
+// bashQuestion builds the wrapper's question object for a Bash gate.
+//
+// ⚠️ FLAT, as the wrapper publishes it — `tool_name` beside `input`, never
+// under an `input.arguments` nesting. A fixture in the nested shape would let
+// the settle arm pass its tests while refusing every live gate.
 func bashQuestion(requestID string, command string) []byte {
 	raw, err := json.Marshal(map[string]any{
 		"request_id": requestID,
-		"input": map[string]any{
-			"arguments": map[string]any{
-				"tool_name": "Bash",
-				"input":     map[string]any{"command": command},
-			},
-		},
+		"tool_name":  "Bash",
+		"input":      map[string]any{"command": command},
 	})
 	Expect(err).NotTo(HaveOccurred())
 	return raw
@@ -730,6 +730,35 @@ var _ = Describe("default routine policy", func() {
 		Expect(wrapper.answered).To(Equal([]string{bashSessionID + ":allow"}))
 		_, _, _, outcome := store.RecordAttemptArgsForCall(0)
 		Expect(outcome).To(Equal(pkg.DeliveredOutcome))
+	})
+
+	// SC4 regression guard: an item-carrying gate in the wrapper's own FLAT
+	// question shape must be decided by its tier. The defect this covers is
+	// every such gate being refused as `no-routine-rule` because the policy
+	// parsed an `input.arguments` nesting no producer sends — the classifier
+	// was never consulted, so the item-aware path was unreachable.
+	It("decides an item-carrying Bash gate by its tier, never as no-routine-rule", func() {
+		writeDefaultClassifier("allowlist")
+		settle(pkg.NewDefaultRoutinePolicy(""))
+		// A delivered gate records the watcher carrier; a fall-through records
+		// `no-routine-rule` and holds. Only the tier path can answer `allow`.
+		_, _, carrier, outcome := store.RecordAttemptArgsForCall(0)
+		Expect(carrier).NotTo(Equal("no-routine-rule"))
+		Expect(outcome).To(Equal(pkg.DeliveredOutcome))
+		Expect(wrapper.answered).To(Equal([]string{bashSessionID + ":allow"}))
+	})
+
+	// Positive control for the guard above: the tier path still returns a tier,
+	// and a non-allowlist tier is still held — so the assertion cannot pass by
+	// the rule being renamed, nor by the policy allowing everything.
+	It("returns a tier for a routine Bash call and holds a non-allowlist one", func() {
+		writeDefaultClassifier("manager")
+		settle(pkg.NewDefaultRoutinePolicy(""))
+		Expect(markerLines(marker)).To(Equal(1))
+		Expect(wrapper.answered).To(BeEmpty())
+		_, _, carrier, outcome := store.RecordAttemptArgsForCall(0)
+		Expect(carrier).To(Equal("tier-manager"))
+		Expect(outcome).To(Equal(pkg.HeldOutcome))
 	})
 
 	It("runs the classifier with python's isolated mode", func() {

@@ -715,14 +715,23 @@ func (p *routinePolicy) RoutineRule(question json.RawMessage, cwd string) (strin
 	return "no-routine-rule", false
 }
 
-// routineArguments returns the question's `input.arguments` object.
+// routineArguments returns the question's tool name and tool input as one map.
 //
-// ⚠️ Both are isinstance-guarded, not just `.get`-ed. A payload whose `input`
-// or `arguments` is a truthy non-object would panic inside the settle loop and
-// abort the whole poll, skipping every later arm.
+// ⚠️ The wrapper publishes a FLAT question — `{"tool_name": "Bash", "input":
+// {...}}` — and that is the shape every live gate carries. This function once
+// read only `input.arguments`, a nesting no producer sends: every gate failed
+// the parse and was refused as `no-routine-rule` before the tool was ever
+// looked at, so the item-aware Bash rule could never be reached. The nested
+// form stays accepted because an older wrapper sent it and this arm's older
+// fixtures carry it; a payload matching neither fails closed.
+//
+// ⚠️ The shape checks are isinstance-guarded, not just `.get`-ed. A payload
+// whose `input` or `arguments` is a truthy non-object would panic inside the
+// settle loop and abort the whole poll, skipping every later arm.
 func routineArguments(question json.RawMessage) (map[string]any, bool) {
 	var envelope struct {
-		Input map[string]any `json:"input"`
+		ToolName string         `json:"tool_name"`
+		Input    map[string]any `json:"input"`
 	}
 	if len(question) == 0 {
 		return nil, false
@@ -733,6 +742,11 @@ func routineArguments(question json.RawMessage) (map[string]any, bool) {
 	if envelope.Input == nil {
 		return nil, false
 	}
+	// Flat: the wrapper's own question object, the shape every live gate carries.
+	if envelope.ToolName != "" {
+		return map[string]any{"tool_name": envelope.ToolName, "input": envelope.Input}, true
+	}
+	// Nested: `{"input": {"arguments": {"tool_name": ..., "input": {...}}}}`.
 	args, ok := envelope.Input["arguments"].(map[string]any)
 	return args, ok
 }

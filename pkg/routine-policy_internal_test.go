@@ -13,15 +13,16 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// routineQuestion builds a wrapper question envelope for a tool call.
+// routineQuestion builds the wrapper's question object for a tool call.
+//
+// ⚠️ The shape is FLAT — `{"tool_name": ..., "input": {...}}` — because that is
+// what the wrapper publishes on `/api/1.0/sessions/<id>`. A fixture that nests
+// it under `input.arguments` tests a payload no producer sends, which is how
+// the arm shipped reading every gate as `no-routine-rule`.
 func routineQuestion(tool string, call map[string]any) json.RawMessage {
 	raw, err := json.Marshal(map[string]any{
-		"input": map[string]any{
-			"arguments": map[string]any{
-				"tool_name": tool,
-				"input":     call,
-			},
-		},
+		"tool_name": tool,
+		"input":     call,
 	})
 	Expect(err).NotTo(HaveOccurred())
 	return raw
@@ -95,6 +96,39 @@ var _ = Describe("routine policy", func() {
 		)
 		Expect(allowed).To(BeFalse())
 		Expect(rule).To(Equal("no-routine-rule"))
+	})
+
+	// The wrapper publishes the FLAT question and the nested one is a legacy
+	// shape this arm still accepts. Both must reach the same decision: a policy
+	// that parses only the nesting refuses every live gate, which is exactly
+	// the defect that made the item-aware Bash rule unreachable.
+	It("parses the wrapper's flat question", func() {
+		rule, allowed := policy.RoutineRule(
+			routineQuestion(
+				"Read",
+				map[string]any{"file_path": filepath.Join(workspace, "main.go")},
+			),
+			workspace,
+		)
+		Expect(allowed).To(BeTrue())
+		Expect(rule).To(Equal("routine-tool:Read"))
+	})
+
+	It("still parses the legacy nested question", func() {
+		raw, err := json.Marshal(map[string]any{
+			"input": map[string]any{
+				"arguments": map[string]any{
+					"tool_name": "Read",
+					"input": map[string]any{
+						"file_path": filepath.Join(workspace, "main.go"),
+					},
+				},
+			},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		rule, allowed := policy.RoutineRule(raw, workspace)
+		Expect(allowed).To(BeTrue())
+		Expect(rule).To(Equal("routine-tool:Read"))
 	})
 
 	It("refuses a Write when no routine root is declared", func() {
