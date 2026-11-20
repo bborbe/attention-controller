@@ -123,47 +123,18 @@ func (b *contextCrossingBook) mark(ctx context.Context, record ContextCrossingRe
 
 // clear re-arms the session, so its next crossing raises a fresh card.
 //
-// ⚠️ It is called on a real sub-threshold reading and on a session that is not
-// live — never on a zero reading. A zero is "nothing measured yet", not "the
-// context emptied", and treating it as a re-arm would mint a second card for a
-// crossing that never ended (see readContextCrossing).
+// ⚠️ It is called on ONE thing only: a real sub-threshold reading. Not on a
+// zero reading — a zero is "nothing measured yet", not "the context emptied" —
+// and not on a session that is not live, because a dead session's registry row
+// flickers and each flicker would re-mint at an unchanged token count (measured
+// 2026-11-20: six cards for one session across 14 h at a constant 602 170
+// tokens). A session that never drops below the threshold has not left its
+// crossing, however long it sits there.
 func (b *contextCrossingBook) clear(ctx context.Context, sessionID string) error {
 	if _, ok := b.entries[sessionID]; !ok {
 		return nil
 	}
 	delete(b.entries, sessionID)
-	return b.save(ctx)
-}
-
-// prune drops entries whose session file is gone and whose session is not live.
-//
-// ⚠️ Both conditions are required. A state file that has not been rewritten in
-// a while is normal for a quiet live session, so absence of a file alone must
-// not re-arm it; and a session that is not live cannot be cued, so its entry is
-// pure growth. A resumed session keeps its id, so dropping the entry is what
-// lets a resumed run receive its own card.
-func (b *contextCrossingBook) prune(
-	ctx context.Context,
-	present map[string]bool,
-	liveness SessionLivenessChecker,
-) error {
-	removed := false
-	for sessionID := range b.entries {
-		if err := ctx.Err(); err != nil {
-			return nil
-		}
-		if present[sessionID] {
-			continue
-		}
-		if liveness.IsLive(ctx, sessionID) {
-			continue
-		}
-		delete(b.entries, sessionID)
-		removed = true
-	}
-	if !removed {
-		return nil
-	}
 	return b.save(ctx)
 }
 

@@ -161,7 +161,7 @@ var _ = Describe("ContextCrossingJob", func() {
 		Expect(sink.raised).To(Equal([]string{"sid-1"}))
 	})
 
-	It("re-arms a session that is no longer live", func() {
+	It("does not re-raise when liveness drops and returns at an unchanged reading", func() {
 		writeState("a.json", "sid-1", 600000)
 		liveness := &switchableLiveness{live: true}
 		one := pkg.NewContextCrossingJob(
@@ -179,7 +179,10 @@ var _ = Describe("ContextCrossingJob", func() {
 		liveness.live = true
 		Expect(one.ScanOnce(ctx)).To(Succeed())
 
-		Expect(sink.raised).To(Equal([]string{"sid-1", "sid-1"}))
+		// ⚠️ A liveness blip is not a crossing boundary: the entry survives it,
+		// so the unchanged reading raises nothing. Clearing here was the defect
+		// measured 2026-11-20 (six cards for one session at a constant count).
+		Expect(sink.raised).To(Equal([]string{"sid-1"}))
 	})
 })
 
