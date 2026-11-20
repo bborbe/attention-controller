@@ -837,6 +837,31 @@ var _ = Describe("sweepGateOwnerSession", func() {
 	})
 })
 
+var _ = Describe("sweepGateLiveSession", func() {
+	var dir string
+
+	BeforeEach(func() {
+		dir = GinkgoT().TempDir()
+	})
+
+	It("reports a session with a heartbeat as live", func() {
+		Expect(os.WriteFile(filepath.Join(dir, "aaaa1111.json"), []byte("{}"), 0o600)).To(Succeed())
+		Expect(sweepGateLiveSession(dir, "aaaa1111")).To(BeTrue())
+	})
+
+	It("reports a session with no heartbeat as not live", func() {
+		Expect(sweepGateLiveSession(dir, "aaaa1111")).To(BeFalse())
+	})
+
+	It("reports an empty session id as not live", func() {
+		Expect(sweepGateLiveSession(dir, "")).To(BeFalse())
+	})
+
+	It("reports an unreadable live dir as not live", func() {
+		Expect(sweepGateLiveSession("", "aaaa1111")).To(BeFalse())
+	})
+})
+
 var _ = DescribeTable("sweepGateProducerID",
 	func(owner, expected string) {
 		Expect(sweepGateProducerID(owner)).To(Equal(expected))

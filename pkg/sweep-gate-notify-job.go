@@ -1016,6 +1016,11 @@ func (j *sweepGateNotifyJob) postCard(
 	)
 
 	owner := sweepGateOwnerSession(subject)
+	if !sweepGateLiveSession(sweepGateLiveDir(), owner) {
+		// A resolved-but-dead owner is worse than none: the filter would read the
+		// card as unowned anyway, and the log would claim an owner that cannot act.
+		owner = ""
+	}
 	output, err := j.poster.Post(ctx, card, owner)
 	if err != nil {
 		sweepGateNotifyErrorf(
@@ -1754,6 +1759,36 @@ func sweepGateOwnerID(value string) string {
 		return ""
 	}
 	return id
+}
+
+// sweepGateLiveDir is the supervisor's heartbeat store — the same default
+// `manager-attention-watch.py` reads, and the only input that makes an owner
+// actionable.
+func sweepGateLiveDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".local", "state", "claude-supervisor", "live")
+}
+
+// sweepGateLiveSession reports whether `sessionID` has a heartbeat in the live
+// store at `liveDir`.
+//
+// ⚠️ Why the card cares. The owner filter's hop 3b drops a card as
+// `peer-manager-own` only when the named session is a manager **and** is in the
+// live set; a named session with no heartbeat falls through to
+// `route_to_fleet()` and reads `unowned-fleet` — deliberately, because a dead
+// manager cannot act on its own gate. So naming a dead manager buys nothing and
+// misattributes the card: the row reads unroutable while claiming an owner.
+// Naming only live sessions leaves that fail-open untouched and makes the
+// attribution mean what it says.
+func sweepGateLiveSession(liveDir, sessionID string) bool {
+	if sessionID == "" || liveDir == "" {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(liveDir, sessionID+".json"))
+	return err == nil
 }
 
 // sweepGateProducerID is the producer id a card is posted under: the owner

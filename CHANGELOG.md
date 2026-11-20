@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- fix: **a `sweep-gate` card names a manager only when that manager is live.** Route (b) made the card carry its subject page's `claude_session_id` as `--producer-id`, which is right when the manager is running and useless when it is not: `gate-owner-filter.py`'s hop 3b drops a card as `peer-manager-own` only when the named session is a manager **and** is in the supervisor's live set, so a named-but-dead manager falls through to `route_to_fleet()` and reads `unowned-fleet` — deliberately, because a dead manager cannot act on its own gate. Measured 2026-11-19: three real cards named `956f6f82…` and `2d775733…`, neither of which had a heartbeat, so all three still reached the fleet tier while the log claimed an owner. The job now checks `~/.local/state/claude-supervisor/live/<id>.json` at post time and falls back to the constant `sweep-gate` when there is no heartbeat, which is the honest unroutable class. The filter's fail-open is untouched.
+
 ## v0.106.1
 
 - fix: raise the background-job runner capacity from 20 to 22, one above the twenty-one `runner.Add` sites reachable in the maximal configuration. With the store API and jump listeners enabled, the v0.106.0 watcher reaper filled the capacity-20 buffer, so the Mac board hung in `start-jobs` and `/readiness` stayed 503 (the deploy rolled back)
