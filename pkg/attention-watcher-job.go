@@ -41,13 +41,19 @@ const AttentionDeliveryRetryBackoff = 5 * time.Minute
 // clock at the first retry would quietly widen the bound the operator was
 // promised.
 //
-// ⚠️ It is a MARKER, not a stop. The arm keeps retrying past it, because an
-// answer dropped while its gate stays open is worse than a late one (the
-// 2026-10-04 age-gate lesson); the marker is what tells the operator to look
-// instead of waiting blind. The Python watcher carried this bound on the booked
-// arm only and never on the unbooked one — measured 2026-11-14, an unbooked
-// answer retried 34 minutes unmarked. The port unified both arms into this one,
-// so this constant now governs every retry.
+// ⚠️ It is a MARKER, not a stop for the retry loop. The arm keeps retrying past
+// it, because an answer dropped while its gate stays open is worse than a late
+// one (the 2026-10-04 age-gate lesson); the marker is what tells the operator to
+// look instead of waiting blind. The Python watcher carried this bound on the
+// booked arm only and never on the unbooked one — measured 2026-11-14, an
+// unbooked answer retried 34 minutes unmarked. The port unified both arms into
+// this one, so this constant now governs every retry.
+//
+// ⚠️ It is ALSO the hold's close bound: `closeOverdueHeld` closes a held
+// (open + answered) card past this value, carrying the `failed` marker, so a card
+// the retry loop never carried leaves the board instead of staying open forever.
+// The retry loop still runs for a card that is being retried; the close is the
+// terminal fallback once the bound is passed and no `delivered` attempt exists.
 //
 // It is defined from AttentionDeliveryRetryBackoff rather than repeating the
 // literal, so the tree carries exactly ONE five-minute value and a spec can fail
