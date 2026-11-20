@@ -303,14 +303,36 @@ func (i *Item) parkForEvidence(
 	for _, entry := range done {
 		claims = append(claims, EvidenceClaimsFromText(AnswerText(entry))...)
 	}
+	claims = uniqueStrings(claims)
+	// ⚠️ An empty claim set does NOT park: the answer stands as given and the
+	// item keeps the `answered` state the caller stamped before this call.
+	//
+	// A `done` that names no artifact is the case the probe can never check, so
+	// parking it could never resolve — the sweep would reopen it at every
+	// deadline, and each reopen clears AnsweredBy / AnsweredClient / Answer, so
+	// the loop also destroys its own record of who answered. Measured 2026-11-20:
+	// one card reopened 27 times in 22 hours, 30 minutes apart, on an answer
+	// (`done` on "run /mcp → Reconnect") that names nothing a probe can see.
+	//
+	// The protection this path exists for is NOT weakened. A done-class answer
+	// that DOES name a PR or a path still parks and is still verified, so
+	// `done — merged https://…` cannot close an unmerged PR. What changed is only
+	// the answer the probe could never judge.
+	if len(claims) == 0 {
+		return
+	}
 	i.State = AwaitingEvidenceState
-	i.EvidenceClaims = uniqueStrings(claims)
+	i.EvidenceClaims = claims
 	i.EvidenceDeadline = NewEvidenceDeadline(now)
 }
 
 // EvidenceAllObserved reports whether EVERY claim is visible. An empty claim set
 // is never observed: the store does not treat "the answer named nothing" as
 // satisfied, because that is the case it cannot check.
+//
+// ⚠️ Since an empty claim set no longer parks (see parkForEvidence), this branch
+// is a guard for an item that is already parked with none — one written before
+// that rule — rather than the live path it once was.
 func EvidenceAllObserved(ctx context.Context, claims []string, run EvidenceRunner) bool {
 	if len(claims) == 0 {
 		return false
