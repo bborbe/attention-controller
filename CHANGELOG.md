@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- fix: **the routine-gate settle arm decides a live gate instead of refusing it as `no-routine-rule`.** The policy parsed `question.input.arguments`, a nesting no wrapper sends — the wrapper publishes a FLAT `{"tool_name": ..., "input": {...}}` — so `routineArguments` failed for every gate and `RoutineRule` refused it before the tool was ever looked at. The item-aware Bash rule was therefore unreachable: measured 2026-11-20 on the running daemon, 228,759 `action=hold_routine_gate` lines, every one `rule=no-routine-rule`, zero `tier-*` and zero `bash-*`. `routineArguments` now accepts the flat shape first and keeps the nested one for an older wrapper, the settle-job fixtures build the flat shape, and a spec fails if an item-carrying gate is ever recorded as `no-routine-rule` again
+
 ## v0.106.0
 
 - feat: add a watcher reaper job that sends SIGTERM every 5 min to running copies of retired claude-supervisor watcher scripts (`-retired-watchers`, default `manager-attention-watch,permission-answer-poll`; empty disables it, and it is off when `SESSION_LIVENESS=off`), so a session still on an old plugin body no longer keeps them alive

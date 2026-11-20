@@ -113,7 +113,7 @@ var _ = Describe("routine gate settle job", func() {
 				Question: &pkg.WrapperQuestion{
 					RequestID: "req-1",
 					Raw: []byte(
-						`{"request_id":"req-1","input":{"arguments":{"tool_name":"Read","input":{"file_path":"/tmp/ws/a.go"}}}}`,
+						`{"request_id":"req-1","tool_name":"Read","input":{"file_path":"/tmp/ws/a.go"}}`,
 					),
 				},
 			},

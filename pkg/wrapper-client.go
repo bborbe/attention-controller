@@ -49,12 +49,13 @@ type WrapperQuestion struct {
 	// race is closed: the caller decided against one gate, and the answer must
 	// land on that same gate.
 	RequestID string `json:"request_id"`
-	// Input is the question payload, which carries the tool name and its
-	// arguments the routine policy evaluates.
+	// Input is the tool call's own input — `{"command": ...}` for a Bash gate —
+	// which the routine policy evaluates beside the tool name.
 	Input json.RawMessage `json:"input"`
 	// Raw is the whole question object as the wrapper sent it, kept so the
 	// routine policy sees the envelope it was written for
-	// (`question.input.arguments`) rather than a re-marshalled subset.
+	// (`question.tool_name` beside `question.input`) rather than a
+	// re-marshalled subset.
 	Raw json.RawMessage `json:"-"`
 }
 
