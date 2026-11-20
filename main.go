@@ -1272,6 +1272,7 @@ func (a *application) addMaintenanceJobs(
 	runner.Add(ctx, sessionHeartbeatStore.Run)
 	return a.addInProcessJobs(
 		ctx, runner, store, panes, liveness, provenance, sessionLedger, notifier,
+		sessionHeartbeatStore,
 	)
 }
 
@@ -1329,6 +1330,7 @@ func (a *application) addInProcessJobs(
 	provenance pkg.ProvenanceResolver,
 	sessionLedger pkg.SessionLedgerStore,
 	notifier pkg.AttentionChangeNotifier,
+	heartbeats pkg.SessionHeartbeatStore,
 ) error {
 	runner.Add(ctx, pkg.NewMetricsPushJob(
 		prometheus.DefaultGatherer,
@@ -1392,6 +1394,7 @@ func (a *application) addInProcessJobs(
 	// linter's length bound, and each job's rationale belongs beside the job.
 	return a.addAttentionWatcherJobs(
 		ctx, runner, store, panes, liveness, provenance, sessionLedger, notifier,
+		heartbeats,
 	)
 }
 
@@ -1415,12 +1418,12 @@ func (a *application) addAttentionWatcherJobs(
 	provenance pkg.ProvenanceResolver,
 	sessionLedger pkg.SessionLedgerStore,
 	notifier pkg.AttentionChangeNotifier,
+	heartbeats pkg.SessionHeartbeatStore,
 ) error {
 	stateDir, contextDir, transcriptRoot, err := a.attentionWatcherDirs(ctx)
 	if err != nil {
 		return err
 	}
-
 	// One pane text writer, three consumers: the carrier types into a pane, the
 	// menu arm sends its key sequence, and the settle arm reads a session's tty.
 	// Two writers would be two subprocess paths whose failure semantics could
@@ -1508,19 +1511,15 @@ func (a *application) addAttentionWatcherJobs(
 	// ⚠️ The book lives under the attention state dir, not the context-state dir:
 	// the statusline owns the latter, and its files are the readings this job
 	// judges rather than a place this job writes.
-	runner.Add(ctx, pkg.NewContextCrossingJob(
-		contextDir,
-		pkg.NewStoreContextCrossingSink(store, nil),
-		liveness,
-		pkg.ContextCrossingTokens,
-		pkg.ContextCrossingInterval,
-		filepath.Join(stateDir, pkg.ContextCrossingBookFileName),
-	).Run)
+	a.addContextCrossingJob(ctx, runner, store, liveness, stateDir, contextDir)
 	// The wake job is the second writer on the same books (the pane carrier the
 	// delivery arm already types through), so it is registered HERE and not on the
 	// cluster listener, where panes, the registry and the ledger do not exist.
+	//
+	// ⚠️ The transcript source attaches via OPTION, so registrations stay at one.
 	runner.Add(ctx, pkg.NewManagerWakeJob(store, sessionLedger, provenance, carrier, notifier,
-		libtime.NewCurrentDateTime(), pkg.NewManagerWakeEmissionLog()).Run)
+		libtime.NewCurrentDateTime(), pkg.NewManagerWakeEmissionLog(),
+		a.managerWakeTranscriptOption(ctx, stateDir, transcriptRoot, heartbeats)).Run)
 	registerCompactTrio(ctx, runner, store, carrier, writer, transcriptRoot)
 
 	a.logAttentionWatcherRegistration()
@@ -1539,36 +1538,6 @@ func (a *application) logAttentionWatcherRegistration() {
 		"job=attention-watcher action=registered arms=prune,ingest,deliver,menu,headless,crossing,wake,compact-trio settle=%t",
 		a.AttentionWrapperURL != "",
 	)
-}
-
-// attentionWatcherDirs resolves the three directories the ported jobs read.
-//
-// ⚠️ Each falls back to its own default rather than sharing one: the event logs,
-// the statusline context files and the transcripts have different owners and
-// different lifetimes, so a bad setting must fail the job that reads it and not
-// the other two.
-func (a *application) attentionWatcherDirs(ctx context.Context) (string, string, string, error) {
-	stateDir := a.AttentionStateDir
-	if stateDir == "" {
-		resolved, err := defaultAttentionStateDir(ctx)
-		if err != nil {
-			return "", "", "", errors.Wrap(ctx, err, "resolve attention state dir failed")
-		}
-		stateDir = resolved
-	}
-	contextDir := a.AttentionContextDir
-	if contextDir == "" {
-		resolved, err := defaultAttentionContextDir(ctx)
-		if err != nil {
-			return "", "", "", errors.Wrap(ctx, err, "resolve attention context dir failed")
-		}
-		contextDir = resolved
-	}
-	transcriptRoot, err := defaultTranscriptRoot(ctx)
-	if err != nil {
-		return "", "", "", errors.Wrap(ctx, err, "resolve transcript root failed")
-	}
-	return stateDir, contextDir, transcriptRoot, nil
 }
 
 // defaultAttentionContextDir resolves ~/.claude/state/context, the directory the
