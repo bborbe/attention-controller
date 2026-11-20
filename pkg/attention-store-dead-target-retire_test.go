@@ -77,8 +77,11 @@ var _ = Describe("Dead-target retire", func() {
 	})
 
 	// park answers a done-class claim so the item sits awaiting evidence.
-	// ⚠️ An OPTION answer, not a text one: it carries no claim, so the sweep
-	// never shells out to `gh` and this spec stays hermetic.
+	// ⚠️ The claim is a PATH, not a pull request: the default evidence runner
+	// probes a path with os.Stat and shells out to `gh` only for a PR URL, so a
+	// nonexistent path keeps this spec hermetic. The path must exist for the
+	// parking to be the thing under test — an answer naming nothing no longer
+	// parks at all (2026-11-20: an empty claim set closes the item instead).
 	park := func() *pkg.Item {
 		item, err := store.Push(ctx, pkg.PushRequest{
 			ProducerID:      "session-a",
@@ -95,8 +98,8 @@ var _ = Describe("Dead-target retire", func() {
 		})
 		Expect(err).To(BeNil())
 		_, err = store.Answer(ctx, item.ItemID, "attention-board", "", "", &pkg.Answer{
-			Kind:  pkg.OptionAnswerKind,
-			Value: "done — reviewed and flipped both",
+			Kind:  pkg.TextAnswerKind,
+			Value: "done /nonexistent/dead-target/artifact",
 		}, nil, nil)
 		Expect(err).To(BeNil())
 		return item
@@ -209,9 +212,12 @@ var _ = Describe("Dead-target retire", func() {
 			},
 		})
 		Expect(err).To(BeNil())
+		// A claim the default runner probes hermetically (a path, not a PR), so
+		// the item parks and this spec tests the reopen, not the new empty-claim
+		// rule.
 		_, err = store.Answer(ctx, item.ItemID, "attention-board", "", "", &pkg.Answer{
-			Kind:  pkg.OptionAnswerKind,
-			Value: "done — approved",
+			Kind:  pkg.TextAnswerKind,
+			Value: "done /nonexistent/dead-target/artifact",
 		}, nil, nil)
 		Expect(err).To(BeNil())
 		sweepPastDeadline()

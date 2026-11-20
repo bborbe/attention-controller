@@ -72,9 +72,12 @@ var _ = Describe("Evidence-backed close", func() {
 	It("parks a done-class answer in awaiting_evidence instead of satisfied", func() {
 		item := pushQuestion()
 
+		// ⚠️ The answer must NAME an artifact: an empty claim set no longer parks
+		// (see "does not park a bare done answer that names no artifact"), so a
+		// claim-free `done` here would assert the opposite of the new rule.
 		answered := answerWith(item.ItemID, &Answer{
-			Kind:  OptionAnswerKind,
-			Value: "done — reviewed and flipped both",
+			Kind:  TextAnswerKind,
+			Value: "done — reviewed and flipped both https://github.com/bborbe/attention-controller/pull/77",
 		})
 
 		Expect(answered.State).To(Equal(AwaitingEvidenceState))
@@ -83,6 +86,52 @@ var _ = Describe("Evidence-backed close", func() {
 		Expect(
 			answered.EvidenceDeadline.Time().Sub(now.Time()),
 		).To(Equal(time.Duration(EvidenceDeadline)))
+	})
+
+	// The failing shape measured 2026-11-20: a card whose positive option is a
+	// bare `done` and whose work names no artifact. It parked, the probe could
+	// never observe an empty claim set, and it reopened every 30 minutes — 27
+	// times on one card, each reopen clearing the answer that caused it.
+	It("does not park a bare done answer that names no artifact", func() {
+		item, err := store.Push(ctx, PushRequest{
+			ProducerID:      "session-a",
+			ProducerKind:    SessionProducerKind,
+			LivenessRef:     LivenessRef("session:session-a"),
+			DedupKey:        "question-bare-done",
+			InterruptClass:  "pick",
+			Payload:         "you run: /mcp → Reconnect (TTS binding, independent of the task)",
+			AnswerMechanism: MessageAnswerMechanism,
+			Options: AnswerOptions{
+				{Label: "done"},
+				{Label: "not now"},
+			},
+		})
+		Expect(err).To(BeNil())
+
+		answered, err := store.Answer(
+			ctx, item.ItemID, "attention-board", "", "",
+			&Answer{Kind: OptionAnswerKind, Value: "done"}, nil, nil,
+		)
+		Expect(err).To(BeNil())
+
+		Expect(answered.State).To(Equal(AnsweredState), "an unverifiable claim is not parked")
+		Expect(answered.AnsweredAt).NotTo(BeNil(), "the answer itself is still recorded")
+		Expect(answered.EvidenceDeadline).To(BeNil())
+		Expect(answered.EvidenceClaims).To(BeEmpty())
+
+		// The loop is what the fix is for: parking is only its first half, so the
+		// sweep must not reopen the item either.
+		now = now.Add(libtime.Duration(EvidenceDeadline))
+		_, err = store.SweepAnswered(ctx, libtime.Duration(15*60*1e9))
+		Expect(err).To(BeNil())
+
+		got, err := store.Get(ctx, item.ItemID)
+		Expect(err).To(BeNil())
+		// The answered sweep closes an answered item once it is older than the
+		// store's max age; either end state is fine, `open` is not. What must
+		// never happen is the reopen that made this card a loop.
+		Expect(got.State).NotTo(Equal(OpenState), "a bare done never reopens")
+		Expect(string(got.Context)).NotTo(ContainSubstring("reopened"))
 	})
 
 	// Negative control: without this, "parked" could be the state every answer
@@ -140,10 +189,19 @@ var _ = Describe("Evidence-backed close", func() {
 
 	It("reopens the item on the board when the deadline passes unobserved", func() {
 		item := pushQuestion()
-		answerWith(item.ItemID, &Answer{
-			Kind:  TextAnswerKind,
-			Value: "done https://github.com/bborbe/attention-controller/pull/77",
-		})
+		// ⚠️ A NON-NIL client, so the nil assertion after the reopen can actually
+		// fail. With a nil client stamped the assertion would pass even if the
+		// reopen stopped clearing the field.
+		answeredWithClient, err := store.Answer(
+			ctx, item.ItemID, "attention-board", "", "",
+			&Answer{
+				Kind:  TextAnswerKind,
+				Value: "done https://github.com/bborbe/attention-controller/pull/77",
+			}, nil,
+			&AnsweredClient{UserAgent: "curl/8", RemoteAddr: "127.0.0.1:4242"},
+		)
+		Expect(err).To(BeNil())
+		Expect(answeredWithClient.AnsweredClient).NotTo(BeNil(), "the client must land first")
 
 		original := store.evidenceRunner
 		DeferCleanup(func() { store.evidenceRunner = original })
@@ -152,11 +210,12 @@ var _ = Describe("Evidence-backed close", func() {
 		}
 
 		now = now.Add(libtime.Duration(EvidenceDeadline))
-		_, err := store.SweepAnswered(ctx, libtime.Duration(15*60*1e9))
+		_, err = store.SweepAnswered(ctx, libtime.Duration(15*60*1e9))
 		Expect(err).To(BeNil())
 
 		got, err := store.Get(ctx, item.ItemID)
 		Expect(err).To(BeNil())
+		Expect(got.AnsweredClient).To(BeNil(), "the reopen clears the client it cannot attribute")
 		Expect(got.State).To(Equal(OpenState))
 		Expect(got.EvidenceDeadline).To(BeNil())
 		Expect(
