@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.104.3
 
 - fix: **an answered permission card stays in the open set until its answer is observed delivered.** `Answer` used to move the card `open → answered` on the click, so the board showed a parked worker as unblocked while the answer's delivery had not landed (measured 2026-11-19: `rc=3 NOT_DELIVERED` returned against a card already off the open set). For a `permission` card — the class a parked worker waits on — `Answer` now records the answer but keeps `State = open`; every other class keeps the immediate `AnsweredState` it had (a `done`-class claim still parks in `awaiting_evidence`). The delivery arm calls the new `SettleAnswer` on a `delivered` attempt to take `open → answered` (pane and headless paths alike), and past `AttentionDeliveryBound` writes the `failed` marker and settles the card to answered — so it leaves the open set with the visible undeliverable marker (a closed card is not on the board, so closing would hide it) while the answer stays deliverable for a late retry. `suppressAnsweredTwins` and `closeRedundantReraises` skip an open item that carries `AnsweredAt` so the held card is not dropped or closed against its own answered-index record. The board renders a held card as the dimmed record with `data-held="true"` and excludes it from the answerable filter, so it stays visible with the recorded answer and no controls. A permission arm answer still lands on a held card; `message`/`ack` keep first-write-wins.
 ## v0.104.2
