@@ -91,6 +91,12 @@ type fakeTranscriptReader struct {
 	boundaries map[string]int
 	holdCalls  []string
 	pathBySess map[string]string
+
+	// lastAssistantText and pendingToolCall script the two reads the manager
+	// gate computation needs. A session absent from either map answers
+	// ("", false), which is the fail-closed direction the real reader takes.
+	lastAssistantText map[string]string
+	pendingToolCall   map[string]string
 }
 
 func (f *fakeTranscriptReader) Path(sessionID string) string { return f.pathBySess[sessionID] }
@@ -126,6 +132,16 @@ func (f *fakeTranscriptReader) ModifiedAt(sessionID string) (time.Time, bool) {
 func (f *fakeTranscriptReader) CompactionBoundaries(sessionID string) (int, bool) {
 	boundaries, ok := f.boundaries[sessionID]
 	return boundaries, ok
+}
+
+func (f *fakeTranscriptReader) LastAssistantText(sessionID string) (string, bool) {
+	text, ok := f.lastAssistantText[sessionID]
+	return text, ok
+}
+
+func (f *fakeTranscriptReader) PendingToolCall(sessionID string) (string, bool) {
+	name, ok := f.pendingToolCall[sessionID]
+	return name, ok
 }
 
 var _ = Describe("pane carrier", func() {
@@ -211,6 +227,16 @@ var _ = Describe("pane carrier", func() {
 		Expect(verdict).To(Equal(DeliveryOK))
 		Expect(writer.sent[0].text).To(Equal(
 			"Operator answer, via attention board: allow [" + storeID + "]"))
+	})
+
+	It("carries the answer's own answered_at so a re-delivery is distinguishable", func() {
+		delivery.AnswerStamp = "2026-11-19T16:19:12Z"
+		verdict, _ := carrier.TypeIntoPane(ctx, delivery, "run it", false)
+		Expect(verdict).To(Equal(DeliveryOK))
+		Expect(writer.sent[0].text).To(Equal(
+			"Operator answer, via attention board: run it ["+storeID+
+				" @ 2026-11-19T16:19:12Z]"),
+			"the stamp belongs to the answer, so two arrivals of one answer render identically")
 	})
 
 	It("refuses to type into a busy composer", func() {

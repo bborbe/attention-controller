@@ -330,4 +330,93 @@ var _ = Describe("transcript reader", func() {
 			Expect(ok).To(BeFalse())
 		})
 	})
+
+	Describe("LastAssistantText", func() {
+		It("TestTranscriptReaderLastAssistantText", func() {
+			// ⚠️ The last assistant record is frequently NOT the last record in the
+			// file: a `user` tool-result record follows it.
+			writeTranscript(
+				root,
+				sessionID,
+				`{"type":"assistant","message":{"content":[{"type":"text","text":"closing: pick"}]}}`+"\n"+
+					`{"type":"user","message":{"content":[{"type":"tool_result",`+
+					`"tool_use_id":"tu-9","content":"ok"}]}}`+"\n",
+			)
+			text, ok := reader.LastAssistantText(sessionID)
+			Expect(ok).To(BeTrue())
+			Expect(text).To(Equal("closing: pick"))
+
+			// Two assistant text blocks: the LAST one wins, not the first.
+			writeTranscript(
+				root,
+				sessionID,
+				`{"type":"assistant","message":{"content":[{"type":"text","text":"first"}]}}`+"\n"+
+					`{"type":"assistant","message":{"content":[{"type":"text","text":"second"}]}}`+"\n",
+			)
+			text, ok = reader.LastAssistantText(sessionID)
+			Expect(ok).To(BeTrue())
+			Expect(text).To(Equal("second"))
+
+			// No assistant text at all is ("", false), never ("", true): an empty
+			// result must not be readable as "the last block carries no closer".
+			writeTranscript(
+				root,
+				sessionID,
+				`{"type":"user","message":{"content":"anything"}}`+"\n",
+			)
+			text, ok = reader.LastAssistantText(sessionID)
+			Expect(ok).To(BeFalse())
+			Expect(text).To(BeEmpty())
+
+			text, ok = reader.LastAssistantText("99999999-9999-9999-9999-999999999999")
+			Expect(ok).To(BeFalse())
+			Expect(text).To(BeEmpty())
+		})
+	})
+
+	Describe("PendingToolCall", func() {
+		It("TestTranscriptReaderPendingToolCall", func() {
+			writeTranscript(
+				root,
+				sessionID,
+				`{"type":"assistant","message":{"content":[{"type":"tool_use",`+
+					`"id":"tu-1","name":"AskUserQuestion"}]}}`+"\n",
+			)
+			name, ok := reader.PendingToolCall(sessionID)
+			Expect(ok).To(BeTrue())
+			Expect(name).To(Equal("AskUserQuestion"))
+
+			// A tool_result for the same call closes it.
+			writeTranscript(
+				root,
+				sessionID,
+				`{"type":"assistant","message":{"content":[{"type":"tool_use",`+
+					`"id":"tu-1","name":"AskUserQuestion"}]}}`+"\n"+
+					`{"type":"user","message":{"content":[{"type":"tool_result",`+
+					`"tool_use_id":"tu-1"}]}}`+"\n",
+			)
+			name, ok = reader.PendingToolCall(sessionID)
+			Expect(ok).To(BeFalse())
+			Expect(name).To(BeEmpty())
+
+			// ⚠️ An OLDER call's result must not clear a newer pending call.
+			writeTranscript(
+				root,
+				sessionID,
+				`{"type":"assistant","message":{"content":[{"type":"tool_use",`+
+					`"id":"tu-1","name":"Bash"}]}}`+"\n"+
+					`{"type":"assistant","message":{"content":[{"type":"tool_use",`+
+					`"id":"tu-2","name":"AskUserQuestion"}]}}`+"\n"+
+					`{"type":"user","message":{"content":[{"type":"tool_result",`+
+					`"tool_use_id":"tu-1"}]}}`+"\n",
+			)
+			name, ok = reader.PendingToolCall(sessionID)
+			Expect(ok).To(BeTrue())
+			Expect(name).To(Equal("AskUserQuestion"))
+
+			name, ok = reader.PendingToolCall("99999999-9999-9999-9999-999999999999")
+			Expect(ok).To(BeFalse())
+			Expect(name).To(BeEmpty())
+		})
+	})
 })

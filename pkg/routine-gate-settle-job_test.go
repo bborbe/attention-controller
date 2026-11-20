@@ -113,7 +113,7 @@ var _ = Describe("routine gate settle job", func() {
 				Question: &pkg.WrapperQuestion{
 					RequestID: "req-1",
 					Raw: []byte(
-						`{"request_id":"req-1","input":{"arguments":{"tool_name":"Read","input":{"file_path":"/tmp/ws/a.go"}}}}`,
+						`{"request_id":"req-1","tool_name":"Read","input":{"file_path":"/tmp/ws/a.go"}}`,
 					),
 				},
 			},
@@ -215,6 +215,17 @@ var _ = Describe("routine gate settle job", func() {
 	It("skips a non-permission item", func() {
 		item := permissionItem("item-1")
 		item.AnswerMechanism = pkg.MessageAnswerMechanism
+		store.ReadReturns(pkg.Items{item}, nil)
+		Expect(job.SettleOnce(context.Background())).To(Succeed())
+		Expect(wrapper.probeCalls).To(Equal(0))
+	})
+
+	It("skips a held card the operator already answered", func() {
+		// A held card is open + answered while its delivery is pending; settling it
+		// here would re-answer a gate the operator already answered.
+		item := permissionItem("item-1")
+		answeredAt := libtime.NewCurrentDateTime().Now()
+		item.AnsweredAt = &answeredAt
 		store.ReadReturns(pkg.Items{item}, nil)
 		Expect(job.SettleOnce(context.Background())).To(Succeed())
 		Expect(wrapper.probeCalls).To(Equal(0))

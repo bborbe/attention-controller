@@ -91,6 +91,20 @@ type PaneDelivery struct {
 	// the worker is never told the operator answered when a manager did. Empty
 	// renders as the operator's, as every delivery before this field did.
 	Answerer Answerer
+	// AnswerStamp is the card's own `answered_at`, rendered into the line.
+	//
+	// ⚠️ It is what makes a RE-DELIVERY distinguishable from a new answer at
+	// the point it arrives. The stamp belongs to the ANSWER, not to the
+	// delivery, so two arrivals of one answer carry an identical stamp while a
+	// genuinely new answer carries a new one — a session can tell the repeat
+	// from a fresh verdict without re-polling the card.
+	//
+	// Measured 2026-11-19 on card 982bdcf8…: one answer, answered at 16:19:12,
+	// arrived three times (16:24:24, 16:34:31, 16:55:03) and nothing in the
+	// text distinguished them.
+	//
+	// Empty renders no stamp, as every delivery before this field did.
+	AnswerStamp string
 }
 
 // PaneCarrier types an answer into a session's pane and proves it landed.
@@ -217,11 +231,23 @@ func (c *paneCarrier) renderLine(delivery *PaneDelivery, text string, bare bool)
 	if bare {
 		return strings.NewReplacer("\r", " ", "\n", " ").Replace(text)
 	}
-	line := deliverPrefix + " " + text + " [" + delivery.StoreItemID + "]"
+	line := deliverPrefix + " " + text + " " + delivery.marker()
 	if delivery.Answerer == ManagerAnswerer {
-		line = ManagerAnswerText(text) + " [" + delivery.StoreItemID + "]"
+		line = ManagerAnswerText(text) + " " + delivery.marker()
 	}
 	return strings.NewReplacer("\r", " ", "\n", " / ").Replace(line)
+}
+
+// marker renders the trailing `[<item-id> @ <answered-at>]` the line carries.
+//
+// The item id is load-bearing on its own — a session's own rule accepts a board
+// delivery only when it names the card — and the stamp is additive, so a card
+// whose answer carries no timestamp still renders the id exactly as before.
+func (d *PaneDelivery) marker() string {
+	if d.AnswerStamp == "" {
+		return "[" + d.StoreItemID + "]"
+	}
+	return "[" + d.StoreItemID + " @ " + d.AnswerStamp + "]"
 }
 
 // retypeGuard is the at-most-once check. It returns a non-empty verdict when the

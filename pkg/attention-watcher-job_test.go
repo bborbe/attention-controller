@@ -22,6 +22,7 @@ import (
 // carry and returns a fixed verdict.
 type recordingCarrier struct {
 	calls   []string
+	entries []*pkg.PaneDelivery
 	verdict pkg.DeliveryVerdict
 }
 
@@ -32,6 +33,7 @@ func (c *recordingCarrier) TypeIntoPane(
 	_ bool,
 ) (pkg.DeliveryVerdict, string) {
 	c.calls = append(c.calls, delivery.StoreItemID+"="+text)
+	c.entries = append(c.entries, delivery)
 	return c.verdict, "scripted"
 }
 
@@ -75,6 +77,85 @@ var _ = Describe("attention watcher delivery job", func() {
 		Expect(store.RecordAttemptCallCount()).To(Equal(1))
 		_, _, _, outcome := store.RecordAttemptArgsForCall(0)
 		Expect(outcome).To(Equal(pkg.DeliveredOutcome))
+	})
+
+	It(
+		"reuses ONE delivery entry across cycles, so the at-most-once marker survives a retry",
+		func() {
+			// ⚠️ This is the duplicate-delivery regression. `TypeIntoPane` writes
+			// `PendingLine` and the transcript byte mark onto the entry it is given,
+			// and `retypeGuard` uses them to answer "composer empty, transcript has
+			// not caught up — wait, do not type a second copy". A job that builds a
+			// fresh entry per cycle throws both away, and once a busy session has
+			// written past the transcript tail window the delivered line is
+			// unreachable, so the answer is typed again on every backoff.
+			// Measured 2026-11-19 on card 982bdcf8…: one answer, three arrivals
+			// (16:24:24, 16:34:31, 16:55:03) at the 5-minute retry cadence.
+			carrier.verdict = pkg.DeliveryRetry
+			store.ReadBoardReturns(pkg.Items{
+				answeredItem("item-1", "operator", pkg.Decision("allow")),
+			}, nil)
+
+			Expect(job.DeliverOnce(context.Background())).To(Succeed())
+			Expect(job.DeliverOnce(context.Background())).To(Succeed())
+
+			Expect(carrier.entries).To(HaveLen(2))
+			Expect(carrier.entries[1]).To(BeIdenticalTo(carrier.entries[0]),
+				"a fresh entry per cycle discards PendingLine/PendingAt and re-types the answer")
+		},
+	)
+
+	It("drops the entry once the card is delivered, so a later answer starts clean", func() {
+		store.ReadBoardReturns(pkg.Items{
+			answeredItem("item-1", "operator", pkg.Decision("allow")),
+		}, nil)
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+
+		Expect(carrier.entries).To(HaveLen(2))
+		Expect(carrier.entries[1]).NotTo(BeIdenticalTo(carrier.entries[0]),
+			"a delivered entry must not be reused by a later answer for the same card")
+	})
+
+	It("drops the entry of a card that has left the board", func() {
+		// ⚠️ Pruning is keyed on BOARD MEMBERSHIP, not on this cycle's
+		// eligibility: an entry whose card is still on the board but withheld by
+		// the backoff is exactly the one the next cycle needs the marker for.
+		carrier.verdict = pkg.DeliveryRetry
+		item := answeredItem("item-1", "operator", pkg.Decision("allow"))
+		store.ReadBoardReturns(pkg.Items{item}, nil)
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+
+		store.ReadBoardReturns(pkg.Items{}, nil)
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+
+		store.ReadBoardReturns(pkg.Items{item}, nil)
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+
+		Expect(carrier.entries).To(HaveLen(2))
+		Expect(carrier.entries[1]).NotTo(BeIdenticalTo(carrier.entries[0]),
+			"a card that left the board must not keep its entry for the life of the process")
+	})
+
+	It("settles a held card (open + answered) once delivery is observed", func() {
+		held := answeredItem("item-1", "operator", pkg.Decision("allow"))
+		held.State = pkg.OpenState
+		store.ReadBoardReturns(pkg.Items{held}, nil)
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+
+		Expect(store.RecordAttemptCallCount()).To(Equal(1))
+		Expect(store.SettleAnswerCallCount()).To(Equal(1),
+			"the held card leaves the open set only after delivery was observed")
+		_, itemID := store.SettleAnswerArgsForCall(0)
+		Expect(itemID).To(Equal(pkg.ItemID("item-1")))
+	})
+
+	It("does not settle an item that is already answered", func() {
+		store.ReadBoardReturns(pkg.Items{
+			answeredItem("item-1", "operator", pkg.Decision("allow")),
+		}, nil)
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+		Expect(store.SettleAnswerCallCount()).To(Equal(0))
 	})
 
 	It("skips a card the originate arm settled", func() {
@@ -184,7 +265,10 @@ var _ = Describe("attention watcher delivery job", func() {
 
 	It("skips an open card", func() {
 		item := answeredItem("item-1", "operator", pkg.Decision("allow"))
+		// An open card with no recorded answer is unanswered; an open card WITH
+		// one is the hold, which the arm does deliver.
 		item.State = pkg.OpenState
+		item.AnsweredAt = nil
 		store.ReadBoardReturns(pkg.Items{item}, nil)
 		Expect(job.DeliverOnce(context.Background())).To(Succeed())
 		Expect(carrier.calls).To(BeEmpty())
@@ -286,6 +370,74 @@ var _ = Describe("attention watcher delivery job", func() {
 		// none — but records nothing: a pane-less session is not a failed delivery.
 		Expect(carrier.calls).To(HaveLen(1))
 		Expect(store.RecordAttemptCallCount()).To(Equal(0))
+	})
+
+	It("settles a held card after the headless arm delivers it", func() {
+		// A held permission card (open + answered) must leave the open set once the
+		// headless arm carries it — the pane-less path is the one a parked sdk-cli
+		// worker takes, and without this settle the card would stay open forever.
+		headless := &fakeHeadlessDeliverer{terminal: true}
+		job = pkg.NewAttentionWatcherJob(
+			store, carrier, headless, time.Hour, libtime.NewCurrentDateTime(),
+		)
+		carrier.verdict = pkg.DeliveryNoPane
+		held := answeredItem("item-1", "operator", pkg.Decision("allow"))
+		held.State = pkg.OpenState
+		store.ReadBoardReturns(pkg.Items{held}, nil)
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+		Expect(headless.calls).To(Equal([]pkg.ItemID{"item-1"}))
+		Expect(store.SettleAnswerCallCount()).To(Equal(1),
+			"a headless delivery of a held card must settle it")
+	})
+
+	It("settles a delivered-but-open held card past the bound", func() {
+		// The arm can record `delivered` and die before settling. Without settling
+		// here the card is skipped every tick and stays open forever.
+		held := answeredItem("item-1", "operator", pkg.Decision("allow"))
+		held.State = pkg.OpenState
+		old := libtime.DateTime(time.Now().Add(-10 * time.Minute))
+		held.AnsweredAt = &old
+		store.ReadBoardReturns(pkg.Items{held}, nil)
+		store.DeliveryReportsReturns(map[pkg.ItemID]*pkg.DeliveryReport{
+			"item-1": {ItemID: "item-1", Status: pkg.DeliveredStatus},
+		}, nil)
+		store.DeliveryReturns(&pkg.DeliveryReport{
+			ItemID: pkg.ItemID("item-1"), Status: pkg.DeliveredStatus,
+		}, nil)
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+		Expect(store.SettleAnswerCallCount()).To(Equal(1),
+			"a delivered-but-open card must settle, not be skipped forever")
+	})
+
+	It("closes an overdue undelivered held card and writes the failed marker", func() {
+		// Job-level coverage for closeOverdueHeld: an open answered card past the
+		// bound with no delivered attempt must get the failed marker and be SETTLED
+		// to answered (leaving the open set, keeping the answer deliverable), not
+		// closed. LivenessRef is cleared so the deliver path skips it and only the
+		// overdue fallback acts.
+		held := answeredItem("item-1", "operator", pkg.Decision("allow"))
+		held.State = pkg.OpenState
+		held.LivenessRef = ""
+		old := libtime.DateTime(time.Now().Add(-10 * time.Minute))
+		held.AnsweredAt = &old
+		store.ReadBoardReturns(pkg.Items{held}, nil)
+		store.DeliveryReportsReturns(map[pkg.ItemID]*pkg.DeliveryReport{}, nil)
+		store.DeliveryReturns(&pkg.DeliveryReport{
+			ItemID: pkg.ItemID("item-1"), Status: pkg.NeverAttemptedStatus,
+		}, nil)
+
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+
+		wroteFailed := false
+		for i := 0; i < store.RecordAttemptCallCount(); i++ {
+			_, _, _, outcome := store.RecordAttemptArgsForCall(i)
+			if outcome == pkg.FailedOutcome {
+				wroteFailed = true
+			}
+		}
+		Expect(wroteFailed).To(BeTrue(), "the visible failed marker must be written")
+		Expect(store.SettleAnswerCallCount()).To(Equal(1),
+			"the overdue undelivered card must be settled to answered, not closed")
 	})
 
 	It("keeps the pane path for a tab session", func() {

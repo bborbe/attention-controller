@@ -43,21 +43,76 @@ func readSessionNamesWithError(
 	sessionsDir string,
 ) (map[string]sessionName, error) {
 	names := map[string]sessionName{}
+	entries, err := readSessionRegistryEntries(ctx, sessionsDir)
+	for _, record := range entries {
+		names[record.SessionID] = sessionName{
+			Name:   record.Name,
+			Source: record.NameSource,
+		}
+	}
+	return names, err
+}
+
+// readSessionStatuses reads the session registry as `session id -> status`.
+//
+// The status is the registry's own `idle` / `busy` / `waiting` / `shell` word —
+// the fact the gate computation reads for every registered session, and the one
+// the transcript cannot supply: the transcript answers WHICH call, the registry
+// answers IS IT MOVING.
+//
+// It returns an error when the directory is unreadable, so a caller can tell a
+// failed read from an empty registry. An empty map is a positive claim ("nobody
+// is registered"), and the caller acts on it — an unreadable registry makes
+// every session without a fresh heartbeat read `unregistered`.
+//
+// ⚠️ An entry carrying no status is SKIPPED rather than recorded as "". The
+// Python watcher's `d.get("status")` answers `None` for such an entry, which its
+// gate reads as unregistered; recording "" would instead give it a status word
+// that matches no row and hold it silently forever.
+func readSessionStatuses(ctx context.Context, sessionsDir string) (map[string]string, error) {
+	statuses := map[string]string{}
+	entries, err := readSessionRegistryEntries(ctx, sessionsDir)
+	for _, record := range entries {
+		if record.Status == "" {
+			continue
+		}
+		statuses[record.SessionID] = record.Status
+	}
+	return statuses, err
+}
+
+// readSessionRegistryEntries walks the session registry once and returns every
+// entry that parsed.
+//
+// ⚠️ ONE walk, two projections. readSessionNames needs the name and its source;
+// readSessionStatuses needs the status. Two walks of the same directory would be
+// two answers to "what is in the registry", and the failure is silent: a session
+// could be named from one pass and statused from another.
+//
+// A failed directory read is an ERROR, never an empty result — an empty registry
+// is a positive claim the callers act on. A single unparseable or unnamed entry
+// is skipped and logged, which is the direction both callers survive: that
+// session is merely absent from the projection.
+func readSessionRegistryEntries(
+	ctx context.Context,
+	sessionsDir string,
+) ([]sessionRegistryEntry, error) {
 	if sessionsDir == "" {
-		return names, nil
+		return nil, nil
 	}
 	entries, err := os.ReadDir(sessionsDir)
 	if err != nil {
 		glog.V(2).Infof("read session registry %s failed: %v", sessionsDir, err)
-		return names, errors.Wrap(ctx, err, "read session registry failed")
+		return nil, errors.Wrap(ctx, err, "read session registry failed")
 	}
+	out := make([]sessionRegistryEntry, 0, len(entries))
 	for _, entry := range entries {
 		select {
 		case <-ctx.Done():
 			glog.V(3).Infof("session registry scan cancelled")
 			// A partial read is not a clean one: report the cancellation so the
 			// feed does not stamp sources.registry = "ok" over an incomplete scan.
-			return names, errors.Wrap(ctx, ctx.Err(), "session registry scan cancelled")
+			return out, errors.Wrap(ctx, ctx.Err(), "session registry scan cancelled")
 		default:
 		}
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
@@ -73,12 +128,10 @@ func readSessionNamesWithError(
 			glog.V(3).Infof("parse session registry entry %s failed: %v", entry.Name(), err)
 			continue
 		}
-		if record.SessionID != "" {
-			names[record.SessionID] = sessionName{
-				Name:   record.Name,
-				Source: record.NameSource,
-			}
+		if record.SessionID == "" {
+			continue
 		}
+		out = append(out, record)
 	}
-	return names, nil
+	return out, nil
 }

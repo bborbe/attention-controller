@@ -53,6 +53,9 @@ const managerWakeLinePrefix = "attention gate:"
 // in runes, so one long card cannot paste a page into a manager's composer.
 const managerWakeLabelMax = 160
 
+// managerClearedLinePrefix opens the line that announces a gate leaving the set.
+const managerClearedLinePrefix = "attention cleared:"
+
 // managerLedgerRole is the ledger's own marker for a manager row. ONLY an
 // explicit `manager` counts; a row with no role reads as a worker, which is the
 // fail-open direction that cannot silence a fleet.
@@ -109,6 +112,19 @@ func WithManagerWakeInterval(interval time.Duration) ManagerWakeOption {
 	}
 }
 
+// WithManagerWakeTranscriptSource adds the transcript-and-registry source beside
+// the store source. It is an option, not a constructor parameter, so the one
+// registration site and every spec keep their call shape.
+func WithManagerWakeTranscriptSource(
+	source ManagerTranscriptSource,
+	tracker ManagerGateTracker,
+) ManagerWakeOption {
+	return func(job *managerWakeJob) {
+		job.transcriptSource = source
+		job.gateTracker = tracker
+	}
+}
+
 // NewManagerWakeJob creates the wake job.
 //
 // currentDateTimeGetter is injected rather than reached for, because both the
@@ -154,6 +170,13 @@ type managerWakeJob struct {
 	sink                  ManagerWakeEmissionSink
 	interval              time.Duration
 	reemitAfter           time.Duration
+
+	// transcriptSource is the job's second source; nil disables the transcript
+	// arm, so a spec built without the option runs exactly the store arm.
+	transcriptSource ManagerTranscriptSource
+	// gateTracker owns the transcript arm's history: the previous gated set, the
+	// content keys and the park ages.
+	gateTracker ManagerGateTracker
 
 	// passMu serializes passes. It is TryLock'd rather than Lock'd so two
 	// overlapping passes cannot both diff against the same previous set and
@@ -355,12 +378,20 @@ func (p *wakePass) resolveProvenance() Provenances {
 	return p.job.provenance.Resolve(p.ctx, p.items)
 }
 
-// wake computes one manager's kept set and types the entries that entered it.
+// wake runs both sources for one manager: the store arm spec 021 defined, then
+// the transcript-and-registry arm when it is wired.
 func (p *wakePass) wake(manager string) {
 	if reason, parked := p.job.parks[manager]; parked {
 		glog.V(3).Infof("job=manager-wake action=parked manager=%s reason=%q", manager, reason)
 		return
 	}
+	p.wakeStore(manager)
+	p.wakeTranscript(manager)
+}
+
+// wakeStore computes one manager's kept set from the store and types the entries
+// that entered it.
+func (p *wakePass) wakeStore(manager string) {
 	previous := p.job.emitted[manager]
 	next := make(map[ItemID]libtime.DateTime, len(previous))
 	for _, item := range p.items {
@@ -393,6 +424,211 @@ func (p *wakePass) commit(manager string, next map[ItemID]libtime.DateTime) {
 		return
 	}
 	p.job.emitted[manager] = next
+}
+
+// trackedFor returns the manager's own session plus every ledger row it spawned,
+// sorted so one pass is reproducible.
+func (p *wakePass) trackedFor(manager string) []string {
+	sessions := []string{manager}
+	for sessionID, entry := range p.owners {
+		if sessionID == manager {
+			continue
+		}
+		if entry.SpawnerSessionID == manager {
+			sessions = append(sessions, sessionID)
+		}
+	}
+	sort.Strings(sessions)
+	return sessions
+}
+
+// wakeTranscript runs the transcript-and-registry arm: the second source feeds
+// the same pane carrier and the same job.
+//
+// ⚠️ A source error is logged and the arm is skipped (fail-open). The source
+// itself consumes an unreadable registry, so this error is reserved for a future
+// whole-pass failure and never the split fail-open the source owns.
+func (p *wakePass) wakeTranscript(manager string) {
+	source := p.job.transcriptSource
+	tracker := p.job.gateTracker
+	if source == nil || tracker == nil {
+		return
+	}
+	if _, parked := p.job.parks[manager]; parked {
+		return
+	}
+	states, err := source.GateStates(p.ctx, p.trackedFor(manager))
+	if err != nil {
+		glog.Warningf(
+			"job=manager-wake action=transcript_error manager=%s error=%v", manager, err,
+		)
+		return
+	}
+	open, answered := p.managerStoreViews(states)
+	outcome, err := tracker.Observe(p.ctx, ManagerGateObserveInput{
+		Manager:  manager,
+		States:   states,
+		Open:     open,
+		Answered: answered,
+	})
+	if err != nil {
+		glog.Warningf(
+			"job=manager-wake action=gate_observe_error manager=%s error=%v", manager, err,
+		)
+		return
+	}
+	p.typeGateRecords(manager, states, outcome.Records)
+	for _, request := range outcome.Reposts {
+		p.postRepost(manager, request)
+	}
+}
+
+// managerStoreViews reads the store's open and answered views, and ONLY when the
+// pass has a parked session: an idle arm must not depend on the store being up.
+//
+// ⚠️ A failed read is nil, never an empty view — an empty result is a positive
+// claim the re-post acts on, so an unreachable store must suppress it.
+func (p *wakePass) managerStoreViews(
+	states ManagerGateStates,
+) (*ManagerOpenView, *ManagerAnswerView) {
+	if len(managerParkedSessions(states)) == 0 {
+		return nil, nil
+	}
+	open := managerOpenView(p.items)
+	answered, err := p.job.store.History(
+		p.ctx, 0, 0, HistoryFilter{DedupKeyPrefix: "park:"},
+	)
+	if err != nil {
+		glog.Warningf("job=manager-wake action=answered_read_error error=%v", err)
+		return open, nil
+	}
+	return open, managerAnswerView(answered)
+}
+
+// managerOpenView projects the pass's open items onto the two fields the re-post
+// decision reads.
+func managerOpenView(items Items) *ManagerOpenView {
+	view := &ManagerOpenView{
+		Producers: make(map[string]struct{}, len(items)),
+		DedupKeys: make(map[string]struct{}, len(items)),
+	}
+	for _, item := range items {
+		if item.ProducerID != "" {
+			view.Producers[string(item.ProducerID)] = struct{}{}
+		}
+		if item.DedupKey != "" {
+			view.DedupKeys[string(item.DedupKey)] = struct{}{}
+		}
+	}
+	return view
+}
+
+// managerAnswerView projects the answered `park:` rows onto their 8-char session
+// prefixes.
+func managerAnswerView(items Items) *ManagerAnswerView {
+	view := &ManagerAnswerView{
+		BySession: make(map[string]ManagerParkAnswer, len(items)),
+	}
+	for _, item := range items {
+		session := strings.TrimPrefix(string(item.DedupKey), "park:")
+		if session == "" || session == string(item.DedupKey) {
+			continue
+		}
+		answer := ManagerParkAnswer{ItemID: item.ItemID, CreatedAt: item.CreatedAt}
+		if item.Answer != nil {
+			answer.Answer = item.Answer.Value
+		}
+		view.BySession[session] = answer
+	}
+	return view
+}
+
+// typeGateRecords types one line per transition and records one emission per
+// typed line.
+//
+// ⚠️ A lost-sight HELD record (its detail is managerUntrackedDetail) is
+// bookkeeping and is never announced. ⚠️ The emission's ManagerSession is the
+// gate's OWN session id — the worker's — never the manager's: that is the field
+// the operator probe joins on.
+func (p *wakePass) typeGateRecords(
+	manager string,
+	states ManagerGateStates,
+	records []ManagerGateRecord,
+) {
+	bySession := make(map[string]ManagerGateState, len(states))
+	for _, state := range states {
+		bySession[state.SessionID] = state
+	}
+	for _, record := range records {
+		if record.Kind == ManagerGateRecordHeld && record.Detail == managerUntrackedDetail {
+			continue
+		}
+		state := bySession[record.Session]
+		verdict, reason := p.job.carrier.TypeIntoPane(
+			p.ctx,
+			&PaneDelivery{SessionID: manager},
+			managerGateRecordLine(record),
+			true,
+		)
+		if verdict == DeliveryNoPane || verdict == DeliveryRefuse {
+			p.job.parks[manager] = string(verdict) + ": " + reason
+			glog.V(2).Infof(
+				"job=manager-wake action=transcript_park manager=%s reason=%q",
+				manager,
+				reason,
+			)
+			return
+		}
+		if verdict != DeliveryOK {
+			continue
+		}
+		p.recordGateEmission(state)
+	}
+}
+
+// managerGateRecordLine renders one transition as the line the pane carries.
+func managerGateRecordLine(record ManagerGateRecord) string {
+	sid8 := managerSessionPrefix(record.Session)
+	if record.Kind == ManagerGateRecordCleared {
+		return managerClearedLinePrefix + " " + sid8
+	}
+	return managerWakeLinePrefix + " " + sid8 + " (" + record.Label + "): " + record.Detail
+}
+
+// recordGateEmission appends one emission with a zero ItemID: a transcript wake
+// names no card.
+func (p *wakePass) recordGateEmission(state ManagerGateState) {
+	if p.job.sink == nil {
+		return
+	}
+	emission := ManagerWakeEmission{
+		ManagerSession: state.SessionID,
+		EmittedAt:      p.now,
+	}
+	if err := p.job.sink.Append(p.ctx, emission); err != nil {
+		glog.Warningf(
+			"job=manager-wake action=emission_error session=%s error=%v",
+			state.SessionID,
+			err,
+		)
+	}
+}
+
+// postRepost posts one re-presented card, logging rather than failing: a failed
+// push costs this card and never the pass.
+func (p *wakePass) postRepost(manager string, request ManagerRepostRequest) {
+	push := managerRepostPushRequest(request, p.now)
+	if err := push.Validate(p.ctx); err != nil {
+		glog.Warningf(
+			"job=manager-wake action=repost_invalid manager=%s error=%v", manager, err,
+		)
+		return
+	}
+	if _, err := p.job.store.Push(p.ctx, push); err != nil {
+		glog.Warningf(
+			"job=manager-wake action=repost_error manager=%s error=%v", manager, err,
+		)
+	}
 }
 
 // stale reports whether an entry's last emission is old enough to re-type. The

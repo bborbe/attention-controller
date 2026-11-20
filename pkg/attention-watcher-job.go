@@ -6,6 +6,7 @@ package pkg
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/bborbe/errors"
@@ -41,13 +42,19 @@ const AttentionDeliveryRetryBackoff = 5 * time.Minute
 // clock at the first retry would quietly widen the bound the operator was
 // promised.
 //
-// ⚠️ It is a MARKER, not a stop. The arm keeps retrying past it, because an
-// answer dropped while its gate stays open is worse than a late one (the
-// 2026-10-04 age-gate lesson); the marker is what tells the operator to look
-// instead of waiting blind. The Python watcher carried this bound on the booked
-// arm only and never on the unbooked one — measured 2026-11-14, an unbooked
-// answer retried 34 minutes unmarked. The port unified both arms into this one,
-// so this constant now governs every retry.
+// ⚠️ It is a MARKER, not a stop for the retry loop. The arm keeps retrying past
+// it, because an answer dropped while its gate stays open is worse than a late
+// one (the 2026-10-04 age-gate lesson); the marker is what tells the operator to
+// look instead of waiting blind. The Python watcher carried this bound on the
+// booked arm only and never on the unbooked one — measured 2026-11-14, an
+// unbooked answer retried 34 minutes unmarked. The port unified both arms into
+// this one, so this constant now governs every retry.
+//
+// ⚠️ It is ALSO the hold's close bound: `closeOverdueHeld` closes a held
+// (open + answered) card past this value, carrying the `failed` marker, so a card
+// the retry loop never carried leaves the board instead of staying open forever.
+// The retry loop still runs for a card that is being retried; the close is the
+// terminal fallback once the bound is passed and no `delivered` attempt exists.
 //
 // It is defined from AttentionDeliveryRetryBackoff rather than repeating the
 // literal, so the tree carries exactly ONE five-minute value and a spec can fail
@@ -181,6 +188,25 @@ type attentionWatcherJob struct {
 	interval              time.Duration
 	currentDateTimeGetter libtime.CurrentDateTimeGetter
 	signaller             AnsweredSignaller
+
+	mu sync.Mutex
+	// pending keeps each card's in-flight delivery across cycles.
+	//
+	// ⚠️ Without it the arm re-types the same answer every backoff. The
+	// carrier's at-most-once proof is `PaneDelivery.PendingLine` plus the byte
+	// mark taken before the line went in, and `retypeGuard` relies on that
+	// marker to answer "the composer is empty and the transcript has not caught
+	// up yet — wait, do not type a second copy". A job that builds a fresh
+	// struct every cycle throws the marker away, leaving only a transcript
+	// containment check against the file's TAIL window; once a busy session has
+	// written past that window the delivered line is unreachable, the check
+	// fails, and the line is typed again.
+	//
+	// Measured 2026-11-19 on card 982bdcf8…: answered 16:19:12, typed at
+	// 16:24:21 and 16:34:27 with verdict `retry` ("still unsubmitted after 3
+	// Enters"), delivered again at 16:55:04 — three arrivals of one answer,
+	// ~5 min apart, the exact AttentionDeliveryRetryBackoff cadence.
+	pending map[ItemID]*PaneDelivery
 }
 
 // Run delivers answered cards until the context is cancelled.
@@ -230,7 +256,81 @@ func (j *attentionWatcherJob) DeliverOnce(ctx context.Context) error {
 		}
 		j.deliver(ctx, item, reports[item.ItemID])
 	}
+	j.closeOverdueHeld(ctx, items)
+	j.prunePending(items)
 	return nil
+}
+
+// prunePending drops entries for cards the board no longer carries.
+//
+// ⚠️ It prunes on BOARD MEMBERSHIP, never on this cycle's eligibility. An entry
+// whose card is on the board but not eligible right now — `retryDue` withholding
+// it, or a park — is the one the next cycle needs the marker for; dropping it
+// there would re-type the answer, which is the defect `pending` exists to
+// prevent. A card that has left the board can never be delivered again, so its
+// entry is the only safe thing to drop, and dropping it is what keeps the map
+// from growing for the life of the process.
+func (j *attentionWatcherJob) prunePending(items Items) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if len(j.pending) == 0 {
+		return
+	}
+	onBoard := make(map[ItemID]struct{}, len(items))
+	for _, item := range items {
+		onBoard[item.ItemID] = struct{}{}
+	}
+	for id := range j.pending {
+		if _, ok := onBoard[id]; !ok {
+			delete(j.pending, id)
+		}
+	}
+}
+
+// closeOverdueHeld is the hold's bounded fallback: an open, answered card whose
+// delivery never succeeded must leave the open set past AttentionDeliveryBound.
+//
+// ⚠️ It SETTLES the card to answered, it does not CLOSE it. Settling satisfies
+// both constraints at once: the card leaves the open set (SC4) and the `failed`
+// marker renders on the dimmed answered record — a CLOSED card is not on the board
+// at all, so closing here would hide the very marker SC4 requires. Settling also
+// keeps the answer DELIVERABLE: an answered card is still carried by the retry
+// loop, so a late delivery lands and the answer is not dropped while the worker's
+// gate is still open — which is what closing would do, contradicting
+// AttentionDeliveryBound's own "retry past the bound" contract.
+func (j *attentionWatcherJob) closeOverdueHeld(ctx context.Context, items Items) {
+	for _, item := range items {
+		if err := ctx.Err(); err != nil {
+			return
+		}
+		if item.State != OpenState || item.AnsweredAt == nil {
+			continue
+		}
+		if j.currentDateTimeGetter.Now().Time().Before(
+			item.AnsweredAt.Time().Add(AttentionDeliveryBound),
+		) {
+			continue
+		}
+		report, err := j.store.Delivery(ctx, item.ItemID)
+		if err != nil {
+			glog.Warningf(
+				"job=attention-watcher action=bound_read_error item=%s error=%v",
+				item.ItemID,
+				err,
+			)
+			continue
+		}
+		if report != nil && report.Status == DeliveredStatus {
+			// Delivered but still OPEN: the arm recorded delivery but died before
+			// settling. Settle it so the card leaves the open set.
+			j.settleAnswer(ctx, item)
+			continue
+		}
+		j.markUndeliverableIfOverdue(ctx, item, report, "delivery bound exceeded")
+		// Settle to answered (not close): leaves the open set, renders the failed
+		// marker, and keeps the card deliverable for a late retry.
+		j.settleAnswer(ctx, item)
+	}
 }
 
 // eligible reports whether an item may be attempted NOW, applying the backoff
@@ -326,7 +426,10 @@ func (j *attentionWatcherJob) deliverable(
 	item Item,
 	reports map[ItemID]*DeliveryReport,
 ) bool {
-	if item.State != AnsweredState || item.AnsweredAt == nil {
+	if (item.State != AnsweredState && item.State != OpenState) || item.AnsweredAt == nil {
+		// ⚠️ The HOLD: an answered card stays OPEN until an arm observes delivery,
+		// so this arm must carry an OpenState item that carries an answer. An
+		// OpenState item with no answer is still not ours.
 		return false
 	}
 	// An approved compact card is the TRIO's answer, not prose. This arm would
@@ -375,6 +478,52 @@ func (j *attentionWatcherJob) deliverable(
 }
 
 // deliver carries one answer and records what it observed.
+// deliveryFor returns this card's live delivery entry, creating it once.
+//
+// ⚠️ The entry MUST outlive the cycle. `TypeIntoPane` records the pending line
+// and the transcript byte mark on the entry it is given, and both are the
+// at-most-once proof the next cycle needs — on a fresh struct they are written
+// and thrown away, and every backoff re-types the answer. See the `pending`
+// field's note for the measurement.
+//
+// Pane 0 makes the carrier resolve the pane from the session's own tty, which is
+// the correct path for a card whose recorded pane was never ours.
+func (j *attentionWatcherJob) deliveryFor(item Item, sessionID string) *PaneDelivery {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.pending == nil {
+		j.pending = make(map[ItemID]*PaneDelivery, 1)
+	}
+	delivery, ok := j.pending[item.ItemID]
+	if !ok {
+		delivery = &PaneDelivery{}
+		j.pending[item.ItemID] = delivery
+	}
+	delivery.SessionID = sessionID
+	delivery.StoreItemID = string(item.ItemID)
+	delivery.AnswerMechanism = item.AnswerMechanism
+	delivery.Answerer = ""
+	if IsManagerAnswered(item) {
+		delivery.Answerer = ManagerAnswerer
+	}
+	delivery.AnswerStamp = ""
+	if item.AnsweredAt != nil {
+		delivery.AnswerStamp = item.AnsweredAt.Time().UTC().Format(time.RFC3339)
+	}
+	return delivery
+}
+
+// forget drops a card's delivery entry once nothing more can be carried.
+//
+// It is called on the two terminal verdicts only. A `retry` and a `no-pane`
+// keep their entry — that is the whole point — and a `refuse` keeps it too,
+// because the answer is still pending and a resumed session may yet receive it.
+func (j *attentionWatcherJob) forget(itemID ItemID) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	delete(j.pending, itemID)
+}
+
 func (j *attentionWatcherJob) deliver(
 	ctx context.Context,
 	item Item,
@@ -388,16 +537,7 @@ func (j *attentionWatcherJob) deliver(
 	if !ok {
 		return
 	}
-	// Pane 0 makes the carrier resolve the pane from the session's own tty,
-	// which is the correct path for a card whose recorded pane was never ours.
-	delivery := &PaneDelivery{
-		SessionID:       sessionID,
-		StoreItemID:     string(item.ItemID),
-		AnswerMechanism: item.AnswerMechanism,
-	}
-	if IsManagerAnswered(item) {
-		delivery.Answerer = ManagerAnswerer
-	}
+	delivery := j.deliveryFor(item, sessionID)
 	verdict, reason := j.carrier.TypeIntoPane(ctx, delivery, text, false)
 	glog.V(2).Infof(
 		"job=attention-watcher action=deliver item=%s verdict=%s reason=%q",
@@ -414,6 +554,9 @@ func (j *attentionWatcherJob) deliver(
 	switch verdict {
 	case DeliveryOK:
 		j.recordAttempt(ctx, item, DeliveredOutcome)
+		// ⚠️ Settle AFTER the delivered record is durable: the record is the
+		// evidence the card left the open set only once delivery was observed.
+		j.settleAnswer(ctx, item)
 		// Signal only after the delivered outcome is on record: the durable
 		// DeliveryReport is the dedupe state the next tick reads.
 		if j.signaller != nil {
@@ -421,6 +564,9 @@ func (j *attentionWatcherJob) deliver(
 		}
 		// Delivered: any park is over, and the count it took is moot.
 		j.clearPark(ctx, item)
+		// Delivered: the entry's marker has done its job and must not be reused
+		// by a later answer for the same card.
+		j.forget(item.ItemID)
 	case DeliveryRefuse:
 		j.refuse(ctx, item, sessionID, count, reason)
 	case DeliveryNoPane:
@@ -428,8 +574,12 @@ func (j *attentionWatcherJob) deliver(
 		// shape for every headless `sdk-cli` worker, which has no pane by
 		// construction. Recording nothing here is what dropped the operator's
 		// answer; the wrapper owns that child's stdin, so the turn goes there.
-		if j.headless != nil {
-			j.headless.DeliverHeadless(ctx, item)
+		if j.headless != nil && j.headless.DeliverHeadless(ctx, item) {
+			// ⚠️ Settle on a successful headless delivery too: the hold keeps a
+			// permission card open until delivery, and the headless arm is the one
+			// that reaches a pane-less worker. Without this the held card would stay
+			// open forever after the wrapper delivered it.
+			j.settleAnswer(ctx, item)
 		}
 	case DeliveryRetry:
 		// A busy or unreadable composer has not failed yet, so it is not marked
@@ -453,6 +603,8 @@ func (j *attentionWatcherJob) deliver(
 		// closes, 3a5a4ab9… and f3a96f81….
 		j.recordAttempt(ctx, item, HeldOutcome)
 		j.maybePark(ctx, item, count, verdict, reason)
+		// The gate is gone: there is nothing left for this entry to guard.
+		j.forget(item.ItemID)
 	}
 }
 
@@ -475,11 +627,16 @@ func (j *attentionWatcherJob) refuse(
 	reason string,
 ) {
 	if j.headless != nil && j.headless.CanResume(ctx, sessionID) {
-		if !j.headless.DeliverHeadless(ctx, item) {
-			// Still pending: the headless arm logged why. The attempt is already
-			// counted, so the park bound applies here too.
-			j.maybePark(ctx, item, count, DeliveryRetry, "headless resume pending: "+reason)
+		if j.headless.DeliverHeadless(ctx, item) {
+			// Settle on a successful resume-delivery, for the same reason the
+			// DeliveryNoPane branch does: a held permission card must leave the open
+			// set once the headless arm carried it.
+			j.settleAnswer(ctx, item)
+			return
 		}
+		// Still pending: the headless arm logged why. The attempt is already
+		// counted, so the park bound applies here too.
+		j.maybePark(ctx, item, count, DeliveryRetry, "headless resume pending: "+reason)
 		return
 	}
 	reason += " — and the session cannot be resumed through the headless path"
@@ -588,6 +745,24 @@ func (j *attentionWatcherJob) clearPark(ctx context.Context, item Item) {
 			err,
 		)
 	}
+}
+
+// settleAnswer moves a held card from open to answered once delivery was
+// observed, logging rather than failing: the answer has already reached the
+// session, and a failed settle only leaves the card on the board one more tick.
+func (j *attentionWatcherJob) settleAnswer(ctx context.Context, item Item) {
+	if item.State != OpenState {
+		return
+	}
+	if _, err := j.store.SettleAnswer(ctx, item.ItemID); err != nil {
+		glog.Warningf(
+			"job=attention-watcher action=settle_error item=%s error=%v",
+			item.ItemID,
+			err,
+		)
+		return
+	}
+	glog.V(2).Infof("job=attention-watcher action=settled item=%s", item.ItemID)
 }
 
 // recordRetry writes the trail entry for an answer this arm looked at and could

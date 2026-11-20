@@ -127,6 +127,18 @@ type TranscriptReader interface {
 	// `post-compact` into the middle of it and lose exactly what the sequence
 	// exists to preserve.
 	CompactionBoundaries(sessionID string) (int, bool)
+
+	// LastAssistantText returns the text of the LAST assistant text block in the
+	// transcript tail, and whether one was found. ok is false when the tail holds
+	// no assistant text at all — which is NOT the same as "the last block carries
+	// no closer": a failed read must not be representable as an empty result.
+	LastAssistantText(sessionID string) (string, bool)
+
+	// PendingToolCall returns the name of the last tool_use that has no matching
+	// tool_result, and whether one is pending. It reports the CALL NAME only; it
+	// does not claim the session is parked — the caller supplies that from the
+	// transcript's mtime.
+	PendingToolCall(sessionID string) (string, bool)
 }
 
 // NewTranscriptReader creates the reader the delivery carrier uses.
@@ -590,6 +602,128 @@ func transcriptTailEndsTurn(tail []byte, midFile bool) bool {
 		return turnEnd
 	}
 	return false
+}
+
+// LastAssistantText returns the text of the last assistant text block in the
+// transcript tail.
+//
+// ⚠️ Fail-closed in every unsure direction: an absent transcript, an unreadable
+// tail or a tail with no assistant text all report ("", false). A read failure
+// must never be representable as an empty closer, because the caller reads the
+// empty string as "this session said nothing".
+func (r *transcriptReader) LastAssistantText(sessionID string) (string, bool) {
+	path := r.Path(sessionID)
+	if path == "" {
+		return "", false
+	}
+	tail, ok := readTranscriptWindow(path, nil)
+	if !ok {
+		return "", false
+	}
+	return lastAssistantTextFromTail(tail)
+}
+
+// lastAssistantTextFromTail walks the tail in ORDER and keeps the last non-empty
+// text block of any assistant record.
+//
+// ⚠️ The last assistant record is frequently NOT the last record in the file — a
+// `user` tool-result record follows it. Stopping at the last line, or returning
+// the first assistant text, both report the wrong turn.
+func lastAssistantTextFromTail(tail []byte) (string, bool) {
+	text := ""
+	found := false
+	for _, line := range bytes.Split(tail, []byte("\n")) {
+		record, ok := decodeTranscriptRecord(line)
+		if !ok || record.Type != "assistant" || record.Message == nil {
+			continue
+		}
+		for _, block := range transcriptContentBlocks(record.Message.Content) {
+			if block.Type == "text" && block.Text != "" {
+				text = block.Text
+				found = true
+			}
+		}
+	}
+	return text, found
+}
+
+// PendingToolCall returns the name of the last tool_use with no matching
+// tool_result.
+//
+// ⚠️ It reports the CALL NAME only and claims nothing about the session being
+// parked: the park decision needs the transcript's mtime, which the caller reads
+// through ModifiedAt rather than this method stat-ing the file a second time.
+func (r *transcriptReader) PendingToolCall(sessionID string) (string, bool) {
+	path := r.Path(sessionID)
+	if path == "" {
+		return "", false
+	}
+	tail, ok := readTranscriptWindow(path, nil)
+	if !ok {
+		return "", false
+	}
+	return pendingToolCallFromTail(tail)
+}
+
+// pendingToolCallFromTail walks the tail in ORDER holding ONE pending slot.
+//
+// ⚠️ A tool_result clears the slot only when it answers the call the slot holds.
+// A result for an OLDER call must not clear a newer pending one — measured shape:
+// `tool_use tu-1`, `tool_use tu-2`, `tool_result tu-1`, where the session is
+// still parked on tu-2. One slot, last-writer-wins; a set would report a call
+// that is already answered.
+func pendingToolCallFromTail(tail []byte) (string, bool) {
+	pending := false
+	pendingID := ""
+	pendingName := ""
+	for _, line := range bytes.Split(tail, []byte("\n")) {
+		record, ok := decodeTranscriptRecord(line)
+		if !ok || record.Message == nil {
+			continue
+		}
+		for _, block := range transcriptContentBlocks(record.Message.Content) {
+			switch block.Type {
+			case "tool_use":
+				pendingID = block.ID
+				pendingName = block.Name
+				pending = true
+			case "tool_result":
+				if pending && block.ToolUseID == pendingID {
+					pending = false
+					pendingID = ""
+					pendingName = ""
+				}
+			}
+		}
+	}
+	return pendingName, pending
+}
+
+// transcriptContentBlock is one element of a record's message.content. It is a
+// superset of transcriptBlock: the tool fields are read by PendingToolCall and
+// by the stuck detection, and text by LastAssistantText.
+type transcriptContentBlock struct {
+	Type      string          `json:"type"`
+	Text      string          `json:"text"`
+	ID        string          `json:"id"`
+	Name      string          `json:"name"`
+	ToolUseID string          `json:"tool_use_id"`
+	IsError   bool            `json:"is_error"`
+	Content   json.RawMessage `json:"content"`
+}
+
+// transcriptContentBlocks decodes a message content block list. It returns nil
+// for a bare string content or a malformed body, which is the fail-closed
+// direction every reader on this file takes.
+func transcriptContentBlocks(raw json.RawMessage) []transcriptContentBlock {
+	if len(raw) == 0 {
+		return nil
+	}
+	var blocks []transcriptContentBlock
+	if err := json.Unmarshal(raw, &blocks); err != nil {
+		return nil
+	}
+	return blocks
 }
 
 // readTranscriptWindow reads the portion of the transcript a delivery check

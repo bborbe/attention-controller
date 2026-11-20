@@ -101,6 +101,12 @@ type application struct {
 	// process this one does not own.
 	AttentionWrapperURL string `required:"false" arg:"attention-wrapper-url" env:"ATTENTION_WRAPPER_URL" usage:"claude-wrapper base URL the routine-gate settle arm answers through (empty disables that arm)" default:"http://127.0.0.1:18090"`
 
+	// RetiredWatchers names the claude-supervisor scripts the watcher reaper
+	// stops. Empty disables the reaper (the default). List only scripts that NO
+	// plugin version still arms or runs as a hook: killing a hook or an armed
+	// watcher breaks live sessions (incident 2026-11-20).
+	RetiredWatchers string `required:"false" arg:"retired-watchers" env:"RETIRED_WATCHERS" usage:"comma-separated claude-supervisor script names whose running copies the reaper stops (empty disables the reaper, the default; list only scripts no plugin version still arms or runs as a hook)"`
+
 	// AttentionRoutineBashClassifier is the settle arm's Bash classifier; `off` or a missing path is the rollback.
 	AttentionRoutineBashClassifier string `required:"false" arg:"attention-routine-bash-classifier" env:"ATTENTION_ROUTINE_BASH_CLASSIFIER" usage:"permission-tier.py the routine-gate settle arm rates Bash gates with ('off' disables the Bash rule; empty resolves to ~/.claude/plugins/marketplaces/claude-supervisor/scripts/permission-tier.py)"`
 
@@ -421,7 +427,15 @@ func (a *application) createStoreDeps(ctx context.Context, db libkv.DB) (storeDe
 		initialLostAnswersTotal,
 	)
 
-	rawStore, err := a.createAttentionStore(ctx, db, livenessChecker, boardMetrics)
+	// ⚠️ The ONE session-ledger store for this process, built here so both the
+	// attention store (whose evidence sweep reads a session's pane) and the
+	// /api/1.0/session-ledger endpoints share it. A second
+	// NewSessionLedgerStore over the same db is a second handle on the same
+	// BoltDB file, which BoltDB refuses with a lock timeout rather than a
+	// readable error.
+	sessionLedger := pkg.NewSessionLedgerStore(db)
+
+	rawStore, err := a.createAttentionStore(ctx, db, livenessChecker, boardMetrics, sessionLedger)
 	if err != nil {
 		return storeDeps{}, err
 	}
@@ -464,6 +478,7 @@ func (a *application) createAttentionStore(
 	db libkv.DB,
 	livenessChecker pkg.SessionLivenessChecker,
 	lostAnswers pkg.LostAnswerCounter,
+	sessionLedger pkg.SessionLedgerStore,
 ) (pkg.AttentionStore, error) {
 	heartbeatWindow, err := libtime.ParseDuration(ctx, a.HeartbeatWindow)
 	if err != nil {
@@ -489,6 +504,17 @@ func (a *application) createAttentionStore(
 			pkg.WithExpiryCloseWriter(attnlog.NewExpiryCloseWriter(stateDir)),
 		)
 	}
+	// ⚠️ The pane lister and the session-ledger lookup are what let the evidence
+	// sweep tell a DEAD target from an UNPROVABLE one. Without both, `targetGone`
+	// answers false forever and the retirement never fires in this process — the
+	// change would ship as a no-op while its tests passed. A host with no
+	// WezTerm (a cluster backend) simply gets a lister whose listing fails, which
+	// is unprovable, which reopens exactly as before.
+	options = append(
+		options,
+		pkg.WithSessionPaneLookup(pkg.NewLedgerSessionPaneLookup(sessionLedger)),
+		pkg.WithPaneLister(pkg.NewWeztermPaneLister(libtime.NewCurrentDateTime())),
+	)
 	return pkg.NewAttentionStore(
 		db,
 		pkg.NewItemIDGenerator(),
@@ -1174,11 +1200,18 @@ func (a *application) createHTTPServer(
 		// The unforwarded-closers check shares it too: a failed scan costs one
 		// interval of loss counting and loses nothing, so it logs action=error and
 		// keeps ticking.
-		// ⚠️ The capacity must EXCEED the number of registrations below (nineteen),
-		// not equal it. The runner buffers `make(chan Func, maxConcurrent)` and
-		// `Add` blocks before `Run` drains, so a full buffer hangs startup with no
-		// log line — one spare slot is the margin, as 6→7, 10→11 and 12→19 before it.
-		runner := run.NewConcurrentRunner(20)
+		// ⚠️ The capacity must EXCEED the number of `runner.Add` sites reachable
+		// from here in the MAXIMAL configuration (twenty-one: eighteen in main.go
+		// plus one each in manager_wake_wiring.go, compact_trio_wiring.go and
+		// watcher_reaper_wiring.go — settle arm, jump listener, store API listener
+		// and watcher reaper all enabled), not equal it. The runner buffers
+		// `make(chan Func, maxConcurrent)` and `Add` blocks before `Run` drains,
+		// so a full buffer hangs startup with no log line — one spare slot is the
+		// margin, as 6→7, 10→11 and 12→19 before it. Count the sites, not the
+		// arms a test host happens to enable: the watcher reaper filled a
+		// capacity of twenty on the live board while every narrower test host
+		// started fine (deploy rolled back, 2026-11-20).
+		runner := run.NewConcurrentRunner(22)
 		defer runner.Close()
 
 		// The board listener itself is NOT a runner slot: it was bound before
@@ -1252,6 +1285,7 @@ func (a *application) addMaintenanceJobs(
 	runner.Add(ctx, sessionHeartbeatStore.Run)
 	return a.addInProcessJobs(
 		ctx, runner, store, panes, liveness, provenance, sessionLedger, notifier,
+		sessionHeartbeatStore,
 	)
 }
 
@@ -1309,6 +1343,7 @@ func (a *application) addInProcessJobs(
 	provenance pkg.ProvenanceResolver,
 	sessionLedger pkg.SessionLedgerStore,
 	notifier pkg.AttentionChangeNotifier,
+	heartbeats pkg.SessionHeartbeatStore,
 ) error {
 	runner.Add(ctx, pkg.NewMetricsPushJob(
 		prometheus.DefaultGatherer,
@@ -1372,6 +1407,7 @@ func (a *application) addInProcessJobs(
 	// linter's length bound, and each job's rationale belongs beside the job.
 	return a.addAttentionWatcherJobs(
 		ctx, runner, store, panes, liveness, provenance, sessionLedger, notifier,
+		heartbeats,
 	)
 }
 
@@ -1395,12 +1431,12 @@ func (a *application) addAttentionWatcherJobs(
 	provenance pkg.ProvenanceResolver,
 	sessionLedger pkg.SessionLedgerStore,
 	notifier pkg.AttentionChangeNotifier,
+	heartbeats pkg.SessionHeartbeatStore,
 ) error {
 	stateDir, contextDir, transcriptRoot, err := a.attentionWatcherDirs(ctx)
 	if err != nil {
 		return err
 	}
-
 	// One pane text writer, three consumers: the carrier types into a pane, the
 	// menu arm sends its key sequence, and the settle arm reads a session's tty.
 	// Two writers would be two subprocess paths whose failure semantics could
@@ -1488,20 +1524,17 @@ func (a *application) addAttentionWatcherJobs(
 	// ⚠️ The book lives under the attention state dir, not the context-state dir:
 	// the statusline owns the latter, and its files are the readings this job
 	// judges rather than a place this job writes.
-	runner.Add(ctx, pkg.NewContextCrossingJob(
-		contextDir,
-		pkg.NewStoreContextCrossingSink(store, nil),
-		liveness,
-		pkg.ContextCrossingTokens,
-		pkg.ContextCrossingInterval,
-		filepath.Join(stateDir, pkg.ContextCrossingBookFileName),
-	).Run)
+	a.addContextCrossingJob(ctx, runner, store, liveness, stateDir, contextDir)
 	// The wake job is the second writer on the same books (the pane carrier the
 	// delivery arm already types through), so it is registered HERE and not on the
 	// cluster listener, where panes, the registry and the ledger do not exist.
+	//
+	// ⚠️ The transcript source attaches via OPTION, so registrations stay at one.
 	runner.Add(ctx, pkg.NewManagerWakeJob(store, sessionLedger, provenance, carrier, notifier,
-		libtime.NewCurrentDateTime(), pkg.NewManagerWakeEmissionLog()).Run)
+		libtime.NewCurrentDateTime(), pkg.NewManagerWakeEmissionLog(),
+		a.managerWakeTranscriptOption(ctx, stateDir, transcriptRoot, heartbeats)).Run)
 	registerCompactTrio(ctx, runner, store, carrier, writer, transcriptRoot)
+	a.addWatcherReaperJob(ctx, runner)
 
 	a.logAttentionWatcherRegistration()
 	return nil
@@ -1519,36 +1552,6 @@ func (a *application) logAttentionWatcherRegistration() {
 		"job=attention-watcher action=registered arms=prune,ingest,deliver,menu,headless,crossing,wake,compact-trio settle=%t",
 		a.AttentionWrapperURL != "",
 	)
-}
-
-// attentionWatcherDirs resolves the three directories the ported jobs read.
-//
-// ⚠️ Each falls back to its own default rather than sharing one: the event logs,
-// the statusline context files and the transcripts have different owners and
-// different lifetimes, so a bad setting must fail the job that reads it and not
-// the other two.
-func (a *application) attentionWatcherDirs(ctx context.Context) (string, string, string, error) {
-	stateDir := a.AttentionStateDir
-	if stateDir == "" {
-		resolved, err := defaultAttentionStateDir(ctx)
-		if err != nil {
-			return "", "", "", errors.Wrap(ctx, err, "resolve attention state dir failed")
-		}
-		stateDir = resolved
-	}
-	contextDir := a.AttentionContextDir
-	if contextDir == "" {
-		resolved, err := defaultAttentionContextDir(ctx)
-		if err != nil {
-			return "", "", "", errors.Wrap(ctx, err, "resolve attention context dir failed")
-		}
-		contextDir = resolved
-	}
-	transcriptRoot, err := defaultTranscriptRoot(ctx)
-	if err != nil {
-		return "", "", "", errors.Wrap(ctx, err, "resolve transcript root failed")
-	}
-	return stateDir, contextDir, transcriptRoot, nil
 }
 
 // defaultAttentionContextDir resolves ~/.claude/state/context, the directory the

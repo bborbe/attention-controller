@@ -170,10 +170,15 @@ type registryEntryStamp struct {
 // the name a session holds *now* to prove pane ownership and the source that
 // says who chose that name before it renders it. One definition so the two
 // readers cannot disagree about what an entry is.
+//
+// `Status` is the registry's own `idle` / `busy` / `waiting` / `shell` word,
+// read by the gate computation. ⚠️ The JSON tag is `status` — the field the
+// Python watcher reads — not a spelled-out variant.
 type sessionRegistryEntry struct {
 	SessionID  string `json:"sessionId"`
 	Name       string `json:"name"`
 	NameSource string `json:"nameSource"`
+	Status     string `json:"status"` // idle / busy / waiting / shell
 }
 
 // SessionIDs is a collection of live session ids, as one listing of the
