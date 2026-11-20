@@ -44,13 +44,13 @@ type ProcessLister interface {
 
 // NewPsProcessLister creates a ProcessLister backed by `ps`.
 func NewPsProcessLister() ProcessLister {
-	return &psProcessLister{}
+	return &processLister{}
 }
 
-type psProcessLister struct{}
+type processLister struct{}
 
 // List reads the process table through `ps`.
-func (l *psProcessLister) List(ctx context.Context) ([]Process, error) {
+func (l *processLister) List(ctx context.Context) ([]Process, error) {
 	ctx, cancel := context.WithTimeout(ctx, processListTimeout)
 	defer cancel()
 	// #nosec G204 -- the command and every flag are compile-time literals.
@@ -84,4 +84,4 @@ func ParsePsOutput(raw string) []Process {
 }
 
 // Compile-time guard: the lister must satisfy its own interface.
-var _ ProcessLister = (*psProcessLister)(nil)
+var _ ProcessLister = (*processLister)(nil)

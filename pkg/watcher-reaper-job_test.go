@@ -65,7 +65,7 @@ var _ = Describe("ParseRetiredWatchers", func() {
 	})
 })
 
-var _ = Describe("MatchRetiredWatcher", func() {
+var _ = Describe("RetiredWatcherMatcher", func() {
 	var retired map[string]bool
 
 	BeforeEach(func() {
@@ -73,8 +73,14 @@ var _ = Describe("MatchRetiredWatcher", func() {
 	})
 
 	match := func(p pkg.Process) (pkg.RetiredWatcher, bool) {
-		return pkg.MatchRetiredWatcher(p, reaperUID, reaperSelfPID, retired)
+		return pkg.NewRetiredWatcherMatcher(retired, reaperUID, reaperSelfPID).Match(p)
 	}
+
+	It("matches nothing with an empty retired list", func() {
+		retired = map[string]bool{}
+		_, ok := match(watcherProcess(21, frameworkPy, cacheWatch))
+		Expect(ok).To(BeFalse())
+	})
 
 	It("matches a retired script from a plugin cache version", func() {
 		got, ok := match(watcherProcess(10, frameworkPy, cacheWatch, "--tracked", "x"))
@@ -170,10 +176,8 @@ var _ = Describe("WatcherReaperJob", func() {
 	JustBeforeEach(func() {
 		job = pkg.NewWatcherReaperJob(
 			lister,
+			pkg.NewRetiredWatcherMatcher(retired, reaperUID, reaperSelfPID),
 			signaller,
-			retired,
-			reaperUID,
-			reaperSelfPID,
 			time.Minute,
 		)
 	})
@@ -216,19 +220,6 @@ var _ = Describe("WatcherReaperJob", func() {
 		Expect(signaller.TerminateCallCount()).To(Equal(0))
 	})
 
-	Context("with an empty retired list", func() {
-		BeforeEach(func() {
-			retired = map[string]bool{}
-		})
-
-		It("reads nothing and stops nothing", func() {
-			reaped, err := job.ReapOnce(ctx)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(reaped).To(Equal(0))
-			Expect(lister.ListCallCount()).To(Equal(0))
-		})
-	})
-
 	It("runs one pass, then stops when the context is cancelled", func() {
 		cancelled, cancel := context.WithCancel(ctx)
 		cancel()
@@ -237,7 +228,12 @@ var _ = Describe("WatcherReaperJob", func() {
 	})
 
 	It("refuses a non-positive interval", func() {
-		job = pkg.NewWatcherReaperJob(lister, signaller, retired, reaperUID, reaperSelfPID, 0)
+		job = pkg.NewWatcherReaperJob(
+			lister,
+			pkg.NewRetiredWatcherMatcher(retired, reaperUID, reaperSelfPID),
+			signaller,
+			0,
+		)
 		Expect(job.Run(ctx)).NotTo(Succeed())
 	})
 })

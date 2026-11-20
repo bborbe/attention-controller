@@ -36,10 +36,8 @@ func (a *application) addWatcherReaperJob(ctx context.Context, runner run.Concur
 	}
 	runner.Add(ctx, pkg.NewWatcherReaperJob(
 		pkg.NewPsProcessLister(),
+		pkg.NewRetiredWatcherMatcher(retired, os.Getuid(), os.Getpid()),
 		pkg.NewSyscallProcessSignaller(),
-		retired,
-		os.Getuid(),
-		os.Getpid(),
 		pkg.WatcherReaperInterval,
 	).Run)
 }

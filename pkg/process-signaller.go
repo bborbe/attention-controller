@@ -26,14 +26,14 @@ type ProcessSignaller interface {
 
 // NewSyscallProcessSignaller creates a ProcessSignaller backed by kill(2).
 func NewSyscallProcessSignaller() ProcessSignaller {
-	return &syscallProcessSignaller{}
+	return &processSignaller{}
 }
 
-type syscallProcessSignaller struct{}
+type processSignaller struct{}
 
 // Terminate sends SIGTERM, never SIGKILL: a watcher gets the chance to flush
 // its state file and exit through its own handler.
-func (s *syscallProcessSignaller) Terminate(ctx context.Context, pid int) error {
+func (s *processSignaller) Terminate(ctx context.Context, pid int) error {
 	if pid <= 1 {
 		return errors.Errorf(ctx, "refusing to signal pid %d", pid)
 	}
@@ -47,4 +47,4 @@ func (s *syscallProcessSignaller) Terminate(ctx context.Context, pid int) error 
 }
 
 // Compile-time guard: the signaller must satisfy its own interface.
-var _ ProcessSignaller = (*syscallProcessSignaller)(nil)
+var _ ProcessSignaller = (*processSignaller)(nil)
