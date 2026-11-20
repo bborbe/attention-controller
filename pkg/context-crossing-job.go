@@ -139,8 +139,9 @@ func (j *contextCrossingJob) Run(ctx context.Context) error {
 //   - a reading that could not be decoded (a zero, a missing field) is not a
 //     measurement and changes nothing — re-arming on it would mint a second
 //     card for a crossing that never ended;
-//   - a session that is not live is re-armed, because a resumed session keeps
-//     its id and a resumed run is a new crossing;
+//   - a session that is not live is SKIPPED and keeps its entry — liveness is
+//     not a crossing boundary, and clearing on it re-mints at an unchanged
+//     token count;
 //   - a live session at or above the threshold is raised only when the book
 //     does not already hold it.
 func (j *contextCrossingJob) ScanOnce(ctx context.Context) error {
@@ -156,7 +157,6 @@ func (j *contextCrossingJob) ScanOnce(ctx context.Context) error {
 	if err != nil {
 		return errors.Wrap(ctx, err, "list context state failed")
 	}
-	present := make(map[string]bool, len(names))
 	raised := 0
 	for _, name := range names {
 		if err := ctx.Err(); err != nil {
@@ -166,7 +166,6 @@ func (j *contextCrossingJob) ScanOnce(ctx context.Context) error {
 		if !ok {
 			continue
 		}
-		present[record.SessionID] = true
 		didRaise, err := j.scanRecord(ctx, record)
 		if err != nil {
 			return err
@@ -174,9 +173,6 @@ func (j *contextCrossingJob) ScanOnce(ctx context.Context) error {
 		if didRaise {
 			raised++
 		}
-	}
-	if err := j.book.prune(ctx, present, j.liveness); err != nil {
-		return errors.Wrap(ctx, err, "prune crossing book failed")
 	}
 	if raised > 0 {
 		glog.Infof(
@@ -191,11 +187,14 @@ func (j *contextCrossingJob) ScanOnce(ctx context.Context) error {
 // scanRecord applies the crossing rule to one decoded reading, reporting whether
 // it raised a card.
 //
-// ⚠️ The two re-arm branches look alike and are not: one is the crossing
-// ending, the other a session that cannot be cued. Both must leave the book
-// empty, and a zero reading reaches neither — readContextCrossing rejects it
-// before this method is called, which is what keeps "nothing measured yet" from
-// minting a second card.
+// ⚠️ EXACTLY ONE branch re-arms the book: a real sub-threshold reading. A
+// session that is merely not live is skipped and its entry KEPT, because
+// liveness is not a crossing boundary and treating it as one re-mints.
+// Measured 2026-11-20 on the live store, the first 24 h after v0.103.3: session
+// `e9cdf8e6` sat at an unchanged 602 170 tokens and raised SIX cards
+// (23:42, 00:36, 01:38, 02:19, 06:08, 14:02) — the state file never dropped
+// below the threshold, so every re-arm came from a liveness blip on a dead
+// session. The book entry survives a blip; only a measured drop ends a crossing.
 func (j *contextCrossingJob) scanRecord(
 	ctx context.Context,
 	record ContextCrossingRecord,
@@ -209,8 +208,12 @@ func (j *contextCrossingJob) scanRecord(
 	// files sat at or above the threshold while only 2 of their sessions were
 	// alive. Pushing on file presence alone would raise 81 cards for sessions
 	// that cannot be compacted at all.
+	//
+	// ⚠️ It returns WITHOUT clearing the book. Clearing here was the defect the
+	// post-deploy measurement found: a dead session whose registry row flickers
+	// back gets a fresh card on every flicker, at an unchanged token count.
 	if !j.liveness.IsLive(ctx, record.SessionID) {
-		return false, j.rearm(ctx, record.SessionID)
+		return false, nil
 	}
 	if j.book.raised(record.SessionID) {
 		return false, nil

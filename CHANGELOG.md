@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- fix: **the crossing book is re-armed by a real sub-threshold reading only, so a dead session's liveness blip no longer re-mints its compact card.** v0.103.3's book was also cleared when a session read not-live, on the reasoning that a resumed session keeps its id and deserves a fresh card. The 24 h post-deploy measurement showed the cost: session `e9cdf8e6` sat at an unchanged 602 170 tokens and raised **six** cards (2026-11-19 23:42 → 2026-11-20 14:02), one per liveness blip, with its state file never dropping below the threshold. A not-live session is now skipped with its entry KEPT — liveness is not a crossing boundary, and only a measured drop ends a crossing. The `prune` that dropped dead sessions' entries is removed for the same reason; the book keeps one small entry per session that has ever crossed, and a session id is never reused.
+
 ## v0.107.3
 
 - fix: **`who-needs-me` builds its transcript index in one pass instead of one glob per session.** `hostSnapshot` called `transcripts.Path(sid)` for every registry session, and `Path` runs `filepath.Glob(root/*/<sid>.jsonl)` — which makes Go open and sort *every* project directory on *every* call. With ~58 sessions against 131 project dirs that is O(sessions × files): a 10 s CPU profile put 60 % of the process in `filepath.Glob`/`os.readdir`, a single read took 8–19 s, and the endpoint saturated the process at >100 % CPU while `/healthz` stayed instant. A new `TranscriptReader.Paths()` returns the newest transcript per session from one glob; `hostSnapshot` looks up from that map. Measured: the full per-request loop drops from 1.70 s (58 × 25.8 ms) to one scan.
