@@ -6,7 +6,10 @@ package main
 
 import (
 	"context"
+	"path/filepath"
 
+	"github.com/bborbe/errors"
+	"github.com/bborbe/run"
 	libtime "github.com/bborbe/time"
 	"github.com/golang/glog"
 
@@ -46,4 +49,57 @@ func (a *application) managerWakeTranscriptOption(
 		),
 		pkg.NewManagerGateTracker(stateDir, libtime.NewCurrentDateTime()),
 	)
+}
+
+// attentionWatcherDirs resolves the three directories the ported jobs read.
+//
+// ⚠️ Each falls back to its own default rather than sharing one: the event logs,
+// the statusline context files and the transcripts have different owners and
+// different lifetimes, so a bad setting must fail the job that reads it and not
+// the other two.
+func (a *application) attentionWatcherDirs(ctx context.Context) (string, string, string, error) {
+	stateDir := a.AttentionStateDir
+	if stateDir == "" {
+		resolved, err := defaultAttentionStateDir(ctx)
+		if err != nil {
+			return "", "", "", errors.Wrap(ctx, err, "resolve attention state dir failed")
+		}
+		stateDir = resolved
+	}
+	contextDir := a.AttentionContextDir
+	if contextDir == "" {
+		resolved, err := defaultAttentionContextDir(ctx)
+		if err != nil {
+			return "", "", "", errors.Wrap(ctx, err, "resolve attention context dir failed")
+		}
+		contextDir = resolved
+	}
+	transcriptRoot, err := defaultTranscriptRoot(ctx)
+	if err != nil {
+		return "", "", "", errors.Wrap(ctx, err, "resolve transcript root failed")
+	}
+	return stateDir, contextDir, transcriptRoot, nil
+}
+
+// addContextCrossingJob registers the context-crossing detector.
+//
+// ⚠️ Its book lives under the attention state dir, not the context-state dir:
+// the statusline owns the latter, and its files are the readings this job judges
+// rather than a place this job writes.
+func (a *application) addContextCrossingJob(
+	ctx context.Context,
+	runner run.ConcurrentRunner,
+	store pkg.AttentionStore,
+	liveness pkg.SessionLivenessChecker,
+	stateDir string,
+	contextDir string,
+) {
+	runner.Add(ctx, pkg.NewContextCrossingJob(
+		contextDir,
+		pkg.NewStoreContextCrossingSink(store, nil),
+		liveness,
+		pkg.ContextCrossingTokens,
+		pkg.ContextCrossingInterval,
+		filepath.Join(stateDir, pkg.ContextCrossingBookFileName),
+	).Run)
 }
