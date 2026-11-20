@@ -102,8 +102,10 @@ type application struct {
 	AttentionWrapperURL string `required:"false" arg:"attention-wrapper-url" env:"ATTENTION_WRAPPER_URL" usage:"claude-wrapper base URL the routine-gate settle arm answers through (empty disables that arm)" default:"http://127.0.0.1:18090"`
 
 	// RetiredWatchers names the claude-supervisor scripts the watcher reaper
-	// stops. ⚠️ Empty disables the reaper; that is the rollback.
-	RetiredWatchers string `required:"false" arg:"retired-watchers" env:"RETIRED_WATCHERS" usage:"comma-separated claude-supervisor script names whose running copies the reaper stops (empty disables the reaper)" default:"manager-attention-watch,permission-answer-poll"`
+	// stops. Empty disables the reaper (the default). List only scripts that NO
+	// plugin version still arms or runs as a hook: killing a hook or an armed
+	// watcher breaks live sessions (incident 2026-11-20).
+	RetiredWatchers string `required:"false" arg:"retired-watchers" env:"RETIRED_WATCHERS" usage:"comma-separated claude-supervisor script names whose running copies the reaper stops (empty disables the reaper, the default; list only scripts no plugin version still arms or runs as a hook)"`
 
 	// AttentionRoutineBashClassifier is the settle arm's Bash classifier; `off` or a missing path is the rollback.
 	AttentionRoutineBashClassifier string `required:"false" arg:"attention-routine-bash-classifier" env:"ATTENTION_ROUTINE_BASH_CLASSIFIER" usage:"permission-tier.py the routine-gate settle arm rates Bash gates with ('off' disables the Bash rule; empty resolves to ~/.claude/plugins/marketplaces/claude-supervisor/scripts/permission-tier.py)"`

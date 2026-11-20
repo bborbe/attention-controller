@@ -10,11 +10,6 @@ import (
 	"strings"
 )
 
-// DefaultRetiredWatchers names the claude-supervisor scripts whose job moved
-// into this process. `manager-attention-watch` is replaced by the manager wake
-// job; `permission-answer-poll` was deleted upstream (claude-supervisor #1036).
-const DefaultRetiredWatchers = "manager-attention-watch,permission-answer-poll"
-
 // supervisorScriptPattern matches a claude-supervisor script path and captures
 // the plugin version (empty for the marketplace clone) and the script name.
 //

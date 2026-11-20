@@ -46,6 +46,8 @@ var _ = Describe("ParsePsOutput", func() {
 	})
 })
 
+const testRetiredWatchers = "manager-attention-watch,permission-answer-poll"
+
 var _ = Describe("ParseRetiredWatchers", func() {
 	It("trims blanks and a trailing .py", func() {
 		Expect(
@@ -61,7 +63,7 @@ var _ = Describe("ParseRetiredWatchers", func() {
 	})
 
 	It("parses the default list into both retired scripts", func() {
-		Expect(pkg.ParseRetiredWatchers(pkg.DefaultRetiredWatchers)).To(HaveLen(2))
+		Expect(pkg.ParseRetiredWatchers(testRetiredWatchers)).To(HaveLen(2))
 	})
 })
 
@@ -69,7 +71,7 @@ var _ = Describe("RetiredWatcherMatcher", func() {
 	var retired map[string]bool
 
 	BeforeEach(func() {
-		retired = pkg.ParseRetiredWatchers(pkg.DefaultRetiredWatchers)
+		retired = pkg.ParseRetiredWatchers(testRetiredWatchers)
 	})
 
 	match := func(p pkg.Process) (pkg.RetiredWatcher, bool) {
@@ -164,7 +166,7 @@ var _ = Describe("WatcherReaperJob", func() {
 		ctx = context.Background()
 		lister = &mocks.ProcessLister{}
 		signaller = &mocks.ProcessSignaller{}
-		retired = pkg.ParseRetiredWatchers(pkg.DefaultRetiredWatchers)
+		retired = pkg.ParseRetiredWatchers(testRetiredWatchers)
 		lister.ListReturns([]pkg.Process{
 			watcherProcess(10, frameworkPy, cacheWatch),
 			watcherProcess(11, frameworkPy, cacheFilter, "--feed"),
