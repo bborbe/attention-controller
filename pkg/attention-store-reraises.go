@@ -75,7 +75,13 @@ func (a *attentionStore) closeRedundantReraises(
 		ctx,
 		tx,
 		func(ctx context.Context, key string, item Item) error {
-			if key == liveIndexMarkerKey || item.State != OpenState {
+			// ⚠️ A HELD card (open + AnsweredAt != nil) is the answered card itself,
+			// not a re-raise of it: the hold keeps a permission card open until
+			// delivery. Its own answer wrote its ask identity into the index, so
+			// testing it here would close it as a redundant re-raise within one
+			// sweep tick, before delivery — defeating the hold. Only an UNANSWERED
+			// open item can be a redundant re-raise.
+			if key == liveIndexMarkerKey || item.State != OpenState || item.AnsweredAt != nil {
 				return nil
 			}
 			answered, err := a.answeredIndex.Exists(ctx, tx, askIdentity(item))
@@ -136,7 +142,7 @@ func (a *attentionStore) closeOpenItem(
 		}
 		return false, errors.Wrapf(ctx, err, "get item %s failed", key)
 	}
-	if item.State != OpenState {
+	if item.State != OpenState || item.AnsweredAt != nil {
 		return false, nil
 	}
 	if err := ValidateTransition(ctx, item.State, ClosedState); err != nil {

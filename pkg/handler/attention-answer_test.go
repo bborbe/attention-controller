@@ -99,6 +99,9 @@ var _ = Describe("AttentionAnswerHandler", func() {
 		)
 		Expect(rec.Code).To(Equal(http.StatusOK))
 
+		_, err := store.SettleAnswer(ctx, item.ItemID)
+		Expect(err).To(BeNil())
+
 		got, err := store.Get(ctx, item.ItemID)
 		Expect(err).To(BeNil())
 		Expect(got.Decision).To(Equal(pkg.AllowDecision))
@@ -218,6 +221,9 @@ var _ = Describe("AttentionAnswerHandler", func() {
 		)
 		Expect(rec.Code).To(Equal(http.StatusOK))
 
+		_, err := store.SettleAnswer(ctx, item.ItemID)
+		Expect(err).To(BeNil())
+
 		got, err := store.Get(ctx, item.ItemID)
 		Expect(err).To(BeNil())
 		Expect(got.Answer).NotTo(BeNil())
@@ -251,6 +257,9 @@ var _ = Describe("AttentionAnswerHandler", func() {
 
 		rec := answer(item.ItemID, `{"answered_by":"telegram"}`)
 		Expect(rec.Code).To(Equal(http.StatusOK))
+
+		_, err := store.SettleAnswer(ctx, item.ItemID)
+		Expect(err).To(BeNil())
 
 		got, err := store.Get(ctx, item.ItemID)
 		Expect(err).To(BeNil())

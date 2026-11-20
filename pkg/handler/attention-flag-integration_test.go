@@ -262,6 +262,10 @@ var _ = Describe("Attention flag round trip", func() {
 			`{"answered_by":"attention-board"}`,
 		)
 		Expect(answerRec.Code).To(Equal(http.StatusOK))
+		// Settled: a held answer is still open and flaggable; the refusal is for
+		// the settled answered state.
+		_, err := store.SettleAnswer(ctx, item.ItemID)
+		Expect(err).To(BeNil())
 
 		flagRec := post(
 			"/api/1.0/attention/"+item.ItemID.String()+"/flag",

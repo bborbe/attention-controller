@@ -200,7 +200,11 @@ func (j *routineGateSettleJob) settle(
 	item Item,
 	reports map[ItemID]*DeliveryReport,
 ) {
-	if item.State != OpenState || item.AnswerMechanism != PermissionAnswerMechanism {
+	// ⚠️ A HELD card (open + AnsweredAt != nil) is already answered and awaiting
+	// delivery; settling it here would re-answer a gate the operator already
+	// answered. The hold keeps a permission card open, so this job must skip it.
+	if item.State != OpenState || item.AnswerMechanism != PermissionAnswerMechanism ||
+		item.AnsweredAt != nil {
 		return
 	}
 	sessionID, ok := itemSessionID(ctx, item)

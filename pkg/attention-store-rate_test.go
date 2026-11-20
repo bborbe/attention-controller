@@ -121,6 +121,8 @@ var _ = Describe("Rating", func() {
 		item := push("rate-answered")
 		_, err := store.Answer(ctx, item.ItemID, "attention-board", "", "", nil, nil, nil)
 		Expect(err).To(BeNil())
+		_, err = store.SettleAnswer(ctx, item.ItemID)
+		Expect(err).To(BeNil())
 		before := get(item.ItemID)
 		Expect(before.State).To(Equal(pkg.AnsweredState))
 
