@@ -1198,14 +1198,18 @@ func (a *application) createHTTPServer(
 		// The unforwarded-closers check shares it too: a failed scan costs one
 		// interval of loss counting and loses nothing, so it logs action=error and
 		// keeps ticking.
-		// ⚠️ The capacity must EXCEED the number of registrations below (twenty,
-		// counting the watcher reaper), not equal it. The runner buffers
+		// ⚠️ The capacity must EXCEED the number of `runner.Add` sites reachable
+		// from here in the MAXIMAL configuration (twenty-one: eighteen in main.go
+		// plus one each in manager_wake_wiring.go, compact_trio_wiring.go and
+		// watcher_reaper_wiring.go — settle arm, jump listener, store API listener
+		// and watcher reaper all enabled), not equal it. The runner buffers
 		// `make(chan Func, maxConcurrent)` and `Add` blocks before `Run` drains,
 		// so a full buffer hangs startup with no log line — one spare slot is the
-		// margin, as 6→7, 10→11, 12→19 and 20→21 before it. The 20→21 bump came
-		// after the reaper's twentieth registration filled the buffer and the
-		// board never left its starting screen (deploy rolled back, 2026-11-20).
-		runner := run.NewConcurrentRunner(21)
+		// margin, as 6→7, 10→11 and 12→19 before it. Count the sites, not the
+		// arms a test host happens to enable: the watcher reaper filled a
+		// capacity of twenty on the live board while every narrower test host
+		// started fine (deploy rolled back, 2026-11-20).
+		runner := run.NewConcurrentRunner(22)
 		defer runner.Close()
 
 		// The board listener itself is NOT a runner slot: it was bound before
