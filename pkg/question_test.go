@@ -316,6 +316,7 @@ var _ = Describe("Questions and cardinality", func() {
 				}, nil)
 			Expect(err).To(BeNil())
 			Expect(answered.State).To(Equal(pkg.AnsweredState))
+			Expect(answered.AnsweredAt).NotTo(BeNil())
 			Expect(answered.Answers).To(HaveLen(2))
 			Expect(answered.Answers[0].Question).To(Equal("Chores"))
 			// A multi-pick question's labels ride in values, so two picks are two

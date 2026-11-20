@@ -163,6 +163,18 @@ func newAttentionPageRow(
 		row.Dimmed = true
 		row.Record = recordAnswer(item)
 		row.Client = recordClient(item)
+	} else if item.State == pkg.OpenState && item.AnsweredAt != nil {
+		// ⚠️ The HOLD: an answered-but-undelivered card is still OPEN, so it stays
+		// in the open set and keeps rendering — with the recorded answer and no
+		// answer controls, exactly as a dimmed record (Dimmed is set so every
+		// template gate behaves identically) — but it ALSO carries `held`, so the
+		// answerable filter never hides it. A card that vanished here would
+		// re-create the defect: the board showing the worker as unblocked while the
+		// answer had not landed.
+		row.Dimmed = true
+		row.Held = true
+		row.Record = recordAnswer(item)
+		row.Client = recordClient(item)
 	}
 	if row.Message {
 		row.Questions = pageQuestions(item)

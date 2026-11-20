@@ -190,6 +190,37 @@ var _ = Describe("pane carrier", func() {
 		Expect(delivery.PendingLine).To(BeEmpty())
 	})
 
+	It("types a manager answer in the manager's voice, with no operator envelope", func() {
+		delivery.Answerer = ManagerAnswerer
+		verdict, _ := carrier.TypeIntoPane(
+			ctx,
+			delivery,
+			"Manager answer, via supervisor: Approve",
+			false,
+		)
+		Expect(verdict).To(Equal(DeliveryOK))
+		Expect(writer.sent).To(HaveLen(2))
+		Expect(writer.sent[0].text).To(Equal(
+			"Manager answer, via supervisor: Approve [" + storeID + "]"))
+		Expect(writer.sent[0].text).NotTo(ContainSubstring("Operator answer"))
+	})
+
+	It("prefixes a bare manager label exactly once", func() {
+		delivery.Answerer = ManagerAnswerer
+		verdict, _ := carrier.TypeIntoPane(ctx, delivery, "Approve", false)
+		Expect(verdict).To(Equal(DeliveryOK))
+		Expect(writer.sent[0].text).To(Equal(
+			"Manager answer, via supervisor: Approve [" + storeID + "]"))
+	})
+
+	It("types an explicit operator answer exactly as before", func() {
+		delivery.Answerer = OperatorAnswerer
+		verdict, _ := carrier.TypeIntoPane(ctx, delivery, "allow", false)
+		Expect(verdict).To(Equal(DeliveryOK))
+		Expect(writer.sent[0].text).To(Equal(
+			"Operator answer, via attention board: allow [" + storeID + "]"))
+	})
+
 	It("refuses to type into a busy composer", func() {
 		writer.composer[7] = ComposerBusy
 		verdict, reason := carrier.TypeIntoPane(ctx, delivery, "allow", false)

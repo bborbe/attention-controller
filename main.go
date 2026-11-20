@@ -421,7 +421,15 @@ func (a *application) createStoreDeps(ctx context.Context, db libkv.DB) (storeDe
 		initialLostAnswersTotal,
 	)
 
-	rawStore, err := a.createAttentionStore(ctx, db, livenessChecker, boardMetrics)
+	// ⚠️ The ONE session-ledger store for this process, built here so both the
+	// attention store (whose evidence sweep reads a session's pane) and the
+	// /api/1.0/session-ledger endpoints share it. A second
+	// NewSessionLedgerStore over the same db is a second handle on the same
+	// BoltDB file, which BoltDB refuses with a lock timeout rather than a
+	// readable error.
+	sessionLedger := pkg.NewSessionLedgerStore(db)
+
+	rawStore, err := a.createAttentionStore(ctx, db, livenessChecker, boardMetrics, sessionLedger)
 	if err != nil {
 		return storeDeps{}, err
 	}
@@ -464,6 +472,7 @@ func (a *application) createAttentionStore(
 	db libkv.DB,
 	livenessChecker pkg.SessionLivenessChecker,
 	lostAnswers pkg.LostAnswerCounter,
+	sessionLedger pkg.SessionLedgerStore,
 ) (pkg.AttentionStore, error) {
 	heartbeatWindow, err := libtime.ParseDuration(ctx, a.HeartbeatWindow)
 	if err != nil {
@@ -489,6 +498,17 @@ func (a *application) createAttentionStore(
 			pkg.WithExpiryCloseWriter(attnlog.NewExpiryCloseWriter(stateDir)),
 		)
 	}
+	// ⚠️ The pane lister and the session-ledger lookup are what let the evidence
+	// sweep tell a DEAD target from an UNPROVABLE one. Without both, `targetGone`
+	// answers false forever and the retirement never fires in this process — the
+	// change would ship as a no-op while its tests passed. A host with no
+	// WezTerm (a cluster backend) simply gets a lister whose listing fails, which
+	// is unprovable, which reopens exactly as before.
+	options = append(
+		options,
+		pkg.WithSessionPaneLookup(pkg.NewLedgerSessionPaneLookup(sessionLedger)),
+		pkg.WithPaneLister(pkg.NewWeztermPaneLister(libtime.NewCurrentDateTime())),
+	)
 	return pkg.NewAttentionStore(
 		db,
 		pkg.NewItemIDGenerator(),
@@ -1488,12 +1508,16 @@ func (a *application) addAttentionWatcherJobs(
 	// an always-empty book — a job that can never post, which reads in a log
 	// exactly like a quiet fleet. It lands with the ingest change that fills the
 	// book; until then manager gates post immediately, as they did before.
+	// ⚠️ The book lives under the attention state dir, not the context-state dir:
+	// the statusline owns the latter, and its files are the readings this job
+	// judges rather than a place this job writes.
 	runner.Add(ctx, pkg.NewContextCrossingJob(
 		contextDir,
 		pkg.NewStoreContextCrossingSink(store, nil),
 		liveness,
 		pkg.ContextCrossingTokens,
 		pkg.ContextCrossingInterval,
+		filepath.Join(stateDir, pkg.ContextCrossingBookFileName),
 	).Run)
 	// The wake job is the second writer on the same books (the pane carrier the
 	// delivery arm already types through), so it is registered HERE and not on the

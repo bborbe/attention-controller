@@ -20,6 +20,7 @@ type historyMatcher struct {
 	producerNeedles [][]byte
 	prefix          DedupKey
 	prefixNeedle    []byte
+	ratedOnly       bool
 }
 
 // newHistoryMatcher merges the filters and builds the raw-byte needles.
@@ -33,45 +34,74 @@ type historyMatcher struct {
 func newHistoryMatcher(filters []HistoryFilter) historyMatcher {
 	m := historyMatcher{}
 	for _, f := range filters {
-		for _, p := range f.Producers {
-			if p == "" {
-				continue
-			}
-			if m.ids == nil {
-				m.ids = map[ProducerID]struct{}{}
-			}
-			if _, seen := m.ids[p]; seen {
-				continue
-			}
-			m.ids[p] = struct{}{}
-			if value, err := json.Marshal(string(p)); err == nil {
-				m.producerNeedles = append(
-					m.producerNeedles,
-					append([]byte(`"producer_id":`), value...),
-				)
-			}
-		}
+		m.addProducers(f.Producers)
 		if f.DedupKeyPrefix != "" {
 			m.prefix = f.DedupKeyPrefix
 		}
-	}
-	if m.prefix != "" {
-		if value, err := json.Marshal(string(m.prefix)); err == nil {
-			m.prefixNeedle = append([]byte(`"dedup_key":`), value[:len(value)-1]...)
+		if f.RatedOnly {
+			m.ratedOnly = true
 		}
 	}
+	m.prefixNeedle = dedupKeyPrefixNeedle(m.prefix)
 	return m
+}
+
+// addProducers folds one filter's producer ids into the matcher, skipping an
+// empty id (it would match every item whose producer declared none) and a
+// duplicate. Split out of newHistoryMatcher for the same reason the store's walk
+// was split from its bounds: the loop is one rule, and the merged function's
+// cognitive budget is spent on the filter merge.
+func (m *historyMatcher) addProducers(producers []ProducerID) {
+	for _, p := range producers {
+		if p == "" {
+			continue
+		}
+		if m.ids == nil {
+			m.ids = map[ProducerID]struct{}{}
+		}
+		if _, seen := m.ids[p]; seen {
+			continue
+		}
+		m.ids[p] = struct{}{}
+		if value, err := json.Marshal(string(p)); err == nil {
+			m.producerNeedles = append(
+				m.producerNeedles,
+				append([]byte(`"producer_id":`), value...),
+			)
+		}
+	}
+}
+
+// dedupKeyPrefixNeedle is the marshalled prefix with its closing quote removed,
+// so it matches any value that STARTS with the prefix.
+func dedupKeyPrefixNeedle(prefix DedupKey) []byte {
+	if prefix == "" {
+		return nil
+	}
+	value, err := json.Marshal(string(prefix))
+	if err != nil {
+		return nil
+	}
+	return append([]byte(`"dedup_key":`), value[:len(value)-1]...)
 }
 
 // mayMatch reports whether the raw entry could pass every set filter. It can
 // only rule an entry OUT; a read error answers true so the decode that follows
 // reports it.
 func (m historyMatcher) mayMatch(it libkv.Item) bool {
-	if len(m.ids) == 0 && m.prefix == "" {
+	if len(m.ids) == 0 && m.prefix == "" && !m.ratedOnly {
 		return true
 	}
 	ok := true
 	err := it.Value(func(v []byte) error {
+		// ⚠️ An unrated item omits the field entirely (`rating,omitempty`), so the
+		// needle is the KEY with its colon — matching `"rated_at":` would be wrong
+		// in both directions, and a bare `"rating"` would also match the key name
+		// inside `"rating":null` if a future encoder ever wrote it.
+		if m.ratedOnly && !bytes.Contains(v, []byte(`"rating":`)) {
+			ok = false
+			return nil
+		}
 		if m.prefixNeedle != nil && !bytes.Contains(v, m.prefixNeedle) {
 			ok = false
 			return nil
@@ -99,6 +129,9 @@ func (m historyMatcher) matches(item Item) bool {
 		}
 	}
 	if m.prefix != "" && !strings.HasPrefix(string(item.DedupKey), string(m.prefix)) {
+		return false
+	}
+	if m.ratedOnly && item.Rating == NoRating {
 		return false
 	}
 	return true

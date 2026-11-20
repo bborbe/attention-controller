@@ -158,6 +158,8 @@ var _ = Describe("AttentionStore with a dead liveness subject", func() {
 			Value: "left",
 		}, nil, nil)
 		Expect(err).To(BeNil(), "the operator must be able to answer an ask whose asker is gone")
+		_, err = store.SettleAnswer(ctx, item.ItemID)
+		Expect(err).To(BeNil())
 
 		_, err = store.ReadBoard(ctx)
 		Expect(err).To(BeNil())

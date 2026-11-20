@@ -176,6 +176,8 @@ var _ = Describe("AttentionCloseHandler", func() {
 		item := pushQuestion()
 		_, err := store.Answer(ctx, item.ItemID, "supervisor:attention-next", "", "", nil, nil, nil)
 		Expect(err).To(BeNil())
+		_, err = store.SettleAnswer(ctx, item.ItemID)
+		Expect(err).To(BeNil())
 
 		resp := closeItem(item.ItemID, `{"answered_by":"attention-board"}`)
 

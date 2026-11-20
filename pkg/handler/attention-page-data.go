@@ -106,6 +106,14 @@ type attentionPageRow struct {
 	// item answered before `answer` existed carries no content and is still a
 	// record.
 	Dimmed bool
+	// Held reports that this row is an ANSWERED-but-not-yet-delivered card: the
+	// answer is recorded, the card is still in the open set (state `open`), and
+	// an arm has not yet observed delivery. It renders like the dimmed record —
+	// the recorded answer, no answer controls — but carries its own `held` class
+	// rather than `dimmed`, so the answerable filter does NOT hide it: the whole
+	// point of the hold is that the operator keeps seeing the card until the
+	// worker is actually released.
+	Held bool
 	// Record is the answer the store recorded, rendered for the dimmed card by
 	// recordAnswer. Empty on every row that is not dimmed.
 	Record string

@@ -76,7 +76,7 @@
      — and it must be the SAME markup, not a second renderer that would drift
      from this one. The dollar sign inside a sub-template is the value passed to
      it, which is why Speak is carried on the row and read as dot-Speak here. */}}
-{{define "attention-row"}}<li class="item risk-{{ .Risk }}{{if .Dimmed}} dimmed{{end}}" data-item-id="{{ .Item.ItemID }}" data-risk="{{ .Risk }}" data-producer-kind="{{ .Item.ProducerKind }}"{{if .Provenance.Uncovered}} data-uncovered="true"{{end}} data-flagged="{{if .Flagged}}true{{else}}false{{end}}">
+{{define "attention-row"}}<li class="item risk-{{ .Risk }}{{if .Dimmed}} dimmed{{end}}" data-item-id="{{ .Item.ItemID }}" data-held="{{if .Held}}true{{else}}false{{end}}" data-risk="{{ .Risk }}" data-producer-kind="{{ .Item.ProducerKind }}"{{if .Provenance.Uncovered}} data-uncovered="true"{{end}} data-flagged="{{if .Flagged}}true{{else}}false{{end}}">
 {{/* The corner X renders on every OPEN row, ungated by mechanism, from
      2026-09-27 — message, ack and permission alike — and is withheld from the
      dimmed record card by the (not .Dimmed) conjunct, added 2026-10-01. It was

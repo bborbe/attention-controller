@@ -24,6 +24,9 @@ type parkedItem struct {
 	key      string
 	claims   []string
 	deadline *libtime.DateTime
+	// livenessRef is carried so the probe pass can resolve the target's pane and
+	// session with no write transaction open.
+	livenessRef LivenessRef
 }
 
 // evidenceVerdict is one parked item's probe result, computed OUTSIDE the write
@@ -31,6 +34,13 @@ type parkedItem struct {
 type evidenceVerdict struct {
 	key      string
 	observed bool
+	// targetGone is whether the card's pane and session are BOTH provably gone.
+	// ⚠️ It is computed in the PROBE phase, never in the apply phase: resolving
+	// it shells out to `wezterm cli list`, and bbolt admits one writer, so doing
+	// it inside the write transaction would hold the store's write lock across a
+	// subprocess and block every Push/Answer/Close for the duration — the same
+	// defect this file's two-phase split exists to prevent for `gh` probes.
+	targetGone bool
 	// deadline is the deadline the item carried when it was probed. The apply
 	// pass re-checks it so a RE-ANSWER of the parked item during the probe
 	// window — which stamps a new deadline and possibly new claims — cannot be
@@ -92,9 +102,10 @@ func (a *attentionStore) evaluateParkedEvidence(ctx context.Context) ([]evidence
 				continue
 			}
 			items = append(items, parkedItem{
-				key:      key,
-				claims:   item.EvidenceClaims,
-				deadline: item.EvidenceDeadline,
+				key:         key,
+				claims:      item.EvidenceClaims,
+				deadline:    item.EvidenceDeadline,
+				livenessRef: item.LivenessRef,
 			})
 		}
 		return nil
@@ -175,6 +186,14 @@ func (a *attentionStore) applyEvidenceVerdict(
 	if item.EvidenceDeadline == nil || now.Before(*item.EvidenceDeadline) {
 		return false, nil
 	}
+	// ⚠️ A card whose target pane AND session are both provably gone is retired,
+	// not reopened. Reopening it puts a question on the board whose only action
+	// is "type into a pane that no longer exists" — the operator's "more useless
+	// attention cards". The verdict was computed in the PROBE phase: see
+	// evidenceVerdict.targetGone for why it must not be resolved here.
+	if verdict.targetGone {
+		return a.retireDeadTarget(ctx, tx, item)
+	}
 	// The claim was never observed in time. The card goes back on the board with
 	// the claim intact and a note saying why, because an answer nobody can
 	// verify is a question the operator still has to settle.
@@ -235,6 +254,117 @@ func (a *attentionStore) awaitingEvidenceKeys(
 		return nil, errors.Wrap(ctx, err, "scan live index for awaiting evidence failed")
 	}
 	return keys, nil
+}
+
+// RetiredNote is appended to a card closed because its target is gone, so the
+// board's history says why it will not come back.
+const RetiredNote = "retired: the pane and session this card was waiting on are both gone"
+
+// targetGone reports whether the item's target pane and session are BOTH
+// provably gone.
+//
+// ⚠️ Every read must SUCCEED for this to answer true, and that asymmetry is the
+// whole rule. The pane lister's own contract draws it: an empty listing read
+// successfully proves a recorded pane is gone, while a failed read proves
+// nothing. So a nil lister, a listing error, an unresolvable session name, or a
+// non-session liveness model all answer "unprovable" — and unprovable reopens
+// exactly as before. Retiring on a failed read would delete a live question.
+func (a *attentionStore) targetGone(ctx context.Context, ref LivenessRef) bool {
+	if a.paneLister == nil || a.sessionPaneLookup == nil {
+		return false
+	}
+	model, sessionID, err := ref.Parse(ctx)
+	if err != nil || model != SessionLivenessModel {
+		// `owner:` is deliberately always-live, and `heartbeat:` has its own
+		// clock — neither is a pane target.
+		return false
+	}
+	if a.sessionLivenessChecker.IsLive(ctx, sessionID) {
+		return false
+	}
+	// ⚠️ The pane comes from the LIVE session-ledger store: it records the pane
+	// AND the label at spawn time and outlives the session. The retired
+	// file-backed directory has no row after 2026-10-14, and the session
+	// registry deletes its entry on exit.
+	paneID, label, ok := a.sessionPaneLookup.Lookup(ctx, sessionID)
+	if !ok {
+		return false
+	}
+	panes, err := a.paneLister.List(ctx)
+	if err != nil {
+		return false
+	}
+	// ⚠️ Membership alone is NOT proof. A pane id is a recycled lease, so the
+	// title must still name this session — `OwnsPane` is the rule, and it
+	// answers false when the id was reused by somebody else.
+	return !OwnsPane(panes, paneID, label)
+}
+
+// SessionPaneLookup resolves the pane a session was spawned in and the label it
+// was spawned with. Both come from the live session-ledger store; `ok` is false
+// when the session has no row, which the caller treats as unprovable.
+type SessionPaneLookup interface {
+	Lookup(ctx context.Context, sessionID string) (paneID int, label string, ok bool)
+}
+
+// NewLedgerSessionPaneLookup adapts a SessionLedgerStore to SessionPaneLookup.
+func NewLedgerSessionPaneLookup(store SessionLedgerStore) SessionPaneLookup {
+	return &ledgerSessionPaneLookup{store: store}
+}
+
+type ledgerSessionPaneLookup struct {
+	store SessionLedgerStore
+}
+
+func (l *ledgerSessionPaneLookup) Lookup(
+	ctx context.Context,
+	sessionID string,
+) (int, string, bool) {
+	if l.store == nil {
+		return 0, "", false
+	}
+	entry, found, err := l.store.Get(ctx, sessionID)
+	if err != nil || !found {
+		return 0, "", false
+	}
+	paneID, convErr := strconv.Atoi(entry.PaneID)
+	if convErr != nil || paneID <= 0 || entry.Label == "" {
+		return 0, "", false
+	}
+	return paneID, entry.Label, true
+}
+
+// retireDeadTarget closes a card whose target is gone, instead of reopening it.
+//
+// ⚠️ The close goes through `closeItem`, never a hand-rolled state flip. That
+// helper is the ONE close site for the lost-answer counter and the terminal
+// delivery record; a fourth close path that set `ClosedState` itself would skip
+// both and leave a retired card reading `never_attempted` — the false alarm
+// `recordCloseAttempt` exists to remove.
+func (a *attentionStore) retireDeadTarget(
+	ctx context.Context,
+	tx libkv.Tx,
+	item *Item,
+) (bool, error) {
+	item.EvidenceDeadline = nil
+	item.ResolvedBy = "retired: target pane and session are gone"
+	item.Context = ItemContext(appendNote(string(item.Context), RetiredNote))
+	if err := ValidateTransition(ctx, AwaitingEvidenceState, ClosedState); err != nil {
+		return false, errors.Wrap(ctx, err, "validate retire transition failed")
+	}
+	if err := a.closeItem(ctx, tx, item); err != nil {
+		return false, errors.Wrap(ctx, err, "retire dead-target item failed")
+	}
+	return true, nil
+}
+
+// appendNote appends one line to an item's context, keeping an empty note empty
+// rather than starting it with a newline.
+func appendNote(note string, line string) string {
+	if note == "" {
+		return line
+	}
+	return note + "\n" + line
 }
 
 // evidenceNotePrefix opens the one line a reopen leaves behind.
@@ -338,9 +468,10 @@ func (a *attentionStore) probeWithinBudget(
 			budget = 0
 		}
 		verdicts = append(verdicts, evidenceVerdict{
-			key:      item.key,
-			observed: EvidenceAllObserved(ctx, item.claims, a.evidenceRunner),
-			deadline: item.deadline,
+			key:        item.key,
+			observed:   EvidenceAllObserved(ctx, item.claims, a.evidenceRunner),
+			targetGone: a.targetGone(ctx, item.livenessRef),
+			deadline:   item.deadline,
 		})
 	}
 	return verdicts

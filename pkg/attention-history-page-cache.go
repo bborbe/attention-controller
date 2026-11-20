@@ -21,6 +21,7 @@ type historyPageKey struct {
 	offset      int
 	producers   string
 	dedupPrefix string
+	ratedOnly   bool
 }
 
 // newHistoryPageKey folds a History call's bounds and filters into the key.
@@ -31,6 +32,7 @@ type historyPageKey struct {
 func newHistoryPageKey(limit int, offset int, filters []HistoryFilter) historyPageKey {
 	var producers []string
 	var dedupPrefix string
+	var ratedOnly bool
 	for _, filter := range filters {
 		for _, producer := range filter.Producers {
 			producers = append(producers, string(producer))
@@ -38,12 +40,16 @@ func newHistoryPageKey(limit int, offset int, filters []HistoryFilter) historyPa
 		if filter.DedupKeyPrefix != "" {
 			dedupPrefix = string(filter.DedupKeyPrefix)
 		}
+		if filter.RatedOnly {
+			ratedOnly = true
+		}
 	}
 	return historyPageKey{
 		limit:       limit,
 		offset:      offset,
 		producers:   strings.Join(producers, "\x00"),
 		dedupPrefix: dedupPrefix,
+		ratedOnly:   ratedOnly,
 	}
 }
 

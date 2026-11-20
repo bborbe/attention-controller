@@ -176,6 +176,8 @@ var _ = Describe("expires_at bound", func() {
 			Value: "which way?",
 		}, nil, nil)
 		Expect(err).To(BeNil())
+		_, err = store.SettleAnswer(ctx, item.ItemID)
+		Expect(err).To(BeNil())
 
 		_, err = store.ReadBoard(ctx)
 		Expect(err).To(BeNil())
@@ -222,6 +224,8 @@ var _ = Describe("expires_at bound", func() {
 			Kind:  pkg.OptionAnswerKind,
 			Value: "which way?",
 		}, nil, nil)
+		Expect(err).To(BeNil())
+		_, err = store.SettleAnswer(ctx, resolved.ItemID)
 		Expect(err).To(BeNil())
 
 		// ⚠️ History is read WITHOUT a board read first, deliberately: the board

@@ -95,7 +95,10 @@ var _ = Describe("Evidence-backed close", func() {
 			Value: "not yet",
 		})
 
+		// An ordinary (non-done) answer moves the card to answered immediately and
+		// does not park for evidence. The hold applies only to permission cards.
 		Expect(answered.State).To(Equal(AnsweredState))
+		Expect(answered.AnsweredAt).NotTo(BeNil())
 		Expect(answered.EvidenceDeadline).To(BeNil())
 	})
 

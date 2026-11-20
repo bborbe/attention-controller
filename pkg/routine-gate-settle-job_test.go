@@ -220,6 +220,17 @@ var _ = Describe("routine gate settle job", func() {
 		Expect(wrapper.probeCalls).To(Equal(0))
 	})
 
+	It("skips a held card the operator already answered", func() {
+		// A held card is open + answered while its delivery is pending; settling it
+		// here would re-answer a gate the operator already answered.
+		item := permissionItem("item-1")
+		answeredAt := libtime.NewCurrentDateTime().Now()
+		item.AnsweredAt = &answeredAt
+		store.ReadReturns(pkg.Items{item}, nil)
+		Expect(job.SettleOnce(context.Background())).To(Succeed())
+		Expect(wrapper.probeCalls).To(Equal(0))
+	})
+
 	It("records a failed attempt when the wrapper refuses", func() {
 		wrapper.verdict = pkg.DeliveryRefuse
 		store.ReadReturns(pkg.Items{permissionItem("item-1")}, nil)

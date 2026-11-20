@@ -184,6 +184,10 @@ var _ = Describe("Attention flag handlers", func() {
 		item := pushItem()
 		_, err := store.Answer(ctx, item.ItemID, "telegram", "", "", nil, nil, nil)
 		Expect(err).To(BeNil())
+		// Settled: a held answer is still open and flaggable; the refusal is for
+		// the settled answered state.
+		_, err = store.SettleAnswer(ctx, item.ItemID)
+		Expect(err).To(BeNil())
 
 		rec := flag(item.ItemID, `{"reason":"asked the wrong team"}`)
 		Expect(rec.Code).To(Equal(http.StatusConflict))

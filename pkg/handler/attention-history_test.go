@@ -153,6 +153,38 @@ var _ = Describe("Attention history over HTTP", func() {
 		Expect(itemsOf(get("?dedup_key_prefix=park:"))).To(BeEmpty())
 	})
 
+	// ⚠️ The rated filter is what makes the daily ratings readout O(rated)
+	// instead of O(all) — the read is O(offset) on the index, so walking every
+	// page to find a few hundred rated rows is what timed it out against a
+	// 150k-item store. The order below is load-bearing: the rated read runs
+	// FIRST, so a cache key that omitted the filter would answer the later
+	// unfiltered reads from the rated page and fail here rather than in
+	// production.
+	It("narrows to rated items when rated=true", func() {
+		seed(3)
+		all := itemsOf(get(""))
+		Expect(all).To(HaveLen(3))
+		_, err := store.Rate(ctx, all[0].ItemID, pkg.UpRating)
+		Expect(err).To(BeNil())
+		_, err = store.Rate(ctx, all[2].ItemID, pkg.DownRating)
+		Expect(err).To(BeNil())
+
+		rated := itemsOf(get("?rated=true"))
+		Expect(rated).To(HaveLen(2))
+		for _, item := range rated {
+			Expect(item.Rating).NotTo(Equal(pkg.NoRating))
+		}
+
+		Expect(itemsOf(get("?rated=false"))).To(HaveLen(3))
+		Expect(itemsOf(get(""))).To(HaveLen(3))
+		Expect(itemsOf(get("?rated=true&limit=1"))).To(HaveLen(1))
+	})
+
+	It("rejects a non-boolean rated value with 400", func() {
+		seed(1)
+		Expect(get("?rated=ture").Code).To(Equal(http.StatusBadRequest))
+	})
+
 	It("skips the first offset", func() {
 		seed(3)
 		all := itemsOf(get(""))

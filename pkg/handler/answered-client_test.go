@@ -295,6 +295,9 @@ var _ = Describe("Answered client over HTTP", func() {
 			answerHandler.ServeHTTP(rec, req)
 			Expect(rec.Code).To(Equal(http.StatusOK))
 
+			_, err := store.SettleAnswer(ctx, item.ItemID)
+			Expect(err).To(BeNil())
+
 			got, err := store.Get(ctx, item.ItemID)
 			Expect(err).To(BeNil())
 			Expect(got.State).To(Equal(pkg.AnsweredState))

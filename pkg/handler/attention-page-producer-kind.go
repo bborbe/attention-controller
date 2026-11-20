@@ -143,7 +143,10 @@ func filterByProducerKind(
 			continue
 		}
 		hiddenAll++
-		if !row.Dimmed {
+		// A held row is Dimmed (it renders as a record) but still OPEN — the hold
+		// keeps a permission card in the open set until delivery — so it counts
+		// toward the open-hidden count, not the answered one.
+		if !row.Dimmed || row.Held {
 			hiddenOpen++
 		}
 	}
