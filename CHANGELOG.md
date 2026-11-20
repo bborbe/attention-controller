@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.105.0
 
 - feat: **the mid-turn population is woken by the same in-process wake job.** `ManagerWakeJob` gains a second source — the registry, the heartbeat store and the transcripts — feeding the same pane carrier, so a worker that ends its turn on a `👤 You:` panel is woken without a per-manager poller; `manager-attention-watch.py` is deleted by the sibling change. Fail-open is split by input: an unreadable transcript costs that session's transcript half only, while an unreadable registry holds only sessions without a fresh heartbeat. The gated / `CLEARED` / `HELD` doctrine — the ten-row gate table, the four `None` causes, the content key and the measured incidents — lives in `docs/manager-gate-semantics.md`, and `TestDocTableMatchesCode` parses that table and compares it to `ManagerGateRows` so it cannot drift. Every guard is covered by a Ginkgo spec and by the committed `hack/guard-mutation.sh`, which mutates each guard, requires an assertion failure, and restores from one pre-loop backup.
 ## v0.104.3
