@@ -12,6 +12,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 
 - fix: raise the background-job runner capacity from 20 to 22, one above the twenty-one `runner.Add` sites reachable in the maximal configuration. With the store API and jump listeners enabled, the v0.106.0 watcher reaper filled the capacity-20 buffer, so the Mac board hung in `start-jobs` and `/readiness` stayed 503 (the deploy rolled back)
 - test: guard the runner capacity — `runner_capacity_test.go` parses the package, counts every `runner.Add` call site and fails unless the `NewConcurrentRunner` capacity exceeds it, so the next new job cannot hang startup unnoticed
+- fix: make the watcher reaper opt-in — `-retired-watchers` now defaults to empty. The previous default (`manager-attention-watch,permission-answer-poll`) SIGTERMed processes still in legitimate use: `permission-answer-poll.py` is a live `PermissionRequest` hook in sessions on claude-supervisor 0.358.1, and `manager-attention-watch.py` is still armed by the current manager round-tail
 
 ## v0.106.1
 
