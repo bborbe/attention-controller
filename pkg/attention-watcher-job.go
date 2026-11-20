@@ -6,6 +6,7 @@ package pkg
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/bborbe/errors"
@@ -187,6 +188,25 @@ type attentionWatcherJob struct {
 	interval              time.Duration
 	currentDateTimeGetter libtime.CurrentDateTimeGetter
 	signaller             AnsweredSignaller
+
+	mu sync.Mutex
+	// pending keeps each card's in-flight delivery across cycles.
+	//
+	// ⚠️ Without it the arm re-types the same answer every backoff. The
+	// carrier's at-most-once proof is `PaneDelivery.PendingLine` plus the byte
+	// mark taken before the line went in, and `retypeGuard` relies on that
+	// marker to answer "the composer is empty and the transcript has not caught
+	// up yet — wait, do not type a second copy". A job that builds a fresh
+	// struct every cycle throws the marker away, leaving only a transcript
+	// containment check against the file's TAIL window; once a busy session has
+	// written past that window the delivered line is unreachable, the check
+	// fails, and the line is typed again.
+	//
+	// Measured 2026-11-19 on card 982bdcf8…: answered 16:19:12, typed at
+	// 16:24:21 and 16:34:27 with verdict `retry` ("still unsubmitted after 3
+	// Enters"), delivered again at 16:55:04 — three arrivals of one answer,
+	// ~5 min apart, the exact AttentionDeliveryRetryBackoff cadence.
+	pending map[ItemID]*PaneDelivery
 }
 
 // Run delivers answered cards until the context is cancelled.
@@ -431,6 +451,52 @@ func (j *attentionWatcherJob) deliverable(
 }
 
 // deliver carries one answer and records what it observed.
+// deliveryFor returns this card's live delivery entry, creating it once.
+//
+// ⚠️ The entry MUST outlive the cycle. `TypeIntoPane` records the pending line
+// and the transcript byte mark on the entry it is given, and both are the
+// at-most-once proof the next cycle needs — on a fresh struct they are written
+// and thrown away, and every backoff re-types the answer. See the `pending`
+// field's note for the measurement.
+//
+// Pane 0 makes the carrier resolve the pane from the session's own tty, which is
+// the correct path for a card whose recorded pane was never ours.
+func (j *attentionWatcherJob) deliveryFor(item Item, sessionID string) *PaneDelivery {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.pending == nil {
+		j.pending = make(map[ItemID]*PaneDelivery, 1)
+	}
+	delivery, ok := j.pending[item.ItemID]
+	if !ok {
+		delivery = &PaneDelivery{}
+		j.pending[item.ItemID] = delivery
+	}
+	delivery.SessionID = sessionID
+	delivery.StoreItemID = string(item.ItemID)
+	delivery.AnswerMechanism = item.AnswerMechanism
+	delivery.Answerer = ""
+	if IsManagerAnswered(item) {
+		delivery.Answerer = ManagerAnswerer
+	}
+	delivery.AnswerStamp = ""
+	if item.AnsweredAt != nil {
+		delivery.AnswerStamp = item.AnsweredAt.Time().UTC().Format(time.RFC3339)
+	}
+	return delivery
+}
+
+// forget drops a card's delivery entry once nothing more can be carried.
+//
+// It is called on the two terminal verdicts only. A `retry` and a `no-pane`
+// keep their entry — that is the whole point — and a `refuse` keeps it too,
+// because the answer is still pending and a resumed session may yet receive it.
+func (j *attentionWatcherJob) forget(itemID ItemID) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	delete(j.pending, itemID)
+}
+
 func (j *attentionWatcherJob) deliver(
 	ctx context.Context,
 	item Item,
@@ -444,16 +510,7 @@ func (j *attentionWatcherJob) deliver(
 	if !ok {
 		return
 	}
-	// Pane 0 makes the carrier resolve the pane from the session's own tty,
-	// which is the correct path for a card whose recorded pane was never ours.
-	delivery := &PaneDelivery{
-		SessionID:       sessionID,
-		StoreItemID:     string(item.ItemID),
-		AnswerMechanism: item.AnswerMechanism,
-	}
-	if IsManagerAnswered(item) {
-		delivery.Answerer = ManagerAnswerer
-	}
+	delivery := j.deliveryFor(item, sessionID)
 	verdict, reason := j.carrier.TypeIntoPane(ctx, delivery, text, false)
 	glog.V(2).Infof(
 		"job=attention-watcher action=deliver item=%s verdict=%s reason=%q",
@@ -480,6 +537,9 @@ func (j *attentionWatcherJob) deliver(
 		}
 		// Delivered: any park is over, and the count it took is moot.
 		j.clearPark(ctx, item)
+		// Delivered: the entry's marker has done its job and must not be reused
+		// by a later answer for the same card.
+		j.forget(item.ItemID)
 	case DeliveryRefuse:
 		j.refuse(ctx, item, sessionID, count, reason)
 	case DeliveryNoPane:
@@ -516,6 +576,8 @@ func (j *attentionWatcherJob) deliver(
 		// closes, 3a5a4ab9… and f3a96f81….
 		j.recordAttempt(ctx, item, HeldOutcome)
 		j.maybePark(ctx, item, count, verdict, reason)
+		// The gate is gone: there is nothing left for this entry to guard.
+		j.forget(item.ItemID)
 	}
 }
 

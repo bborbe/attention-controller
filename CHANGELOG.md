@@ -8,6 +8,11 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- fix: **a board answer is typed into the pane once, not once per retry.** The delivery arm rebuilt its `PaneDelivery` on every cycle, discarding the `PendingLine` and transcript byte mark that `TypeIntoPane` writes as its at-most-once proof; only a containment check against the transcript's 256 KiB tail window survived, and once a busy session had written past it the delivered line was unreachable and the answer was typed again on every `AttentionDeliveryRetryBackoff`. The job now keeps one entry per card (`pending`) and drops it on the terminal verdicts. Measured 2026-11-19 on card `982bdcf8…`: one answer, answered `16:19:12`, arrived at the session three times (`16:24:24`, `16:34:31`, `16:55:03`) at the 5-minute retry cadence.
+- feat: **a delivery carries the answer's own `answered_at`**, rendered as `[<item-id> @ <answered-at>]`, so a re-delivery is distinguishable from a new answer at the point it arrives — the stamp belongs to the answer, so two arrivals of one answer render identically and a new answer renders a new stamp. Empty renders the id alone, exactly as before.
+
 ## v0.107.0
 
 - fix: raise the background-job runner capacity from 20 to 22, one above the twenty-one `runner.Add` sites reachable in the maximal configuration. With the store API and jump listeners enabled, the v0.106.0 watcher reaper filled the capacity-20 buffer, so the Mac board hung in `start-jobs` and `/readiness` stayed 503 (the deploy rolled back)

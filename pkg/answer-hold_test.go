@@ -162,7 +162,9 @@ var _ = Describe("Answer hold", func() {
 
 		got, err := store.Get(ctx, item.ItemID)
 		Expect(err).To(BeNil())
-		Expect(got.State).To(Equal(pkg.OpenState), "a held card must not be closed as a redundant re-raise")
+		Expect(
+			got.State,
+		).To(Equal(pkg.OpenState), "a held card must not be closed as a redundant re-raise")
 	})
 
 	It("keeps a held card on the board even past its own expires_at", func() {

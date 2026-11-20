@@ -22,6 +22,7 @@ import (
 // carry and returns a fixed verdict.
 type recordingCarrier struct {
 	calls   []string
+	entries []*pkg.PaneDelivery
 	verdict pkg.DeliveryVerdict
 }
 
@@ -32,6 +33,7 @@ func (c *recordingCarrier) TypeIntoPane(
 	_ bool,
 ) (pkg.DeliveryVerdict, string) {
 	c.calls = append(c.calls, delivery.StoreItemID+"="+text)
+	c.entries = append(c.entries, delivery)
 	return c.verdict, "scripted"
 }
 
@@ -75,6 +77,44 @@ var _ = Describe("attention watcher delivery job", func() {
 		Expect(store.RecordAttemptCallCount()).To(Equal(1))
 		_, _, _, outcome := store.RecordAttemptArgsForCall(0)
 		Expect(outcome).To(Equal(pkg.DeliveredOutcome))
+	})
+
+	It(
+		"reuses ONE delivery entry across cycles, so the at-most-once marker survives a retry",
+		func() {
+			// ⚠️ This is the duplicate-delivery regression. `TypeIntoPane` writes
+			// `PendingLine` and the transcript byte mark onto the entry it is given,
+			// and `retypeGuard` uses them to answer "composer empty, transcript has
+			// not caught up — wait, do not type a second copy". A job that builds a
+			// fresh entry per cycle throws both away, and once a busy session has
+			// written past the transcript tail window the delivered line is
+			// unreachable, so the answer is typed again on every backoff.
+			// Measured 2026-11-19 on card 982bdcf8…: one answer, three arrivals
+			// (16:24:24, 16:34:31, 16:55:03) at the 5-minute retry cadence.
+			carrier.verdict = pkg.DeliveryRetry
+			store.ReadBoardReturns(pkg.Items{
+				answeredItem("item-1", "operator", pkg.Decision("allow")),
+			}, nil)
+
+			Expect(job.DeliverOnce(context.Background())).To(Succeed())
+			Expect(job.DeliverOnce(context.Background())).To(Succeed())
+
+			Expect(carrier.entries).To(HaveLen(2))
+			Expect(carrier.entries[1]).To(BeIdenticalTo(carrier.entries[0]),
+				"a fresh entry per cycle discards PendingLine/PendingAt and re-types the answer")
+		},
+	)
+
+	It("drops the entry once the card is delivered, so a later answer starts clean", func() {
+		store.ReadBoardReturns(pkg.Items{
+			answeredItem("item-1", "operator", pkg.Decision("allow")),
+		}, nil)
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+
+		Expect(carrier.entries).To(HaveLen(2))
+		Expect(carrier.entries[1]).NotTo(BeIdenticalTo(carrier.entries[0]),
+			"a delivered entry must not be reused by a later answer for the same card")
 	})
 
 	It("settles a held card (open + answered) once delivery is observed", func() {
