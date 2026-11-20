@@ -131,6 +131,62 @@ var _ = Describe("routine policy", func() {
 		Expect(rule).To(Equal("routine-tool:Read"))
 	})
 
+	It("parses a legacy nested Bash gate", func() {
+		raw, err := json.Marshal(map[string]any{
+			"input": map[string]any{
+				"arguments": map[string]any{
+					"tool_name": "Bash",
+					"input":     map[string]any{"command": "ls -la"},
+				},
+			},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		command, sandboxDisabled, ok := routineBashCommand(raw)
+		Expect(ok).To(BeTrue())
+		Expect(sandboxDisabled).To(BeFalse())
+		Expect(command).To(Equal("ls -la"))
+	})
+
+	It("fails closed on a flat question with no input object", func() {
+		rule, allowed := policy.RoutineRule(
+			json.RawMessage(`{"tool_name":"Read","input":null}`),
+			workspace,
+		)
+		Expect(allowed).To(BeFalse())
+		Expect(rule).To(Equal("no-routine-rule"))
+	})
+
+	It("fails closed on a flat question whose input is not an object", func() {
+		rule, allowed := policy.RoutineRule(
+			json.RawMessage(`{"tool_name":"Read","input":"main.go"}`),
+			workspace,
+		)
+		Expect(allowed).To(BeFalse())
+		Expect(rule).To(Equal("no-routine-rule"))
+	})
+
+	// `input` is model-controlled tool input, so an empty `tool_name` must not
+	// let a tool input's own `arguments` key choose the tool name the policy
+	// sees. Flat is selected by the key's presence, and an empty value is
+	// malformed — never a fall-through to the legacy branch.
+	It("fails closed when tool_name is present but empty", func() {
+		raw, err := json.Marshal(map[string]any{
+			"tool_name": "",
+			"input": map[string]any{
+				"arguments": map[string]any{
+					"tool_name": "Read",
+					"input": map[string]any{
+						"file_path": filepath.Join(workspace, "main.go"),
+					},
+				},
+			},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		rule, allowed := policy.RoutineRule(raw, workspace)
+		Expect(allowed).To(BeFalse())
+		Expect(rule).To(Equal("no-routine-rule"))
+	})
+
 	It("refuses a Write when no routine root is declared", func() {
 		rule, allowed := policy.RoutineRule(
 			routineQuestion(

@@ -485,13 +485,11 @@ var _ = Describe("routine gate settle job Bash rule", func() {
 				`cat >/dev/null; echo '{"tier":"allowlist"}'`))
 			raw, err := json.Marshal(map[string]any{
 				"request_id": "req-1",
-				"input": map[string]any{"arguments": map[string]any{
-					"tool_name": "Bash",
-					"input": map[string]any{
-						"command":                   "ls -la",
-						"dangerouslyDisableSandbox": value,
-					},
-				}},
+				"tool_name":  "Bash",
+				"input": map[string]any{
+					"command":                   "ls -la",
+					"dangerouslyDisableSandbox": value,
+				},
 			})
 			Expect(err).NotTo(HaveOccurred())
 			wrapper.session.Question.Raw = raw
@@ -714,9 +712,10 @@ var _ = Describe("default routine policy", func() {
 	It("keeps the Read rule when the Bash rule is disabled", func() {
 		target := filepath.Join(workspace, "a.go")
 		Expect(os.WriteFile(target, []byte("package a\n"), 0o600)).To(Succeed())
-		raw, err := json.Marshal(map[string]any{"input": map[string]any{"arguments": map[string]any{
-			"tool_name": "Read", "input": map[string]any{"file_path": target},
-		}}})
+		raw, err := json.Marshal(map[string]any{
+			"tool_name": "Read",
+			"input":     map[string]any{"file_path": target},
+		})
 		Expect(err).NotTo(HaveOccurred())
 		wrapper.session.Question.Raw = raw
 		settle(pkg.NewDefaultRoutinePolicy(""))
@@ -746,6 +745,9 @@ var _ = Describe("default routine policy", func() {
 		Expect(carrier).NotTo(Equal("no-routine-rule"))
 		Expect(outcome).To(Equal(pkg.DeliveredOutcome))
 		Expect(wrapper.answered).To(Equal([]string{bashSessionID + ":allow"}))
+		// Ties the verdict to the classifier actually running, not to a rule
+		// stamped by some other path.
+		Expect(markerLines(marker)).To(Equal(1))
 	})
 
 	// Positive control for the guard above: the tier path still returns a tier,

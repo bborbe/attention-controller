@@ -728,9 +728,16 @@ func (p *routinePolicy) RoutineRule(question json.RawMessage, cwd string) (strin
 // ⚠️ The shape checks are isinstance-guarded, not just `.get`-ed. A payload
 // whose `input` or `arguments` is a truthy non-object would panic inside the
 // settle loop and abort the whole poll, skipping every later arm.
+//
+// ⚠️ Flat is selected by the KEY'S PRESENCE, not by a non-empty value: a
+// question that carries `tool_name` at all is a flat one, and an empty value is
+// malformed rather than an invitation to read `input.arguments`. `input` is
+// model-controlled tool input, so letting an empty `tool_name` fall through to
+// the legacy branch would let a tool input's own `arguments` key choose the
+// tool name the policy sees.
 func routineArguments(question json.RawMessage) (map[string]any, bool) {
 	var envelope struct {
-		ToolName string         `json:"tool_name"`
+		ToolName *string        `json:"tool_name"`
 		Input    map[string]any `json:"input"`
 	}
 	if len(question) == 0 {
@@ -743,8 +750,11 @@ func routineArguments(question json.RawMessage) (map[string]any, bool) {
 		return nil, false
 	}
 	// Flat: the wrapper's own question object, the shape every live gate carries.
-	if envelope.ToolName != "" {
-		return map[string]any{"tool_name": envelope.ToolName, "input": envelope.Input}, true
+	if envelope.ToolName != nil {
+		if *envelope.ToolName == "" {
+			return nil, false
+		}
+		return map[string]any{"tool_name": *envelope.ToolName, "input": envelope.Input}, true
 	}
 	// Nested: `{"input": {"arguments": {"tool_name": ..., "input": {...}}}}`.
 	args, ok := envelope.Input["arguments"].(map[string]any)
