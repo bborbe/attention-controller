@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.107.2
 
 - fix: **a `done`-class answer that names no artifact closes the item instead of parking it for evidence it can never satisfy.** `parkForEvidence` moved the item to `awaiting_evidence` unconditionally, so a card whose only positive option was a bare `done` (no PR, no path) parked with an EMPTY claim set — and `EvidenceAllObserved` treats an empty set as never observed, so the sweep reopened it at every 30-minute deadline, forever, clearing `AnsweredBy` / `AnsweredClient` / `Answer` on each pass. Measured 2026-11-20: one card reopened 27 times in 22 hours on the answer `done` to "run /mcp → Reconnect". The false-`done` guard is unchanged — an answer naming a PR or a path still parks and is still probed, so `done — merged https://…` cannot close an unmerged PR
 - test: pin the reopen's clearing of `AnsweredClient`, which nothing asserted. The reopen fixture stamped a nil client, so a nil assertion passed even with the production clear deleted; it now stamps a real client first and fails if the clear goes away. The dead-target retire fixtures also had to name a claim (a path the default runner probes with `os.Stat`, keeping them hermetic) because a claim-free `done` no longer parks
