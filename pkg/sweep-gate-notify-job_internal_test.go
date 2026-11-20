@@ -505,6 +505,13 @@ var _ = Describe("sweep gate notify job", func() {
 		subjects.subjects = []SweepGateSubject{{
 			Name: "My Topic", Vault: vault, Branch: "goal",
 		}}
+		registry := GinkgoT().TempDir()
+		Expect(os.WriteFile(
+			filepath.Join(registry, "1.json"),
+			[]byte(`{"sessionId":"aaaa1111"}`),
+			0o600,
+		)).To(Succeed())
+		job.liveRegistryDir = registry
 
 		gate.results = []SweepGateTickResult{{ExitCode: 10, Output: "digest moved"}}
 		gate.onTick = func(stateDir string) {
@@ -521,6 +528,36 @@ var _ = Describe("sweep gate notify job", func() {
 		// The wiring is the fix: a resolved owner must reach the poster, and the
 		// poster must post under it rather than the constant.
 		Expect(poster.owners).To(Equal([]string{"aaaa1111"}))
+	})
+
+	It("posts under the constant when the resolved owner is not live", func() {
+		vault := GinkgoT().TempDir()
+		Expect(os.MkdirAll(filepath.Join(vault, goalDirName), 0o750)).To(Succeed())
+		Expect(os.WriteFile(
+			filepath.Join(vault, goalDirName, "My Topic.md"),
+			[]byte("---\nclaude_session_id: aaaa1111\n---\n"),
+			0o600,
+		)).To(Succeed())
+		subjects.subjects = []SweepGateSubject{{
+			Name: "My Topic", Vault: vault, Branch: "goal",
+		}}
+		// No registry entry for aaaa1111: naming a manager that is not live would
+		// misattribute a card the filter reads as unowned anyway.
+		job.liveRegistryDir = GinkgoT().TempDir()
+
+		gate.results = []SweepGateTickResult{{ExitCode: 10, Output: "digest moved"}}
+		gate.onTick = func(stateDir string) {
+			Expect(os.WriteFile(
+				filepath.Join(stateDir, sweepGateSlugOfSubject+sweepGateCardSuffix),
+				[]byte(`{"dedup_key": "open-card-invariant:my-topic", "payload": "p"}`),
+				0o600,
+			)).To(Succeed())
+		}
+		classifier.results = []SweepGateClassifyResult{{ExitCode: 0}}
+
+		job.cycle(ctx)
+
+		Expect(poster.owners).To(Equal([]string{""}))
 	})
 
 	It("clears the card before the gate runs and posts the one the gate writes", func() {
@@ -844,12 +881,27 @@ var _ = Describe("sweepGateLiveSession", func() {
 		dir = GinkgoT().TempDir()
 	})
 
-	It("reports a session with a heartbeat as live", func() {
-		Expect(os.WriteFile(filepath.Join(dir, "aaaa1111.json"), []byte("{}"), 0o600)).To(Succeed())
+	writeRegistry := func(name, body string) {
+		Expect(os.WriteFile(filepath.Join(dir, name+".json"), []byte(body), 0o600)).To(Succeed())
+	}
+
+	It("reports a registered session as live", func() {
+		writeRegistry("12345", `{"sessionId":"aaaa1111"}`)
 		Expect(sweepGateLiveSession(dir, "aaaa1111")).To(BeTrue())
 	})
 
-	It("reports a session with no heartbeat as not live", func() {
+	It("accepts the snake_case key too", func() {
+		writeRegistry("1", `{"session_id":"bbbb2222"}`)
+		Expect(sweepGateLiveSession(dir, "bbbb2222")).To(BeTrue())
+	})
+
+	It("reports an unregistered session as not live", func() {
+		writeRegistry("12345", `{"sessionId":"cccc3333"}`)
+		Expect(sweepGateLiveSession(dir, "aaaa1111")).To(BeFalse())
+	})
+
+	It("ignores a registry entry that is not an object", func() {
+		writeRegistry("1", `null`)
 		Expect(sweepGateLiveSession(dir, "aaaa1111")).To(BeFalse())
 	})
 
@@ -857,7 +909,7 @@ var _ = Describe("sweepGateLiveSession", func() {
 		Expect(sweepGateLiveSession(dir, "")).To(BeFalse())
 	})
 
-	It("reports an unreadable live dir as not live", func() {
+	It("reports an unreadable registry as not live", func() {
 		Expect(sweepGateLiveSession("", "aaaa1111")).To(BeFalse())
 	})
 })

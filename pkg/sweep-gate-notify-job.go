@@ -465,8 +465,12 @@ type sweepGateNotifyJob struct {
 	poster     SweepGateCardPoster
 	waker      SweepGateWaker
 	stateDir   string
-	interval   time.Duration
-	now        libtime.CurrentDateTimeGetter
+	// liveRegistryDir is the session registry the owner filter reads. Empty
+	// falls back to sweepGateLiveRegistryDir(); it is a field so a spec can
+	// point it at a temp dir instead of the machine's own registry.
+	liveRegistryDir string
+	interval        time.Duration
+	now             libtime.CurrentDateTimeGetter
 }
 
 // run is the loop shape every in-process job in this repo shares: a ticker and
@@ -1016,9 +1020,21 @@ func (j *sweepGateNotifyJob) postCard(
 	)
 
 	owner := sweepGateOwnerSession(subject)
-	if !sweepGateLiveSession(sweepGateLiveDir(), owner) {
+	registryDir := j.liveRegistryDir
+	if registryDir == "" {
+		registryDir = sweepGateLiveRegistryDir()
+	}
+	if !sweepGateLiveSession(registryDir, owner) {
 		// A resolved-but-dead owner is worse than none: the filter would read the
 		// card as unowned anyway, and the log would claim an owner that cannot act.
+		if owner != "" {
+			sweepGateNotifyInfof(
+				"job=%s action=owner_not_live subject=%s owner=%s",
+				sweepGateNotifyJobName,
+				subject.Name,
+				owner,
+			)
+		}
 		owner = ""
 	}
 	output, err := j.poster.Post(ctx, card, owner)
@@ -1761,15 +1777,18 @@ func sweepGateOwnerID(value string) string {
 	return id
 }
 
-// sweepGateLiveDir is the supervisor's heartbeat store — the same default
-// `manager-attention-watch.py` reads, and the only input that makes an owner
-// actionable.
-func sweepGateLiveDir() string {
+// sweepGateLiveRegistryDir is the session registry the owner filter reads.
+//
+// ⚠️ It must be the SAME source the filter uses. `gate-owner-filter.py` builds
+// its live set from `live_ids()` over `~/.claude/sessions/*.json`; a liveness
+// rule that read a different store would clear owners the filter considers
+// live, which is the opposite of what this change is for.
+func sweepGateLiveRegistryDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".local", "state", "claude-supervisor", "live")
+	return filepath.Join(home, ".claude", "sessions")
 }
 
 // sweepGateLiveSession reports whether `sessionID` has a heartbeat in the live
@@ -1783,12 +1802,35 @@ func sweepGateLiveDir() string {
 // misattributes the card: the row reads unroutable while claiming an owner.
 // Naming only live sessions leaves that fail-open untouched and makes the
 // attribution mean what it says.
-func sweepGateLiveSession(liveDir, sessionID string) bool {
-	if sessionID == "" || liveDir == "" {
+// ⚠️ It mirrors `live_ids()` exactly: glob `*.json`, parse, take `sessionId` or
+// `session_id`. The filenames are pids, not session ids, so a filename match
+// would be wrong.
+func sweepGateLiveSession(registryDir, sessionID string) bool {
+	if sessionID == "" || registryDir == "" {
 		return false
 	}
-	_, err := os.Stat(filepath.Join(liveDir, sessionID+".json"))
-	return err == nil
+	paths, err := filepath.Glob(filepath.Join(registryDir, "*.json"))
+	if err != nil {
+		return false
+	}
+	for _, path := range paths {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var rec map[string]any
+		if err := json.Unmarshal(content, &rec); err != nil {
+			continue
+		}
+		sid, _ := rec["sessionId"].(string)
+		if sid == "" {
+			sid, _ = rec["session_id"].(string)
+		}
+		if sid == sessionID {
+			return true
+		}
+	}
+	return false
 }
 
 // sweepGateProducerID is the producer id a card is posted under: the owner
