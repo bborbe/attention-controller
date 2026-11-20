@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.106.0
 
 - feat: add a watcher reaper job that sends SIGTERM every 5 min to running copies of retired claude-supervisor watcher scripts (`-retired-watchers`, default `manager-attention-watch,permission-answer-poll`; empty disables it, and it is off when `SESSION_LIVENESS=off`), so a session still on an old plugin body no longer keeps them alive
 
