@@ -61,6 +61,17 @@ const managerClearedLinePrefix = "attention cleared:"
 // fail-open direction that cannot silence a fleet.
 const managerLedgerRole = "manager"
 
+// managerLedgerRoleHuman is the ledger's marker for the operator's own
+// workspace, opened into the Direct window by `/supervisor:open --flagged`.
+//
+// ⚠️ It fails CLOSED in the opposite direction from managerLedgerRole: only an
+// explicit `human` matches, so a row with no role, a null role or no row at all
+// is NOT human. The two defaults point opposite ways because the failure
+// directions do — absence reads as a manager so a pre-field record cannot
+// silence the fleet, and reads as not-human so an unrecorded session cannot be
+// silently excluded, which is that same silence reached from the other side.
+const managerLedgerRoleHuman = "human"
+
 // ManagerWakeEmission is one record of one pane write.
 //
 // It exists so the wake has a producer: a criterion measuring
@@ -353,6 +364,27 @@ func (p *wakePass) isManager(sessionID string) bool {
 	return entry.Role == managerLedgerRole
 }
 
+// isHuman reports whether a session's ledger row declares `role: human` — the
+// operator's own workspace, opened into the Direct window rather than as a
+// worker.
+//
+// A human row is answered in its own tab, so no manager ever acts on it, and
+// waking a manager for one costs a full turn spent re-establishing that the gate
+// is the operator's own. Measured 2026-10-27 on Fleet Manager `ac24db61`: pane
+// 2165 (`role: human`) fired the feed three times across three consecutive
+// 30-minute windows and relayed nothing.
+//
+// ⚠️ The match is deliberately NOT scoped to this manager's own spawns: `role`
+// is a global ledger fact, so a human row spawned by another manager is
+// excluded too — a human row is never a manager's to route, whoever spawned it.
+func (p *wakePass) isHuman(sessionID string) bool {
+	entry, ok := p.owners[sessionID]
+	if !ok {
+		return false
+	}
+	return entry.Role == managerLedgerRoleHuman
+}
+
 // clearParksNotLive drops the parks of managers that are no longer live, so a
 // manager that comes back is attempted again.
 func (p *wakePass) clearParksNotLive() {
@@ -643,12 +675,13 @@ func (p *wakePass) stale(last libtime.DateTime) bool {
 	return p.now.Sub(last) > libtime.Duration(p.job.reemitAfter)
 }
 
-// keeps is the ownership rule: peer drop, dead-manager keep, unowned keep.
+// keeps is the ownership rule: peer drop, role-human drop, dead-manager keep,
+// unowned keep.
 //
-// The keep-set is wide on purpose. It drops ONLY on a live peer manager,
-// reached by the spawn edge (the item's spawner) or by hop 3b (the item's own
-// session is itself a live manager). Everything else is kept, because an
-// unresolvable owner is not a reason to silence a gate:
+// The keep-set is wide on purpose. It drops on a live peer manager, reached by
+// the spawn edge (the item's spawner) or by hop 3b (the item's own session is
+// itself a live manager), and on a `role: human` row. Everything else is kept,
+// because an unresolvable owner is not a reason to silence a gate:
 //
 //   - self            — the manager's own gate is the one it exists to see;
 //   - own worker      — the panes a manager exists to see;
@@ -660,6 +693,13 @@ func (p *wakePass) keeps(manager string, item Item) bool {
 	sessionID := sessionIDFromItem(item)
 	if sessionID == "" || sessionID == manager {
 		return true
+	}
+	// The operator's own workspace is never a manager's to route. It sits above
+	// every spawn-edge branch because `own-worker` returns true for a pane this
+	// watcher spawned, which is exactly the reported case: the manager WAS the
+	// human row's spawner, and still has no business waking for it.
+	if p.isHuman(sessionID) {
+		return false
 	}
 	spawner := p.owners[sessionID].SpawnerSessionID
 	if spawner == manager {

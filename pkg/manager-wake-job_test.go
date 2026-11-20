@@ -288,6 +288,42 @@ var _ = Describe("manager wake job", func() {
 		Expect(carrier.sessions()).To(ConsistOf("mgr-1"))
 	})
 
+	It(
+		"TestRoleHumanNeverWakes — the operator's own workspace is not a manager's to route",
+		func() {
+			live["mgr-1"] = true
+			ledger.ListReturns(pkg.SessionLedgerEntries{
+				ledgerRow("mgr-1", "manager", ""),
+				// The reported case: the manager IS the human row's spawner, so the
+				// `own-worker` branch would keep it — which is exactly the wake that
+				// fired three times on 2026-10-27 and relayed nothing.
+				ledgerRow("human-1", "human", "mgr-1"),
+				ledgerRow("w-1", "agent", "mgr-1"),
+			}, nil)
+			store.ReadReturns(pkg.Items{
+				wakeItem("item-human", "human-1"),
+				wakeItem("item-worker", "w-1"),
+			}, nil)
+
+			Expect(newJob().WakeOnce(context.Background())).To(Succeed())
+			// The worker's card still wakes the manager; only the human row is dropped.
+			Expect(carrier.recorded()).To(HaveLen(1))
+			Expect(carrier.recorded()[0].text).To(ContainSubstring("item-worker"))
+
+			// Positive control: the same row read as an agent is kept, so the drop is
+			// the `role: human` predicate and not the spawn edge.
+			carrier = newWakeRecordingCarrier()
+			ledger.ListReturns(pkg.SessionLedgerEntries{
+				ledgerRow("mgr-1", "manager", ""),
+				ledgerRow("human-1", "agent", "mgr-1"),
+			}, nil)
+			store.ReadReturns(pkg.Items{wakeItem("item-human", "human-1")}, nil)
+			Expect(newJob().WakeOnce(context.Background())).To(Succeed())
+			Expect(carrier.recorded()).To(HaveLen(1))
+			Expect(carrier.recorded()[0].text).To(ContainSubstring("item-human"))
+		},
+	)
+
 	It("TestExpiredItemNeverWakes — the population read drops an expired item", func() {
 		oneManager()
 		// The store's own Read already excludes the expired card, so the job
