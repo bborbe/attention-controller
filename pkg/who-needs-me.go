@@ -302,8 +302,13 @@ func (r *whoNeedsMeReader) hostSnapshot(
 		sources.Registry = sourceFailed
 	}
 	sessions := make([]WhoNeedsMeSession, 0, len(names))
+	// One pass for every session's transcript path. Calling transcripts.Path per
+	// session globs the whole project tree per session — O(sessions × files),
+	// which saturated the process (2026-11-19); Paths builds the same answer from
+	// a single scan.
+	paths := r.transcripts.Paths()
 	for sessionID, entry := range names {
-		sessions = append(sessions, r.sessionRow(sessionID, entry, panesByID, now))
+		sessions = append(sessions, r.sessionRow(sessionID, entry, panesByID, paths, now))
 	}
 	sort.SliceStable(
 		sessions,
@@ -317,10 +322,11 @@ func (r *whoNeedsMeReader) sessionRow(
 	sessionID string,
 	entry sessionName,
 	panesByID map[int]Pane,
+	paths map[string]string,
 	now time.Time,
 ) WhoNeedsMeSession {
 	row := WhoNeedsMeSession{SessionID: sessionID, Name: entry.Name, AgeState: "absent"}
-	if path := r.transcripts.Path(sessionID); path != "" {
+	if path := paths[sessionID]; path != "" {
 		if info, err := os.Stat(path); err == nil {
 			row.AgeState = sourceOK
 			row.AgeSeconds = int64(now.Sub(info.ModTime()).Seconds())

@@ -101,6 +101,14 @@ type fakeTranscriptReader struct {
 
 func (f *fakeTranscriptReader) Path(sessionID string) string { return f.pathBySess[sessionID] }
 
+func (f *fakeTranscriptReader) Paths() map[string]string {
+	out := make(map[string]string, len(f.pathBySess))
+	for sessionID, path := range f.pathBySess {
+		out[sessionID] = path
+	}
+	return out
+}
+
 func (f *fakeTranscriptReader) Offset(sessionID string) (int64, bool) {
 	offset, ok := f.offsets[sessionID]
 	return offset, ok

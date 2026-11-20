@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- fix: **`who-needs-me` builds its transcript index in one pass instead of one glob per session.** `hostSnapshot` called `transcripts.Path(sid)` for every registry session, and `Path` runs `filepath.Glob(root/*/<sid>.jsonl)` — which makes Go open and sort *every* project directory on *every* call. With ~58 sessions against 131 project dirs that is O(sessions × files): a 10 s CPU profile put 60 % of the process in `filepath.Glob`/`os.readdir`, a single read took 8–19 s, and the endpoint saturated the process at >100 % CPU while `/healthz` stayed instant. A new `TranscriptReader.Paths()` returns the newest transcript per session from one glob; `hostSnapshot` looks up from that map. Measured: the full per-request loop drops from 1.70 s (58 × 25.8 ms) to one scan.
+
 ## v0.107.2
 
 - fix: **a `done`-class answer that names no artifact closes the item instead of parking it for evidence it can never satisfy.** `parkForEvidence` moved the item to `awaiting_evidence` unconditionally, so a card whose only positive option was a bare `done` (no PR, no path) parked with an EMPTY claim set — and `EvidenceAllObserved` treats an empty set as never observed, so the sweep reopened it at every 30-minute deadline, forever, clearing `AnsweredBy` / `AnsweredClient` / `Answer` on each pass. Measured 2026-11-20: one card reopened 27 times in 22 hours on the answer `done` to "run /mcp → Reconnect". The false-`done` guard is unchanged — an answer naming a PR or a path still parks and is still probed, so `done — merged https://…` cannot close an unmerged PR
