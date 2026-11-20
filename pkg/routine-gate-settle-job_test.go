@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"time"
 
 	libtime "github.com/bborbe/time"
@@ -238,5 +239,104 @@ var _ = Describe("routine gate settle job", func() {
 		Expect(store.RecordAttemptCallCount()).To(Equal(1))
 		_, _, _, outcome := store.RecordAttemptArgsForCall(0)
 		Expect(outcome).To(Equal(pkg.FailedOutcome))
+	})
+
+	// The classifier-tier outcomes. A Bash gate carries no path argument, so the
+	// policy decides it by the tier claude-supervisor's classifier assigns — and
+	// only `allowlist` is an allow. The four decisions the settle job can take
+	// for such a gate are pinned here: the allow it delivers, the two tiers it
+	// holds, and the hold a classifier failure produces.
+	//
+	// These run the REAL policy over a fake classifier script, so the tier the
+	// script prints is the one the arm acts on. They are unit fixtures: they
+	// prove the job's own logic, not that the deployed binary reaches this path.
+	Context("a Bash gate decided by the classifier tier", func() {
+		var clock libtime.CurrentDateTime
+
+		// bashJob builds the settle job over the real policy, with a scripted
+		// classifier printing body.
+		bashJob := func(body string, timeout time.Duration) pkg.RoutineGateSettleJob {
+			dir := GinkgoT().TempDir()
+			script := writeFakeClassifier(dir, filepath.Join(dir, "runs"), body)
+			bashPolicy := pkg.NewRoutinePolicy(nil, pkg.WithRoutineBashClassifier(
+				pkg.NewRoutineBashClassifier("/bin/sh", nil, script, timeout),
+				clock,
+			))
+			wrapper.session = &pkg.WrapperSession{Question: &pkg.WrapperQuestion{
+				RequestID: "req-1",
+				Raw:       bashQuestion("req-1", "go test ./pkg/..."),
+			}}
+			return pkg.NewRoutineGateSettleJob(
+				store, wrapper, bashPolicy, sessions, time.Hour, clock,
+			)
+		}
+
+		BeforeEach(func() {
+			clock = libtime.NewCurrentDateTime()
+			store.ReadReturns(pkg.Items{permissionItem("item-1")}, nil)
+		})
+
+		It("allows and delivers an allowlist-tier gate", func() {
+			bashJobWith := bashJob(
+				`cat >/dev/null; echo '{"tier":"allowlist","form":null,"reason":"x"}'`,
+				5*time.Second,
+			)
+			Expect(bashJobWith.SettleOnce(context.Background())).To(Succeed())
+			Expect(wrapper.answered).To(ConsistOf(
+				"11111111-2222-3333-4444-555555555555:allow"))
+			Expect(store.RecordAttemptCallCount()).To(Equal(1))
+			_, _, _, outcome := store.RecordAttemptArgsForCall(0)
+			Expect(outcome).To(Equal(pkg.DeliveredOutcome))
+		})
+
+		It("holds a manager-tier gate, recording the refusing rule", func() {
+			bashJobWith := bashJob(
+				`cat >/dev/null; echo '{"tier":"manager","form":null,"reason":"x"}'`,
+				5*time.Second,
+			)
+			Expect(bashJobWith.SettleOnce(context.Background())).To(Succeed())
+			Expect(wrapper.answered).To(BeEmpty())
+			Expect(store.RecordAttemptCallCount()).To(Equal(1))
+			_, _, carrier, outcome := store.RecordAttemptArgsForCall(0)
+			Expect(carrier).To(Equal("tier-manager"))
+			Expect(outcome).To(Equal(pkg.HeldOutcome))
+		})
+
+		It("holds an operator-tier gate, recording the refusing rule", func() {
+			bashJobWith := bashJob(
+				`cat >/dev/null; echo '{"tier":"operator","form":null,"reason":"x"}'`,
+				5*time.Second,
+			)
+			Expect(bashJobWith.SettleOnce(context.Background())).To(Succeed())
+			Expect(wrapper.answered).To(BeEmpty())
+			Expect(store.RecordAttemptCallCount()).To(Equal(1))
+			_, _, carrier, outcome := store.RecordAttemptArgsForCall(0)
+			Expect(carrier).To(Equal("tier-operator"))
+			Expect(outcome).To(Equal(pkg.HeldOutcome))
+		})
+
+		It("holds a gate whose classifier exits non-zero", func() {
+			bashJobWith := bashJob(
+				`cat >/dev/null; echo '{"tier":"allowlist"}'; exit 3`,
+				5*time.Second,
+			)
+			Expect(bashJobWith.SettleOnce(context.Background())).To(Succeed())
+			Expect(wrapper.answered).To(BeEmpty())
+			Expect(store.RecordAttemptCallCount()).To(Equal(1))
+			_, _, carrier, outcome := store.RecordAttemptArgsForCall(0)
+			Expect(carrier).To(Equal("tier-error"))
+			Expect(outcome).To(Equal(pkg.HeldOutcome))
+		})
+
+		It("holds a gate whose classifier times out", func() {
+			bashJobWith := bashJob(`sleep 10; echo '{"tier":"allowlist"}'`,
+				500*time.Millisecond)
+			Expect(bashJobWith.SettleOnce(context.Background())).To(Succeed())
+			Expect(wrapper.answered).To(BeEmpty())
+			Expect(store.RecordAttemptCallCount()).To(Equal(1))
+			_, _, carrier, outcome := store.RecordAttemptArgsForCall(0)
+			Expect(carrier).To(Equal("tier-error"))
+			Expect(outcome).To(Equal(pkg.HeldOutcome))
+		})
 	})
 })

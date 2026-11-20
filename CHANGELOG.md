@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- test: **the settle job's four classifier-tier outcomes are pinned in its own suite.** `routine-gate-settle-job_test.go` gains five specs over the real policy and a scripted classifier: an `allowlist`-tier Bash gate is delivered, a `manager` and an `operator` tier are held with the refusing rule recorded (`tier-manager` / `tier-operator`), and a classifier that exits non-zero or times out is held as `tier-error`. These are unit fixtures — they prove the job's own logic with injected inputs, not that the deployed binary reaches the item-aware path.
+
 ## v0.105.0
 
 - feat: **the mid-turn population is woken by the same in-process wake job.** `ManagerWakeJob` gains a second source — the registry, the heartbeat store and the transcripts — feeding the same pane carrier, so a worker that ends its turn on a `👤 You:` panel is woken without a per-manager poller; `manager-attention-watch.py` is deleted by the sibling change. Fail-open is split by input: an unreadable transcript costs that session's transcript half only, while an unreadable registry holds only sessions without a fresh heartbeat. The gated / `CLEARED` / `HELD` doctrine — the ten-row gate table, the four `None` causes, the content key and the measured incidents — lives in `docs/manager-gate-semantics.md`, and `TestDocTableMatchesCode` parses that table and compares it to `ManagerGateRows` so it cannot drift. Every guard is covered by a Ginkgo spec and by the committed `hack/guard-mutation.sh`, which mutates each guard, requires an assertion failure, and restores from one pre-loop backup.
