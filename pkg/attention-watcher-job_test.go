@@ -349,6 +349,36 @@ var _ = Describe("attention watcher delivery job", func() {
 			"a delivered-but-open card must settle, not be skipped forever")
 	})
 
+	It("closes an overdue undelivered held card and writes the failed marker", func() {
+		// Job-level coverage for closeOverdueHeld: an open answered card past the
+		// bound with no delivered attempt must get the failed marker and be closed.
+		// LivenessRef is cleared so the deliver path skips it and only the overdue
+		// fallback acts.
+		held := answeredItem("item-1", "operator", pkg.Decision("allow"))
+		held.State = pkg.OpenState
+		held.LivenessRef = ""
+		old := libtime.DateTime(time.Now().Add(-10 * time.Minute))
+		held.AnsweredAt = &old
+		store.ReadBoardReturns(pkg.Items{held}, nil)
+		store.DeliveryReportsReturns(map[pkg.ItemID]*pkg.DeliveryReport{}, nil)
+		store.DeliveryReturns(&pkg.DeliveryReport{
+			ItemID: pkg.ItemID("item-1"), Status: pkg.NeverAttemptedStatus,
+		}, nil)
+
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+
+		wroteFailed := false
+		for i := 0; i < store.RecordAttemptCallCount(); i++ {
+			_, _, _, outcome := store.RecordAttemptArgsForCall(i)
+			if outcome == pkg.FailedOutcome {
+				wroteFailed = true
+			}
+		}
+		Expect(wroteFailed).To(BeTrue(), "the visible failed marker must be written")
+		Expect(store.CloseUndeliveredCallCount()).To(Equal(1),
+			"the overdue undelivered card must be closed")
+	})
+
 	It("keeps the pane path for a tab session", func() {
 		// A tab session's answer still goes through the carrier: the headless arm
 		// must not take a card that has a pane.
