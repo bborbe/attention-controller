@@ -117,6 +117,26 @@ var _ = Describe("attention watcher delivery job", func() {
 			"a delivered entry must not be reused by a later answer for the same card")
 	})
 
+	It("drops the entry of a card that has left the board", func() {
+		// ⚠️ Pruning is keyed on BOARD MEMBERSHIP, not on this cycle's
+		// eligibility: an entry whose card is still on the board but withheld by
+		// the backoff is exactly the one the next cycle needs the marker for.
+		carrier.verdict = pkg.DeliveryRetry
+		item := answeredItem("item-1", "operator", pkg.Decision("allow"))
+		store.ReadBoardReturns(pkg.Items{item}, nil)
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+
+		store.ReadBoardReturns(pkg.Items{}, nil)
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+
+		store.ReadBoardReturns(pkg.Items{item}, nil)
+		Expect(job.DeliverOnce(context.Background())).To(Succeed())
+
+		Expect(carrier.entries).To(HaveLen(2))
+		Expect(carrier.entries[1]).NotTo(BeIdenticalTo(carrier.entries[0]),
+			"a card that left the board must not keep its entry for the life of the process")
+	})
+
 	It("settles a held card (open + answered) once delivery is observed", func() {
 		held := answeredItem("item-1", "operator", pkg.Decision("allow"))
 		held.State = pkg.OpenState

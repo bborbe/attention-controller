@@ -257,7 +257,34 @@ func (j *attentionWatcherJob) DeliverOnce(ctx context.Context) error {
 		j.deliver(ctx, item, reports[item.ItemID])
 	}
 	j.closeOverdueHeld(ctx, items)
+	j.prunePending(items)
 	return nil
+}
+
+// prunePending drops entries for cards the board no longer carries.
+//
+// ⚠️ It prunes on BOARD MEMBERSHIP, never on this cycle's eligibility. An entry
+// whose card is on the board but not eligible right now — `retryDue` withholding
+// it, or a park — is the one the next cycle needs the marker for; dropping it
+// there would re-type the answer, which is the defect `pending` exists to
+// prevent. A card that has left the board can never be delivered again, so its
+// entry is the only safe thing to drop, and dropping it is what keeps the map
+// from growing for the life of the process.
+func (j *attentionWatcherJob) prunePending(items Items) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if len(j.pending) == 0 {
+		return
+	}
+	onBoard := make(map[ItemID]struct{}, len(items))
+	for _, item := range items {
+		onBoard[item.ItemID] = struct{}{}
+	}
+	for id := range j.pending {
+		if _, ok := onBoard[id]; !ok {
+			delete(j.pending, id)
+		}
+	}
 }
 
 // closeOverdueHeld is the hold's bounded fallback: an open, answered card whose
