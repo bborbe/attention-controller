@@ -137,6 +137,15 @@ func WithManagerWakeInterval(interval time.Duration) ManagerWakeOption {
 	}
 }
 
+// WithManagerWakeGoalScope enables the foreign-goal exclusion. Without it the
+// job keeps every gate the spawn edge keeps — the behaviour before the vault was
+// consulted, which is what a spec that does not care about scoping should get.
+func WithManagerWakeGoalScope(scope GoalScope) ManagerWakeOption {
+	return func(job *managerWakeJob) {
+		job.goalScope = scope
+	}
+}
+
 // WithManagerWakeTranscriptSource adds the transcript-and-registry source beside
 // the store source. It is an option, not a constructor parameter, so the one
 // registration site and every spec keep their call shape.
@@ -203,6 +212,10 @@ type managerWakeJob struct {
 	// gateTracker owns the transcript arm's history: the previous gated set, the
 	// content keys and the park ages.
 	gateTracker ManagerGateTracker
+	// goalScope is the vault's ownership answer; nil disables the foreign-goal
+	// exclusion, so a spec built without the option keeps every gate the spawn
+	// edge keeps.
+	goalScope GoalScope
 
 	// passMu serializes passes. It is TryLock'd rather than Lock'd so two
 	// overlapping passes cannot both diff against the same previous set and
@@ -830,6 +843,20 @@ func (p *wakePass) keeps(manager string, item Item) bool {
 	// human row's spawner, and still has no business waking for it.
 	if p.isHuman(sessionID) {
 		return false
+	}
+	// The vault's durable answer, where it has one: a gate whose page belongs to
+	// another goal is not this manager's. ⚠️ `ok` false means the vault could not
+	// answer — no goal page for this manager, no task for that session, or a task
+	// declaring no goal — and every one of those KEEPS the gate, because an
+	// unresolvable owner is not a reason to silence it.
+	if p.job.goalScope != nil {
+		if goal, foreign, ok := p.job.goalScope.Foreign(manager, sessionID); ok && foreign {
+			glog.V(3).Infof(
+				"job=manager-wake action=foreign_goal item=%s manager=%s goal=%q",
+				item.ItemID, manager, goal,
+			)
+			return false
+		}
 	}
 	spawner := p.owners[sessionID].SpawnerSessionID
 	if spawner == manager {

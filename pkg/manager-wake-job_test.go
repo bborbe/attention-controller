@@ -359,6 +359,30 @@ var _ = Describe("manager wake job", func() {
 		},
 	)
 
+	It("TestForeignGoalNeverWakes — another goal's worker does not wake this manager", func() {
+		oneManager()
+		store.ReadReturns(pkg.Items{wakeItem("item-foreign", "w-1")}, nil)
+
+		// The vault says the gate belongs to another goal. It sits above the spawn
+		// edge, which would keep it: w-1 was spawned by this manager.
+		flushBatch(newJob(pkg.WithManagerWakeGoalScope(&stubGoalScope{
+			goal: "Other Goal", foreign: true, ok: true,
+		})))
+		Expect(carrier.recorded()).To(BeEmpty())
+
+		// Positive control: the same item with the vault answering "mine" is kept,
+		// so the drop is the scope and not the spawn edge.
+		carrier = newWakeRecordingCarrier()
+		flushBatch(newJob(pkg.WithManagerWakeGoalScope(&stubGoalScope{ok: true})))
+		Expect(carrier.recorded()).To(HaveLen(1))
+
+		// Positive control: a vault that cannot answer (ok false) keeps the gate —
+		// an unresolvable owner is not a reason to silence it.
+		carrier = newWakeRecordingCarrier()
+		flushBatch(newJob(pkg.WithManagerWakeGoalScope(&stubGoalScope{})))
+		Expect(carrier.recorded()).To(HaveLen(1))
+	})
+
 	It("TestExpiredItemNeverWakes — the population read drops an expired item", func() {
 		oneManager()
 		// The store's own Read already excludes the expired card, so the job
@@ -626,3 +650,15 @@ var _ = Describe("manager wake job", func() {
 		},
 	)
 })
+
+// stubGoalScope is the vault's answer, scripted. It exists so a spec can pin the
+// three outcomes the exclusion must distinguish: foreign, mine, and could-not-answer.
+type stubGoalScope struct {
+	goal    string
+	foreign bool
+	ok      bool
+}
+
+func (s *stubGoalScope) Foreign(_, _ string) (string, bool, bool) {
+	return s.goal, s.foreign, s.ok
+}

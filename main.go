@@ -1226,7 +1226,7 @@ func (a *application) createHTTPServer(
 		runner.Add(ctx, watcher.Run)
 
 		if err := a.addMaintenanceJobs(ctx, runner, store, panes, livenessChecker, provenance,
-			sessionLedger, notifier, sessionHeartbeatStore); err != nil {
+			sessionLedger, notifier, sessionHeartbeatStore, tasks); err != nil {
 			return err
 		}
 
@@ -1272,6 +1272,7 @@ func (a *application) addMaintenanceJobs(
 	sessionLedger pkg.SessionLedgerStore,
 	notifier pkg.AttentionChangeNotifier,
 	sessionHeartbeatStore pkg.SessionHeartbeatService,
+	tasks pkg.TaskIndex,
 ) error {
 	if err := a.addAnsweredSweep(ctx, runner, store); err != nil {
 		return err
@@ -1285,7 +1286,7 @@ func (a *application) addMaintenanceJobs(
 	runner.Add(ctx, sessionHeartbeatStore.Run)
 	return a.addInProcessJobs(
 		ctx, runner, store, panes, liveness, provenance, sessionLedger, notifier,
-		sessionHeartbeatStore,
+		sessionHeartbeatStore, tasks,
 	)
 }
 
@@ -1344,6 +1345,7 @@ func (a *application) addInProcessJobs(
 	sessionLedger pkg.SessionLedgerStore,
 	notifier pkg.AttentionChangeNotifier,
 	heartbeats pkg.SessionHeartbeatStore,
+	tasks pkg.TaskIndex,
 ) error {
 	runner.Add(ctx, pkg.NewMetricsPushJob(
 		prometheus.DefaultGatherer,
@@ -1407,7 +1409,7 @@ func (a *application) addInProcessJobs(
 	// linter's length bound, and each job's rationale belongs beside the job.
 	return a.addAttentionWatcherJobs(
 		ctx, runner, store, panes, liveness, provenance, sessionLedger, notifier,
-		heartbeats,
+		heartbeats, tasks,
 	)
 }
 
@@ -1432,6 +1434,7 @@ func (a *application) addAttentionWatcherJobs(
 	sessionLedger pkg.SessionLedgerStore,
 	notifier pkg.AttentionChangeNotifier,
 	heartbeats pkg.SessionHeartbeatStore,
+	tasks pkg.TaskIndex,
 ) error {
 	stateDir, contextDir, transcriptRoot, err := a.attentionWatcherDirs(ctx)
 	if err != nil {
@@ -1530,9 +1533,15 @@ func (a *application) addAttentionWatcherJobs(
 	// cluster listener, where panes, the registry and the ledger do not exist.
 	//
 	// ⚠️ The transcript source attaches via OPTION, so registrations stay at one.
+	// ⚠️ The goal scope is wired HERE and not left to the option's absence: an
+	// exclusion that is never enabled is a no-op with a passing test, which is
+	// exactly what a first review of this change found. A vault-less host still
+	// gets the seam — NewGoalScope fails open on an empty dir, so every gate is
+	// kept.
 	runner.Add(ctx, pkg.NewManagerWakeJob(store, sessionLedger, provenance, carrier, notifier,
 		libtime.NewCurrentDateTime(), pkg.NewManagerWakeEmissionLog(),
-		a.managerWakeTranscriptOption(ctx, stateDir, transcriptRoot, heartbeats)).Run)
+		a.managerWakeTranscriptOption(ctx, stateDir, transcriptRoot, heartbeats),
+		pkg.WithManagerWakeGoalScope(pkg.NewGoalScope(a.VaultDir, tasks))).Run)
 	registerCompactTrio(ctx, runner, store, carrier, writer, transcriptRoot)
 	a.addWatcherReaperJob(ctx, runner)
 

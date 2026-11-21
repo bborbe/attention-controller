@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- fix: **the wake job no longer wakes a manager for a gate the vault says belongs to another goal.** `keeps()` dropped on the spawn edge alone, whose every hop reads a LIVE store and fails open — so the answer for one gate depended on the health of a manager that had nothing to do with it. Measured 2026-10-29: goal manager `49b471f1` was handed **five gates raised by five sessions in four other goals** in one afternoon, each resolved by hand to a task naming another goal. The vault answers "whose work is this" from stamps that outlive the manager that wrote them: `GoalScope` resolves the manager's goal from the goal page's `claude_session_id`, and a gate whose task does not list that goal is excluded. ⚠️ **It is a second, independent input, never a replacement for the spawn edge** — and it fails OPEN in every direction: an unconfigured vault, an unstamped manager, a session anchoring no task and a task declaring no goal each return "cannot answer", which keeps the gate. `TestForeignGoalNeverWakes` carries both positive controls — the same item kept when the vault answers "mine", and kept again when the vault cannot answer at all.
+
 ## v0.107.7
 
 - fix: **the attention board's corner X renders on every card, dimmed records and held cards included.** The X was withheld from every dimmed row since v0.32.1, so an answered card — and a held card (answered, not yet delivered) — had no way to be cleared from the board. A click now closes the item (`answered` → `closed`; a held card: `open` → `closed`) and answers nothing; the record is kept in the store and its history. A held close keeps the arm that answered rather than overwriting `answered_by`, and a held `permission` card is no longer refused as an unanswered gate. Operator ask, verbatim: *"at least we should always show an X button that allows to close/hide a card."*
