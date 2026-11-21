@@ -1478,7 +1478,18 @@ func (a *attentionStore) Close(
 		// withdrawing its own item through this route names no arm, and recording
 		// a client for it would put a causer on the record that the schema does
 		// not name.
-		if from == OpenState {
+		//
+		// ⚠️ A HELD card is `open` with AnsweredAt set: the store holds an answer
+		// it has not yet delivered, and the board renders it as a dimmed record.
+		// From 2026-11-21 the board's corner X closes it, and this write must be
+		// skipped for it — the item is already answered, so overwriting
+		// AnsweredBy would replace the arm that answered with the arm that merely
+		// closed. Its `permission` arm also already carries its Decision, so the
+		// unanswered-gate refusal below does not describe it: closing a held gate
+		// retires a card whose answer was recorded, it does not consume an
+		// unanswered one. See [[Attention Item Schema]] § The corner X's dimmed
+		// row and § The held card.
+		if from == OpenState && item.AnsweredAt == nil {
 			// A `permission` item leaves `open` only through a write that records a
 			// decision. This route's arm-caused body carries no decision field at
 			// all, so an arm-caused close of an open gate is not an answer to it —

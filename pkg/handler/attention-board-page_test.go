@@ -655,16 +655,22 @@ var _ = Describe("Attention page board controls", func() {
 			},
 		)
 
-		// ⚠️ Added 2026-10-01 with the dimmed-record corner-X fix. The dimmed
-		// record card is a record, not a prompt, so it carries no control that
-		// offers an answer — the corner X included, because on a message card the
-		// X's act is the Dismiss / clear and without the (not .Dimmed) conjunct
-		// its fall-through closes the item and deletes the record the card exists
-		// to preserve.
+		// ⚠️ AMENDED 2026-11-21 — this spec was written 2026-10-01 to prove the
+		// corner X was WITHHELD from every dimmed card, and it is now inverted: the
+		// X renders on every card, dimmed included, on the operator's ask ("at least
+		// we should always show an X button that allows to close/hide a card").
+		// The inversion is deliberate rather than a deletion — the five-row fixture
+		// and its rowBlock scoping are kept, so a regression that re-withholds the
+		// control from a dimmed row fails here.
+		//
+		// ⚠️ A held card is added to the fixture: it is `open` + answered_at (the
+		// controller's hold), renders dimmed, and is the state the operator's own
+		// screenshots showed. Only a `permission` item can be held, because Answer
+		// keeps that class open until delivery.
 		//
 		// ⚠️ Both halves sit in ONE render, deliberately, for the read-aloud
-		// spec's reason: the negative alone is also satisfied by a fix that
-		// removed the control from EVERY row.
+		// spec's reason: a positive alone is also satisfied by a fix that added
+		// the control to EVERY row.
 		//
 		// ⚠️ Every assertion is scoped to the row's own block via rowBlock, never
 		// the whole body: `data-corner-x` also appears in the page's own inline
@@ -672,7 +678,7 @@ var _ = Describe("Attention page board controls", func() {
 		// substring check finds a copy whether the card renders the button or not
 		// and can never fail.
 		It(
-			"withholds the corner X from every dimmed card and keeps it on every open row, in one render",
+			"carries the corner X on every dimmed and open row, in one render",
 			func() {
 				// Two local builders: the outer permissionRequest() carries a fixed
 				// dedup key, and the open permission row must coexist with the
@@ -753,6 +759,26 @@ var _ = Describe("Attention page board controls", func() {
 				)
 				Expect(err).To(BeNil())
 
+				// The held card: answered, still open, not yet delivered. Only a
+				// `permission` item can be held — Answer keeps that class open until
+				// SettleAnswer observes delivery.
+				heldPermission, err := store.Push(
+					ctx,
+					permissionItem("x-held-gate", "Deploy to staging now?"),
+				)
+				Expect(err).To(BeNil())
+				_, err = store.Answer(
+					ctx,
+					heldPermission.ItemID,
+					"attention-watch-auto",
+					"",
+					pkg.AllowDecision,
+					nil,
+					nil,
+					nil,
+				)
+				Expect(err).To(BeNil())
+
 				body := render()
 
 				// ⚠️ Positive control first, on all five: every dimmed row is
@@ -770,17 +796,28 @@ var _ = Describe("Attention page board controls", func() {
 				Expect(dimmedRow(body, openMessage.ItemID)).To(BeFalse())
 				Expect(dimmedRow(body, openAck.ItemID)).To(BeFalse())
 				Expect(dimmedRow(body, openPermission.ItemID)).To(BeFalse())
+				Expect(dimmedRow(body, heldPermission.ItemID)).To(BeTrue())
+				Expect(
+					rowBlock(body, heldPermission.ItemID),
+				).To(ContainSubstring(`data-held="true"`))
 
 				// ⚠️ The dimmed-permission half is load-bearing: the live board
 				// cannot exhibit it (measured 2026-09-28 — of 252 dimmed rows
 				// served, 252 were `message` and 0 were `permission`), so this
 				// spec is that half's only proof.
+				//
+				// ⚠️ INVERTED 2026-11-21: the X is now EXPECTED on every dimmed
+				// row. A build that re-withholds it (the 2026-10-01 gate) fails
+				// here rather than passing.
 				Expect(
 					rowBlock(body, dimmedMessage.ItemID),
-				).NotTo(ContainSubstring("data-corner-x"))
+				).To(ContainSubstring("data-corner-x"))
 				Expect(
 					rowBlock(body, dimmedPermission.ItemID),
-				).NotTo(ContainSubstring("data-corner-x"))
+				).To(ContainSubstring("data-corner-x"))
+				Expect(
+					rowBlock(body, heldPermission.ItemID),
+				).To(ContainSubstring("data-corner-x"))
 
 				// Every open row keeps the X, whatever its mechanism.
 				Expect(rowBlock(body, openMessage.ItemID)).To(ContainSubstring("data-corner-x"))

@@ -94,9 +94,14 @@ var _ = Describe("buildAttentionPage", func() {
 		// digest only when the served page is meant to change.
 		sum := sha256.Sum256([]byte(attentionPageTemplate))
 
-		Expect(len(attentionPageTemplate)).To(Equal(146746))
+		// ⚠️ Regenerated 2026-11-21: the served page changed on purpose — the
+		// corner X now renders on every row, dimmed records and held cards
+		// included — so the assembled document legitimately grew. The previous
+		// pair was 146746 /
+		// 1ac3d0b8e397bf7b7974c6b140dfab806498ac5fbd1283689e74494cf4ef29ea.
+		Expect(len(attentionPageTemplate)).To(Equal(147363))
 		Expect(hex.EncodeToString(sum[:])).To(Equal(
-			"1ac3d0b8e397bf7b7974c6b140dfab806498ac5fbd1283689e74494cf4ef29ea",
+			"c92b535783cd474995ede74e50ffc921e2ac2fd01caad8025b251048a1a9a2a3",
 		))
 	})
 })
