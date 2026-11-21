@@ -26,9 +26,11 @@ func (s *stubTaskIndex) Lookup(sessionID string) (pkg.Task, bool) {
 	return task, ok
 }
 
-func (s *stubTaskIndex) SubjectTitles() []string                  { return nil }
+func (s *stubTaskIndex) SubjectTitles() []string { return nil }
+
 func (s *stubTaskIndex) ApplyPaths(_ context.Context, _ []string) {}
-func (s *stubTaskIndex) Reconcile(_ context.Context)              {}
+
+func (s *stubTaskIndex) Reconcile(_ context.Context) {}
 
 var _ = Describe("session goal scope", func() {
 	var dir string
@@ -42,6 +44,30 @@ var _ = Describe("session goal scope", func() {
 
 	BeforeEach(func() {
 		dir = GinkgoT().TempDir()
+	})
+
+	It("TestGoalScopeManagerResolved — true only when the manager's page carries a goal", func() {
+		writeGoal("Mine", "mgr-1")
+		scope := pkg.NewGoalScope(dir, &stubTaskIndex{})
+
+		Expect(scope.ManagerResolved("mgr-1")).To(BeTrue())
+		Expect(scope.ManagerResolved("fleet-1")).To(BeFalse())
+		Expect(scope.ManagerResolved("")).To(BeFalse())
+		// A vault-less scope answers false, so the unowned routing never fires
+		// where nothing could be read.
+		Expect(pkg.NewGoalScope("", &stubTaskIndex{}).ManagerResolved("mgr-1")).To(BeFalse())
+	})
+
+	It("TestGoalScopeSessionResolved — separates no-task from task-with-no-goal", func() {
+		tasks := &stubTaskIndex{tasks: map[string]pkg.Task{
+			"w-no-goal": {Goals: nil},
+		}}
+		scope := pkg.NewGoalScope(dir, tasks)
+
+		Expect(scope.SessionResolved("w-no-goal")).To(BeTrue())
+		Expect(scope.SessionResolved("exit-observer-keeper")).To(BeFalse())
+		Expect(scope.SessionResolved("")).To(BeFalse())
+		Expect(pkg.NewGoalScope(dir, nil).SessionResolved("w-no-goal")).To(BeFalse())
 	})
 
 	It("TestGoalScopeResolvesTheManagersGoalFromItsPage", func() {
@@ -99,7 +125,8 @@ var _ = Describe("session goal scope", func() {
 		Expect(ok).To(BeFalse())
 
 		// A vault directory that does not exist.
-		_, _, ok = pkg.NewGoalScope(filepath.Join(dir, "absent"), tasks).Foreign("mgr-1", "w-nogoal")
+		_, _, ok = pkg.NewGoalScope(filepath.Join(dir, "absent"), tasks).
+			Foreign("mgr-1", "w-nogoal")
 		Expect(ok).To(BeFalse())
 	})
 })

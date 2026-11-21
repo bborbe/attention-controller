@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 
 	"github.com/bborbe/errors"
@@ -15,6 +16,30 @@ import (
 
 	"github.com/bborbe/attention-controller/pkg"
 )
+
+// managerWakeFleetOption builds the wake job's Fleet Manager registry option.
+//
+// ⚠️ The directory is `~/.claude/state/worker-manager`, a SIBLING of the
+// attention state dir, never `<stateDir>/worker-manager`. `stateDir` is
+// `~/.claude/state/attention`, so joining `worker-manager` onto it names a
+// directory that does not exist — the registry is then always empty,
+// `isFleetManager` is always false, and the unowned class is DROPPED for every
+// goal-resolved manager instead of being routed. That is the opposite of the
+// intent and completely silent, which is why the path is resolved from home here
+// rather than from a caller's state dir.
+//
+// ⚠️ An unresolvable home returns the nil-resolver option, which keeps the
+// pre-change behaviour: every manager keeps the unowned class.
+func managerWakeFleetOption() pkg.ManagerWakeOption {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		glog.Warningf("resolve home dir for fleet registry failed: %v", err)
+		return pkg.WithManagerWakeFleetRegistry(nil)
+	}
+	return pkg.WithManagerWakeFleetRegistry(
+		pkg.NewFleetManagerRegistry(pkg.DefaultWorkerManagerDir(home)),
+	)
+}
 
 // managerWakeTranscriptOption builds the wake job's transcript-and-registry
 // option.

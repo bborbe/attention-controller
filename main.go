@@ -1541,7 +1541,8 @@ func (a *application) addAttentionWatcherJobs(
 	runner.Add(ctx, pkg.NewManagerWakeJob(store, sessionLedger, provenance, carrier, notifier,
 		libtime.NewCurrentDateTime(), pkg.NewManagerWakeEmissionLog(),
 		a.managerWakeTranscriptOption(ctx, stateDir, transcriptRoot, heartbeats),
-		pkg.WithManagerWakeGoalScope(pkg.NewGoalScope(a.VaultDir, tasks))).Run)
+		pkg.WithManagerWakeGoalScope(pkg.NewGoalScope(a.VaultDir, tasks)),
+		managerWakeFleetOption()).Run)
 	registerCompactTrio(ctx, runner, store, carrier, writer, transcriptRoot)
 	a.addWatcherReaperJob(ctx, runner)
 

@@ -121,6 +121,12 @@ if not spawner and is_manager(session_id, ledger):
         return DROP, "peer-manager-own"
 ```
 
-The branches deliberately NOT ported — scope exclusion, ownership claims, the `role: human`
-exclusion and fleet routing — are out of scope for this change: the kept set is wide by design, so
-the unowned class is kept rather than routed.
+The branches deliberately NOT ported — ownership claims and the `role: human` exclusion — remain
+out of scope: the kept set is wide by design.
+
+**Fleet routing for the unowned class was added 2026-11-21.** A card whose producer anchors no task
+(`GoalScope.Foreign` answers `ok=false`) while the manager's OWN goal resolves is typed to the live
+Fleet Manager alone — or nowhere when none is registered. Measured 2026-11-21: the exit observer's
+cron card (`f5a4475f`) reached two goal managers that could not act on it. Every other unresolved
+case still keeps: a manager with no goal page, a vault that cannot be read, and an item that names
+no session at all.

@@ -383,6 +383,60 @@ var _ = Describe("manager wake job", func() {
 		Expect(carrier.recorded()).To(HaveLen(1))
 	})
 
+	It(
+		"TestUnownedClassGoesToTheFleetManagerOnly — a card whose producer anchors no task wakes only the Fleet Manager",
+		func() {
+			twoManagers := func() {
+				live["mgr-1"] = true
+				live["fleet-1"] = true
+				ledger.ListReturns(pkg.SessionLedgerEntries{
+					ledgerRow("mgr-1", "manager", ""),
+					ledgerRow("fleet-1", "manager", ""),
+				}, nil)
+			}
+			fleet := &stubFleetRegistry{registrations: []pkg.FleetManagerRegistration{
+				{SessionID: "fleet-1", ResolvedAt: "2026-11-21T10:00:00+01:00"},
+			}}
+
+			// The vault can name no owner (ok false) but DOES resolve the managers'
+			// own goals — the unowned class. It goes to the Fleet Manager alone.
+			twoManagers()
+			store.ReadReturns(pkg.Items{wakeItem("item-cron", "exit-observer-keeper")}, nil)
+			flushBatch(newJob(
+				pkg.WithManagerWakeGoalScope(
+					&stubGoalScope{resolved: map[string]bool{"mgr-1": true}, noTask: true},
+				),
+				pkg.WithManagerWakeFleetRegistry(fleet),
+			))
+			Expect(carrier.sessions()).To(Equal([]string{"fleet-1"}))
+
+			// Positive control: with the manager's own goal unresolved the gate is
+			// kept for every manager — a missing manager page is not a silence.
+			carrier = newWakeRecordingCarrier()
+			twoManagers()
+			store.ReadReturns(pkg.Items{wakeItem("item-cron", "exit-observer-keeper")}, nil)
+			flushBatch(newJob(
+				pkg.WithManagerWakeGoalScope(&stubGoalScope{}),
+				pkg.WithManagerWakeFleetRegistry(fleet),
+			))
+			Expect(carrier.sessions()).To(HaveLen(2))
+
+			// Positive control: with no live Fleet Manager registration the unowned
+			// card is typed nowhere rather than into every manager.
+			carrier = newWakeRecordingCarrier()
+			twoManagers()
+			live["fleet-1"] = false
+			store.ReadReturns(pkg.Items{wakeItem("item-cron", "exit-observer-keeper")}, nil)
+			flushBatch(newJob(
+				pkg.WithManagerWakeGoalScope(
+					&stubGoalScope{resolved: map[string]bool{"mgr-1": true}, noTask: true},
+				),
+				pkg.WithManagerWakeFleetRegistry(fleet),
+			))
+			Expect(carrier.recorded()).To(BeEmpty())
+		},
+	)
+
 	It("TestExpiredItemNeverWakes — the population read drops an expired item", func() {
 		oneManager()
 		// The store's own Read already excludes the expired card, so the job
@@ -654,11 +708,37 @@ var _ = Describe("manager wake job", func() {
 // stubGoalScope is the vault's answer, scripted. It exists so a spec can pin the
 // three outcomes the exclusion must distinguish: foreign, mine, and could-not-answer.
 type stubGoalScope struct {
-	goal    string
-	foreign bool
-	ok      bool
+	goal     string
+	foreign  bool
+	ok       bool
+	resolved map[string]bool
+	noTask   bool
 }
 
 func (s *stubGoalScope) Foreign(_, _ string) (string, bool, bool) {
 	return s.goal, s.foreign, s.ok
+}
+
+// ManagerResolved is the manager-side fact the unowned routing needs, keyed per
+// session so a spec can model a Fleet Manager with no goal page. A nil map
+// answers false for every manager, so every spec written before this field keeps
+// its gate — exactly the fail-open the field exists to preserve.
+func (s *stubGoalScope) ManagerResolved(manager string) bool {
+	return s.resolved[manager]
+}
+
+// SessionResolved separates the cron class (no task row) from a real task that
+// merely declares no goal. The zero stub answers TRUE, so a spec must opt IN to
+// the unowned class rather than land in it by accident.
+func (s *stubGoalScope) SessionResolved(_ string) bool {
+	return !s.noTask
+}
+
+// stubFleetRegistry is the Fleet Manager registration list, scripted.
+type stubFleetRegistry struct {
+	registrations []pkg.FleetManagerRegistration
+}
+
+func (s *stubFleetRegistry) Registrations(_ context.Context) []pkg.FleetManagerRegistration {
+	return s.registrations
 }
