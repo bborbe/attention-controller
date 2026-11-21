@@ -35,6 +35,16 @@ type GoalScope interface {
 	// those keeps the gate**: an unresolvable owner is not a reason to silence
 	// it, which is the fail-open direction every other hop takes.
 	Foreign(managerSession, session string) (goal string, foreign bool, ok bool)
+
+	// ManagerResolved reports whether the vault names a goal for this manager
+	// session.
+	//
+	// ⚠️ It separates two facts `Foreign`'s single `ok` folds together: "the
+	// SESSION anchors no task" and "the MANAGER has no goal page". The first is
+	// the unowned class the wake job may route; the second is a manager whose
+	// scope could not be read, which must keep everything. Answering one with the
+	// other would turn a missing manager page into a fleet-wide silence.
+	ManagerResolved(managerSession string) bool
 }
 
 // NewGoalScope returns a GoalScope reading vaultDir's goal and task pages.
@@ -80,6 +90,14 @@ func (s *goalScope) Foreign(managerSession, session string) (string, bool, bool)
 		}
 	}
 	return task.Goals[0], true, true
+}
+
+// ManagerResolved implements GoalScope.
+func (s *goalScope) ManagerResolved(managerSession string) bool {
+	if s.vaultDir == "" || managerSession == "" {
+		return false
+	}
+	return s.goalOf(managerSession) != ""
 }
 
 // goalOf returns the title of the goal page stamped with sessionID, or "".

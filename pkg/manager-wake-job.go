@@ -146,6 +146,15 @@ func WithManagerWakeGoalScope(scope GoalScope) ManagerWakeOption {
 	}
 }
 
+// WithManagerWakeFleetRegistry enables the unowned-class routing. Without it the
+// job keeps an unowned gate for every manager — the behaviour before this change,
+// which is what a spec that does not care about fleet routing should get.
+func WithManagerWakeFleetRegistry(registry FleetManagerRegistry) ManagerWakeOption {
+	return func(job *managerWakeJob) {
+		job.fleet = registry
+	}
+}
+
 // WithManagerWakeTranscriptSource adds the transcript-and-registry source beside
 // the store source. It is an option, not a constructor parameter, so the one
 // registration site and every spec keep their call shape.
@@ -216,6 +225,9 @@ type managerWakeJob struct {
 	// exclusion, so a spec built without the option keeps every gate the spawn
 	// edge keeps.
 	goalScope GoalScope
+	// fleet is the Fleet Manager registration list; nil disables the unowned
+	// routing, so a spec built without it keeps the pre-change behaviour.
+	fleet FleetManagerRegistry
 
 	// passMu serializes passes. It is TryLock'd rather than Lock'd so two
 	// overlapping passes cannot both diff against the same previous set and
@@ -425,6 +437,32 @@ func (p *wakePass) isHuman(sessionID string) bool {
 		return false
 	}
 	return entry.Role == managerLedgerRoleHuman
+}
+
+// isFleetManager reports whether manager is the live Fleet Manager.
+//
+// ⚠️ Newest `resolved_at` wins among the LIVE registrations only. Routing the
+// unowned class to a dead session is a black hole with extra steps, so a stale
+// registration is skipped rather than used — the same rule the Python filter's
+// `fleet_manager()` applies.
+//
+// ⚠️ It answers false when no registry is attached: a job built without the
+// option keeps the unowned class for every manager, which is the pre-change
+// behaviour.
+func (p *wakePass) isFleetManager(manager string) bool {
+	if p.job.fleet == nil || manager == "" {
+		return false
+	}
+	best, bestAt := "", ""
+	for _, registration := range p.job.fleet.Registrations(p.ctx) {
+		if !p.isLive(registration.SessionID) {
+			continue
+		}
+		if best == "" || registration.ResolvedAt >= bestAt {
+			best, bestAt = registration.SessionID, registration.ResolvedAt
+		}
+	}
+	return best == manager
 }
 
 // clearParksNotLive drops the parks of managers that are no longer live, so a
@@ -850,12 +888,25 @@ func (p *wakePass) keeps(manager string, item Item) bool {
 	// declaring no goal — and every one of those KEEPS the gate, because an
 	// unresolvable owner is not a reason to silence it.
 	if p.job.goalScope != nil {
-		if goal, foreign, ok := p.job.goalScope.Foreign(manager, sessionID); ok && foreign {
+		goal, foreign, ok := p.job.goalScope.Foreign(manager, sessionID)
+		if ok && foreign {
 			glog.V(3).Infof(
 				"job=manager-wake action=foreign_goal item=%s manager=%s goal=%q",
 				item.ItemID, manager, goal,
 			)
 			return false
+		}
+		spawner := p.owners[sessionID].SpawnerSessionID
+		if spawner == manager {
+			return true
+		}
+		// The vault could not name an owner AND this manager has a goal of its
+		// own: the card is the unowned class — a cron, a producer with no task row
+		// — and it belongs to the Fleet Manager alone. ⚠️ The `ManagerResolved`
+		// guard is load-bearing: a manager whose own goal page is missing must
+		// keep, or a missing page becomes a fleet-wide silence.
+		if !ok && p.job.goalScope.ManagerResolved(manager) {
+			return p.isFleetManager(manager)
 		}
 	}
 	spawner := p.owners[sessionID].SpawnerSessionID

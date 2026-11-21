@@ -26,9 +26,11 @@ func (s *stubTaskIndex) Lookup(sessionID string) (pkg.Task, bool) {
 	return task, ok
 }
 
-func (s *stubTaskIndex) SubjectTitles() []string                  { return nil }
+func (s *stubTaskIndex) SubjectTitles() []string { return nil }
+
 func (s *stubTaskIndex) ApplyPaths(_ context.Context, _ []string) {}
-func (s *stubTaskIndex) Reconcile(_ context.Context)              {}
+
+func (s *stubTaskIndex) Reconcile(_ context.Context) {}
 
 var _ = Describe("session goal scope", func() {
 	var dir string
@@ -99,7 +101,8 @@ var _ = Describe("session goal scope", func() {
 		Expect(ok).To(BeFalse())
 
 		// A vault directory that does not exist.
-		_, _, ok = pkg.NewGoalScope(filepath.Join(dir, "absent"), tasks).Foreign("mgr-1", "w-nogoal")
+		_, _, ok = pkg.NewGoalScope(filepath.Join(dir, "absent"), tasks).
+			Foreign("mgr-1", "w-nogoal")
 		Expect(ok).To(BeFalse())
 	})
 })
