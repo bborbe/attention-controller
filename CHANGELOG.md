@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.107.7
 
 - fix: **the attention board's corner X renders on every card, dimmed records and held cards included.** The X was withheld from every dimmed row since v0.32.1, so an answered card — and a held card (answered, not yet delivered) — had no way to be cleared from the board. A click now closes the item (`answered` → `closed`; a held card: `open` → `closed`) and answers nothing; the record is kept in the store and its history. A held close keeps the arm that answered rather than overwriting `answered_by`, and a held `permission` card is no longer refused as an unanswered gate. Operator ask, verbatim: *"at least we should always show an X button that allows to close/hide a card."*
 
