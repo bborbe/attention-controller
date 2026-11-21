@@ -10,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/golang/glog"
 )
 
 // fleetManagerBranch is the `branch` value a Fleet Manager registration carries.
@@ -57,6 +59,7 @@ func (r *fleetManagerRegistry) Registrations(_ context.Context) []FleetManagerRe
 	}
 	entries, err := os.ReadDir(r.dir)
 	if err != nil {
+		glog.V(2).Infof("fleet registry: read %s failed: %v", r.dir, err)
 		return nil
 	}
 	registrations := make([]FleetManagerRegistration, 0, len(entries))

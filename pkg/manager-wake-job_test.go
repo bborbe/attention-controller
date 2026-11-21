@@ -403,7 +403,9 @@ var _ = Describe("manager wake job", func() {
 			twoManagers()
 			store.ReadReturns(pkg.Items{wakeItem("item-cron", "exit-observer-keeper")}, nil)
 			flushBatch(newJob(
-				pkg.WithManagerWakeGoalScope(&stubGoalScope{resolved: true}),
+				pkg.WithManagerWakeGoalScope(
+					&stubGoalScope{resolved: map[string]bool{"mgr-1": true}, noTask: true},
+				),
 				pkg.WithManagerWakeFleetRegistry(fleet),
 			))
 			Expect(carrier.sessions()).To(Equal([]string{"fleet-1"}))
@@ -426,7 +428,9 @@ var _ = Describe("manager wake job", func() {
 			live["fleet-1"] = false
 			store.ReadReturns(pkg.Items{wakeItem("item-cron", "exit-observer-keeper")}, nil)
 			flushBatch(newJob(
-				pkg.WithManagerWakeGoalScope(&stubGoalScope{resolved: true}),
+				pkg.WithManagerWakeGoalScope(
+					&stubGoalScope{resolved: map[string]bool{"mgr-1": true}, noTask: true},
+				),
 				pkg.WithManagerWakeFleetRegistry(fleet),
 			))
 			Expect(carrier.recorded()).To(BeEmpty())
@@ -707,18 +711,27 @@ type stubGoalScope struct {
 	goal     string
 	foreign  bool
 	ok       bool
-	resolved bool
+	resolved map[string]bool
+	noTask   bool
 }
 
 func (s *stubGoalScope) Foreign(_, _ string) (string, bool, bool) {
 	return s.goal, s.foreign, s.ok
 }
 
-// ManagerResolved is the manager-side fact the unowned routing needs. The zero
-// stub answers false, so every spec written before this field keeps its gate —
-// exactly the fail-open the field exists to preserve.
-func (s *stubGoalScope) ManagerResolved(_ string) bool {
-	return s.resolved
+// ManagerResolved is the manager-side fact the unowned routing needs, keyed per
+// session so a spec can model a Fleet Manager with no goal page. A nil map
+// answers false for every manager, so every spec written before this field keeps
+// its gate — exactly the fail-open the field exists to preserve.
+func (s *stubGoalScope) ManagerResolved(manager string) bool {
+	return s.resolved[manager]
+}
+
+// SessionResolved separates the cron class (no task row) from a real task that
+// merely declares no goal. The zero stub answers TRUE, so a spec must opt IN to
+// the unowned class rather than land in it by accident.
+func (s *stubGoalScope) SessionResolved(_ string) bool {
+	return !s.noTask
 }
 
 // stubFleetRegistry is the Fleet Manager registration list, scripted.

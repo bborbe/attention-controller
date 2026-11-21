@@ -883,35 +883,42 @@ func (p *wakePass) keeps(manager string, item Item) bool {
 		return false
 	}
 	// The vault's durable answer, where it has one: a gate whose page belongs to
-	// another goal is not this manager's. ⚠️ `ok` false means the vault could not
-	// answer — no goal page for this manager, no task for that session, or a task
-	// declaring no goal — and every one of those KEEPS the gate, because an
-	// unresolvable owner is not a reason to silence it.
+	// another goal is not this manager's. ⚠️ It sits ABOVE the own-worker branch
+	// deliberately — a positively-foreign pane is foreign even when this manager
+	// spawned it, which is the case `TestForeignGoalNeverWakes` pins.
+	var (
+		goal    string
+		foreign bool
+		scoped  bool
+	)
 	if p.job.goalScope != nil {
-		goal, foreign, ok := p.job.goalScope.Foreign(manager, sessionID)
-		if ok && foreign {
+		goal, foreign, scoped = p.job.goalScope.Foreign(manager, sessionID)
+		if scoped && foreign {
 			glog.V(3).Infof(
 				"job=manager-wake action=foreign_goal item=%s manager=%s goal=%q",
 				item.ItemID, manager, goal,
 			)
 			return false
 		}
-		spawner := p.owners[sessionID].SpawnerSessionID
-		if spawner == manager {
-			return true
-		}
-		// The vault could not name an owner AND this manager has a goal of its
-		// own: the card is the unowned class — a cron, a producer with no task row
-		// — and it belongs to the Fleet Manager alone. ⚠️ The `ManagerResolved`
-		// guard is load-bearing: a manager whose own goal page is missing must
-		// keep, or a missing page becomes a fleet-wide silence.
-		if !ok && p.job.goalScope.ManagerResolved(manager) {
-			return p.isFleetManager(manager)
-		}
 	}
 	spawner := p.owners[sessionID].SpawnerSessionID
 	if spawner == manager {
+		// A manager's OWN workers are the panes it EXISTS to see, so the UNOWNED
+		// class must never silence them — a wrapper-backed worker writes no
+		// `worker-manager` record and would otherwise lose its card. (The foreign
+		// branch above still applies: a resolved foreign goal outranks the spawn
+		// edge, which is the documented contract.)
 		return true
+	}
+	// The unowned class — the task index knows NO task for this session — belongs
+	// to the Fleet Manager alone. ⚠️ Both guards are load-bearing:
+	// `SessionResolved` keeps a real task that merely declares no goal with its
+	// owner, and `ManagerResolved` keeps everything for a manager whose own page
+	// is missing, so a missing page is never a fleet-wide silence.
+	if p.job.goalScope != nil && !scoped &&
+		!p.job.goalScope.SessionResolved(sessionID) &&
+		p.job.goalScope.ManagerResolved(manager) {
+		return p.isFleetManager(manager)
 	}
 	if spawner == "" {
 		// HOP 3b — the item's own session IS the manager, and an operator-started
