@@ -1066,9 +1066,14 @@ document.addEventListener('click', function (event) {
    form.answer, so a row with no Deny control falls through to closeCard exactly
    as an ack row does. The mechanisms share one dispatch because they share one
    act per class, and it is delegated on the document for the tab strip's reason.
-   ⚠️ A dimmed record card now carries no data-corner-x button at all, so this
-   listener never fires on one — which is why the fall-through to closeCard on a
-   dimmed row can no longer happen. */
+   ⚠️ AMENDED 2026-11-21 — a dimmed record card DOES carry data-corner-x again,
+   and the fall-through below is now the intended act for it. A dimmed row
+   renders no form.answer and no Deny control (both are gated on not .Dimmed), so
+   the listener reaches closeCard, which closes the item — `answered` -> `closed`
+   for an answered record, `open` -> `closed` for a held card — and answers
+   nothing. The record survives the close in the store's history; only the card
+   leaves the board. On a held card this abandons an undelivered answer, which
+   the operator accepted on 2026-11-21. */
 document.addEventListener('click', function (event) {
   if (!event.target || !event.target.closest) { return; }
   var button = event.target.closest('button[data-corner-x]');
