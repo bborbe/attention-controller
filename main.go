@@ -1532,7 +1532,8 @@ func (a *application) addAttentionWatcherJobs(
 	// ⚠️ The transcript source attaches via OPTION, so registrations stay at one.
 	runner.Add(ctx, pkg.NewManagerWakeJob(store, sessionLedger, provenance, carrier, notifier,
 		libtime.NewCurrentDateTime(), pkg.NewManagerWakeEmissionLog(),
-		a.managerWakeTranscriptOption(ctx, stateDir, transcriptRoot, heartbeats)).Run)
+		a.managerWakeTranscriptOption(ctx, stateDir, transcriptRoot, heartbeats),
+		managerWakeSubjectOption(stateDir, contextDir)).Run)
 	registerCompactTrio(ctx, runner, store, carrier, writer, transcriptRoot)
 	a.addWatcherReaperJob(ctx, runner)
 

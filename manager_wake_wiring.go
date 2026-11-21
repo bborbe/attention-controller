@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 
 	"github.com/bborbe/errors"
@@ -49,6 +50,28 @@ func (a *application) managerWakeTranscriptOption(
 		),
 		pkg.NewManagerGateTracker(stateDir, libtime.NewCurrentDateTime()),
 	)
+}
+
+// managerWakeSubjectOption builds the wake job's subject-ownership option.
+//
+// ⚠️ An unresolvable home directory returns the no-op option rather than failing
+// startup, for the same reason the transcript option does: a host with no vaults
+// tree has nothing to resolve subjects against, and the spawn-edge rule still
+// runs. A nil resolver keeps every card, which is the pre-change behaviour.
+func managerWakeSubjectOption(
+	stateDir string,
+	contextDir string,
+) pkg.ManagerWakeOption {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		glog.Warningf("resolve home dir for wake subjects failed: %v", err)
+		return pkg.WithManagerWakeSubjectResolver(nil)
+	}
+	return pkg.WithManagerWakeSubjectResolver(pkg.NewDefaultWakeSubjectResolver(
+		stateDir,
+		contextDir,
+		filepath.Join(home, "Documents", "Obsidian"),
+	))
 }
 
 // attentionWatcherDirs resolves the three directories the ported jobs read.

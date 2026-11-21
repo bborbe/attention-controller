@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- fix: **the wake job types a card only to a manager that owns its subject.** `keeps` decided by the spawn edge and by session identity alone, so a card produced by another manager's worker, by a cron, or by a session with no resolvable spawner was kept by every manager and typed into every manager's pane — measured 2026-11-21 over `11:01–12:01Z`: 12 emission lines, **4 foreign emission records across 2 foreign items** (`b46adb4c` to `5b29b81a` and `6acc49ca`; `f5a4475f` to the same two). The predicate now resolves the manager's and the producer's subject — `~/.claude/state/worker-manager/<session>.json`, else the context record's session name → the task page's first goal — and drops a card only on a **positive** foreign resolution. An unresolved producer is unowned and is kept by the Fleet Manager alone, matching the Python filter's `route_unowned`; a manager whose own subject does not resolve keeps, so the spawn-edge rule is unchanged where it was deliberate. The rule is one shared fixture (`testdata/wake-subject-predicate.json`) read by the Go test and by the claude-supervisor Python test, so the two implementations cannot drift.
+
 ## v0.107.7
 
 - fix: **the attention board's corner X renders on every card, dimmed records and held cards included.** The X was withheld from every dimmed row since v0.32.1, so an answered card — and a held card (answered, not yet delivered) — had no way to be cleared from the board. A click now closes the item (`answered` → `closed`; a held card: `open` → `closed`) and answers nothing; the record is kept in the store and its history. A held close keeps the arm that answered rather than overwriting `answered_by`, and a held `permission` card is no longer refused as an unanswered gate. Operator ask, verbatim: *"at least we should always show an X button that allows to close/hide a card."*

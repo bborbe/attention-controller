@@ -224,6 +224,10 @@ type managerWakeJob struct {
 	// by producer session, each holding the items that entered and the time the
 	// first of them did. It is the buffer ManagerWakeBatchWindow closes.
 	pending map[string]map[string]*managerWakeBatch
+	// subjects resolves a session to the subject it is anchored to. nil keeps
+	// the pre-change behaviour exactly: the spawn edge alone decides, so a spec
+	// built without the option runs the old rule.
+	subjects WakeSubjectResolver
 }
 
 // managerWakeBatch is one producer session's pending delivery.
@@ -821,8 +825,15 @@ func (p *wakePass) stale(last libtime.DateTime) bool {
 //   - liveness unknown — a peer drop requires a RESOLVED live peer.
 func (p *wakePass) keeps(manager string, item Item) bool {
 	sessionID := sessionIDFromItem(item)
-	if sessionID == "" || sessionID == manager {
+	if sessionID == manager {
 		return true
+	}
+	// No session at all is the unowned class: no manager can prove the card is
+	// not theirs, so it belongs to the Fleet Manager alone. This is the Python
+	// filter's `route_unowned` rule; before this change every manager kept it,
+	// which is how the exit-observer's cron card reached two goal managers.
+	if sessionID == "" {
+		return p.isFleetManager(manager)
 	}
 	// The operator's own workspace is never a manager's to route. It sits above
 	// every spawn-edge branch because `own-worker` returns true for a pane this
@@ -830,6 +841,16 @@ func (p *wakePass) keeps(manager string, item Item) bool {
 	// human row's spawner, and still has no business waking for it.
 	if p.isHuman(sessionID) {
 		return false
+	}
+	// Subject ownership sits ABOVE the spawn-edge branches: a card whose
+	// producer resolves to a different subject is not this manager's, however
+	// the spawn edge reads. Only a POSITIVE foreign resolution drops here; an
+	// unresolvable producer was handled above, so a manager whose own subject
+	// does not resolve falls through to the spawn-edge rule unchanged.
+	if ownership, ok := p.wakeOwnership(manager, sessionID); ok {
+		if !ownership.Keeps() {
+			return false
+		}
 	}
 	spawner := p.owners[sessionID].SpawnerSessionID
 	if spawner == manager {
