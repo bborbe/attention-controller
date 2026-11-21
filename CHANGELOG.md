@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- fix: **the wake job no longer wakes a manager for the operator's own `role: human` row.** `keeps()` dropped only on a live peer manager, so the operator's Direct-window session — a row the manager itself spawned — read as `own-worker` and kept. Measured 2026-10-27 on Fleet Manager `ac24db61`: pane 2165 (`role: human`) fired the feed **three times** across three consecutive 30-minute windows, each a full manager turn spent re-establishing that the gate was the operator's own and relaying nothing. The predicate sits above every spawn-edge branch, because `own-worker` returns true for exactly the reported case, and it matches an **explicit** `human` only — a row with no role, a null role or no row is not human, so an unrecorded session cannot be silently excluded. `TestRoleHumanNeverWakes` carries a positive control that reads the same row as `agent`, so a break in the spawn edge cannot be mistaken for the predicate.
+
 ## v0.107.4
 
 - fix: **the crossing book is re-armed by a real sub-threshold reading only, so a dead session's liveness blip no longer re-mints its compact card.** v0.103.3's book was also cleared when a session read not-live, on the reasoning that a resumed session keeps its id and deserves a fresh card. The 24 h post-deploy measurement showed the cost: session `e9cdf8e6` sat at an unchanged 602 170 tokens and raised **six** cards (2026-11-19 23:42 → 2026-11-20 14:02), one per liveness blip, with its state file never dropping below the threshold. A not-live session is now skipped with its entry KEPT — liveness is not a crossing boundary, and only a measured drop ends a crossing. The `prune` that dropped dead sessions' entries is removed for the same reason; the book keeps one small entry per session that has ever crossed, and a session id is never reused.
