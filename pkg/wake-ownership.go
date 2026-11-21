@@ -122,7 +122,15 @@ func (r *wakeSubjectResolver) Resolve(_ context.Context, sessionID string) WakeS
 	if !resolved.Resolved {
 		resolved = r.resolveContext(sessionID)
 	}
-	r.cache[sessionID] = resolved
+	// ⚠️ Only a RESOLVED subject is cached. A negative is a record that may be
+	// written a moment later (a session that has just spawned has no
+	// `worker-manager` file yet), so caching it would make the session
+	// permanently unresolvable for the life of the process — and, because an
+	// unresolved producer falls to the Fleet Manager alone, permanently drop its
+	// cards everywhere else. A re-read per pass is the cheap side of that trade.
+	if resolved.Resolved {
+		r.cache[sessionID] = resolved
+	}
 	return resolved
 }
 

@@ -153,4 +153,142 @@ var _ = Describe("wake subject ownership", func() {
 		Expect(carrier.recorded()).To(HaveLen(1))
 		Expect(carrier.recorded()[0].text).To(ContainSubstring("item-1"))
 	})
+
+	It(
+		"TestSessionlessCardGoesToTheFleetManagerOnly — an unowned card wakes only a Fleet Manager",
+		func() {
+			live["mgr-1"] = true
+			live["fleet-1"] = true
+			ledger.ListReturns(pkg.SessionLedgerEntries{
+				ledgerRow("mgr-1", "manager", ""),
+				ledgerRow("fleet-1", "manager", ""),
+			}, nil)
+			store.ReadReturns(pkg.Items{sessionlessItem("item-1")}, nil)
+			subjects := fakeWakeSubjectResolver{
+				"mgr-1":   {Subject: "Goal A", Resolved: true},
+				"fleet-1": {Fleet: true, Resolved: true},
+			}
+			job := pkg.NewManagerWakeJob(
+				store, ledger, provenance, carrier, notifier, clock, sink,
+				pkg.WithManagerWakeSubjectResolver(subjects),
+			)
+
+			Expect(job.WakeOnce(context.Background())).To(Succeed())
+			now = now.Add(pkg.ManagerWakeBatchWindow)
+			Expect(job.WakeOnce(context.Background())).To(Succeed())
+
+			Expect(carrier.sessions()).To(Equal([]string{"fleet-1"}))
+		},
+	)
+
+	It(
+		"TestOwnWorkerSurvivesAMissingSubjectRecord — an own worker is never silenced by the subject rule",
+		func() {
+			live["mgr-1"] = true
+			live["w-own"] = true
+			ledger.ListReturns(pkg.SessionLedgerEntries{
+				ledgerRow("mgr-1", "manager", ""),
+				ledgerRow("w-own", "agent", "mgr-1"),
+			}, nil)
+			store.ReadReturns(pkg.Items{wakeItem("item-1", "w-own")}, nil)
+			// The worker has NO subject record at all — the wrapper-backed case.
+			subjects := fakeWakeSubjectResolver{
+				"mgr-1": {Subject: "Goal A", Resolved: true},
+			}
+			job := pkg.NewManagerWakeJob(
+				store, ledger, provenance, carrier, notifier, clock, sink,
+				pkg.WithManagerWakeSubjectResolver(subjects),
+			)
+
+			Expect(job.WakeOnce(context.Background())).To(Succeed())
+			now = now.Add(pkg.ManagerWakeBatchWindow)
+			Expect(job.WakeOnce(context.Background())).To(Succeed())
+
+			Expect(carrier.recorded()).To(HaveLen(1))
+		},
+	)
 })
+
+var _ = Describe("default wake subject resolver", func() {
+	var (
+		stateDir   string
+		contextDir string
+		vaultsRoot string
+		resolver   pkg.WakeSubjectResolver
+	)
+
+	BeforeEach(func() {
+		root := GinkgoT().TempDir()
+		stateDir = root + "/state"
+		contextDir = root + "/context"
+		vaultsRoot = root + "/Obsidian"
+		Expect(os.MkdirAll(stateDir+"/worker-manager", 0o755)).To(Succeed())
+		Expect(os.MkdirAll(contextDir, 0o755)).To(Succeed())
+		Expect(os.MkdirAll(vaultsRoot+"/private-personal/25 Tasks", 0o755)).To(Succeed())
+		resolver = pkg.NewDefaultWakeSubjectResolver(stateDir, contextDir, vaultsRoot)
+	})
+
+	write := func(path string, body string) {
+		Expect(os.WriteFile(path, []byte(body), 0o644)).To(Succeed())
+	}
+
+	It("TestWorkerManagerRecord — reads the subject and the fleet branch", func() {
+		write(stateDir+"/worker-manager/mgr-1.json", `{"subject":"Goal A","branch":"goal"}`)
+		write(stateDir+"/worker-manager/fleet-1.json", `{"subject":"","branch":"fleet"}`)
+
+		Expect(resolver.Resolve(context.Background(), "mgr-1")).To(Equal(
+			pkg.WakeSubject{Subject: "Goal A", Resolved: true},
+		))
+		Expect(resolver.Resolve(context.Background(), "fleet-1")).To(Equal(
+			pkg.WakeSubject{Fleet: true, Resolved: true},
+		))
+	})
+
+	It("TestContextNameToGoal — falls back to the session name and the task page's goal", func() {
+		write(contextDir+"/w-1.json", `{"session_name":"Some Task"}`)
+		write(
+			vaultsRoot+"/private-personal/25 Tasks/Some Task.md",
+			"---\ngoals:\n    - '[[Goal B]]'\n---\n\nbody\n",
+		)
+
+		Expect(resolver.Resolve(context.Background(), "w-1")).To(Equal(
+			pkg.WakeSubject{Subject: "Goal B", Resolved: true},
+		))
+	})
+
+	It("TestBodyBulletIsNotAGoal — a `- [[` line outside the frontmatter is not a goal", func() {
+		write(contextDir+"/w-2.json", `{"session_name":"No Goals"}`)
+		write(
+			vaultsRoot+"/private-personal/25 Tasks/No Goals.md",
+			"---\nphase: execution\n---\n\n- [[Not A Goal]]\n",
+		)
+
+		Expect(resolver.Resolve(context.Background(), "w-2")).To(Equal(pkg.WakeSubject{}))
+	})
+
+	It("TestMissingAndMalformedRecords — an absent or unreadable record resolves nothing", func() {
+		Expect(resolver.Resolve(context.Background(), "nobody")).To(Equal(pkg.WakeSubject{}))
+		write(stateDir+"/worker-manager/bad.json", "{not json")
+		Expect(resolver.Resolve(context.Background(), "bad")).To(Equal(pkg.WakeSubject{}))
+	})
+
+	It(
+		"TestUnresolvedIsNotCached — a record written after a miss is seen on the next read",
+		func() {
+			Expect(resolver.Resolve(context.Background(), "late").Resolved).To(BeFalse())
+			write(stateDir+"/worker-manager/late.json", `{"subject":"Goal C","branch":"goal"}`)
+			Expect(resolver.Resolve(context.Background(), "late")).To(Equal(
+				pkg.WakeSubject{Subject: "Goal C", Resolved: true},
+			))
+		},
+	)
+})
+
+// sessionlessItem builds an item that names no session at all — the unowned class.
+func sessionlessItem(id string) pkg.Item {
+	return pkg.Item{
+		ItemID:     pkg.ItemID(id),
+		Payload:    pkg.Payload("cron " + id),
+		ProducerID: "exit-observer-keeper",
+	}
+}

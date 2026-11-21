@@ -842,19 +842,24 @@ func (p *wakePass) keeps(manager string, item Item) bool {
 	if p.isHuman(sessionID) {
 		return false
 	}
-	// Subject ownership sits ABOVE the spawn-edge branches: a card whose
-	// producer resolves to a different subject is not this manager's, however
-	// the spawn edge reads. Only a POSITIVE foreign resolution drops here; an
-	// unresolvable producer was handled above, so a manager whose own subject
-	// does not resolve falls through to the spawn-edge rule unchanged.
+	spawner := p.owners[sessionID].SpawnerSessionID
+	// A manager's OWN workers are the panes it EXISTS to see, so the subject
+	// rule must never silence them — not for a missing record (a wrapper-backed
+	// worker writes none) and not for a foreign one. This sits above the subject
+	// check for exactly that reason; the same branch below stays for the
+	// spawn-edge path, which this return now short-circuits.
+	if spawner == manager {
+		return true
+	}
+	// Subject ownership sits above the remaining spawn-edge branches: a card
+	// whose producer resolves to a different subject is not this manager's,
+	// however the spawn edge reads. Only a POSITIVE foreign resolution drops
+	// here; an unresolvable producer was handled above, so a manager whose own
+	// subject does not resolve falls through to the spawn-edge rule unchanged.
 	if ownership, ok := p.wakeOwnership(manager, sessionID); ok {
 		if !ownership.Keeps() {
 			return false
 		}
-	}
-	spawner := p.owners[sessionID].SpawnerSessionID
-	if spawner == manager {
-		return true
 	}
 	if spawner == "" {
 		// HOP 3b — the item's own session IS the manager, and an operator-started
