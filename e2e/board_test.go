@@ -1935,6 +1935,40 @@ var _ = Describe("the attention board", func() {
 			WithTimeout(5 * time.Second).Should(Equal(0))
 	})
 
+	// ⚠️ Added 2026-11-21 with the dimmed-card corner X. A held card is a
+	// `permission` item that is answered but not yet delivered: it renders
+	// dimmed, and until this change it carried no X at all, so the operator had
+	// no way to clear it from the board. The click must close the item
+	// (open -> closed) while keeping the answer it already recorded — the close
+	// is not an acknowledgement.
+	It("closes a held permission card from its corner X", func() {
+		itemID := pushPermission("e2e: the held card's corner X", "e2e-held-corner-x")
+		post("api/1.0/attention/"+itemID+"/answer", map[string]any{
+			"answered_by": "e2e",
+			"decision":    "allow",
+		})
+		held := getItem(itemID)
+		Expect(held.State).To(Equal(pkg.OpenState))
+		Expect(held.AnsweredAt).NotTo(BeNil())
+
+		// hide=none: the default view parks dimmed rows, and this card IS one.
+		page := newPage("?hide=none")
+		defer func() { _ = page.Close() }()
+
+		Eventually(func() int { return rowCount(page, itemID) }).Should(Equal(1))
+		class, err := page.Locator(rowSelector(itemID)).GetAttribute("class")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(class).To(ContainSubstring("dimmed"))
+
+		Expect(page.Locator(rowSelector(itemID) + " " + cornerXSelector).Click()).To(Succeed())
+
+		Eventually(func() string { return string(getItem(itemID).State) }).
+			WithTimeout(5 * time.Second).Should(Equal("closed"))
+		closed := getItem(itemID)
+		Expect(closed.AnsweredBy).To(Equal("e2e"))
+		Expect(closed.Decision).To(Equal(pkg.AllowDecision))
+	})
+
 	// ⚠️ AC2's rendered half (b). Its markup half — the provenance div's index
 	// being less than the ask's in the served row — belongs to the handler-level
 	// prompt; this case is not the whole criterion. ⚠️ A stale stylesheet cannot
