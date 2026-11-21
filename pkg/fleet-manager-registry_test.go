@@ -39,6 +39,16 @@ var _ = Describe("fleet manager registry", func() {
 		Expect(registrations[0].ResolvedAt).To(Equal("2026-11-21T10:00:00+01:00"))
 	})
 
+	It("TestDefaultWorkerManagerDirIsNotUnderTheAttentionStateDir", func() {
+		dir := pkg.DefaultWorkerManagerDir("/home/x")
+		Expect(dir).To(Equal("/home/x/.claude/state/worker-manager"))
+		// ⚠️ The regression a review caught: joining `worker-manager` onto the
+		// ATTENTION state dir names a directory that does not exist. The registry
+		// is then always empty, `isFleetManager` always false, and the unowned
+		// class is DROPPED instead of routed — with every unit test still green.
+		Expect(dir).NotTo(HavePrefix("/home/x/.claude/state/attention/"))
+	})
+
 	It("TestFleetManagerRegistryMissingDirectoryIsEmpty", func() {
 		Expect(pkg.NewFleetManagerRegistry(filepath.Join(dir, "nope")).
 			Registrations(context.Background())).To(BeEmpty())

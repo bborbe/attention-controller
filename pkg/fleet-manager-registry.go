@@ -48,6 +48,17 @@ func NewFleetManagerRegistry(workerManagerDir string) FleetManagerRegistry {
 	return &fleetManagerRegistry{dir: workerManagerDir}
 }
 
+// DefaultWorkerManagerDir is where the manager registrations live.
+//
+// ⚠️ It is a SIBLING of the attention state dir (`~/.claude/state/attention`),
+// never a child of it. Joining `worker-manager` onto the attention state dir
+// names a directory that does not exist, and an empty registry makes the unowned
+// routing a DROP rather than a route — silently, with every test still green.
+// Exported so the wiring and its test agree on one spelling.
+func DefaultWorkerManagerDir(home string) string {
+	return filepath.Join(home, ".claude", "state", "worker-manager")
+}
+
 type fleetManagerRegistry struct {
 	dir string
 }

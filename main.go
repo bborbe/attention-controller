@@ -1542,13 +1542,7 @@ func (a *application) addAttentionWatcherJobs(
 		libtime.NewCurrentDateTime(), pkg.NewManagerWakeEmissionLog(),
 		a.managerWakeTranscriptOption(ctx, stateDir, transcriptRoot, heartbeats),
 		pkg.WithManagerWakeGoalScope(pkg.NewGoalScope(a.VaultDir, tasks)),
-		// ⚠️ Wired beside the goal scope for the same reason: an unowned routing
-		// that is never enabled is a no-op with a passing test. A host with no
-		// worker-manager state resolves no Fleet Manager, and the card is then
-		// typed nowhere rather than into every manager.
-		pkg.WithManagerWakeFleetRegistry(
-			pkg.NewFleetManagerRegistry(filepath.Join(stateDir, "worker-manager")),
-		)).Run)
+		managerWakeFleetOption()).Run)
 	registerCompactTrio(ctx, runner, store, carrier, writer, transcriptRoot)
 	a.addWatcherReaperJob(ctx, runner)
 
