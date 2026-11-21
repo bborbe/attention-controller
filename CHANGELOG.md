@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.107.6
 
 - fix: **a producer session's cards are coalesced into one wake line within a 60 s window.** `wakeStore` typed one pane line per entering item, so a session raising a burst of cards cost the manager one turn per card — each turn spent re-reading a board that was about to carry the rest. Each manager now keeps a pending buffer per producer session, stamped with the first item's time, and flushes it as **one batched line naming every card it carries** once `ManagerWakeBatchWindow` (60 s) has elapsed. A later arrival joins the open buffer (the window runs from the first item, not the latest), a card answered before the window closes is removed from the buffer, and a card still open is **delayed, never dropped**. The per-item last-emission dedupe is unchanged, so a stale entry re-enters the buffer and re-batches, and an entry that left and re-entered starts a fresh one. A batched delivery records **one** emission carrying every item id (`item_ids`), so the `raised_at → woken_at` probe still joins on the record.
 
