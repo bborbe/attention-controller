@@ -88,6 +88,11 @@ func (s *goalScope) Foreign(managerSession, session string) (string, bool, bool)
 // file yields "". Several pages may carry the same stamp; the first in filename
 // order wins, which is deterministic rather than meaningful — the vault writes
 // one stamp per goal manager.
+//
+// ⚠️ The stamp is normalised through `sweepGateOwnerID`, not compared raw: the
+// vault writes both `claude_session_id: abc` and `claude_session_id: "abc"`, and
+// a raw comparison under-fires on the quoted form — silently, because an
+// unmatched stamp reads as "this manager has no goal" rather than as an error.
 func (s *goalScope) goalOf(sessionID string) string {
 	dir := filepath.Join(s.vaultDir, goalDirName)
 	entries, err := os.ReadDir(dir)
@@ -104,7 +109,7 @@ func (s *goalScope) goalOf(sessionID string) string {
 			glog.V(2).Infof("goal scope: read %s failed: %v", entry.Name(), err)
 			continue
 		}
-		if frontmatterValue(content, taskSessionKey) != sessionID {
+		if sweepGateOwnerID(frontmatterValue(content, taskSessionKey)) != sessionID {
 			continue
 		}
 		return strings.TrimSuffix(entry.Name(), ".md")
