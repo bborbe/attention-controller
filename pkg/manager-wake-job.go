@@ -37,6 +37,15 @@ const ManagerWakeInterval = 10 * time.Second
 // `0` would mean "re-type on every pass", the hot loop this replaces.
 const ManagerWakeReemitAfter = time.Hour
 
+// ManagerWakeBatchWindow is how long one producer session's entering cards are
+// coalesced before they are typed as one line.
+//
+// ⚠️ It is a DELAY, never a drop: every card that enters inside the window is
+// named in the batched line when the window closes. The window exists because a
+// producer session often raises a burst of cards together — a manager turn spent
+// on the first one re-reads a board that is about to carry the rest.
+const ManagerWakeBatchWindow = 60 * time.Second
+
 // ManagerWakeEmissionLogPath is where every pane write is recorded.
 //
 // ⚠️ It is a constant beside the job, not a config knob: the emission record is
@@ -78,8 +87,13 @@ const managerLedgerRoleHuman = "human"
 // `raised_at → woken_at` against a wake with no record could only be ticked
 // from a hand-written log line.
 type ManagerWakeEmission struct {
-	// ItemID is the attention item the wake named.
+	// ItemID is the attention item the wake named, when the wake named exactly
+	// one. A batched wake names every card it carries in ItemIDs and leaves this
+	// empty.
 	ItemID ItemID `json:"item_id"`
+	// ItemIDs is every attention item the wake named. It is empty for a
+	// transcript wake, which names no card.
+	ItemIDs []ItemID `json:"item_ids,omitempty"`
 	// ManagerSession is the manager session the wake was typed into.
 	ManagerSession string `json:"manager_session"`
 	// EmittedAt is the clock reading the write was made at.
@@ -164,6 +178,7 @@ func NewManagerWakeJob(
 		reemitAfter:           ManagerWakeReemitAfter,
 		emitted:               map[string]map[ItemID]libtime.DateTime{},
 		parks:                 map[string]string{},
+		pending:               map[string]map[string]*managerWakeBatch{},
 	}
 	for _, option := range options {
 		option(job)
@@ -205,6 +220,20 @@ type managerWakeJob struct {
 	// the verdict that parked them. A park clears on liveness, exactly as a
 	// delivery park does.
 	parks map[string]string
+	// pending is, per manager session, the batches awaiting their window: keyed
+	// by producer session, each holding the items that entered and the time the
+	// first of them did. It is the buffer ManagerWakeBatchWindow closes.
+	pending map[string]map[string]*managerWakeBatch
+}
+
+// managerWakeBatch is one producer session's pending delivery.
+type managerWakeBatch struct {
+	// firstSeen is when the batch's first item entered. The window is measured
+	// from it, so a later arrival joins the batch instead of restarting the
+	// clock.
+	firstSeen libtime.DateTime
+	// items are the batch's items, in the order they entered.
+	items []Item
 }
 
 // Run runs a pass on every change signal and every tick until cancellation.
@@ -421,31 +450,132 @@ func (p *wakePass) wake(manager string) {
 	p.wakeTranscript(manager)
 }
 
-// wakeStore computes one manager's kept set from the store and types the entries
-// that entered it.
+// wakeStore computes one manager's kept set from the store and delivers the
+// entries that entered it as one batched line per producer session.
+//
+// ⚠️ An entering entry is BUFFERED, not typed: the batch closes when
+// ManagerWakeBatchWindow has elapsed since its first item, so a burst from one
+// producer session costs the manager one turn instead of one turn per card. A
+// card is never dropped — a batched line names every id it carries.
 func (p *wakePass) wakeStore(manager string) {
 	previous := p.job.emitted[manager]
 	next := make(map[ItemID]libtime.DateTime, len(previous))
+	kept := make(map[ItemID]Item, len(p.items))
 	for _, item := range p.items {
 		if !p.keeps(manager, item) {
 			// ⚠️ An entry that leaves the set is forgotten, so a re-entry is a
 			// fresh entry and emits again.
 			continue
 		}
+		kept[item.ItemID] = item
 		if last, seen := previous[item.ItemID]; seen && !p.stale(last) {
 			next[item.ItemID] = last
 			continue
 		}
-		typed, parked, reason := p.typeWake(manager, item)
-		if parked {
-			p.job.parks[manager] = reason
-			break
-		}
-		if typed {
-			next[item.ItemID] = p.now
-		}
+		p.enqueue(manager, item)
+	}
+	p.prunePending(manager, kept)
+	for id := range p.flushPending(manager, kept) {
+		next[id] = p.now
 	}
 	p.commit(manager, next)
+}
+
+// enqueue adds one item to its producer session's batch, starting the batch's
+// window on the first item.
+func (p *wakePass) enqueue(manager string, item Item) {
+	byProducer := p.job.pending[manager]
+	if byProducer == nil {
+		byProducer = map[string]*managerWakeBatch{}
+		p.job.pending[manager] = byProducer
+	}
+	producer := wakeProducerKey(item)
+	batch := byProducer[producer]
+	if batch == nil {
+		batch = &managerWakeBatch{firstSeen: p.now}
+		byProducer[producer] = batch
+	}
+	for _, pending := range batch.items {
+		if pending.ItemID == item.ItemID {
+			return
+		}
+	}
+	batch.items = append(batch.items, item)
+}
+
+// wakeProducerKey groups an item by the session that raised it. An item naming
+// no session is grouped with the other session-less items.
+func wakeProducerKey(item Item) string {
+	if session := sessionIDFromItem(item); session != "" {
+		return session
+	}
+	return string(item.ProducerID)
+}
+
+// prunePending drops the pending items that are no longer in the kept set —
+// answered, expired, or lost to a peer manager — and the batches and managers
+// they empty. A card still in the kept set is never dropped: only its delivery
+// waits.
+func (p *wakePass) prunePending(manager string, kept map[ItemID]Item) {
+	byProducer := p.job.pending[manager]
+	if len(byProducer) == 0 {
+		return
+	}
+	for producer, batch := range byProducer {
+		pending := batch.items[:0]
+		for _, item := range batch.items {
+			if _, ok := kept[item.ItemID]; ok {
+				pending = append(pending, item)
+			}
+		}
+		batch.items = pending
+		if len(batch.items) == 0 {
+			delete(byProducer, producer)
+		}
+	}
+	if len(byProducer) == 0 {
+		delete(p.job.pending, manager)
+	}
+}
+
+// flushPending types every batch whose window has elapsed, one delivery per
+// producer session, and returns the items it delivered.
+func (p *wakePass) flushPending(
+	manager string,
+	kept map[ItemID]Item,
+) map[ItemID]struct{} {
+	delivered := map[ItemID]struct{}{}
+	byProducer := p.job.pending[manager]
+	if len(byProducer) == 0 {
+		return delivered
+	}
+	producers := make([]string, 0, len(byProducer))
+	for producer := range byProducer {
+		producers = append(producers, producer)
+	}
+	sort.Strings(producers)
+	for _, producer := range producers {
+		batch := byProducer[producer]
+		if p.now.Sub(batch.firstSeen) < libtime.Duration(ManagerWakeBatchWindow) {
+			continue
+		}
+		typed, parked, reason := p.typeBatch(manager, batch, kept)
+		if parked {
+			p.job.parks[manager] = reason
+			return delivered
+		}
+		if !typed {
+			continue
+		}
+		for _, item := range batch.items {
+			delivered[item.ItemID] = struct{}{}
+		}
+		delete(byProducer, producer)
+	}
+	if len(byProducer) == 0 {
+		delete(p.job.pending, manager)
+	}
+	return delivered
 }
 
 // commit stores a manager's kept set, dropping the manager's entry when it kept
@@ -719,18 +849,29 @@ func (p *wakePass) keeps(manager string, item Item) bool {
 	return !p.isLive(spawner)
 }
 
-// typeWake types one wake and records the emission. It returns whether a line
-// was typed, whether the manager is now parked, and the park reason.
-func (p *wakePass) typeWake(manager string, item Item) (bool, bool, string) {
-	delivery := &PaneDelivery{SessionID: manager, StoreItemID: string(item.ItemID)}
+// typeBatch types one producer session's batch as one line and records one
+// emission naming every item it carried.
+func (p *wakePass) typeBatch(
+	manager string,
+	batch *managerWakeBatch,
+	kept map[ItemID]Item,
+) (bool, bool, string) {
+	items := batchItems(batch, kept)
+	if len(items) == 0 {
+		return false, false, ""
+	}
+	delivery := &PaneDelivery{SessionID: manager}
+	if len(items) == 1 {
+		delivery.StoreItemID = string(items[0].ItemID)
+	}
 	verdict, reason := p.job.carrier.TypeIntoPane(
-		p.ctx, delivery, managerWakeLine(item, p.provenance[item.ItemID]), true,
+		p.ctx, delivery, managerWakeBatchLine(items, p.provenance), true,
 	)
 	switch verdict {
 	case DeliveryOK:
-		p.record(manager, item)
+		p.recordBatch(manager, items)
 		glog.V(2).Infof(
-			"job=manager-wake action=wake item=%s manager=%s", item.ItemID, manager,
+			"job=manager-wake action=wake items=%d manager=%s", len(items), manager,
 		)
 		return true, false, ""
 	case DeliveryNoPane:
@@ -740,11 +881,11 @@ func (p *wakePass) typeWake(manager string, item Item) (bool, bool, string) {
 		glog.V(2).Infof("job=manager-wake action=refuse manager=%s reason=%q", manager, reason)
 		return false, true, "refuse: " + reason
 	default:
-		// `retry` / `resolved`: nothing typed and nothing failed, so the entry
+		// `retry` / `resolved`: nothing typed and nothing failed, so the batch
 		// keeps its place and the next pass tries again.
 		glog.V(3).Infof(
-			"job=manager-wake action=deferred item=%s manager=%s verdict=%s reason=%q",
-			item.ItemID,
+			"job=manager-wake action=deferred items=%d manager=%s verdict=%s reason=%q",
+			len(items),
 			manager,
 			verdict,
 			reason,
@@ -753,38 +894,69 @@ func (p *wakePass) typeWake(manager string, item Item) (bool, bool, string) {
 	}
 }
 
-// record appends the emission, logging rather than failing: the line has
-// already reached the manager, and a missing record must not be reported as a
-// failed wake.
-func (p *wakePass) record(manager string, item Item) {
+// batchItems returns the batch's items in a deterministic order, refreshed from
+// the kept set so a label that changed while the batch waited renders current.
+func batchItems(batch *managerWakeBatch, kept map[ItemID]Item) []Item {
+	items := make([]Item, 0, len(batch.items))
+	for _, pending := range batch.items {
+		if item, ok := kept[pending.ItemID]; ok {
+			items = append(items, item)
+			continue
+		}
+		items = append(items, pending)
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].ItemID < items[j].ItemID })
+	return items
+}
+
+// recordBatch appends one emission naming every item the batch carried,
+// logging rather than failing: the line has already reached the manager.
+func (p *wakePass) recordBatch(manager string, items []Item) {
 	if p.job.sink == nil {
 		return
 	}
+	ids := make([]ItemID, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item.ItemID)
+	}
 	emission := ManagerWakeEmission{
-		ItemID:         item.ItemID,
 		ManagerSession: manager,
 		EmittedAt:      p.now,
+		ItemIDs:        ids,
+	}
+	if len(ids) == 1 {
+		emission.ItemID = ids[0]
 	}
 	if err := p.job.sink.Append(p.ctx, emission); err != nil {
 		glog.Warningf(
-			"job=manager-wake action=emission_error item=%s manager=%s error=%v",
-			item.ItemID,
+			"job=manager-wake action=emission_error items=%d manager=%s error=%v",
+			len(ids),
 			manager,
 			err,
 		)
 	}
 }
 
-// managerWakeLine renders one wake as one plain string.
-func managerWakeLine(item Item, provenance Provenance) string {
-	line := managerWakeLinePrefix + " " + string(item.ItemID)
+// managerWakeBatchLine renders one producer session's batch as one plain line,
+// naming every item it carries.
+func managerWakeBatchLine(items []Item, provenance Provenances) string {
+	segments := make([]string, 0, len(items))
+	for _, item := range items {
+		segments = append(segments, managerWakeSegment(item, provenance[item.ItemID]))
+	}
+	return managerWakeLinePrefix + " " + strings.Join(segments, "; ")
+}
+
+// managerWakeSegment renders one item's part of a wake line.
+func managerWakeSegment(item Item, provenance Provenance) string {
+	segment := string(item.ItemID)
 	if provenance.SessionName != "" {
-		line += " (" + provenance.SessionName + ")"
+		segment += " (" + provenance.SessionName + ")"
 	}
 	if label := managerWakeLabel(item.Payload); label != "" {
-		line += ": " + label
+		segment += ": " + label
 	}
-	return line
+	return segment
 }
 
 // managerWakeLabel flattens an item's payload to one bounded line.
