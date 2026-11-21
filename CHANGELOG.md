@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.107.5
 
 - fix: **the wake job no longer wakes a manager for the operator's own `role: human` row.** `keeps()` dropped only on a live peer manager, so the operator's Direct-window session — a row the manager itself spawned — read as `own-worker` and kept. Measured 2026-10-27 on Fleet Manager `ac24db61`: pane 2165 (`role: human`) fired the feed **three times** across three consecutive 30-minute windows, each a full manager turn spent re-establishing that the gate was the operator's own and relaying nothing. The predicate sits above every spawn-edge branch, because `own-worker` returns true for exactly the reported case, and it matches an **explicit** `human` only — a row with no role, a null role or no row is not human, so an unrecorded session cannot be silently excluded. `TestRoleHumanNeverWakes` carries a positive control that reads the same row as `agent`, so a break in the spawn edge cannot be mistaken for the predicate.
 
