@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.107.9
 
 - fix: **a card whose producer anchors no task wakes the Fleet Manager alone, not every manager.** `GoalScope.Foreign` returns `ok=false` when the session anchors no task — the cron class — and `keeps` then fell through to the spawn edge, whose every hop also fails open, so the card was typed into **every** manager's pane. Measured 2026-11-21: the exit observer's cron card `f5a4475f` reached `5b29b81a` and `6acc49ca`, neither of which could act on it. `keeps` now routes that class — `ok=false` **and** the manager's own goal resolves **and** it is not the manager's own worker — to the live Fleet Manager registration alone (`branch: fleet` in `~/.claude/state/worker-manager`, newest `resolved_at`, live), or nowhere when none is registered. ⚠️ Every other unresolved case still keeps: a manager with no goal page, a vault that cannot be read, and an item that names no session at all. `GoalScope` gains `ManagerResolved` so the two facts its single `ok` folded together stay distinguishable. `docs/manager-wake.md` § *the branches deliberately NOT ported* updated — fleet routing is no longer one of them.
 
