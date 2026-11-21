@@ -152,6 +152,19 @@ var _ = Describe("manager wake job", func() {
 		)
 	}
 
+	// advance moves the injected clock forward.
+	advance := func(duration stdtime.Duration) {
+		now = now.Add(duration)
+	}
+
+	// flushBatch runs the pass that buffers an entering card and the pass one
+	// batch window later that types it.
+	flushBatch := func(job pkg.ManagerWakeJob) {
+		Expect(job.WakeOnce(context.Background())).To(Succeed())
+		advance(pkg.ManagerWakeBatchWindow)
+		Expect(job.WakeOnce(context.Background())).To(Succeed())
+	}
+
 	// oneManager seeds a live manager with one worker of its own.
 	oneManager := func() {
 		live["mgr-1"] = true
@@ -166,12 +179,20 @@ var _ = Describe("manager wake job", func() {
 		store.ReadReturns(pkg.Items{wakeItem("item-1", "w-1"), wakeItem("item-2", "w-1")}, nil)
 		job := newJob()
 
+		// The first pass buffers both cards; nothing is typed inside the window.
 		Expect(job.WakeOnce(context.Background())).To(Succeed())
-		Expect(carrier.recorded()).To(HaveLen(2))
+		Expect(carrier.recorded()).To(BeEmpty())
+
+		// The window closes: both cards ride ONE line.
+		advance(pkg.ManagerWakeBatchWindow)
+		Expect(job.WakeOnce(context.Background())).To(Succeed())
+		Expect(carrier.recorded()).To(HaveLen(1))
+		Expect(carrier.recorded()[0].text).To(ContainSubstring("item-1"))
+		Expect(carrier.recorded()[0].text).To(ContainSubstring("item-2"))
 
 		// A second pass over the unchanged store types nothing.
 		Expect(job.WakeOnce(context.Background())).To(Succeed())
-		Expect(carrier.recorded()).To(HaveLen(2))
+		Expect(carrier.recorded()).To(HaveLen(1))
 
 		// A third entry emits exactly one line, naming only the third.
 		store.ReadReturns(pkg.Items{
@@ -180,21 +201,28 @@ var _ = Describe("manager wake job", func() {
 			wakeItem("item-3", "w-1"),
 		}, nil)
 		Expect(job.WakeOnce(context.Background())).To(Succeed())
-		Expect(carrier.recorded()).To(HaveLen(3))
-		Expect(carrier.recorded()[2].item).To(Equal("item-3"))
+		Expect(carrier.recorded()).To(HaveLen(1))
+		advance(pkg.ManagerWakeBatchWindow)
+		Expect(job.WakeOnce(context.Background())).To(Succeed())
+		Expect(carrier.recorded()).To(HaveLen(2))
+		Expect(carrier.recorded()[1].text).To(ContainSubstring("item-3"))
+		Expect(carrier.recorded()[1].text).NotTo(ContainSubstring("item-1"))
 
 		// An entry that leaves the set and re-enters it emits again.
 		store.ReadReturns(pkg.Items{wakeItem("item-1", "w-1"), wakeItem("item-2", "w-1")}, nil)
 		Expect(job.WakeOnce(context.Background())).To(Succeed())
-		Expect(carrier.recorded()).To(HaveLen(3))
+		Expect(carrier.recorded()).To(HaveLen(2))
 		store.ReadReturns(pkg.Items{
 			wakeItem("item-1", "w-1"),
 			wakeItem("item-2", "w-1"),
 			wakeItem("item-3", "w-1"),
 		}, nil)
 		Expect(job.WakeOnce(context.Background())).To(Succeed())
-		Expect(carrier.recorded()).To(HaveLen(4))
-		Expect(carrier.recorded()[3].item).To(Equal("item-3"))
+		Expect(carrier.recorded()).To(HaveLen(2))
+		advance(pkg.ManagerWakeBatchWindow)
+		Expect(job.WakeOnce(context.Background())).To(Succeed())
+		Expect(carrier.recorded()).To(HaveLen(3))
+		Expect(carrier.recorded()[2].text).To(ContainSubstring("item-3"))
 	})
 
 	It(
@@ -205,15 +233,22 @@ var _ = Describe("manager wake job", func() {
 			job := newJob()
 
 			Expect(job.WakeOnce(context.Background())).To(Succeed())
-			Expect(carrier.recorded()).To(HaveLen(1))
-
-			// Inside the window: no re-emit.
-			now = now.Add(pkg.ManagerWakeReemitAfter - stdtime.Minute)
+			advance(pkg.ManagerWakeBatchWindow)
 			Expect(job.WakeOnce(context.Background())).To(Succeed())
 			Expect(carrier.recorded()).To(HaveLen(1))
 
-			// Past the window: exactly one re-emit.
-			now = now.Add(2 * stdtime.Minute)
+			// Inside the window: no re-emit.
+			advance(pkg.ManagerWakeReemitAfter - stdtime.Minute)
+			Expect(job.WakeOnce(context.Background())).To(Succeed())
+			Expect(carrier.recorded()).To(HaveLen(1))
+
+			// Past the window: the entry re-enters the batch...
+			advance(2 * stdtime.Minute)
+			Expect(job.WakeOnce(context.Background())).To(Succeed())
+			Expect(carrier.recorded()).To(HaveLen(1))
+
+			// ...and is typed when its own batch window closes: exactly one re-emit.
+			advance(pkg.ManagerWakeBatchWindow)
 			Expect(job.WakeOnce(context.Background())).To(Succeed())
 			Expect(carrier.recorded()).To(HaveLen(2))
 
@@ -235,13 +270,13 @@ var _ = Describe("manager wake job", func() {
 		ledger.ListReturns(peerWorker, nil)
 		store.ReadReturns(pkg.Items{wakeItem("item-1", "w-2")}, nil)
 
-		Expect(newJob().WakeOnce(context.Background())).To(Succeed())
+		flushBatch(newJob())
 		Expect(carrier.sessions()).To(ConsistOf("mgr-2"))
 
 		// Positive control: the same fixture with the peer DEAD keeps the item.
 		carrier = newWakeRecordingCarrier()
 		live["mgr-2"] = false
-		Expect(newJob().WakeOnce(context.Background())).To(Succeed())
+		flushBatch(newJob())
 		Expect(carrier.sessions()).To(ConsistOf("mgr-1"))
 
 		// Positive control: this manager's OWN worker is kept.
@@ -253,19 +288,19 @@ var _ = Describe("manager wake job", func() {
 			ledgerRow("w-1", "agent", "mgr-1"),
 		}, nil)
 		store.ReadReturns(pkg.Items{wakeItem("item-1", "w-1")}, nil)
-		Expect(newJob().WakeOnce(context.Background())).To(Succeed())
+		flushBatch(newJob())
 		Expect(carrier.sessions()).To(ConsistOf("mgr-1"))
 
 		// Positive control: this manager ITSELF is kept.
 		carrier = newWakeRecordingCarrier()
 		store.ReadReturns(pkg.Items{wakeItem("item-1", "mgr-1")}, nil)
-		Expect(newJob().WakeOnce(context.Background())).To(Succeed())
+		flushBatch(newJob())
 		Expect(carrier.sessions()).To(ConsistOf("mgr-1"))
 
 		// Positive control: an item owned by NOBODY is kept by every manager.
 		carrier = newWakeRecordingCarrier()
 		store.ReadReturns(pkg.Items{wakeItem("item-1", "ghost")}, nil)
-		Expect(newJob().WakeOnce(context.Background())).To(Succeed())
+		flushBatch(newJob())
 		Expect(carrier.sessions()).To(ConsistOf("mgr-1", "mgr-2"))
 	})
 
@@ -278,13 +313,13 @@ var _ = Describe("manager wake job", func() {
 		}, nil)
 		store.ReadReturns(pkg.Items{wakeItem("item-1", "mgr-2")}, nil)
 
-		Expect(newJob().WakeOnce(context.Background())).To(Succeed())
+		flushBatch(newJob())
 		Expect(carrier.sessions()).To(ConsistOf("mgr-2"))
 
 		// Positive control: a dead peer manager's own gate is kept by the peer.
 		carrier = newWakeRecordingCarrier()
 		live["mgr-2"] = false
-		Expect(newJob().WakeOnce(context.Background())).To(Succeed())
+		flushBatch(newJob())
 		Expect(carrier.sessions()).To(ConsistOf("mgr-1"))
 	})
 
@@ -305,7 +340,7 @@ var _ = Describe("manager wake job", func() {
 				wakeItem("item-worker", "w-1"),
 			}, nil)
 
-			Expect(newJob().WakeOnce(context.Background())).To(Succeed())
+			flushBatch(newJob())
 			// The worker's card still wakes the manager; only the human row is dropped.
 			Expect(carrier.recorded()).To(HaveLen(1))
 			Expect(carrier.recorded()[0].text).To(ContainSubstring("item-worker"))
@@ -318,7 +353,7 @@ var _ = Describe("manager wake job", func() {
 				ledgerRow("human-1", "agent", "mgr-1"),
 			}, nil)
 			store.ReadReturns(pkg.Items{wakeItem("item-human", "human-1")}, nil)
-			Expect(newJob().WakeOnce(context.Background())).To(Succeed())
+			flushBatch(newJob())
 			Expect(carrier.recorded()).To(HaveLen(1))
 			Expect(carrier.recorded()[0].text).To(ContainSubstring("item-human"))
 		},
@@ -334,7 +369,7 @@ var _ = Describe("manager wake job", func() {
 		expired.ExpiresAt = &expiredAt
 		store.ReadReturns(pkg.Items{wakeItem("item-live", "w-1")}, nil)
 
-		Expect(newJob().WakeOnce(context.Background())).To(Succeed())
+		flushBatch(newJob())
 		Expect(carrier.recorded()).To(HaveLen(1))
 		Expect(carrier.recorded()[0].item).To(Equal("item-live"))
 		Expect(carrier.recorded()[0].item).NotTo(Equal(string(expired.ItemID)))
@@ -363,8 +398,11 @@ var _ = Describe("manager wake job", func() {
 		Expect(job.WakeOnce(context.Background())).NotTo(Succeed())
 		Expect(carrier.recorded()).To(BeEmpty())
 
-		// Positive control: the next healthy pass wakes normally.
+		// Positive control: the next healthy pass wakes normally, once its
+		// batch window closes.
 		oneManager()
+		Expect(job.WakeOnce(context.Background())).To(Succeed())
+		advance(pkg.ManagerWakeBatchWindow)
 		Expect(job.WakeOnce(context.Background())).To(Succeed())
 		Expect(carrier.recorded()).To(HaveLen(1))
 	})
@@ -372,8 +410,12 @@ var _ = Describe("manager wake job", func() {
 	It("TestWakeTypedIntoManagerPane — the wake is one plain line into the pane", func() {
 		oneManager()
 		store.ReadReturns(pkg.Items{wakeItem("item-1", "w-1")}, nil)
+		job := newJob()
 
-		Expect(newJob().WakeOnce(context.Background())).To(Succeed())
+		Expect(job.WakeOnce(context.Background())).To(Succeed())
+		Expect(carrier.recorded()).To(BeEmpty())
+		advance(pkg.ManagerWakeBatchWindow)
+		Expect(job.WakeOnce(context.Background())).To(Succeed())
 		Expect(carrier.recorded()).To(HaveLen(1))
 		Expect(carrier.recorded()[0].session).To(Equal("mgr-1"))
 		Expect(carrier.recorded()[0].text).To(Equal("attention gate: item-1: gate item-1"))
@@ -387,6 +429,9 @@ var _ = Describe("manager wake job", func() {
 		carrier.setVerdict(pkg.DeliveryNoPane)
 		job := newJob()
 		Expect(job.WakeOnce(context.Background())).To(Succeed())
+		Expect(carrier.recorded()).To(BeEmpty())
+		advance(pkg.ManagerWakeBatchWindow)
+		Expect(job.WakeOnce(context.Background())).To(Succeed())
 		Expect(carrier.recorded()).To(HaveLen(1))
 		// Parked: the next pass does not retry.
 		Expect(job.WakeOnce(context.Background())).To(Succeed())
@@ -397,10 +442,13 @@ var _ = Describe("manager wake job", func() {
 		carrier.setVerdict(pkg.DeliveryRefuse)
 		refusing := newJob()
 		Expect(refusing.WakeOnce(context.Background())).To(Succeed())
+		advance(pkg.ManagerWakeBatchWindow)
+		Expect(refusing.WakeOnce(context.Background())).To(Succeed())
 		Expect(refusing.WakeOnce(context.Background())).To(Succeed())
 		Expect(carrier.recorded()).To(HaveLen(1))
 
-		// The park clears on liveness, exactly as a delivery park does.
+		// The park clears on liveness, exactly as a delivery park does; the card
+		// kept its place in the buffer, so it is typed on the next live pass.
 		live["mgr-1"] = false
 		Expect(refusing.WakeOnce(context.Background())).To(Succeed())
 		live["mgr-1"] = true
@@ -409,47 +457,51 @@ var _ = Describe("manager wake job", func() {
 		Expect(carrier.recorded()).To(HaveLen(2))
 	})
 
-	It("TestWakeBoundedByManagerWakeInterval — a tick wakes, a change short-circuits it", func() {
-		Expect(pkg.ManagerWakeInterval).To(Equal(10 * stdtime.Second))
-		oneManager()
-		store.ReadReturns(pkg.Items{wakeItem("item-1", "w-1")}, nil)
+	It(
+		"TestWakeBoundedByManagerWakeInterval — a tick runs a pass, a change short-circuits it",
+		func() {
+			Expect(pkg.ManagerWakeInterval).To(Equal(10 * stdtime.Second))
+			oneManager()
+			store.ReadReturns(pkg.Items{wakeItem("item-1", "w-1")}, nil)
 
-		ctx, cancel := context.WithCancel(context.Background())
-		done := make(chan struct{})
-		go func() {
-			defer GinkgoRecover()
-			defer close(done)
-			_ = newJob(pkg.WithManagerWakeInterval(5 * stdtime.Millisecond)).Run(ctx)
-		}()
-		Eventually(func() int { return len(carrier.recorded()) }).Should(Equal(1))
-		// An unchanged store produces no second wake, however many ticks pass.
-		Consistently(func() int { return len(carrier.recorded()) }, 50*stdtime.Millisecond).
-			Should(Equal(1))
-		cancel()
-		Eventually(done).Should(BeClosed())
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan struct{})
+			go func() {
+				defer GinkgoRecover()
+				defer close(done)
+				_ = newJob(pkg.WithManagerWakeInterval(5 * stdtime.Millisecond)).Run(ctx)
+			}()
+			Eventually(store.ReadCallCount).Should(BeNumerically(">=", 2))
+			// The injected clock never advances, so the batch window never closes and
+			// an unchanged store types nothing however many ticks pass.
+			Consistently(func() int { return len(carrier.recorded()) }, 50*stdtime.Millisecond).
+				Should(Equal(0))
+			cancel()
+			Eventually(done).Should(BeClosed())
 
-		// A notifier signal runs a pass without advancing the clock, long before
-		// the tick could.
-		store.ReadCalls(func(context.Context) (pkg.Items, error) {
-			return pkg.Items{wakeItem("item-1", "w-1")}, nil
-		})
-		changes := make(chan struct{}, 1)
-		notifier.SubscribeReturns(changes, func() {})
-		before := store.ReadCallCount()
-		signalledCtx, signalledCancel := context.WithCancel(context.Background())
-		signalledDone := make(chan struct{})
-		go func() {
-			defer GinkgoRecover()
-			defer close(signalledDone)
-			_ = newJob(pkg.WithManagerWakeInterval(stdtime.Hour)).Run(signalledCtx)
-		}()
-		Consistently(store.ReadCallCount, 50*stdtime.Millisecond).Should(Equal(before))
-		changes <- struct{}{}
-		Eventually(store.ReadCallCount).Should(Equal(before + 1))
-		Expect(now).To(Equal(stdtime.Date(2026, 11, 18, 12, 0, 0, 0, stdtime.UTC)))
-		signalledCancel()
-		Eventually(signalledDone).Should(BeClosed())
-	})
+			// A notifier signal runs a pass without advancing the clock, long before
+			// the tick could.
+			store.ReadCalls(func(context.Context) (pkg.Items, error) {
+				return pkg.Items{wakeItem("item-1", "w-1")}, nil
+			})
+			changes := make(chan struct{}, 1)
+			notifier.SubscribeReturns(changes, func() {})
+			before := store.ReadCallCount()
+			signalledCtx, signalledCancel := context.WithCancel(context.Background())
+			signalledDone := make(chan struct{})
+			go func() {
+				defer GinkgoRecover()
+				defer close(signalledDone)
+				_ = newJob(pkg.WithManagerWakeInterval(stdtime.Hour)).Run(signalledCtx)
+			}()
+			Consistently(store.ReadCallCount, 50*stdtime.Millisecond).Should(Equal(before))
+			changes <- struct{}{}
+			Eventually(store.ReadCallCount).Should(Equal(before + 1))
+			Expect(now).To(Equal(stdtime.Date(2026, 11, 18, 12, 0, 0, 0, stdtime.UTC)))
+			signalledCancel()
+			Eventually(signalledDone).Should(BeClosed())
+		},
+	)
 
 	It("TestRestartReTypesOnce — a fresh process re-types the kept set once", func() {
 		oneManager()
@@ -461,29 +513,116 @@ var _ = Describe("manager wake job", func() {
 		job := newJob()
 
 		Expect(job.WakeOnce(context.Background())).To(Succeed())
-		Expect(carrier.recorded()).To(HaveLen(3))
+		Expect(carrier.recorded()).To(BeEmpty())
+		advance(pkg.ManagerWakeBatchWindow)
 		Expect(job.WakeOnce(context.Background())).To(Succeed())
-		Expect(carrier.recorded()).To(HaveLen(3))
+		Expect(carrier.recorded()).To(HaveLen(1))
+		Expect(carrier.recorded()[0].text).To(ContainSubstring("item-1"))
+		Expect(carrier.recorded()[0].text).To(ContainSubstring("item-2"))
+		Expect(carrier.recorded()[0].text).To(ContainSubstring("item-3"))
+		Expect(job.WakeOnce(context.Background())).To(Succeed())
+		Expect(carrier.recorded()).To(HaveLen(1))
 	})
 
-	It("TestWakeWritesEmissionRecord — every typed line appends one emission", func() {
+	It("TestWakeWritesEmissionRecord — every batched line appends one emission", func() {
 		oneManager()
 		store.ReadReturns(pkg.Items{wakeItem("item-1", "w-1"), wakeItem("item-2", "w-1")}, nil)
+		job := newJob()
 
-		Expect(newJob().WakeOnce(context.Background())).To(Succeed())
-		Expect(carrier.recorded()).To(HaveLen(2))
-		Expect(sink.records).To(HaveLen(2))
-		Expect(sink.records).To(ConsistOf(
-			pkg.ManagerWakeEmission{
-				ItemID:         "item-1",
-				ManagerSession: "mgr-1",
-				EmittedAt:      libtime.DateTime(now),
-			},
-			pkg.ManagerWakeEmission{
-				ItemID:         "item-2",
-				ManagerSession: "mgr-1",
-				EmittedAt:      libtime.DateTime(now),
-			},
-		))
+		Expect(job.WakeOnce(context.Background())).To(Succeed())
+		advance(pkg.ManagerWakeBatchWindow)
+		Expect(job.WakeOnce(context.Background())).To(Succeed())
+		Expect(carrier.recorded()).To(HaveLen(1))
+		// ONE emission for the ONE delivery, naming every card it carried.
+		Expect(sink.records).To(HaveLen(1))
+		Expect(sink.records[0]).To(Equal(pkg.ManagerWakeEmission{
+			ManagerSession: "mgr-1",
+			EmittedAt:      libtime.DateTime(now),
+			ItemIDs:        []pkg.ItemID{"item-1", "item-2"},
+		}))
 	})
+
+	It("TestBatchWaitsFullWindow — a card is delayed, never typed inside the window", func() {
+		oneManager()
+		store.ReadReturns(pkg.Items{wakeItem("item-1", "w-1")}, nil)
+		job := newJob()
+
+		Expect(job.WakeOnce(context.Background())).To(Succeed())
+		advance(pkg.ManagerWakeBatchWindow - stdtime.Second)
+		Expect(job.WakeOnce(context.Background())).To(Succeed())
+		Expect(carrier.recorded()).To(BeEmpty())
+
+		advance(stdtime.Second)
+		Expect(job.WakeOnce(context.Background())).To(Succeed())
+		Expect(carrier.recorded()).To(HaveLen(1))
+		Expect(carrier.recorded()[0].text).To(ContainSubstring("item-1"))
+	})
+
+	It("TestBatchJoinsLaterArrival — the window runs from the first card", func() {
+		oneManager()
+		store.ReadReturns(pkg.Items{wakeItem("item-1", "w-1")}, nil)
+		job := newJob()
+
+		Expect(job.WakeOnce(context.Background())).To(Succeed())
+		advance(30 * stdtime.Second)
+		store.ReadReturns(pkg.Items{
+			wakeItem("item-1", "w-1"),
+			wakeItem("item-2", "w-1"),
+		}, nil)
+		Expect(job.WakeOnce(context.Background())).To(Succeed())
+		Expect(carrier.recorded()).To(BeEmpty())
+
+		// 60 s after the FIRST card, both ride one line.
+		advance(30 * stdtime.Second)
+		Expect(job.WakeOnce(context.Background())).To(Succeed())
+		Expect(carrier.recorded()).To(HaveLen(1))
+		Expect(carrier.recorded()[0].text).To(ContainSubstring("item-1"))
+		Expect(carrier.recorded()[0].text).To(ContainSubstring("item-2"))
+	})
+
+	It("TestBatchSeparatesProducerSessions — one delivery per producer session", func() {
+		live["mgr-1"] = true
+		ledger.ListReturns(pkg.SessionLedgerEntries{
+			ledgerRow("mgr-1", "manager", ""),
+			ledgerRow("w-1", "agent", "mgr-1"),
+			ledgerRow("w-2", "agent", "mgr-1"),
+		}, nil)
+		store.ReadReturns(pkg.Items{
+			wakeItem("item-a", "w-1"),
+			wakeItem("item-b", "w-2"),
+		}, nil)
+		job := newJob()
+
+		Expect(job.WakeOnce(context.Background())).To(Succeed())
+		advance(pkg.ManagerWakeBatchWindow)
+		Expect(job.WakeOnce(context.Background())).To(Succeed())
+		Expect(carrier.recorded()).To(HaveLen(2))
+		Expect(carrier.recorded()[0].text).To(ContainSubstring("item-a"))
+		Expect(carrier.recorded()[0].text).NotTo(ContainSubstring("item-b"))
+		Expect(carrier.recorded()[1].text).To(ContainSubstring("item-b"))
+		Expect(carrier.recorded()[1].text).NotTo(ContainSubstring("item-a"))
+		Expect(sink.records).To(HaveLen(2))
+	})
+
+	It(
+		"TestBatchSkipsCardAnsweredBeforeFlush — a card gone before the window needs no wake",
+		func() {
+			oneManager()
+			store.ReadReturns(pkg.Items{
+				wakeItem("item-1", "w-1"),
+				wakeItem("item-2", "w-1"),
+			}, nil)
+			job := newJob()
+
+			Expect(job.WakeOnce(context.Background())).To(Succeed())
+			// item-2 is answered inside the window: it leaves the kept set.
+			store.ReadReturns(pkg.Items{wakeItem("item-1", "w-1")}, nil)
+			Expect(job.WakeOnce(context.Background())).To(Succeed())
+			advance(pkg.ManagerWakeBatchWindow)
+			Expect(job.WakeOnce(context.Background())).To(Succeed())
+			Expect(carrier.recorded()).To(HaveLen(1))
+			Expect(carrier.recorded()[0].text).To(ContainSubstring("item-1"))
+			Expect(carrier.recorded()[0].text).NotTo(ContainSubstring("item-2"))
+		},
+	)
 })

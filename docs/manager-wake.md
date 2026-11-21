@@ -64,8 +64,27 @@ An entry that leaves the set is forgotten, so a re-entry is a fresh entry and em
 fresh process the previous set is empty, so the first pass re-types the current kept set once — a
 burst bounded by the open set, once per restart.
 
-Every pane write appends one emission record (`item_id`, `manager_session`, `emitted_at`) to
-`ManagerWakeEmissionLogPath`, so a wake has a producer a `raised_at → woken_at` measurement can read.
+## The batch window
+
+An entering entry is **buffered**, not typed immediately. Each manager keeps a pending buffer per
+producer session, stamped with the time its first item entered, and the buffer is typed as **one
+batched wake line** once `ManagerWakeBatchWindow` (60 s) has elapsed since that first item. Every
+card the line carries is named in it, so a burst from one producer session costs the manager one
+turn instead of one turn per card.
+
+- A later arrival joins the open buffer: the window runs from the **first** item, never from the
+  latest one.
+- A card that leaves the kept set before the window closes (answered, expired, or dropped to a live
+  peer manager) is removed from the buffer — no wake is needed for it.
+- A card that is still in the kept set is **never dropped**, only delayed: the buffered line names
+  every id it carries.
+- The per-entry last-emission dedupe still applies. A stale entry re-enters the buffer and is
+  re-batched, and an entry that left and re-entered the set starts a fresh buffer.
+
+Every pane write appends one emission record to `ManagerWakeEmissionLogPath`. A batched wake records
+**one** emission carrying every item id it named (`item_ids`), so a wake still has a producer a
+`raised_at → woken_at` measurement can read. A transcript wake names no card and carries neither
+field.
 
 ## Failure directions
 
