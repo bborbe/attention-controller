@@ -77,6 +77,17 @@ const (
 	// stored item's mechanism, never on anything the caller supplied.
 	ErrorCodePermissionCloseWithoutDecision = "PERMISSION_CLOSE_WITHOUT_DECISION"
 
+	// ErrorCodeHeldCardCloseNeedsArm is the code a caller receives when it
+	// closes a HELD card — an answer recorded but not yet delivered — without
+	// naming the arm that caused the close.
+	//
+	// It is deliberately not ErrorCodeValidation: the request was well formed
+	// and named a real item, and the caller's fix is to name its arm (or to
+	// leave the card to the delivery arm) rather than to correct a body.
+	// It is deliberately not ITEM_CLOSED or ALREADY_ANSWERED either: the card
+	// is still open, and no answer was routed.
+	ErrorCodeHeldCardCloseNeedsArm = "HELD_CARD_CLOSE_NEEDS_ARM"
+
 	// ErrorCodeFlagReasonRequired is the code a caller receives when a flag
 	// carries no usable reason. Distinct from ErrorCodeValidation: the request
 	// may be well-formed JSON and still name no reason, and the caller's fix is

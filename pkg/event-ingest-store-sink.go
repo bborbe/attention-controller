@@ -122,6 +122,20 @@ func (s *StoreEventSink) Close(ctx context.Context, record EventIngestRecord) er
 		if item.DedupKey.String() != record.ItemID {
 			continue
 		}
+		// ⚠️ A HELD card — open with answered_at set — is an answer the delivery
+		// arm has not carried yet. This event close names no arm, so it is the
+		// producer-side clear and must not retire the card: the hold owns that
+		// transition, and a close here abandons the answer while the asking
+		// session is still parked. The store refuses the same write; skipping
+		// here keeps the refusal out of the job's error log, where it would read
+		// as a store fault rather than a deliberate no-op.
+		if heldCard(item) {
+			glog.V(3).Infof(
+				"job=attention-watcher action=close_skip_held item=%s (answer undelivered)",
+				item.ItemID,
+			)
+			return nil
+		}
 		if _, err := s.store.Close(ctx, item.ItemID, "", nil); err != nil {
 			return errors.Wrapf(ctx, err, "close %s failed", item.ItemID)
 		}

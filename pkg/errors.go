@@ -113,6 +113,30 @@ var (
 	// "this close is not an acceptable way to end a gate".
 	ErrPermissionCloseWithoutDecision = stderrors.New("permission close without decision")
 
+	// ErrHeldCardCloseNeedsArm is returned when a close naming NO arm is
+	// attempted on a HELD card — an item that is `open` with `answered_at` set,
+	// because the store recorded an answer it has not yet delivered.
+	//
+	// Retiring a held card before the delivery arm has observed delivery
+	// abandons that answer: the asking session never receives it and stays
+	// parked until its own timeout. The event feed's producer-side clear and the
+	// producer-withdrawal route both close by dedup key naming no arm, and both
+	// race the delivery arm — measured 2026-11-22 on the live board, nine
+	// `permission` cards left the open set reading `retrying` and carrying no
+	// undeliverable marker this way.
+	//
+	// ⚠️ It is deliberately NOT a refusal of every close on a held card. The
+	// operator's 2026-11-21 ruling keeps the board's corner X on every dimmed
+	// card, held included, and that close names `attention-board`; it is an
+	// arm-caused act and stays legal. The refusal is keyed on the ABSENCE of an
+	// arm, which is what distinguishes an event-driven clear from the operator
+	// choosing to drop the answer.
+	//
+	// ⚠️ It is deliberately NOT ErrIllegalTransition: `open -> closed` is a row
+	// of the schema's table. The transition exists; this caller is not entitled
+	// to it while an answer is undelivered.
+	ErrHeldCardCloseNeedsArm = stderrors.New("held card close needs arm")
+
 	// ErrFlagReasonRequired is returned when a flag carries no usable reason —
 	// empty, absent or whitespace-only. The store refuses before writing
 	// anything: a flag without a reason is indistinguishable from a grumble and

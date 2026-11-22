@@ -115,6 +115,56 @@ func (a *attentionStore) closeItem(
 	return a.recordCloseAttempt(ctx, tx, item, now)
 }
 
+// stampCloseArm records the arm on the open -> closed row only — that row is
+// the acknowledgement of an `ack` item, which the schema routes to answered_by
+// with answered_at left unset because nothing is routed back. On the
+// answered -> closed row answered_by already names the arm that answered, and
+// writing here would replace it with the arm that merely closed.
+//
+// The client rides that same row and only when an arm caused it, because the
+// schema sets the field on an *arm-caused* open -> closed: a producer
+// withdrawing its own item through this route names no arm, and recording a
+// client for it would put a causer on the record that the schema does not name.
+//
+// ⚠️ A HELD card is `open` with AnsweredAt set: the store holds an answer it has
+// not yet delivered, and the board renders it as a dimmed record. From
+// 2026-11-21 the board's corner X closes it, and this write must be skipped for
+// it — the item is already answered, so overwriting AnsweredBy would replace the
+// arm that answered with the arm that merely closed. Its `permission` arm also
+// already carries its Decision, so the unanswered-gate refusal below does not
+// describe it: closing a held gate retires a card whose answer was recorded, it
+// does not consume an unanswered one. See [[Attention Item Schema]] § The corner
+// X's dimmed row and § The held card.
+func stampCloseArm(
+	ctx context.Context,
+	item *Item,
+	itemID ItemID,
+	answeredBy string,
+	answeredClient *AnsweredClient,
+) error {
+	if item.State != OpenState || item.AnsweredAt != nil {
+		return nil
+	}
+	// A `permission` item leaves `open` only through a write that records a
+	// decision. This route's arm-caused body carries no decision field at all,
+	// so an arm-caused close of an open gate is not an answer to it — and
+	// `closed` is terminal, so accepting it would consume the gate.
+	if item.AnswerMechanism == PermissionAnswerMechanism && answeredBy != "" {
+		return errors.Wrapf(
+			ctx,
+			ErrPermissionCloseWithoutDecision,
+			"item %s is a permission gate and a close naming arm %q records no decision",
+			itemID,
+			answeredBy,
+		)
+	}
+	item.AnsweredBy = answeredBy
+	if answeredBy != "" {
+		item.AnsweredClient = answeredClient
+	}
+	return nil
+}
+
 // recordCloseAttempt writes the terminal delivery record for an answered card
 // that a close path retired before any arm carried its answer.
 //
@@ -131,11 +181,19 @@ func (a *attentionStore) closeItem(
 // sites are Close, the answered sweep's closeAnsweredItem, and the
 // redundant-re-raise sweep's closeOpenItem.
 //
-// ⚠️ An existing record is NEVER overwritten. A `delivered` must not be
-// downgraded to `held` by the sweep retiring a card an hour after a successful
-// delivery, and a `failed` from a real attempt is a better record than a
-// post-hoc one. The record is written once, at the close transition, which is
-// also why it cannot repeat on a poll: a close is terminal.
+// ⚠️ An existing DELIVERED or FAILED record is never overwritten. A `delivered`
+// must not be downgraded to `held` by the sweep retiring a card an hour after a
+// successful delivery, and a `failed` from a real attempt is a better record
+// than a post-hoc one. The record is written once, at the close transition,
+// which is also why it cannot repeat on a poll: a close is terminal.
+//
+// ⚠️ AMENDED 2026-11-22 — one upgrade is legal, and it is not an overwrite of a
+// verdict. A card still `retrying` when it is closed ends its delivery here:
+// the close is terminal, so no later attempt can carry the answer. Left as
+// `retried` the record reads "still trying" forever and carries no undeliverable
+// marker, so the operator is never told the answer was abandoned — measured
+// 2026-11-22 on the live board, nine `permission` cards. markAbandonedRetry
+// takes that record over with the same marker the delivery bound writes.
 //
 // ⚠️ The failure is returned, not logged and swallowed. A close that committed
 // without its record is exactly the defect this helper removes, so the
@@ -154,10 +212,10 @@ func (a *attentionStore) recordCloseAttempt(
 		// an answer.
 		return nil
 	}
-	_, err := a.attempts.Get(ctx, tx, item.ItemID.String())
+	existing, err := a.attempts.Get(ctx, tx, item.ItemID.String())
 	switch {
 	case err == nil:
-		return nil
+		return a.markAbandonedRetry(ctx, tx, item, existing, now)
 	case !isNotFound(err):
 		return errors.Wrap(ctx, err, "get delivery attempt failed")
 	}
@@ -178,6 +236,49 @@ func (a *attentionStore) recordCloseAttempt(
 		item.ItemID,
 		attempt.Carrier,
 		HeldOutcome,
+	)
+	return nil
+}
+
+// markAbandonedRetry upgrades a still-`retrying` record to the undeliverable
+// marker when a close retires a held card.
+//
+// ⚠️ It only upgrades `retried`. A `delivered` is never downgraded, a `failed`
+// is already the marker, and a `held` record means nothing was attempted (no
+// delivery went wrong) — a different fact, left as recorded.
+//
+// ⚠️ It reuses the delivery bound's own carrier and outcome, so the record a
+// close writes is indistinguishable from the one the bound writes for the same
+// terminal condition: the answer will not arrive. That is deliberate — a reader
+// asking "was this answer delivered?" gets one answer either way, and the
+// card's `closed_at` says which path ended it.
+func (a *attentionStore) markAbandonedRetry(
+	ctx context.Context,
+	tx libkv.Tx,
+	item *Item,
+	existing *DeliveryAttempt,
+	now libtime.DateTime,
+) error {
+	if existing.EffectiveOutcome() != RetriedOutcome {
+		return nil
+	}
+	attempt := DeliveryAttempt{
+		ItemID:      item.ItemID,
+		Carrier:     attentionWatcherUndeliverableCarrier,
+		Outcome:     FailedOutcome,
+		AttemptedAt: now,
+	}
+	if err := attempt.Validate(ctx); err != nil {
+		return errors.Wrap(ctx, err, "validate close marker failed")
+	}
+	if err := a.attempts.Add(ctx, tx, item.ItemID.String(), attempt); err != nil {
+		return errors.Wrap(ctx, err, "add close marker failed")
+	}
+	glog.V(2).Infof(
+		"job=attention-watcher action=close_marker item=%s carrier=%s outcome=%s",
+		item.ItemID,
+		attempt.Carrier,
+		FailedOutcome,
 	)
 	return nil
 }

@@ -1466,47 +1466,13 @@ func (a *attentionStore) Close(
 		if err := ValidateTransition(ctx, from, ClosedState); err != nil {
 			return err
 		}
-		// The arm is recorded on the open -> closed row only — that row is the
-		// acknowledgement of an `ack` item, which the schema routes to
-		// answered_by with answered_at left unset because nothing is routed
-		// back. On the answered -> closed row answered_by already names the arm
-		// that answered, and writing here would replace it with the arm that
-		// merely closed.
-		//
-		// The client rides that same row and only when an arm caused it, because
-		// the schema sets the field on an *arm-caused* open -> closed: a producer
-		// withdrawing its own item through this route names no arm, and recording
-		// a client for it would put a causer on the record that the schema does
-		// not name.
-		//
-		// ⚠️ A HELD card is `open` with AnsweredAt set: the store holds an answer
-		// it has not yet delivered, and the board renders it as a dimmed record.
-		// From 2026-11-21 the board's corner X closes it, and this write must be
-		// skipped for it — the item is already answered, so overwriting
-		// AnsweredBy would replace the arm that answered with the arm that merely
-		// closed. Its `permission` arm also already carries its Decision, so the
-		// unanswered-gate refusal below does not describe it: closing a held gate
-		// retires a card whose answer was recorded, it does not consume an
-		// unanswered one. See [[Attention Item Schema]] § The corner X's dimmed
-		// row and § The held card.
-		if from == OpenState && item.AnsweredAt == nil {
-			// A `permission` item leaves `open` only through a write that records a
-			// decision. This route's arm-caused body carries no decision field at
-			// all, so an arm-caused close of an open gate is not an answer to it —
-			// and `closed` is terminal, so accepting it would consume the gate.
-			if item.AnswerMechanism == PermissionAnswerMechanism && answeredBy != "" {
-				return errors.Wrapf(
-					ctx,
-					ErrPermissionCloseWithoutDecision,
-					"item %s is a permission gate and a close naming arm %q records no decision",
-					itemID,
-					answeredBy,
-				)
-			}
-			item.AnsweredBy = answeredBy
-			if answeredBy != "" {
-				item.AnsweredClient = answeredClient
-			}
+		// A HELD card is retired only by an ARM-CAUSED close — see
+		// heldCloseAllowed for why the no-arm paths must not retire one.
+		if err := heldCloseAllowed(ctx, *item, itemID, answeredBy); err != nil {
+			return err
+		}
+		if err := stampCloseArm(ctx, item, itemID, answeredBy, answeredClient); err != nil {
+			return err
 		}
 		if err := a.closeItem(ctx, tx, item); err != nil {
 			return errors.Wrap(ctx, err, "update item failed")

@@ -96,32 +96,14 @@ func handleAttentionFlag(
 func wrapFlagError(ctx context.Context, err error, itemID pkg.ItemID, what string) error {
 	switch {
 	case errors.Is(err, pkg.ErrFlagReasonRequired):
-		return libhttp.WrapWithDetails(
-			errors.Wrap(ctx, err, what),
-			pkg.ErrorCodeFlagReasonRequired,
-			http.StatusBadRequest,
-			map[string]any{"item_id": itemID.String()},
+		return wrapItemResponse(
+			ctx, err, what, pkg.ErrorCodeFlagReasonRequired, http.StatusBadRequest, itemID,
 		)
 	case errors.Is(err, pkg.ErrItemNotFound):
-		return libhttp.WrapWithDetails(
-			errors.Wrap(ctx, err, what),
-			libhttp.ErrorCodeNotFound,
-			http.StatusNotFound,
-			map[string]any{"item_id": itemID.String()},
-		)
+		return wrapItemResponse(ctx, err, what, libhttp.ErrorCodeNotFound, http.StatusNotFound, itemID)
 	case errors.Is(err, pkg.ErrItemNotOpen):
-		return libhttp.WrapWithDetails(
-			errors.Wrap(ctx, err, what),
-			pkg.ErrorCodeItemNotOpen,
-			http.StatusConflict,
-			map[string]any{"item_id": itemID.String()},
-		)
+		return wrapItemResponse(ctx, err, what, pkg.ErrorCodeItemNotOpen, http.StatusConflict, itemID)
 	default:
-		return libhttp.WrapWithDetails(
-			errors.Wrap(ctx, err, what),
-			libhttp.ErrorCodeValidation,
-			http.StatusConflict,
-			map[string]any{"item_id": itemID.String()},
-		)
+		return wrapItemResponse(ctx, err, what, libhttp.ErrorCodeValidation, http.StatusConflict, itemID)
 	}
 }
