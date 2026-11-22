@@ -1409,6 +1409,15 @@ func wikilinkTitle(raw string) (string, bool) {
 		first, last := entry[0], entry[len(entry)-1]
 		if (first == '"' || first == '\'') && first == last {
 			entry = strings.TrimSpace(entry[1 : len(entry)-1])
+			if first == '\'' {
+				// YAML escapes a literal single quote inside a single-quoted
+				// scalar by doubling it: `'[[Foo''s Bar]]'` is `[[Foo's Bar]]`.
+				// Without this the title keeps the doubled quote, matches no
+				// goal file, and existingGoals returns an empty slice — which
+				// GoalScope.Foreign reads as "this task declares no goal" and
+				// fail-opens on, waking every manager.
+				entry = strings.ReplaceAll(entry, "''", "'")
+			}
 		}
 	}
 	open := strings.Index(entry, "[[")

@@ -253,6 +253,21 @@ var _ = Describe("TaskIndex", func() {
 			"session-a",
 			"Quote Goal", "24 Goals/Quote Goal.md",
 			"Quote Topic", "23 Topics/Quote Topic.md"),
+		Entry("a single-quoted goals entry whose apostrophe YAML doubled",
+			func(root string) string {
+				// ⚠️ The vault writes a title containing an apostrophe as
+				// `'[[Owner''s Goal]]'` — YAML's escape for one literal quote
+				// inside a single-quoted scalar. A reader that keeps the doubled
+				// quote matches no goal file, so the task resolves no goal and
+				// GoalScope.Foreign fail-opens on it.
+				writeVaultTask(root, "Apostrophe Goal.md",
+					"---\nclaude_session_id: session-a\ngoals:\n  - '[[Owner''s Goal]]'\n---\n")
+				writeVaultFile(root, "24 Goals", "Owner's Goal.md",
+					"---\ntitle: Owner's Goal\n---\n")
+				return root
+			},
+			"session-a",
+			"Owner's Goal", "24 Goals/Owner's Goal.md", "", ""),
 		Entry("a 4-space-indented goals entry",
 			func(root string) string {
 				writeVaultTask(root, "Indented.md",
