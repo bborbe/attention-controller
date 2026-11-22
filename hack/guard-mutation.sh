@@ -64,6 +64,13 @@ WakePruneDropsAnswered|pkg/manager-wake-job.go|if _, ok := kept[item.ItemID]; ok
 WakeNoPaneParks|pkg/manager-wake-job.go|if parked {|if false && parked {|TestWakeNoPaneParks
 WakeEmissionRecorded|pkg/manager-wake-job.go|func (p *wakePass) recordBatch(manager string, items []Item) {|func (p *wakePass) recordBatch(manager string, items []Item) { return|TestWakeWritesEmissionRecord
 WakePreviousSetMemory|pkg/manager-wake-job.go|previous := p.job.emitted[manager]|previous := map[ItemID]libtime.DateTime{}|TestEmitOnlyOnEnterNotOnRepoll
+# ⚠️ Guard 12 is a property, not a branch: the store's read already drops an expired
+# item, so the mutation is the expiry filter itself. It is focused on `isExpired`
+# and NOT on `TestExpiredItemNeverWakes`, which drives a MOCKED store
+# (`store.ReadReturns`) whose input never contains the expired card — measured
+# 2026-11-22: with this mutation applied that spec stays green while three
+# `isExpired` specs go red.
+ExpiredItemNeverWakes|pkg/attention-store-impl.go|return !now.Time().Before(effectiveExpiresAt(item).Time())|return false && !now.Time().Before(effectiveExpiresAt(item).Time())|isExpired
 EOF
 )
 
