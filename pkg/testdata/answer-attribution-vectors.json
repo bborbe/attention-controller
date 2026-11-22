@@ -51,6 +51,27 @@
     }
   },
   {
+    "name": "unattributed-close-with-client-and-no-answered-at",
+    "verdict": "UNATTRIBUTED",
+    "item": {
+      "item_id": "item-unattributed-close-with-client-and-no-answered-at",
+      "producer_id": "11111111-2222-3333-4444-555555555555",
+      "producer_kind": "session",
+      "liveness_ref": "session:11111111-2222-3333-4444-555555555555",
+      "dedup_key": "dedup-unattributed-close-with-client-and-no-answered-at",
+      "interrupt_class": "pick",
+      "payload": "vector",
+      "answer_mechanism": "message",
+      "state": "closed",
+      "answered_by": "board",
+      "answered_client": {
+        "automation": false
+      },
+      "closed_at": "2026-11-01T10:05:00Z",
+      "created_at": "2026-11-01T10:00:00Z"
+    }
+  },
+  {
     "name": "unattributed-no-client",
     "verdict": "UNATTRIBUTED",
     "item": {
