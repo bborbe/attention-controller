@@ -10,7 +10,9 @@ script counts them.
 looked at `item_id` alone could not see a batched card at all.
 
 Every path is overridable by environment variable; the defaults are the
-operator's own layout.
+operator's own layout. Those variables — including `SC1_ATTENTION_API` — are
+**trusted operator input**, not untrusted external data: this is a probe the
+operator runs on their own machine, so the URL is used as given.
 
     arm      record T0 (UTC, now) to window.json
     backfill a closed hour ending now
@@ -42,20 +44,46 @@ def now_utc():
 
 
 def parse_ts(s):
+    """Parse an RFC3339 timestamp, normalising a missing offset to UTC.
+
+    A naive result would compare against an aware `t0`/`t1` and raise
+    TypeError, aborting the whole report over one offset-less line.
+    """
     s = s.replace("Z", "+00:00")
     m = re.match(r"^(.*?)(\.\d+)?([+-]\d\d:\d\d)$", s)
     if m:
         base, frac, off = m.group(1), m.group(2) or "", m.group(3)
         s = base + ((frac + "000000")[:7] if frac else "") + off
-    return datetime.datetime.fromisoformat(s)
+    parsed = datetime.datetime.fromisoformat(s)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed
 
 
 def frontmatter(path):
-    t = open(path, encoding="utf-8").read()
+    with open(path, encoding="utf-8") as f:
+        t = f.read()
     if not t.startswith("---"):
         return ""
     parts = t.split("---", 2)
     return parts[1] if len(parts) > 2 else ""
+
+
+def record_item_ids(rec):
+    """Every item id one emission record names, in order, de-duplicated.
+
+    A batched wake (v0.107.6) carries `item_id` empty or set to the first id
+    and every card in `item_ids`. Reading `item_id` alone made every batched
+    card invisible to both `fan_out` and the foreign classification.
+    """
+    ids = []
+    iid = rec.get("item_id") or ""
+    if iid:
+        ids.append(iid)
+    for extra in rec.get("item_ids") or []:
+        if extra and extra not in ids:
+            ids.append(extra)
+    return ids
 
 
 def load_goals():
@@ -144,31 +172,41 @@ def open_items():
         return json.load(r)
 
 
+def write_json(path, value, indent=None):
+    os.makedirs(BASE, exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(value, f, indent=indent)
+    os.replace(tmp, path)
+
+
 def arm():
     t0 = now_utc()
     t1 = t0 + datetime.timedelta(seconds=WINDOW_S)
-    json.dump({"t0": t0.isoformat(), "t1": t1.isoformat()}, open(STATE, "w"))
+    write_json(STATE, {"t0": t0.isoformat(), "t1": t1.isoformat()})
     print(f"armed t0={t0.isoformat()} t1={t1.isoformat()}")
 
 
 def report():
-    st = json.load(open(STATE))
+    with open(STATE, encoding="utf-8") as f:
+        st = json.load(f)
     t0, t1 = parse_ts(st["t0"]), parse_ts(st["t1"])
 
     goals, tasks, managers = load_goals(), load_tasks(), load_managers()
 
     recs = []
-    for line in open(EMIS, encoding="utf-8"):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            d = json.loads(line)
-            ts = parse_ts(d["emitted_at"])
-        except Exception:
-            continue
-        if t0 <= ts < t1:
-            recs.append(d)
+    with open(EMIS, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                d = json.loads(line)
+                ts = parse_ts(d["emitted_at"])
+            except Exception:
+                continue
+            if t0 <= ts < t1:
+                recs.append(d)
 
     items = open_items()
     by_id = {i["item_id"]: i for i in items}
@@ -186,55 +224,50 @@ def report():
                          "kind": kind, "subject": val})
 
     foreign_emis, unknown_emis, own_emis, orphan = [], [], [], []
-    housekeeping_emis, recovered = [], 0
+    housekeeping_emis, recovered, no_receiver = [], 0, 0
     for d in recs:
-        iid = d.get("item_id") or ""
-        if not iid:
-            continue
         recv = d.get("manager_session", "")
+        if not recv:
+            # A transcript wake names no card and carries no receiver; it is
+            # counted in the line count and belongs to no manager.
+            no_receiver += 1
+            continue
         recv_goal = goals.get(recv) or managers.get(recv)
 
-        it = by_id.get(iid)
-        if it is None:
-            pid = closed.get(iid)
-            if pid is None:
-                orphan.append({"item_id": iid, "receiver": recv,
-                               "emitted_at": d["emitted_at"]})
+        for iid in record_item_ids(d):
+            it = by_id.get(iid)
+            if it is None:
+                pid = closed.get(iid)
+                if pid is None:
+                    orphan.append({"item_id": iid, "receiver": recv,
+                                   "emitted_at": d["emitted_at"]})
+                    continue
+                it = {"item_id": iid, "producer_id": pid}
+                recovered += 1
+
+            if is_housekeeping(it.get("producer_id", "")):
+                housekeeping_emis.append({"item_id": iid, "receiver": recv})
                 continue
-            it = {"item_id": iid, "producer_id": pid}
-            recovered += 1
 
-        if is_housekeeping(it.get("producer_id", "")):
-            housekeeping_emis.append({"item_id": iid, "receiver": recv})
-            continue
+            kind, val = subject(it.get("producer_id", ""), goals, tasks, managers)
+            f = is_foreign(kind, val, recv_goal)
+            row = {"item_id": iid, "receiver": recv, "receiver_goal": recv_goal,
+                   "producer": it.get("producer_id"), "producer_kind": kind,
+                   "producer_subject": val, "emitted_at": d["emitted_at"]}
+            if f is None:
+                unknown_emis.append(row)
+            elif f:
+                foreign_emis.append(row)
+            else:
+                own_emis.append(row)
 
-        kind, val = subject(it.get("producer_id", ""), goals, tasks, managers)
-        f = is_foreign(kind, val, recv_goal)
-        row = {"item_id": iid, "receiver": recv, "receiver_goal": recv_goal,
-               "producer": it.get("producer_id"), "producer_kind": kind,
-               "producer_subject": val, "emitted_at": d["emitted_at"]}
-        if f is None:
-            unknown_emis.append(row)
-        elif f:
-            foreign_emis.append(row)
-        else:
-            own_emis.append(row)
-
-    # Flatten item_ids (plural) as well as item_id: the 60 s batching change
-    # (v0.107.6) writes one record naming every card it carried, with item_id
-    # left empty or set to the first id. Reading item_id alone made every
-    # batched card invisible to fan_out.
     fan = {}
     for d in recs:
-        ids = []
-        iid = d.get("item_id") or ""
-        if iid:
-            ids.append(iid)
-        for extra in (d.get("item_ids") or []):
-            if extra and extra not in ids:
-                ids.append(extra)
-        for one in ids:
-            fan.setdefault(one, set()).add(d.get("manager_session", ""))
+        recv = d.get("manager_session", "")
+        if not recv:
+            continue
+        for one in record_item_ids(d):
+            fan.setdefault(one, set()).add(recv)
 
     out = {
         "window": {"t0": t0.isoformat(), "t1": t1.isoformat()},
@@ -251,10 +284,11 @@ def report():
         "own_emissions": len(own_emis),
         "housekeeping_emissions": len(housekeeping_emis),
         "emissions_for_items_no_longer_open": len(orphan),
+        "emissions_with_no_receiver": no_receiver,
         "fan_out": {k: sorted(v) for k, v in fan.items() if len(v) > 1},
         "reader_goal": reader_goal,
     }
-    json.dump(out, open(RESULT, "w"), indent=2)
+    write_json(RESULT, out, indent=2)
 
     print(f"window {out['window']['t0']} .. {out['window']['t1']}")
     print(f"in_window_lines={out['in_window_lines']} "
@@ -267,21 +301,33 @@ def report():
           f"own={out['own_emissions']} "
           f"housekeeping={out['housekeeping_emissions']} "
           f"orphan={out['emissions_for_items_no_longer_open']}")
-    if out["foreign_candidate_count"] == 0:
-        print("VERDICT: INCONCLUSIVE — no foreign candidate in the window")
-    elif out["foreign_emission_count"] == 0:
-        print("VERDICT: PASS — 0 foreign emissions across all manager sessions")
-    else:
+    if reader_goal is None:
+        print(f"VERDICT: BROKEN INSTRUMENT — reader session "
+              f"{os.environ.get('SC1_READER_SESSION', '5b29b81a-e7c2-4cca-bd66-2b1b216151aa')} "
+              f"resolves no goal page, so nothing can be judged foreign")
+    elif out["foreign_emission_count"] > 0:
+        # FAIL wins over INCONCLUSIVE: a real foreign delivery is the finding,
+        # and an empty candidate set is a separate instrument problem.
         print("VERDICT: FAIL — foreign emissions reached managers that do not own the gate")
+    elif out["foreign_candidate_count"] == 0:
+        print("VERDICT: INCONCLUSIVE — no foreign candidate in the window")
+    else:
+        print("VERDICT: PASS — 0 foreign emissions across all manager sessions")
 
 
 def backfill():
     t1 = now_utc()
     t0 = t1 - datetime.timedelta(seconds=WINDOW_S)
-    json.dump({"t0": t0.isoformat(), "t1": t1.isoformat()}, open(STATE, "w"))
+    write_json(STATE, {"t0": t0.isoformat(), "t1": t1.isoformat()})
     print(f"backfilled t0={t0.isoformat()} t1={t1.isoformat()}")
     report()
 
 
+COMMANDS = {"arm": arm, "report": report, "backfill": backfill}
+
+
 if __name__ == "__main__":
-    {"arm": arm, "report": report, "backfill": backfill}[sys.argv[1]]()
+    if len(sys.argv) != 2 or sys.argv[1] not in COMMANDS:
+        print(f"usage: {sys.argv[0]} {'|'.join(COMMANDS)}", file=sys.stderr)
+        raise SystemExit(2)
+    COMMANDS[sys.argv[1]]()
