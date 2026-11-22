@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.108.2
 
 - test: **the guard-mutation harness now covers the ANSWERED-fold and manager-wake guard sets, not only the transcript set — 19 guards to 42, `RED=42 guards=42 failures=0`.** Spec `020`'s four guards and spec `021`'s five were evidenced only inside the PRs that shipped them, so no committed command could re-prove them; `hack/guard-mutation.sh` gains 23 rows over `pkg/answered-signal.go` and `pkg/manager-wake-job.go`. Two defects in the harness itself were fixed to make the new rows honest: a guard's **name** and the **Ginkgo spec text it matches** are not the same string, so the table gained an optional fifth `focus` column (the old rows keep defaulting to their own name); and a focus that matches **nothing** also exits non-zero under `-ginkgo.fail-on-empty`, so it is now rejected as `NO-ASSERTION` instead of counting as a red guard — a misspelled focus would otherwise have read as coverage. ⚠️ **One guard could not go red, and the fix was a missing test vector rather than a better mutation:** deleting row 2 (`a close with no answered_at is a clear, not an answer`) left the suite green, because the only closed-without-`answered_at` vector also carries no `answered_client` and so fell through to row 5 with the same `UNATTRIBUTED` verdict. `pkg/testdata/answer-attribution-vectors.json` gains `unattributed-close-with-client-and-no-answered-at`, which is the case the row actually decides; with it, the deletion fails the classifier.
 
