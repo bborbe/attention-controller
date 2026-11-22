@@ -129,8 +129,11 @@ while IFS='|' read -r guard file old new focus; do
     fi
     # ⚠️ A focus that matched NOTHING also exits non-zero under -ginkgo.fail-on-empty.
     # That is a typo in the table, not a guard proven: reject it explicitly, or every
-    # misspelled focus reads as coverage.
-    if printf '%s' "$output" | grep -Eqi 'fail-on-empty|no specs matched|Testing cancelled'; then
+    # misspelled focus reads as coverage. The shape, measured 2026-11-22 on a
+    # deliberately wrong focus, is `FAIL! - Detected no specs ran and
+    # --fail-on-empty is set` plus `Ran 0 of 1344 Specs` — note "no specs RAN", not
+    # "matched", and note that the RED pattern below would otherwise claim it.
+    if printf '%s' "$output" | grep -Eqi 'fail-on-empty|Detected no specs|Ran 0 of'; then
         echo "NO-ASSERTION $guard (focus matched no spec: $FOCUS)"
         failures=$((failures + 1))
         continue
