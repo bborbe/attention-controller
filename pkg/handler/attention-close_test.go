@@ -212,6 +212,59 @@ var _ = Describe("AttentionCloseHandler", func() {
 		Expect(stored.ClosedAt).To(BeNil())
 	})
 
+	// ⚠️ Added 2026-11-22 with the close-path fix. A held card — open with
+	// answered_at set — holds an answer the delivery arm has not carried. A
+	// close naming no arm is the producer-side clear, and it must be refused
+	// with its own code rather than reading as a validation failure.
+	It("answers the held-card code when a close names no arm", func() {
+		item := pushPermission()
+		_, err := store.Answer(
+			ctx,
+			item.ItemID,
+			"attention-watch-auto",
+			"",
+			pkg.AllowDecision,
+			nil,
+			nil,
+			nil,
+		)
+		Expect(err).To(BeNil())
+
+		resp := closeItem(item.ItemID, "")
+
+		Expect(resp.Code).To(Equal(http.StatusConflict))
+		Expect(resp.Body.String()).To(ContainSubstring(pkg.ErrorCodeHeldCardCloseNeedsArm))
+		Expect(resp.Body.String()).NotTo(ContainSubstring("VALIDATION_ERROR"))
+		stored, err := store.Get(ctx, item.ItemID)
+		Expect(err).To(BeNil())
+		Expect(stored.State).To(Equal(pkg.OpenState))
+		Expect(stored.ClosedAt).To(BeNil())
+	})
+
+	It("still closes a held card when the corner X names its arm", func() {
+		item := pushPermission()
+		_, err := store.Answer(
+			ctx,
+			item.ItemID,
+			"attention-watch-auto",
+			"",
+			pkg.AllowDecision,
+			nil,
+			nil,
+			nil,
+		)
+		Expect(err).To(BeNil())
+
+		resp := closeItem(item.ItemID, `{"answered_by":"attention-board"}`)
+
+		Expect(resp.Code).To(Equal(http.StatusOK))
+		stored, err := store.Get(ctx, item.ItemID)
+		Expect(err).To(BeNil())
+		Expect(stored.State).To(Equal(pkg.ClosedState))
+		// The arm that answered survives the close; the corner X only closes.
+		Expect(stored.AnsweredBy).To(Equal("attention-watch-auto"))
+	})
+
 	It("returns 404 for an item that does not exist", func() {
 		resp := closeItem(pkg.ItemID("00000000000000000000000000000000"), "")
 
