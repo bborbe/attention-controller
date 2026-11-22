@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.108.1
 
 - fix: **a task whose goal title contains an apostrophe now resolves that goal, so `GoalScope.Foreign` can drop a foreign card instead of fail-opening on it.** The vault writes such a title as a YAML single-quoted scalar with the quote doubled — `goals:` `- '[[The Fleet''s Deterministic Python Jobs Run Inside claude-wrapper]]'` — and `wikilinkTitle` stripped the surrounding quotes without unescaping the `''`, so the parsed title kept the doubled apostrophe, matched no goal file, and `existingGoals` returned an empty slice. `Foreign` reads an empty goal list as "this task declares no goal" and fails OPEN, so every manager kept the card. Measured 2026-11-22, window `11:34:38Z → 12:34:38Z` on `v0.108.0`: 6 items typed to more than one manager, 19 excess deliveries/hour, the largest a single card to **eleven** managers; producer `9175720d`'s goal resolved empty by exactly this path. 95 files in the vault carry `Fleet''s`, so the bug was disabling goal attribution well beyond the traced cards.
 
