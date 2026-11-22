@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.107.10
 
 - fix: **a held card can no longer be retired by a close that names no arm, and a close that does retire one records the abandonment.** The hold keeps an answered `permission` card in the open set until delivery, but two no-arm close paths bypassed it: the event feed's producer-side clear (`StoreEventSink.Close` → `Close(ctx, id, "", nil)`) and the producer-withdrawal route. Both found a held card — `open` with `answered_at` set — where the close guard `from == OpenState && item.AnsweredAt == nil` was skipped, retired it, and `recordCloseAttempt` refused to overwrite the existing record, so the card read `retrying` with no undeliverable marker. Measured live 2026-11-22: **nine `permission` cards** left the open set that way, each closed before the 5-minute bound. `Close` now refuses a no-arm close of a held card with `HELD_CARD_CLOSE_NEEDS_ARM` (409) and the event sink skips it; the board's corner X still closes a held card — the operator's 2026-11-21 ruling — but the close now upgrades a still-`retrying` record to the delivery bound's own `failed` marker, so an abandoned answer is visible rather than reading "still trying" forever.
 
