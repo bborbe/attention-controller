@@ -16,6 +16,47 @@ import (
 	libkv "github.com/bborbe/kv"
 )
 
+// heldCard reports whether the item is a HELD card: an answer the store has
+// recorded but not yet delivered, still in the open set.
+//
+// ⚠️ ONE predicate for every site that asks the question — the close guard, the
+// event sink's skip, and the close-time marker. A site that spelled it
+// differently (`state == open && decision != nil`, say) would disagree with the
+// delivery arm about which cards the hold owns, and the disagreement would show
+// up as a card that is held in one path and closable in another.
+func heldCard(item Item) bool {
+	return item.State == OpenState && item.AnsweredAt != nil
+}
+
+// heldCloseAllowed validates Close's held-card guard.
+//
+// ⚠️ A HELD card — open with answered_at set — is an answer the store recorded
+// but has not delivered. Retiring it abandons that answer: the asking session
+// never receives it and stays parked until its own timeout. The event feed's
+// producer-side clear and the producer-withdrawal route both close by dedup key
+// naming NO arm, and on a held card that is a path racing the delivery arm
+// rather than the operator choosing to drop the answer — measured 2026-11-22 on
+// the live board, nine `permission` cards left the open set `retrying` and
+// carrying no undeliverable marker this way.
+//
+// ⚠️ It refuses ONLY the no-arm close. The board's corner X names
+// `attention-board`, and the operator's 2026-11-21 ruling keeps that control on
+// every dimmed card, held included; its close records the abandonment rather
+// than hiding it (recordCloseAttempt upgrades a still-`retrying` record to the
+// undeliverable marker). See [[Attention Item Schema]] § The corner X's dimmed
+// row and § The held card.
+func heldCloseAllowed(ctx context.Context, item Item, itemID ItemID, answeredBy string) error {
+	if !heldCard(item) || answeredBy != "" {
+		return nil
+	}
+	return errors.Wrapf(
+		ctx,
+		ErrHeldCardCloseNeedsArm,
+		"item %s holds an undelivered answer; a close naming no arm cannot retire it",
+		itemID,
+	)
+}
+
 // heldAnswerRefused reports whether a second answer must be refused because the
 // card is already answered but not yet settled (held).
 //

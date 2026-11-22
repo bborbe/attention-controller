@@ -8,7 +8,9 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
+	libtime "github.com/bborbe/time"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -137,6 +139,27 @@ var _ = Describe("StoreEventSink", func() {
 		Expect(sink.Close(ctx, record("permission", "d", `{}`))).To(Succeed())
 
 		Expect(store.closed).To(Equal([]pkg.ItemID{"store-9"}))
+	})
+
+	// ⚠️ Added 2026-11-22: a held card — open with answered_at set — is an
+	// answer the delivery arm has not carried yet, so this no-arm event close
+	// must leave it alone. The store refuses the same write; skipping here keeps
+	// that refusal out of the job's error log.
+	It("skips a held card, which the delivery arm still owns", func() {
+		answeredAt := libtime.DateTime(time.Date(2026, 11, 22, 0, 0, 0, 0, time.UTC))
+		store.board = pkg.Items{
+			{
+				ItemID:     "store-9",
+				DedupKey:   pkg.DedupKey("iid-1"),
+				State:      pkg.OpenState,
+				AnsweredAt: &answeredAt,
+			},
+		}
+		sink := pkg.NewStoreEventSink(store, nil)
+
+		Expect(sink.Close(ctx, record("permission", "d", `{}`))).To(Succeed())
+
+		Expect(store.closed).To(BeEmpty())
 	})
 
 	It("is a no-op when no open item matches", func() {

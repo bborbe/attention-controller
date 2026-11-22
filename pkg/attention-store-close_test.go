@@ -205,5 +205,75 @@ var _ = Describe("AttentionStore Close", func() {
 			Expect(closed.Decision).To(Equal(pkg.AllowDecision))
 			Expect(closed.AnsweredAt).NotTo(BeNil())
 		})
+
+		// ⚠️ Added 2026-11-22 with the close-path fix. The event feed's
+		// producer-side clear and the producer-withdrawal route both close by
+		// dedup key naming NO arm. On a held card that abandons an answer the
+		// delivery arm has not carried yet, so it is refused — the hold owns
+		// that transition. Measured live 2026-11-22: nine permission cards left
+		// the open set `retrying` and unmarked this way.
+		It("refuses a close naming no arm on a held card", func() {
+			item := pushPermission("gate-permission-held-noarm")
+			_, err := store.Answer(
+				ctx,
+				item.ItemID,
+				"attention-watch-auto",
+				"",
+				pkg.AllowDecision,
+				nil,
+				nil,
+				nil,
+			)
+			Expect(err).To(BeNil())
+
+			_, err = store.Close(ctx, item.ItemID, "", nil)
+			Expect(errors.Is(err, pkg.ErrHeldCardCloseNeedsArm)).To(BeTrue())
+			// `open -> closed` is a row of the table, so "illegal transition"
+			// would name the wrong thing.
+			Expect(errors.Is(err, pkg.ErrIllegalTransition)).To(BeFalse())
+
+			// The read-back is the point: a refusal whose write still landed
+			// would be strictly worse than none.
+			held, err := store.Get(ctx, item.ItemID)
+			Expect(err).To(BeNil())
+			Expect(held.State).To(Equal(pkg.OpenState))
+			Expect(held.ClosedAt).To(BeNil())
+			Expect(held.AnsweredAt).NotTo(BeNil())
+		})
+
+		// ⚠️ The other half of the fix. The corner X may still close a held card
+		// (the operator's 2026-11-21 ruling), but the close is terminal, so a
+		// still-`retrying` answer is now abandoned for good. The record must say
+		// so with the undeliverable marker rather than reading "still trying"
+		// forever.
+		It("marks a still-retrying answer abandoned when an arm closes a held card", func() {
+			item := pushPermission("gate-permission-held-retrying")
+			_, err := store.Answer(
+				ctx,
+				item.ItemID,
+				"attention-watch-auto",
+				"",
+				pkg.AllowDecision,
+				nil,
+				nil,
+				nil,
+			)
+			Expect(err).To(BeNil())
+			_, err = store.RecordAttempt(
+				ctx,
+				item.ItemID,
+				"watcher:attention-watcher:retrying",
+				pkg.RetriedOutcome,
+			)
+			Expect(err).To(BeNil())
+
+			closed, err := store.Close(ctx, item.ItemID, "attention-board", nil)
+			Expect(err).To(BeNil())
+			Expect(closed.State).To(Equal(pkg.ClosedState))
+
+			report, err := store.Delivery(ctx, item.ItemID)
+			Expect(err).To(BeNil())
+			Expect(report.Status).To(Equal(pkg.FailedStatus))
+		})
 	})
 })

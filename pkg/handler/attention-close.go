@@ -102,25 +102,41 @@ func NewAttentionCloseHandler(store pkg.AttentionStore) http.Handler {
 func wrapItemError(ctx context.Context, err error, itemID pkg.ItemID, what string) error {
 	switch {
 	case errors.Is(err, pkg.ErrItemNotFound):
-		return libhttp.WrapWithDetails(
-			errors.Wrap(ctx, err, what),
-			libhttp.ErrorCodeNotFound,
-			http.StatusNotFound,
-			map[string]any{"item_id": itemID.String()},
-		)
+		return wrapItemResponse(ctx, err, what, libhttp.ErrorCodeNotFound, http.StatusNotFound, itemID)
 	case errors.Is(err, pkg.ErrPermissionCloseWithoutDecision):
-		return libhttp.WrapWithDetails(
-			errors.Wrap(ctx, err, what),
-			pkg.ErrorCodePermissionCloseWithoutDecision,
-			http.StatusConflict,
-			map[string]any{"item_id": itemID.String()},
+		return wrapItemResponse(
+			ctx, err, what, pkg.ErrorCodePermissionCloseWithoutDecision, http.StatusConflict, itemID,
+		)
+	case errors.Is(err, pkg.ErrHeldCardCloseNeedsArm):
+		// The card is open and holds an answer the delivery arm has not carried
+		// yet. A caller that names its arm (the board's corner X names
+		// `attention-board`) may still close it; a close naming no arm is a
+		// producer-side clear, and it is refused rather than allowed to abandon
+		// the answer silently.
+		return wrapItemResponse(
+			ctx, err, what, pkg.ErrorCodeHeldCardCloseNeedsArm, http.StatusConflict, itemID,
 		)
 	default:
-		return libhttp.WrapWithDetails(
-			errors.Wrap(ctx, err, what),
-			libhttp.ErrorCodeValidation,
-			http.StatusConflict,
-			map[string]any{"item_id": itemID.String()},
-		)
+		return wrapItemResponse(ctx, err, what, libhttp.ErrorCodeValidation, http.StatusConflict, itemID)
 	}
+}
+
+// wrapItemResponse composes one store-failure response. The close and flag
+// routes both answer with the same `{error: {code, message, details}}` shape and
+// differ only in the code and status, so the shape is built here once rather
+// than repeated per case in both routes.
+func wrapItemResponse(
+	ctx context.Context,
+	err error,
+	what string,
+	code string,
+	status int,
+	itemID pkg.ItemID,
+) error {
+	return libhttp.WrapWithDetails(
+		errors.Wrap(ctx, err, what),
+		code,
+		status,
+		map[string]any{"item_id": itemID.String()},
+	)
 }
