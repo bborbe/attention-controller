@@ -6,8 +6,8 @@
 # guard-mutation.sh — prove every gate guard is RED when its decision is deleted.
 #
 # ⚠️ A focus loop proves a focus MATCHES a spec, not that the spec asserts
-# anything: nineteen empty `It(...)` bodies satisfy it. This harness mutates each
-# guard's branch, runs that guard's focus, and REQUIRES the run to fail with an
+# anything: empty `It(...)` bodies satisfy it. This harness mutates each guard's
+# branch, runs that guard's focus, and REQUIRES the run to fail with an
 # ASSERTION — a compile error is rejected explicitly, because a build break also
 # exits non-zero and would otherwise count as coverage.
 #
@@ -41,6 +41,29 @@ StoreReadFailureSuppressesRepost|pkg/manager-gate-repost.go|in.Open == nil {|in.
 StatePersistsAcrossRestart|pkg/manager-gate-state.go|return prev, true|return map[string]string{}, true
 StateIsScopedPerManager|pkg/manager-gate-state.go|"state-"+managerScope(manager)+".json"|"state.json"
 FailOpenIsSplitByInput|pkg/manager-transcript-source.go|HeadlessLive: headlessLive|HeadlessLive: headlessLive && false
+AnswerRow1NotActedOn|pkg/answered-signal.go|if !wasActedOn(item) {|if false && !wasActedOn(item) {|classifies every vector as declared
+AnswerRow2CloseIsNotAnAnswer|pkg/answered-signal.go|if item.State == ClosedState && item.AnsweredAt == nil {|if false && item.State == ClosedState && item.AnsweredAt == nil {|classifies every vector as declared
+AnswerRow3SkipIsDeclined|pkg/answered-signal.go|if item.Answer != nil && item.Answer.Kind == SkipAnswerKind {|if false && item.Answer != nil && item.Answer.Kind == SkipAnswerKind {|classifies every vector as declared
+AnswerRow4HiddenIsHidden|pkg/answered-signal.go|if item.Answer != nil && item.Answer.Kind == HiddenAnswerKind {|if false && item.Answer != nil && item.Answer.Kind == HiddenAnswerKind {|classifies every vector as declared
+AnswerRow5NoClientIsUnattributed|pkg/answered-signal.go|if item.AnsweredClient == nil {|if false && item.AnsweredClient == nil {|classifies every vector as declared
+AnswerRow6AutomationIsAutomated|pkg/answered-signal.go|if item.AnsweredClient.Automation != nil && *item.AnsweredClient.Automation {|if false && item.AnsweredClient.Automation != nil && *item.AnsweredClient.Automation {|never reads a scripted click as the operator
+AnswerRow7NeedsNoResolvedBy|pkg/answered-signal.go|return AttributionVerdictAttributed,|return AttributionVerdictUnattributed,|does not require resolved_by
+AnswerRenderedVocabularyIsDerived|pkg/answered-signal.go|return "ANSWERED"|return "NOT_OPERATOR_ANSWERED"|derives the rendered vocabulary from the verdict
+AnswerNilWriterDiscards|pkg/answered-signal.go|if r.writer == nil {|if false && r.writer == nil {|discards on a nil writer instead of panicking
+AnswerProducerScoping|pkg/answered-signal.go|string(item.ProducerID) != sessionID|string(item.ProducerID) != sessionID && false|declines an attributed card whose producer is a peer session
+AnswerAtMostOncePerItem|pkg/answered-signal.go|if s.signalled[item.ItemID] {|if false && s.signalled[item.ItemID] {|signals one answered card exactly once over three ticks
+WakeEmitOnlyOnEnter|pkg/manager-wake-job.go|if last, seen := previous[item.ItemID]; seen && !p.stale(last) {|if last, seen := previous[item.ItemID]; seen && false && !p.stale(last) {|TestEmitOnlyOnEnterNotOnRepoll
+WakeRearmReEmits|pkg/manager-wake-job.go|return p.now.Sub(last) > libtime.Duration(p.job.reemitAfter)|return true|TestRearmReEmitsEntryOlderThanReemitAfter
+WakeRoleHumanNeverWakes|pkg/manager-wake-job.go|if p.isHuman(sessionID) {|if false && p.isHuman(sessionID) {|TestRoleHumanNeverWakes
+WakeForeignGoalNeverWakes|pkg/manager-wake-job.go|if scoped && foreign {|if false && scoped && foreign {|TestForeignGoalNeverWakes
+WakeUnownedOnlyFleetManager|pkg/manager-wake-job.go|return p.isFleetManager(manager)|return true|TestUnownedClassGoesToTheFleetManagerOnly
+WakeHop3bDropsLiveNonWorker|pkg/manager-wake-job.go|if p.isManager(sessionID) && p.isLive(sessionID) {|if false && p.isManager(sessionID) && p.isLive(sessionID) {|TestHop3bDropsOnLiveNonWorker
+WakePeerManagerDropped|pkg/manager-wake-job.go|return !p.isLive(spawner)|return true|TestProducerIDScopingIgnoresPeerCard
+WakeBatchWaitsWindow|pkg/manager-wake-job.go|if p.now.Sub(batch.firstSeen) < libtime.Duration(ManagerWakeBatchWindow) {|if p.now.Sub(batch.firstSeen) < 0 {|TestBatchWaitsFullWindow
+WakePruneDropsAnswered|pkg/manager-wake-job.go|if _, ok := kept[item.ItemID]; ok {|if _, ok := kept[item.ItemID]; ok == ok {|TestBatchSkipsCardAnsweredBeforeFlush
+WakeNoPaneParks|pkg/manager-wake-job.go|if parked {|if false && parked {|TestWakeNoPaneParks
+WakeEmissionRecorded|pkg/manager-wake-job.go|func (p *wakePass) recordBatch(manager string, items []Item) {|func (p *wakePass) recordBatch(manager string, items []Item) { return|TestWakeWritesEmissionRecord
+WakePreviousSetMemory|pkg/manager-wake-job.go|previous := p.job.emitted[manager]|previous := map[ItemID]libtime.DateTime{}|TestEmitOnlyOnEnterNotOnRepoll
 EOF
 )
 
@@ -77,9 +100,10 @@ fi
 failures=0
 reds=0
 
-while IFS='|' read -r guard file old new; do
+while IFS='|' read -r guard file old new focus; do
     [ -z "$guard" ] && continue
     case "$guard" in \#*) continue ;; esac
+    FOCUS="${focus:-$guard}"
 
     if ! python3 -I "$WORKDIR/mutate.py" "$file" "$old" "$new"; then
         echo "NO-ASSERTION $guard (mutation anchor not unique)"
@@ -88,7 +112,7 @@ while IFS='|' read -r guard file old new; do
         continue
     fi
 
-    output="$(go test ./pkg -run TestSuite -ginkgo.focus="$guard" -ginkgo.fail-on-empty 2>&1)"
+    output="$(go test ./pkg -run TestSuite -ginkgo.focus="$FOCUS" -ginkgo.fail-on-empty 2>&1)"
     status=$?
     # Restore THIS file from the pre-loop backup after every guard.
     cp "$WORKDIR/$file" "$file"
@@ -100,6 +124,17 @@ while IFS='|' read -r guard file old new; do
     fi
     if printf '%s' "$output" | grep -Eq '\[build failed\]|undefined:|syntax error|cannot use'; then
         echo "COMPILE-ERROR $guard"
+        failures=$((failures + 1))
+        continue
+    fi
+    # ⚠️ A focus that matched NOTHING also exits non-zero under -ginkgo.fail-on-empty.
+    # That is a typo in the table, not a guard proven: reject it explicitly, or every
+    # misspelled focus reads as coverage. The shape, measured 2026-11-22 on a
+    # deliberately wrong focus, is `FAIL! - Detected no specs ran and
+    # --fail-on-empty is set` plus `Ran 0 of 1344 Specs` — note "no specs RAN", not
+    # "matched", and note that the RED pattern below would otherwise claim it.
+    if printf '%s' "$output" | grep -Eqi 'fail-on-empty|Detected no specs|Ran 0 of'; then
+        echo "NO-ASSERTION $guard (focus matched no spec: $FOCUS)"
         failures=$((failures + 1))
         continue
     fi
