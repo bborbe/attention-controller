@@ -910,11 +910,6 @@ func (p *wakePass) keeps(manager string, item Item) bool {
 		// edge, which is the documented contract.)
 		return true
 	}
-	// The unowned class — the task index knows NO task for this session — belongs
-	// to the Fleet Manager alone. ⚠️ Both guards are load-bearing:
-	// `SessionResolved` keeps a real task that merely declares no goal with its
-	// owner, and `ManagerResolved` keeps everything for a manager whose own page
-	// is missing, so a missing page is never a fleet-wide silence.
 	// The unowned class — the task index knows NO task for this session — goes
 	// to the Fleet Manager ALONE.
 	//
