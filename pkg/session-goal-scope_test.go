@@ -46,18 +46,6 @@ var _ = Describe("session goal scope", func() {
 		dir = GinkgoT().TempDir()
 	})
 
-	It("TestGoalScopeManagerResolved — true only when the manager's page carries a goal", func() {
-		writeGoal("Mine", "mgr-1")
-		scope := pkg.NewGoalScope(dir, &stubTaskIndex{})
-
-		Expect(scope.ManagerResolved("mgr-1")).To(BeTrue())
-		Expect(scope.ManagerResolved("fleet-1")).To(BeFalse())
-		Expect(scope.ManagerResolved("")).To(BeFalse())
-		// A vault-less scope answers false, so the unowned routing never fires
-		// where nothing could be read.
-		Expect(pkg.NewGoalScope("", &stubTaskIndex{}).ManagerResolved("mgr-1")).To(BeFalse())
-	})
-
 	It("TestGoalScopeSessionResolved — separates no-task from task-with-no-goal", func() {
 		tasks := &stubTaskIndex{tasks: map[string]pkg.Task{
 			"w-no-goal": {Goals: nil},

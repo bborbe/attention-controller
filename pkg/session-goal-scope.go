@@ -36,16 +36,6 @@ type GoalScope interface {
 	// it, which is the fail-open direction every other hop takes.
 	Foreign(managerSession, session string) (goal string, foreign bool, ok bool)
 
-	// ManagerResolved reports whether the vault names a goal for this manager
-	// session.
-	//
-	// ⚠️ It separates two facts `Foreign`'s single `ok` folds together: "the
-	// SESSION anchors no task" and "the MANAGER has no goal page". The first is
-	// the unowned class the wake job may route; the second is a manager whose
-	// scope could not be read, which must keep everything. Answering one with the
-	// other would turn a missing manager page into a fleet-wide silence.
-	ManagerResolved(managerSession string) bool
-
 	// SessionResolved reports whether the task index knows this session at all.
 	//
 	// ⚠️ This is the fact that separates the cron class from every other
@@ -99,14 +89,6 @@ func (s *goalScope) Foreign(managerSession, session string) (string, bool, bool)
 		}
 	}
 	return task.Goals[0], true, true
-}
-
-// ManagerResolved implements GoalScope.
-func (s *goalScope) ManagerResolved(managerSession string) bool {
-	if s.vaultDir == "" || managerSession == "" {
-		return false
-	}
-	return s.goalOf(managerSession) != ""
 }
 
 // SessionResolved implements GoalScope.

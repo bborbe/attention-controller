@@ -398,39 +398,53 @@ var _ = Describe("manager wake job", func() {
 				{SessionID: "fleet-1", ResolvedAt: "2026-11-21T10:00:00+01:00"},
 			}}
 
-			// The vault can name no owner (ok false) but DOES resolve the managers'
-			// own goals — the unowned class. It goes to the Fleet Manager alone.
+			// The vault can name no owner (ok false): the unowned class. It goes
+			// to the Fleet Manager alone.
 			twoManagers()
 			store.ReadReturns(pkg.Items{wakeItem("item-cron", "exit-observer-keeper")}, nil)
 			flushBatch(newJob(
-				pkg.WithManagerWakeGoalScope(
-					&stubGoalScope{resolved: map[string]bool{"mgr-1": true}, noTask: true},
-				),
+				pkg.WithManagerWakeGoalScope(&stubGoalScope{noTask: true}),
 				pkg.WithManagerWakeFleetRegistry(fleet),
 			))
 			Expect(carrier.sessions()).To(Equal([]string{"fleet-1"}))
 
-			// Positive control: with the manager's own goal unresolved the gate is
-			// kept for every manager — a missing manager page is not a silence.
+			// ⚠️ The regression this change exists for: a manager with NO goal
+			// page is still a real manager (it has a ledger row), so the unowned
+			// card must NOT be kept for it. v0.107.9 gated on `ManagerResolved`
+			// and typed the card to `5a44d47d` here.
 			carrier = newWakeRecordingCarrier()
 			twoManagers()
 			store.ReadReturns(pkg.Items{wakeItem("item-cron", "exit-observer-keeper")}, nil)
 			flushBatch(newJob(
-				pkg.WithManagerWakeGoalScope(&stubGoalScope{}),
+				pkg.WithManagerWakeGoalScope(&stubGoalScope{noTask: true}),
+				pkg.WithManagerWakeFleetRegistry(&stubFleetRegistry{}),
+			))
+			Expect(carrier.recorded()).To(BeEmpty())
+
+			// Positive control: the manager's OWN worker is still typed to it even
+			// though its task does not resolve — the own-worker branch sits above
+			// the unowned routing.
+			carrier = newWakeRecordingCarrier()
+			live["mgr-1"] = true
+			ledger.ListReturns(pkg.SessionLedgerEntries{
+				ledgerRow("mgr-1", "manager", ""),
+				ledgerRow("w-own", "agent", "mgr-1"),
+			}, nil)
+			store.ReadReturns(pkg.Items{wakeItem("item-own", "w-own")}, nil)
+			flushBatch(newJob(
+				pkg.WithManagerWakeGoalScope(&stubGoalScope{noTask: true}),
 				pkg.WithManagerWakeFleetRegistry(fleet),
 			))
-			Expect(carrier.sessions()).To(HaveLen(2))
+			Expect(carrier.sessions()).To(Equal([]string{"mgr-1"}))
 
-			// Positive control: with no live Fleet Manager registration the unowned
-			// card is typed nowhere rather than into every manager.
+			// With no live Fleet Manager registration the unowned card is typed
+			// nowhere rather than into every manager.
 			carrier = newWakeRecordingCarrier()
 			twoManagers()
 			live["fleet-1"] = false
 			store.ReadReturns(pkg.Items{wakeItem("item-cron", "exit-observer-keeper")}, nil)
 			flushBatch(newJob(
-				pkg.WithManagerWakeGoalScope(
-					&stubGoalScope{resolved: map[string]bool{"mgr-1": true}, noTask: true},
-				),
+				pkg.WithManagerWakeGoalScope(&stubGoalScope{noTask: true}),
 				pkg.WithManagerWakeFleetRegistry(fleet),
 			))
 			Expect(carrier.recorded()).To(BeEmpty())
@@ -708,23 +722,14 @@ var _ = Describe("manager wake job", func() {
 // stubGoalScope is the vault's answer, scripted. It exists so a spec can pin the
 // three outcomes the exclusion must distinguish: foreign, mine, and could-not-answer.
 type stubGoalScope struct {
-	goal     string
-	foreign  bool
-	ok       bool
-	resolved map[string]bool
-	noTask   bool
+	goal    string
+	foreign bool
+	ok      bool
+	noTask  bool
 }
 
 func (s *stubGoalScope) Foreign(_, _ string) (string, bool, bool) {
 	return s.goal, s.foreign, s.ok
-}
-
-// ManagerResolved is the manager-side fact the unowned routing needs, keyed per
-// session so a spec can model a Fleet Manager with no goal page. A nil map
-// answers false for every manager, so every spec written before this field keeps
-// its gate — exactly the fail-open the field exists to preserve.
-func (s *stubGoalScope) ManagerResolved(manager string) bool {
-	return s.resolved[manager]
 }
 
 // SessionResolved separates the cron class (no task row) from a real task that

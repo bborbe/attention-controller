@@ -910,14 +910,22 @@ func (p *wakePass) keeps(manager string, item Item) bool {
 		// edge, which is the documented contract.)
 		return true
 	}
-	// The unowned class — the task index knows NO task for this session — belongs
-	// to the Fleet Manager alone. ⚠️ Both guards are load-bearing:
-	// `SessionResolved` keeps a real task that merely declares no goal with its
-	// owner, and `ManagerResolved` keeps everything for a manager whose own page
-	// is missing, so a missing page is never a fleet-wide silence.
+	// The unowned class — the task index knows NO task for this session — goes
+	// to the Fleet Manager ALONE.
+	//
+	// ⚠️ It must not be gated on the manager having a GOAL page. Measured
+	// 2026-11-21 on v0.107.9: `5a44d47d` is a live manager with a ledger row but
+	// no goal page, so a `ManagerResolved` gate left it unresolved, the fail-open
+	// kept everything, and the cron card was typed to it. The same gate also
+	// lost the race against a goal page stamped 79 minutes after the card
+	// (`9d046b08`).
+	//
+	// ⚠️ Every manager this pass considers comes from the ledger (`liveManagers`
+	// iterates `p.owners`), so "the manager's scope cannot be resolved at all"
+	// cannot occur here — there is no unresolvable-manager case to preserve. The
+	// Fleet Manager test is the REGISTRY check, never a vault read.
 	if p.job.goalScope != nil && !scoped &&
-		!p.job.goalScope.SessionResolved(sessionID) &&
-		p.job.goalScope.ManagerResolved(manager) {
+		!p.job.goalScope.SessionResolved(sessionID) {
 		return p.isFleetManager(manager)
 	}
 	if spawner == "" {
