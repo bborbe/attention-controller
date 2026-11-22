@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.108.0
 
 - fix: **an unowned card now goes to the Fleet Manager alone, whatever page type the receiving manager is stamped on.** `v0.107.9` gated the unowned routing on `GoalScope.ManagerResolved`, which reads `24 Goals/` only — so a live manager stamped on a task or topic page read as unresolved, the deliberate fail-open kept everything, and the cron card was typed to it. Measured 2026-11-21, window `16:38:36Z → 17:38:36Z` on the installed `v0.107.9`: `b9a20d26` (producer `exit-observer-keeper`, no task) was typed to **two** non-fleet managers and to the Fleet Manager **zero** times. The gate is gone: every manager a pass considers comes from the ledger (`liveManagers` iterates the ledger), so "the manager's scope cannot be resolved at all" cannot occur there, and the Fleet Manager test stays the registry check (`branch: fleet` in `~/.claude/state/worker-manager`). `GoalScope` loses `ManagerResolved`, which no longer has a caller. ⚠️ This also removes the race the old gate lost: a goal page stamped *after* the card (measured: `9d046b08`, 79 minutes late) is no longer a reason to keep the card.
 
