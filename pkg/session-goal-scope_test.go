@@ -42,6 +42,17 @@ var _ = Describe("session goal scope", func() {
 		Expect(os.WriteFile(path, []byte(body), 0o644)).To(Succeed())
 	}
 
+	writeTopic := func(name, sessionStamp string, goals ...string) {
+		path := filepath.Join(dir, "23 Topics", name+".md")
+		Expect(os.MkdirAll(filepath.Dir(path), 0o755)).To(Succeed())
+		body := "---\npage_type: topic\nclaude_session_id: " + sessionStamp + "\n---\n\n## Goals\n\n"
+		for _, goal := range goals {
+			body += "- [[" + goal + "]] — closes a stage\n"
+		}
+		body += "\n## Related\n\n- [[NotAMember]]\n"
+		Expect(os.WriteFile(path, []byte(body), 0o644)).To(Succeed())
+	}
+
 	BeforeEach(func() {
 		dir = GinkgoT().TempDir()
 	})
@@ -87,6 +98,38 @@ var _ = Describe("session goal scope", func() {
 		_, foreign, ok := pkg.NewGoalScope(dir, tasks).Foreign("mgr-1", "w-foreign")
 		Expect(ok).To(BeTrue())
 		Expect(foreign).To(BeTrue())
+	})
+
+	It("TestGoalScopeResolvesATopicManagersGoalsFromItsTopicPage", func() {
+		// A topic manager is stamped on a topic page, not a goal page. `goalOf`
+		// scans only `24 Goals/`, so before this fallback it resolved no goal and
+		// `Foreign` failed open for every card the topic manager received — it
+		// inherited the whole fleet's traffic.
+		writeTopic("Echo Sky Run", "topic-mgr", "Ship One Level", "World 1 Plays")
+		tasks := &stubTaskIndex{tasks: map[string]pkg.Task{
+			"w-member":  {Goals: []string{"World 1 Plays"}},
+			"w-foreign": {Goals: []string{"Someone Elses Goal"}},
+		}}
+		scope := pkg.NewGoalScope(dir, tasks)
+
+		goal, foreign, ok := scope.Foreign("topic-mgr", "w-member")
+		Expect(ok).To(BeTrue())
+		Expect(foreign).To(BeFalse())
+		Expect(goal).To(BeEmpty())
+
+		goal, foreign, ok = scope.Foreign("topic-mgr", "w-foreign")
+		Expect(ok).To(BeTrue())
+		Expect(foreign).To(BeTrue())
+		Expect(goal).To(Equal("Someone Elses Goal"))
+	})
+
+	It("TestGoalScopeKeepsFailingOpenWhenATopicPageDeclaresNoGoals", func() {
+		writeTopic("Empty Topic", "topic-mgr")
+		tasks := &stubTaskIndex{tasks: map[string]pkg.Task{
+			"w-foreign": {Goals: []string{"Other"}},
+		}}
+		_, _, ok := pkg.NewGoalScope(dir, tasks).Foreign("topic-mgr", "w-foreign")
+		Expect(ok).To(BeFalse())
 	})
 
 	It("TestGoalScopeFailsOpenOnEveryUnresolvableBranch", func() {

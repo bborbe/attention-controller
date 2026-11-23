@@ -7,6 +7,7 @@ package pkg
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/golang/glog"
@@ -66,10 +67,10 @@ func (s *goalScope) Foreign(managerSession, session string) (string, bool, bool)
 	if s.vaultDir == "" || managerSession == "" || session == "" || s.tasks == nil {
 		return "", false, false
 	}
-	managerGoal := s.goalOf(managerSession)
-	if managerGoal == "" {
-		// An operator-started manager writes no task row, so its goal page is the
-		// only place it is stamped — and an unreadable or unstamped vault leaves
+	managerGoals := s.goalsOf(managerSession)
+	if len(managerGoals) == 0 {
+		// An operator-started manager writes no task row, so a page stamp is the
+		// only place it is identified — and an unreadable or unstamped vault leaves
 		// the scope unresolved rather than empty. Excluding on that would be a
 		// fleet-wide silence produced by a missing page.
 		return "", false, false
@@ -84,7 +85,7 @@ func (s *goalScope) Foreign(managerSession, session string) (string, bool, bool)
 		return "", false, false
 	}
 	for _, goal := range task.Goals {
-		if goal == managerGoal {
+		if slices.Contains(managerGoals, goal) {
 			return "", false, true
 		}
 	}
@@ -133,4 +134,74 @@ func (s *goalScope) goalOf(sessionID string) string {
 		return strings.TrimSuffix(entry.Name(), ".md")
 	}
 	return ""
+}
+
+// goalsOf returns every goal the manager session serves.
+//
+// A goal manager is stamped on a goal page and serves exactly that goal. A TOPIC
+// manager is stamped on a topic page instead and serves every goal that page
+// declares. `goalOf` scans only `24 Goals/`, so without this fallback a topic
+// manager resolved no goal at all and `Foreign` failed open for every card typed
+// to it. Measured 2026-11-23: topic manager `a2fcfcc8` (subject "Echo Sky Run")
+// kept every card in the fleet because `23 Topics/Echo Sky Run.md` carries its
+// stamp and no goal page does.
+func (s *goalScope) goalsOf(sessionID string) []string {
+	if goal := s.goalOf(sessionID); goal != "" {
+		return []string{goal}
+	}
+	return s.topicGoalsOf(sessionID)
+}
+
+// topicGoalsOf returns the goals declared by the topic page stamped with
+// sessionID, or nil when no topic page carries that stamp.
+func (s *goalScope) topicGoalsOf(sessionID string) []string {
+	dir := filepath.Join(s.vaultDir, topicDirName)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		glog.V(2).Infof("goal scope: read %s failed: %v", dir, err)
+		return nil
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+			continue
+		}
+		content, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			glog.V(2).Infof("goal scope: read %s failed: %v", entry.Name(), err)
+			continue
+		}
+		if sweepGateOwnerID(frontmatterValue(content, taskSessionKey)) != sessionID {
+			continue
+		}
+		return goalsFromSection(content)
+	}
+	return nil
+}
+
+// goalsFromSection returns the wikilink titles under the page's `## Goals`
+// heading, in order.
+//
+// A topic page lists its member goals there, one per bullet, and no other
+// section on the page is a membership list — so the section boundary carries
+// more weight than the link shape. A page with no such section returns nil,
+// which keeps the fail-open direction.
+func goalsFromSection(content []byte) []string {
+	var goals []string
+	inSection := false
+	for line := range strings.SplitSeq(string(content), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "## ") {
+			inSection = trimmed == "## Goals"
+			continue
+		}
+		if !inSection {
+			continue
+		}
+		for _, match := range taskWikilink.FindAllStringSubmatch(trimmed, -1) {
+			if len(match) > 1 && strings.TrimSpace(match[1]) != "" {
+				goals = append(goals, strings.TrimSpace(match[1]))
+			}
+		}
+	}
+	return goals
 }
