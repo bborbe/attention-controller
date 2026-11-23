@@ -106,6 +106,8 @@ var _ = Describe("session goal scope", func() {
 		// `Foreign` failed open for every card the topic manager received — it
 		// inherited the whole fleet's traffic.
 		writeTopic("Echo Sky Run", "topic-mgr", "Ship One Level", "World 1 Plays")
+		writeGoal("Ship One Level", "")
+		writeGoal("World 1 Plays", "")
 		tasks := &stubTaskIndex{tasks: map[string]pkg.Task{
 			"w-member":  {Goals: []string{"World 1 Plays"}},
 			"w-foreign": {Goals: []string{"Someone Elses Goal"}},
@@ -121,6 +123,20 @@ var _ = Describe("session goal scope", func() {
 		Expect(ok).To(BeTrue())
 		Expect(foreign).To(BeTrue())
 		Expect(goal).To(Equal("Someone Elses Goal"))
+	})
+
+	It("TestGoalScopeFiltersNonGoalTitlesOutOfATopicPage", func() {
+		// A topic page's `## Goals` section is documented as mixing goals and
+		// tasks. Without the goal-file filter those task titles would count as the
+		// manager's goals, the set would be non-empty, and the fail-open would never
+		// fire — handing the topic manager every card in the fleet.
+		writeTopic("Mixed Topic", "topic-mgr", "Some Task", "Another Task")
+		writeGoal("A Real Goal", "")
+		tasks := &stubTaskIndex{tasks: map[string]pkg.Task{
+			"w-foreign": {Goals: []string{"Other"}},
+		}}
+		_, _, ok := pkg.NewGoalScope(dir, tasks).Foreign("topic-mgr", "w-foreign")
+		Expect(ok).To(BeFalse())
 	})
 
 	It("TestGoalScopeKeepsFailingOpenWhenATopicPageDeclaresNoGoals", func() {

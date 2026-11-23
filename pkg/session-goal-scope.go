@@ -173,35 +173,47 @@ func (s *goalScope) topicGoalsOf(sessionID string) []string {
 		if sweepGateOwnerID(frontmatterValue(content, taskSessionKey)) != sessionID {
 			continue
 		}
-		return goalsFromSection(content)
+		return s.existingGoals(goalSectionTitles(content))
 	}
 	return nil
 }
 
-// goalsFromSection returns the wikilink titles under the page's `## Goals`
-// heading, in order.
+// existingGoals keeps only the titles that name a file under `24 Goals/`.
 //
-// A topic page lists its member goals there, one per bullet, and no other
-// section on the page is a membership list — so the section boundary carries
-// more weight than the link shape. A page with no such section returns nil,
-// which keeps the fail-open direction.
-func goalsFromSection(content []byte) []string {
+// ⚠️ The filter is load-bearing, not tidiness. A topic page's `## Goals` section
+// is documented as mixing goals and tasks — `task-index.go` records a real page
+// listing eight entries, all tasks and no goals. Returning those task titles as
+// the manager's goal set would make the set non-empty, so the fail-open in
+// `Foreign` would never fire for a topic manager that serves no goals at all,
+// and the topic manager would be handed every card in the fleet. That is the
+// exact defect this change exists to fix, reached from the other side.
+func (s *goalScope) existingGoals(titles []string) []string {
+	if len(titles) == 0 {
+		return nil
+	}
+	known := s.goalNames()
 	var goals []string
-	inSection := false
-	for line := range strings.SplitSeq(string(content), "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "## ") {
-			inSection = trimmed == "## Goals"
-			continue
-		}
-		if !inSection {
-			continue
-		}
-		for _, match := range taskWikilink.FindAllStringSubmatch(trimmed, -1) {
-			if len(match) > 1 && strings.TrimSpace(match[1]) != "" {
-				goals = append(goals, strings.TrimSpace(match[1]))
-			}
+	for _, title := range titles {
+		if _, ok := known[title]; ok {
+			goals = append(goals, title)
 		}
 	}
 	return goals
+}
+
+// goalNames returns the titles of the pages under `24 Goals/`.
+func (s *goalScope) goalNames() map[string]struct{} {
+	known := map[string]struct{}{}
+	entries, err := os.ReadDir(filepath.Join(s.vaultDir, goalDirName))
+	if err != nil {
+		glog.V(2).Infof("goal scope: read goals dir failed: %v", err)
+		return known
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+			continue
+		}
+		known[strings.TrimSuffix(entry.Name(), ".md")] = struct{}{}
+	}
+	return known
 }
