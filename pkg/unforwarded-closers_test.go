@@ -209,8 +209,39 @@ func (r *unforwardedLogRecorder) Lines() []string {
 	return append([]string(nil), r.lines...)
 }
 
-// The seven specs SC2 pins. The focus string `UnforwardedClosers` selects
-// exactly this Describe, so `Ran 7 of <package total> Specs` is the probe.
+// pushUnforwardedCard mints the card the job re-presents a lost gate as, the
+// way `UnforwardedPushRequest` does: dedup key `unforwarded:<item>`.
+func (f *unforwardedFixture) pushUnforwardedCard(session string, item string) *pkg.Item {
+	card, err := f.store.Push(context.Background(), pkg.PushRequest{
+		ProducerID:      pkg.UnforwardedClosersProducerID,
+		ProducerKind:    pkg.CronProducerKind,
+		LivenessRef:     pkg.LivenessRef("session:" + session),
+		DedupKey:        pkg.DedupKey("unforwarded:" + item),
+		InterruptClass:  "pick",
+		Payload:         pkg.Payload("ask for " + item),
+		AnswerMechanism: pkg.MessageAnswerMechanism,
+	})
+	Expect(err).To(BeNil())
+	return card
+}
+
+// dismissCard answers a card the way the board's ✕ Dismiss does: a skip.
+func (f *unforwardedFixture) dismissCard(card *pkg.Item) {
+	_, err := f.store.Answer(
+		context.Background(),
+		card.ItemID,
+		"attention-board",
+		"",
+		"",
+		&pkg.Answer{Kind: pkg.SkipAnswerKind},
+		nil,
+		nil,
+	)
+	Expect(err).To(BeNil())
+}
+
+// The specs SC2 pins. The focus string `UnforwardedClosers` selects exactly
+// this Describe, so `Ran 12 of <package total> Specs` is the probe.
 var _ = Describe("UnforwardedClosers", func() {
 	var fixture *unforwardedFixture
 
@@ -392,6 +423,56 @@ var _ = Describe("UnforwardedClosers", func() {
 		Expect(result.Outcome()).To(Equal(pkg.UnforwardedOutcomeNone))
 		Expect(result.Findings).To(BeEmpty())
 	})
+
+	// ⚠️ The re-mint loop this arm carried into 2026-11-23. An idle row it has
+	// already re-presented is DELIVERED: counting it again makes the scan re-mint
+	// the same card on every cycle. Measured live: one row
+	// (`f5fef254…`, a `you run:` closer for an already-merged PR) minted 33
+	// `unforwarded:f5fef254` cards across 22 hours.
+	It(
+		"UnforwardedClosers exempts an idle row the job already re-presented as a card",
+		func() {
+			at := unforwardedNow - 600
+			transcript := fixture.writeTranscript(
+				"t6b",
+				"Done.\n🔵 READY · nothing running · you decide\n👤 You: `you run: gh -R o/r pr merge 666 --merge`",
+				at-1,
+			)
+			fixture.openRow("s6b", "fffffff0", "idle", transcript, at, "Stop")
+			fixture.pushUnforwardedCard("s6b", "fffffff0")
+
+			result := fixture.scanner().Scan(context.Background())
+
+			Expect(result.Err).To(BeNil())
+			Expect(result.Outcome()).To(Equal(pkg.UnforwardedOutcomeNone))
+			Expect(result.Findings).To(BeEmpty())
+		},
+	)
+
+	// ⚠️ The DISMISSAL case, and the reason the exemption reads the store's
+	// history rather than an open card. The store dedups a re-push only while
+	// the item is OPEN, so dismissing frees the dedup key — a scan keyed on
+	// "is a card open?" would re-mint right after every dismissal, which is the
+	// loop the operator saw. A dismissed card must still mark its row delivered.
+	It(
+		"UnforwardedClosers exempts an idle row whose re-presentation card was dismissed",
+		func() {
+			at := unforwardedNow - 600
+			transcript := fixture.writeTranscript(
+				"t6c",
+				"Done.\n🔵 READY · nothing running · you decide\n👤 You: `you run: gh -R o/r pr merge 666 --merge`",
+				at-1,
+			)
+			fixture.openRow("s6c", "fffffff1", "idle", transcript, at, "Stop")
+			fixture.dismissCard(fixture.pushUnforwardedCard("s6c", "fffffff1"))
+
+			result := fixture.scanner().Scan(context.Background())
+
+			Expect(result.Err).To(BeNil())
+			Expect(result.Outcome()).To(Equal(pkg.UnforwardedOutcomeNone))
+			Expect(result.Findings).To(BeEmpty())
+		},
+	)
 
 	It("UnforwardedClosers does not report a question row younger than the grace window", func() {
 		fixture.openRow("s7", "gggggggg", "question", "", unforwardedNow-5, "Stop")

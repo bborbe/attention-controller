@@ -562,6 +562,19 @@ func (s *UnforwardedClosersScanner) questionFinding(
 
 // idleFinding reports an idle row whose turn's final assistant message carries
 // a waiting closer, after subtracting the four hook-contract exemptions.
+//
+// ⚠️ A row already DELIVERED is not reported, and that is the same check
+// questionFinding applies — its absence here was the re-mint loop this arm
+// carried into 2026-11-23: one idle row (`f5fef254…`, a `you run:` closer for an
+// already-merged PR) was re-presented as 33 `unforwarded:f5fef254` cards across
+// 22 hours, one per scan cycle.
+//
+// ⚠️ The evidence must come from the store's history, not from an open card.
+// The store dedups a re-push only while the item is OPEN, so DISMISSING a card
+// frees its dedup key for the next push — a scan that asked "is a card open?"
+// would re-mint right after every dismissal, which is the operator-visible
+// loop. `readForwarded` reads the history in ANY state, so a dismissed card
+// still marks its row delivered and the loop is cut at the generator.
 func (s *UnforwardedClosersScanner) idleFinding(
 	ctx context.Context,
 	at float64,
@@ -569,6 +582,9 @@ func (s *UnforwardedClosersScanner) idleFinding(
 	record map[string]any,
 	window unforwardedWindow,
 ) *UnforwardedFinding {
+	if _, ok := window.forwarded[item]; ok {
+		return nil
+	}
 	session := asString(record["session_id"])
 	if suppressedWithin(window.suppressed[session], at) {
 		return nil
