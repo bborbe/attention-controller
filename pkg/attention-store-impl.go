@@ -196,6 +196,13 @@ func (a *attentionStore) Push(ctx context.Context, request PushRequest) (*Item, 
 	// otherwise serve predates this change.
 	defer a.historyPage.invalidate()
 
+	// ⚠️ Normalise BEFORE validating, so a producer cannot mint
+	// `interrupt_class: pick` with nothing to pick. The store is the one mint
+	// path every producer reaches — new pushes and dedup re-pushes alike — so a
+	// `pick` carrying no selectable option is downgraded to `ack` here rather
+	// than asking each producer to remember the rule.
+	request = normalizeInterruptClass(request)
+
 	// ⚠️ The store validates its own request rather than trusting the caller.
 	// The HTTP handler does call `PushRequest.Validate` today, so nothing is
 	// unguarded in production — but `Push` is an exported interface method, and a
