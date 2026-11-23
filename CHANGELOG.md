@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- fix: resolve a topic manager's goals from its topic page, so `GoalScope.Foreign` stops failing open for every card a topic manager receives. `goalOf` scans only `24 Goals/`, so a manager stamped on a `23 Topics/` page resolved no goal and kept the whole fleet's traffic.
+
 ## v0.108.3
 
 - test: **guard 12 ("an expired item never wakes") is now a row in the mutation harness, and the test the criterion named for it cannot observe it.** The property is not a branch — the store's read already drops an expired item — so the mutation is the filter itself (`isExpired` → `return false && …` in `pkg/attention-store-impl.go`), focused on the `isExpired` describe. Measured 2026-11-22: with that mutation applied, `treats the boundary instant as expired`, `expires a deadline one microsecond behind` and `expires a row without a deadline at created_at + 24h` go RED, while **`TestExpiredItemNeverWakes` stays GREEN** — it drives a mocked store (`store.ReadReturns(pkg.Items{wakeItem("item-live","w-1")}, nil)`) whose input never contains the expired card, so its `NotTo(Equal(...))` assertion is vacuous. A harness row focused on that spec would have read as coverage while asserting nothing, which is the failure the harness exists to catch.
