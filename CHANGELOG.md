@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.108.4
 
 - fix: resolve a topic manager's goals from its topic page, so `GoalScope.Foreign` stops failing open for every card a topic manager receives. `goalOf` scans only `24 Goals/`, so a manager stamped on a `23 Topics/` page resolved no goal and kept the whole fleet's traffic.
 
