@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.108.12
 
 - chore: remove stale vulnerability ignore IDs that no longer apply (govulncheck, trivy)
 - fix: **`hack/guard-mutation.sh` rows prove their guards again — 44 rows, `RED=44 guards=44 failures=0`.** Two rows had silently stopped asserting anything. `WakeUnownedOnlyFleetManager` mutated `return p.isFleetManager(manager)`, which now occurs twice in `pkg/manager-wake-job.go` (the unowned class at 980 and the task-with-no-goal class at 994, added 2026-11-24), so the mutator refused a non-unique anchor and the row read `NO-ASSERTION`; it is re-anchored on the unique `!p.job.goalScope.SessionResolved(sessionID) {`. `CloserAskIsNormalized` stayed green when its entity strip was deleted, because its only input was `&nbsp;nothing` — which opens with no ask verb either way, so nothing depended on the strip; a `&nbsp;pick — 1. X` case is added, which reads as an ask only when the entity is stripped.
