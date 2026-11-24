@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.108.6
 
 - fix: **a card can no longer be minted `interrupt_class: pick` with no options, so the board stops asking a question it cannot render.** `pick` promises the operator a choice, but the park: re-post and several watch-job producers declared it on cards carrying an empty option set — the live board measured 2026-11-23T23:22:40Z showed 10 open cards, all `pick` + `park:` + `options: null`, their dedup keys re-emitting every cycle. The store now normalises the class at its single mint path (`Push`, covering both fresh pushes and dedup re-pushes): a `pick` with no selectable option — top-level or per-question — is downgraded to `ack`. It normalises the CLASS and never manufactures placeholder options, because a meaningless selection is the defect. A regression test asserts the class, not merely that `options` is non-empty.
 
