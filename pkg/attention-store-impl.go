@@ -147,6 +147,25 @@ func (o sessionPaneLookupOption) applyAttentionStoreOption(store *attentionStore
 	}
 }
 
+// WithDecisionRecordWriter attaches the writer the store uses to turn an
+// irreversible-infrastructure card into a Decision Record page. Without it the
+// store still suppresses the `pick` — the safety property does not depend on a
+// vault being present — but points the acknowledgement at the record's title
+// rather than a page it cannot write.
+func WithDecisionRecordWriter(writer DecisionRecordWriter) AttentionStoreOption {
+	return decisionRecordWriterOption{writer: writer}
+}
+
+type decisionRecordWriterOption struct {
+	writer DecisionRecordWriter
+}
+
+func (o decisionRecordWriterOption) applyAttentionStoreOption(store *attentionStore) {
+	if store.decisionRecordWriter == nil {
+		store.decisionRecordWriter = o.writer
+	}
+}
+
 type attentionStore struct {
 	store                  libkv.StoreTx[string, Item]
 	liveIndex              libkv.StoreTx[string, Item]
@@ -189,6 +208,12 @@ type attentionStore struct {
 	// deletes an entry on exit, so a dead session's name is gone exactly when
 	// this question is asked).
 	sessionPaneLookup SessionPaneLookup
+	// decisionRecordWriter writes the vault page an irreversible-infrastructure
+	// decision becomes instead of a card. Nil means this store has no vault —
+	// the cluster backend's case — and the rule still suppresses the `pick`,
+	// pointing the acknowledgement at the record's title rather than a page it
+	// could not write.
+	decisionRecordWriter DecisionRecordWriter
 }
 
 func (a *attentionStore) Push(ctx context.Context, request PushRequest) (*Item, error) {
@@ -203,6 +228,17 @@ func (a *attentionStore) Push(ctx context.Context, request PushRequest) (*Item, 
 	// than asking each producer to remember the rule.
 	request = normalizeInterruptClass(request)
 
+	// ⚠️ [[Decision Table]] row 46: an irreversible infrastructure decision is
+	// never a card. It becomes a Decision Record page plus an acknowledgement
+	// pointer, and this is the one mint path every producer reaches. It runs
+	// BEFORE the store's own validation so the rewritten request is what gets
+	// validated, and it runs before the write transaction so a page write cannot
+	// hold the store lock.
+	request, err := applyDecisionRecordRule(ctx, request, a.decisionRecordWriter)
+	if err != nil {
+		return nil, errors.Wrap(ctx, err, "apply decision record rule failed")
+	}
+
 	// ⚠️ The store validates its own request rather than trusting the caller.
 	// The HTTP handler does call `PushRequest.Validate` today, so nothing is
 	// unguarded in production — but `Push` is an exported interface method, and a
@@ -214,7 +250,7 @@ func (a *attentionStore) Push(ctx context.Context, request PushRequest) (*Item, 
 		return nil, errors.Wrap(ctx, err, "validate push request failed")
 	}
 	var result *Item
-	err := a.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
+	err = a.db.Update(ctx, func(ctx context.Context, tx libkv.Tx) error {
 		// ⚠️ FIRST, before `updateExistingIfLive`, because that is what reads the
 		// index. A store migrated from an older version has items and no dedup
 		// marker, so its first push rebuilds the index from the items bucket once,

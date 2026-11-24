@@ -31,16 +31,29 @@ var _ = Describe("manager mint e2e (SC2)", func() {
 		fooState := managerGateTestState(
 			"aaaaaaaa-1111-4000-8000-000000000001", "foo-mgr", fooDecision, fooReason, "foo —")
 		pickState := managerGateTestState(
-			"bbbbbbbb-2222-4000-8000-000000000002", "pick-mgr", pickDecision, pickReason, "pick — 1. X")
+			"bbbbbbbb-2222-4000-8000-000000000002",
+			"pick-mgr",
+			pickDecision,
+			pickReason,
+			"pick — 1. X",
+		)
 
 		for round := 1; round <= 2; round++ {
 			states := ManagerGateStates{fooState, pickState}
 			parked := managerParkedSessions(states)
-			Expect(parked).To(ConsistOf(pickState.SessionID), "round %d: only the pick manager is parked", round)
+			Expect(
+				parked,
+			).To(ConsistOf(pickState.SessionID), "round %d: only the pick manager is parked", round)
 
 			entries := map[string]managerTrackedEntry{
-				managerSessionPrefix(fooState.SessionID):  {FullID: fooState.SessionID, Label: "foo-mgr"},
-				managerSessionPrefix(pickState.SessionID): {FullID: pickState.SessionID, Label: "pick-mgr"},
+				managerSessionPrefix(fooState.SessionID): {
+					FullID: fooState.SessionID,
+					Label:  "foo-mgr",
+				},
+				managerSessionPrefix(pickState.SessionID): {
+					FullID: pickState.SessionID,
+					Label:  "pick-mgr",
+				},
 			}
 			reasons := map[string]string{
 				managerSessionPrefix(fooState.SessionID):  fooReason,

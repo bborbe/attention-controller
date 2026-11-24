@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- feat: **an irreversible infrastructure decision is no longer minted as a `pick` — it becomes a Decision Record page plus an acknowledgement pointer.** [[Decision Table]] row 46 forbids carding a VM move/migration, a cluster or host rebuild, a disk/data move between hosts, or a change of which host carries a workload: the class needs a page (`type: Decision Record`, `needs_review: true`, full decision block + premise line) released only by the operator's own `vault-cli decision ack`. `Push` — the single mint path every producer reaches — now classifies the request from its payload, context, options and dedup key; when it matches, it writes the page into the vault and mints an `ack` card reading `decision waiting for ack: <page>`, with no options. Measured from card `491aab84` (2026-11-24), answered fifteen seconds after it was minted behind two shut-down VMs and 490 GB of volumes. Without a vault configured the store still suppresses the `pick`, pointing at the record title. Backstop: `RiskOf` now escalates on the same consequence class, and the row renders `data-blast-radius` plus a `.blast-radius` line so a card minted anyway states what it touches. A routine pick and a self-contained one-way card still mint unchanged; an answer never sets `reviewed` on the page.
+
 ## v0.108.8
 
 - fix: **a `park:` card is no longer minted for a closer verb that asks nothing, so a manager that ends a turn on any verb outside the four ask verbs (`pick`, `approve:`, `review:`, `you run:`) is not re-parked every pass.** `managerIsAsk` gated on every closer body that was not `nothing` and not `later (on …)`, so any invented verb — and `ack` — read as a live ask. It is now an allow-list of exactly four verbs: an unseen verb reads as no ask, and a regression test asserts both directions (the four gate; the invented verbs `foo —`/`bar:`/`baz —` and the category label `you decide` do not).
