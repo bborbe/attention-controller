@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.108.15
 
 - fix: **a card produced by a MANAGER now resolves its owner from the producer's own page stamp instead of failing open to every manager.** `GoalScope.Foreign` answered `ok=false` whenever `tasks.Lookup` missed, and a manager session anchors no task row — it is stamped on a goal page or a topic page — so every card a manager raised was unresolvable and `keeps()` fell through to the keep-everything branch. Measured 2026-11-24 over a two-hour window on `v0.108.10`: topic manager `05238d74` produced two cards that reached goal managers `146c4ab0` and `9eef5c06`, neither goal declared by its topic (`Flagged Work Opens Reliably`, `Keep Vuln Ignore Lists Free of Stale Entries`), each a single-recipient misroute. `Foreign` now falls back to `goalsOf(session)` — the same goal-page / topic-page resolution a manager's own scope already uses — so a page-stamped producer is answered own-or-foreign instead of unresolved; a producer that is neither task-anchored nor page-stamped still returns `ok=false`, leaving the unowned branch in charge of it. Change set: `pkg/session-goal-scope.go`, `pkg/session-goal-scope_test.go`, `CHANGELOG.md`.
 
