@@ -44,7 +44,18 @@ const ManagerWakeReemitAfter = time.Hour
 // named in the batched line when the window closes. The window exists because a
 // producer session often raises a burst of cards together — a manager turn spent
 // on the first one re-reads a board that is about to carry the rest.
-const ManagerWakeBatchWindow = 60 * time.Second
+//
+// ⚠️ It is HALF THE TICK, and that ceiling is load-bearing. A burst is raised
+// inside ONE assistant turn, so its writes land within milliseconds and a
+// sub-tick window already coalesces them; a window longer than the tick buys no
+// extra coalescing and spends the difference as pure latency on every card. At
+// 60 s it was six times ManagerWakeInterval, so the job's own 10 s wake target
+// could not be met by construction: measured 2026-11-24 over the trailing 24 h,
+// `created_at → emitted_at` had a 90.4 s median with 127 of 212 rows in the
+// 65–130 s bucket, and it was 63 % of the gate-answerer's 142 s
+// gate-created → answered latency. Deriving it from the interval rather than
+// restating a literal keeps the two from drifting apart again.
+const ManagerWakeBatchWindow = ManagerWakeInterval / 2
 
 // ManagerWakeEmissionLogPath is where every pane write is recorded.
 //

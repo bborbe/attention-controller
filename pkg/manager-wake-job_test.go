@@ -174,6 +174,31 @@ var _ = Describe("manager wake job", func() {
 		}, nil)
 	}
 
+	It(
+		"TestBatchWindowStaysWithinOneTick — an entering card is typed within the job's own wake target",
+		func() {
+			// The coalescing window is a delay on every card, so it may never exceed
+			// the tick the job already promises (raised → woken within
+			// ManagerWakeInterval). At 60 s it was six times the tick and the target
+			// was unreachable by construction.
+			Expect(pkg.ManagerWakeBatchWindow).To(BeNumerically("<=", pkg.ManagerWakeInterval))
+
+			oneManager()
+			store.ReadReturns(pkg.Items{wakeItem("item-1", "w-1")}, nil)
+			job := newJob()
+
+			// The first pass buffers the card; nothing is typed inside the window.
+			Expect(job.WakeOnce(context.Background())).To(Succeed())
+			Expect(carrier.recorded()).To(BeEmpty())
+
+			// ONE tick later — not the old 60 s — the card is typed.
+			advance(pkg.ManagerWakeInterval)
+			Expect(job.WakeOnce(context.Background())).To(Succeed())
+			Expect(carrier.recorded()).To(HaveLen(1))
+			Expect(carrier.recorded()[0].text).To(ContainSubstring("item-1"))
+		},
+	)
+
 	It("TestEmitOnlyOnEnterNotOnRepoll — emits only entries that enter the kept set", func() {
 		oneManager()
 		store.ReadReturns(pkg.Items{wakeItem("item-1", "w-1"), wakeItem("item-2", "w-1")}, nil)
@@ -763,7 +788,7 @@ var _ = Describe("manager wake job", func() {
 		job := newJob()
 
 		Expect(job.WakeOnce(context.Background())).To(Succeed())
-		advance(30 * stdtime.Second)
+		advance(pkg.ManagerWakeBatchWindow / 2)
 		store.ReadReturns(pkg.Items{
 			wakeItem("item-1", "w-1"),
 			wakeItem("item-2", "w-1"),
@@ -771,8 +796,8 @@ var _ = Describe("manager wake job", func() {
 		Expect(job.WakeOnce(context.Background())).To(Succeed())
 		Expect(carrier.recorded()).To(BeEmpty())
 
-		// 60 s after the FIRST card, both ride one line.
-		advance(30 * stdtime.Second)
+		// One full window after the FIRST card, both ride one line.
+		advance(pkg.ManagerWakeBatchWindow / 2)
 		Expect(job.WakeOnce(context.Background())).To(Succeed())
 		Expect(carrier.recorded()).To(HaveLen(1))
 		Expect(carrier.recorded()[0].text).To(ContainSubstring("item-1"))
