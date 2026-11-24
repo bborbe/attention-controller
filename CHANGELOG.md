@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.108.9
 
 - fix: **`make install` now proves the promote leg ran, so a stale binary can no longer exit 0.** `install-bin` re-reads the installed file's `vcs.revision` after the `mv` and exits non-zero unless it equals the staged build's, refuses an unstamped build, and sweeps `<bin>.new.<pid>` stages whose pid is dead; `install` passes the checkout's HEAD as `cmd/deploy -expect`, which aborts (exit 3) before any restart when the installed commit is not that HEAD. Measured 2026-11-24: `make install` exited 0 while the live binary and `.prev` both stayed at the previous commit, because the gate polled the identity of the stale file — the same shape as the 2026-11-23 run.
 
