@@ -291,9 +291,16 @@ var _ = Describe("manager wake job", func() {
 		flushBatch(newJob())
 		Expect(carrier.sessions()).To(ConsistOf("mgr-1"))
 
-		// Positive control: this manager ITSELF is kept.
+		// Positive control: a card whose SESSION is this manager but which
+		// another producer raised is still kept — only a card the manager
+		// ITSELF produced is dropped.
 		carrier = newWakeRecordingCarrier()
-		store.ReadReturns(pkg.Items{wakeItem("item-1", "mgr-1")}, nil)
+		store.ReadReturns(pkg.Items{{
+			ItemID:      "item-1",
+			ProducerID:  "elsewhere",
+			LivenessRef: "session:mgr-1",
+			Payload:     "gate item-1",
+		}}, nil)
 		flushBatch(newJob())
 		Expect(carrier.sessions()).To(ConsistOf("mgr-1"))
 
@@ -302,6 +309,43 @@ var _ = Describe("manager wake job", func() {
 		store.ReadReturns(pkg.Items{wakeItem("item-1", "ghost")}, nil)
 		flushBatch(newJob())
 		Expect(carrier.sessions()).To(ConsistOf("mgr-1", "mgr-2"))
+	})
+
+	It("TestSelfProducedCardNeverWakesItsProducer — a manager is never typed its own card", func() {
+		oneManager()
+		store.ReadReturns(pkg.Items{wakeItem("item-1", "mgr-1")}, nil)
+
+		// The card the manager raised is buffered-then-flushed like any other;
+		// the drop happens in the keep-set, so nothing is ever typed and nothing
+		// is recorded.
+		flushBatch(newJob())
+		Expect(carrier.sessions()).To(BeEmpty())
+		Expect(sink.records).To(BeEmpty())
+
+		// ⚠️ The test is on ProducerID, not on the liveness_ref-resolved session.
+		// A card the manager PRODUCED for its own worker is still the manager's
+		// own card, and is dropped even though liveness_ref names the worker.
+		carrier = newWakeRecordingCarrier()
+		store.ReadReturns(pkg.Items{{
+			ItemID:      "item-1",
+			ProducerID:  "mgr-1",
+			LivenessRef: "session:w-1",
+			Payload:     "gate item-1",
+		}}, nil)
+		flushBatch(newJob())
+		Expect(carrier.sessions()).To(BeEmpty())
+
+		// Positive control: the same worker card raised by ANOTHER producer is
+		// kept, so the drop is scoped to the producer rather than to the worker.
+		carrier = newWakeRecordingCarrier()
+		store.ReadReturns(pkg.Items{{
+			ItemID:      "item-1",
+			ProducerID:  "elsewhere",
+			LivenessRef: "session:w-1",
+			Payload:     "gate item-1",
+		}}, nil)
+		flushBatch(newJob())
+		Expect(carrier.sessions()).To(ConsistOf("mgr-1"))
 	})
 
 	It("TestHop3bDropsOnLiveNonWorker — a live peer manager's own gate is dropped", func() {
@@ -313,8 +357,10 @@ var _ = Describe("manager wake job", func() {
 		}, nil)
 		store.ReadReturns(pkg.Items{wakeItem("item-1", "mgr-2")}, nil)
 
+		// The card is mgr-2's OWN (producer == mgr-2): mgr-1 drops it as a live
+		// peer's gate, and mgr-2 drops it as self-produced. Neither is typed.
 		flushBatch(newJob())
-		Expect(carrier.sessions()).To(ConsistOf("mgr-2"))
+		Expect(carrier.sessions()).To(BeEmpty())
 
 		// Positive control: a dead peer manager's own gate is kept by the peer.
 		carrier = newWakeRecordingCarrier()

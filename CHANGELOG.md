@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- fix: **a manager is no longer typed its own operator card every round — a card whose `producer_id` is the receiving manager is dropped from that manager's gate feed, and the card stays open on the operator's board with its expiry unchanged.** `keeps()` kept every item whose resolved session was the manager itself (`self — the manager's own gate is the one it exists to see`), so a manager that raised a `decision`-risk card had it typed back as `attention gate: …` on every re-emit. The producer can neither answer it (that would fabricate an operator decision) nor dismiss it (`closed` is terminal, so dismissing would retire an unanswered operator card), so it replayed until expiry. Measured 2026-11-24: card `374a0226…` was typed **six** times to its own producer `0551a75f` across one day. The drop is keyed on `producer_id`, not on the `liveness_ref`-resolved session, so a card this manager merely OWNS (raised by another producer) is still kept. Regression tests assert the drop, the producer-over-liveness-ref precedence, and that an other-producer card for the same worker still wakes the manager.
+
 ## v0.108.8
 
 - fix: **a `park:` card is no longer minted for a closer verb that asks nothing, so a manager that ends a turn on any verb outside the four ask verbs (`pick`, `approve:`, `review:`, `you run:`) is not re-parked every pass.** `managerIsAsk` gated on every closer body that was not `nothing` and not `later (on …)`, so any invented verb — and `ack` — read as a live ask. It is now an allow-list of exactly four verbs: an unseen verb reads as no ask, and a regression test asserts both directions (the four gate; the invented verbs `foo —`/`bar:`/`baz —` and the category label `you decide` do not).

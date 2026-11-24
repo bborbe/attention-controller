@@ -25,21 +25,28 @@ row counts as a manager (`/supervisor:open` starts managers without a row), whil
 ## The kept-set rule
 
 For each live manager and each open item, the item's **session** is the item's `liveness_ref`
-(`session:` / `owner:` / `heartbeat:`) or its `producer_id`. The item's **spawner** is that
-session's `spawner_session_id` in the ledger.
+(`session:` / `owner:` / `heartbeat:`) or its `producer_id`. The item's **producer** is its
+`producer_id` alone. The item's **spawner** is that session's `spawner_session_id` in the ledger.
+
+**Drop the item first when its `producer_id` is the manager itself.** A card the manager raised is
+not a gate it can act on: the answer routes back to the producer, and `closed` is terminal, so
+typing it back replays a line the manager can neither answer (that would fabricate an operator
+decision) nor dismiss (that would retire an unanswered operator card) until it expires. The test is
+on `producer_id`, never on the resolved session: a card this manager merely **owns** — raised by
+another producer — is still kept.
 
 Keep the item when:
 
 | Case | Why |
 |---|---|
-| the session is the manager itself | its own gate is the one it exists to see |
+| the session is the manager itself, raised by another producer | its own gate is the one it exists to see |
 | the session's spawner is the manager | its own worker's panes are the panes it exists to see |
 | the spawner is not a manager | no manager owns the item (`worker-spawner`) |
 | the spawner is a manager but not live | **dead-manager keep** — nobody can act on it, so every manager inherits it |
 | there is no spawner and the session is not a live manager | unowned keep — an unknown destination is not a reason to drop |
 | nothing resolved at all | unowned keep |
 
-Drop the item when, and only when, its owner is a **live peer manager**:
+Otherwise drop the item when, and only when, its owner is a **live peer manager**:
 
 - the spawner is a live manager other than this one (`peer-manager`);
 - or the session has no spawner and is itself a live manager other than this one (`peer-manager-own`, hop 3b).
