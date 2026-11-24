@@ -91,6 +91,10 @@ func run(ctx context.Context, args []string) (deploy.Outcome, error) {
 		"bin", filepath.Join(home, ".local", "bin", "attention-controller"),
 		"installed binary path",
 	)
+	expect := flags.String(
+		"expect", "",
+		"commit the board must serve; empty means the installed binary's own identity",
+	)
 	prev := flags.String("prev", "", "previous binary path (default <bin>.prev)")
 	label := flags.String("label", defaultLabel, "launchd job label")
 	plist := flags.String(
@@ -120,6 +124,7 @@ func run(ctx context.Context, args []string) (deploy.Outcome, error) {
 		},
 		Prober: newProber(*board),
 		Binary: &deploy.FileBinary{Bin: *bin, Prev: *prev},
+		Expect: *expect,
 		Board: &deploy.HTTPCardPoster{
 			URL: strings.TrimSuffix(*board, "/") + "/api/1.0/attention",
 		},
