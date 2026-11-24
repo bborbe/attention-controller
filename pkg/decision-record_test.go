@@ -152,6 +152,14 @@ var _ = Describe("Decision Record mint path", func() {
 				To(Equal(pkg.NoConsequence))
 		})
 
+		It("does not classify a negated instruction", func() {
+			Expect(pkg.RequestConsequence(request(
+				"no-migrate",
+				"Do not migrate the VM to nuke.",
+				"approve — leave it",
+			))).To(Equal(pkg.NoConsequence))
+		})
+
 		It("states a blast radius for an infrastructure item and none for a routine one", func() {
 			Expect(pkg.BlastRadiusOf(pkg.Item{
 				Payload: pkg.Payload(storedSpecimenPayload),
@@ -226,6 +234,41 @@ var _ = Describe("Decision Record mint path", func() {
 			},
 		)
 
+		It("does not rewrite a notification about a completed migration", func() {
+			// An `ack` card reports; it does not ask. Converting it to a decision
+			// pointer would be a category error and would lose its message.
+			payload := "Migration of sun's 2 k3s VMs to nuke completed successfully."
+			item, err := store.Push(ctx, pkg.PushRequest{
+				ProducerID:      "session-a",
+				ProducerKind:    pkg.SessionProducerKind,
+				LivenessRef:     "session:session-a",
+				DedupKey:        "migration-completed-sun-nuke",
+				InterruptClass:  pkg.AckInterruptClass,
+				Payload:         pkg.Payload(payload),
+				AnswerMechanism: pkg.AckAnswerMechanism,
+			})
+			Expect(err).To(BeNil())
+			Expect(item.InterruptClass).To(Equal(pkg.AckInterruptClass))
+			Expect(item.Payload.String()).To(Equal(payload))
+			Expect(decisionRecordPages(vaultDir)).To(BeEmpty())
+		})
+
+		It("does not rewrite an approve gate, which carries its own answer routing", func() {
+			item, err := store.Push(ctx, pkg.PushRequest{
+				ProducerID:      "session-a",
+				ProducerKind:    pkg.SessionProducerKind,
+				LivenessRef:     "session:session-a",
+				DedupKey:        "approve-migrate-sun-vms",
+				InterruptClass:  pkg.ApproveInterruptClass,
+				Payload:         pkg.Payload("Approve migrating sun's 2 k3s VMs to nuke?"),
+				AnswerMechanism: pkg.PermissionAnswerMechanism,
+			})
+			Expect(err).To(BeNil())
+			Expect(item.InterruptClass).To(Equal(pkg.ApproveInterruptClass))
+			Expect(item.AnswerMechanism).To(Equal(pkg.PermissionAnswerMechanism))
+			Expect(decisionRecordPages(vaultDir)).To(BeEmpty())
+		})
+
 		It("reuses the page when the same decision is pushed again", func() {
 			_, err := store.Push(ctx, storedSpecimen())
 			Expect(err).To(BeNil())
@@ -249,6 +292,51 @@ var _ = Describe("Decision Record mint path", func() {
 			after := readFile(pages[0])
 			Expect(after).To(Equal(before))
 			Expect(after).ToNot(ContainSubstring("reviewed: true"))
+		})
+	})
+
+	Describe("Decision Record writer", func() {
+		It("does not reuse a page whose dedup key merely shares a prefix", func() {
+			_, err := store.Push(ctx, request(
+				"sun", "move `vg0/data` from `hell` to `nuke-dev`",
+				"approve — move the volume", "decline — leave it where it is",
+			))
+			Expect(err).To(BeNil())
+			_, err = store.Push(ctx, request(
+				"sun-extra", "move `vg1/data` from `hell` to `nuke-dev`",
+				"approve — move the volume", "decline — leave it where it is",
+			))
+			Expect(err).To(BeNil())
+			Expect(decisionRecordPages(vaultDir)).To(HaveLen(2))
+
+			// Re-pushing "sun" must reuse its own page, not the "sun-extra" page a
+			// substring lookup would have matched.
+			_, err = store.Push(ctx, request(
+				"sun", "move `vg0/data` from `hell` to `nuke-dev`",
+				"approve — move the volume", "decline — leave it where it is",
+			))
+			Expect(err).To(BeNil())
+			Expect(decisionRecordPages(vaultDir)).To(HaveLen(2))
+		})
+
+		It("quotes and escapes an unsafe dedup key and still reuses its page", func() {
+			key := pkg.DedupKey(`weird "key\with\backslash`)
+			_, err := store.Push(ctx, request(
+				key, "move `vg0/data` from `hell` to `nuke-dev`",
+				"approve — move the volume", "decline — leave it where it is",
+			))
+			Expect(err).To(BeNil())
+			pages := decisionRecordPages(vaultDir)
+			Expect(pages).To(HaveLen(1))
+			Expect(readFile(pages[0])).To(ContainSubstring(
+				`dedup_key: "weird \"key\\with\\backslash"`,
+			))
+			_, err = store.Push(ctx, request(
+				key, "move `vg0/data` from `hell` to `nuke-dev`",
+				"approve — move the volume", "decline — leave it where it is",
+			))
+			Expect(err).To(BeNil())
+			Expect(decisionRecordPages(vaultDir)).To(HaveLen(1))
 		})
 	})
 })

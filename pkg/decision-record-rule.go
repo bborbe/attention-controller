@@ -33,6 +33,24 @@ func applyDecisionRecordRule(
 	request PushRequest,
 	writer DecisionRecordWriter,
 ) (PushRequest, error) {
+	// Only a decision card can be routed to a record. A notification (`ack`
+	// class) about a completed migration, or an `approve`/`permission` gate that
+	// carries its own answer routing, must not be silently converted into an
+	// optionless ack card: that would discard its context/options and change how
+	// it is answered. The rule targets the `pick`/`message` card — the shape the
+	// 2026-11-24 incident took — and leaves the other classes to the render-time
+	// risk backstop (RiskOf).
+	if request.InterruptClass != PickInterruptClass ||
+		request.AnswerMechanism != MessageAnswerMechanism {
+		return request, nil
+	}
+	// No writer means no vault to write the page into (the cluster backend's
+	// case). Do not rewrite the card to point at a page that will never exist:
+	// leave the request as a pick, which the render backstop escalates to `risk`
+	// with its blast radius. A fake pointer is worse than an honestly-risky card.
+	if writer == nil {
+		return request, nil
+	}
 	if RequestConsequence(request) != IrreversibleInfraConsequence {
 		return request, nil
 	}
@@ -44,13 +62,9 @@ func applyDecisionRecordRule(
 	if err := rewritten.Validate(ctx); err != nil {
 		return request, errors.Wrap(ctx, err, "validate decision record card failed")
 	}
-	pagePath := ""
-	if writer != nil {
-		written, err := writer.Write(ctx, record)
-		if err != nil {
-			return request, errors.Wrap(ctx, err, "write decision record failed")
-		}
-		pagePath = written
+	pagePath, err := writer.Write(ctx, record)
+	if err != nil {
+		return request, errors.Wrap(ctx, err, "write decision record failed")
 	}
 	return decisionRecordPushRequest(request, record, pagePath), nil
 }

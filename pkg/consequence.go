@@ -91,11 +91,39 @@ var irreversibleInfraPatterns = []*regexp.Regexp{
 func ConsequenceOf(texts ...string) Consequence {
 	body := strings.Join(texts, "\n")
 	for _, pattern := range irreversibleInfraPatterns {
-		if pattern.MatchString(body) {
+		for _, loc := range pattern.FindAllStringIndex(body, -1) {
+			// A negated operation ("do NOT migrate the VM", "no rebuild") is not
+			// an instruction to do it. Skip it rather than classify the text.
+			if negatedBefore(body, loc[0]) {
+				continue
+			}
 			return IrreversibleInfraConsequence
 		}
 	}
 	return NoConsequence
+}
+
+// negationBefore matches a negation token within a short, sentence-bounded
+// window ending at the candidate operation, so "do NOT migrate the VM" is not
+// classified as a migration instruction.
+//
+// ⚠️ The window stops at sentence punctuation ([^.!?\n]) as well as at 40
+// characters, so a negation in an earlier, unrelated sentence — e.g. the
+// specimen's "a rebuild would not." — does not suppress a later genuine
+// instruction. It is deliberately conservative: it may miss a real migration
+// stated in a negating sentence, which is the safe direction (the mint-path rule
+// is the real fix; the classifier is the backstop).
+var negationBefore = regexp.MustCompile(
+	`(?i)(?:\b(?:not|never|no|without|avoid)\b|n['’]t)[^.!?\n]{0,40}$`,
+)
+
+// negatedBefore reports whether the operation starting at start is negated.
+func negatedBefore(body string, start int) bool {
+	windowStart := start - 60
+	if windowStart < 0 {
+		windowStart = 0
+	}
+	return negationBefore.MatchString(body[windowStart:start])
 }
 
 // RequestConsequence returns the consequence class a push request describes.

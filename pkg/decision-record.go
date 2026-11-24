@@ -201,14 +201,30 @@ func recommendedLabel(options AnswerOptions) string {
 // yamlScalarPattern matches a value that is safe as a YAML plain scalar.
 var yamlScalarPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
 
-// yamlScalar quotes a value when it contains characters a YAML plain scalar
-// would misread. Dedup keys are usually slug-shaped, but a producer may send
-// anything, and an unquoted `a: b` would silently become a mapping.
+// yamlReservedScalar matches a value a YAML reader would coerce to a non-string
+// (a bool, null, or a number), so a dedup key of `true` or `123` is quoted
+// rather than read back as a boolean or int.
+var yamlReservedScalar = regexp.MustCompile(
+	`(?i)^(?:true|false|yes|no|on|off|null|~|-?\d+(?:\.\d+)?)$`,
+)
+
+// yamlScalar quotes a value when a YAML plain scalar would misread it: a value
+// with special characters, or one a reader would coerce to a non-string (a
+// bool, null, or a number). Inside the quotes it escapes backslash and the
+// other YAML double-quote specials, so a producer-controlled dedup key cannot
+// break the frontmatter or change type on read-back.
 func yamlScalar(value string) string {
-	if yamlScalarPattern.MatchString(value) {
+	if yamlScalarPattern.MatchString(value) && !yamlReservedScalar.MatchString(value) {
 		return value
 	}
-	return `"` + strings.ReplaceAll(value, `"`, `\"`) + `"`
+	replacer := strings.NewReplacer(
+		`\`, `\\`,
+		`"`, `\"`,
+		"\n", `\n`,
+		"\r", `\r`,
+		"\t", `\t`,
+	)
+	return `"` + replacer.Replace(value) + `"`
 }
 
 // NewVaultDecisionRecordWriter returns a writer that puts Decision Record pages
@@ -287,11 +303,24 @@ func (w *vaultDecisionRecordWriter) findByDedupKey(
 		if readErr != nil {
 			continue
 		}
-		if strings.Contains(frontmatterOf(string(body)), needle) {
+		if frontmatterHasLine(frontmatterOf(string(body)), needle) {
 			return filepath.Join(decisionRecordDir, entry.Name()), true
 		}
 	}
 	return "", false
+}
+
+// frontmatterHasLine reports whether the frontmatter block carries the exact
+// line, so a dedup key `sun` never matches a different key `sun-extra` — a
+// substring match would link the operator (and their `decision ack`) to the
+// wrong page.
+func frontmatterHasLine(frontmatter string, line string) bool {
+	for _, candidate := range strings.Split(frontmatter, "\n") {
+		if strings.TrimRight(candidate, " \r") == line {
+			return true
+		}
+	}
+	return false
 }
 
 // frontmatterOf returns the frontmatter block of a markdown document, or an
