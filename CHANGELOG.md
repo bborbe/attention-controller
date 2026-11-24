@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- fix: **a card can no longer be minted `interrupt_class: pick` with no options, so the board stops asking a question it cannot render.** `pick` promises the operator a choice, but the park: re-post and several watch-job producers declared it on cards carrying an empty option set — the live board measured 2026-11-23T23:22:40Z showed 10 open cards, all `pick` + `park:` + `options: null`, their dedup keys re-emitting every cycle. The store now normalises the class at its single mint path (`Push`, covering both fresh pushes and dedup re-pushes): a `pick` with no selectable option — top-level or per-question — is downgraded to `ack`. It normalises the CLASS and never manufactures placeholder options, because a meaningless selection is the defect. A regression test asserts the class, not merely that `options` is non-empty.
+
 ## v0.108.5
 
 - fix: **an `idle` row the unforwarded-closer scan already re-presented is no longer re-presented on every cycle — the check now honours delivery evidence for idle rows, not only for question rows.** `questionFinding` skipped a row the store or the delivery ledger proved delivered; `idleFinding` did not, so a session's `you run:` closer was carded again every 900 s for as long as the closer stayed in the 24 h window. Measured live 2026-11-23: one row (`f5fef254…`, `gh -R bborbe/trading-lib pr merge 666 --merge --admin`, a PR merged the day before) minted **33** `unforwarded:f5fef254` cards across 22 hours. ⚠️ The exemption reads the store's history in ANY state, so **dismissing a card no longer frees its row**: the store dedups a re-push only while the item is OPEN, and a scan keyed on "is a card open?" would re-mint immediately after every dismissal — which is exactly the loop the operator saw.
