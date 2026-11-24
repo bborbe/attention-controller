@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- chore: remove stale vulnerability ignore IDs that no longer apply (govulncheck, trivy)
+
 ## v0.108.11
 
 - fix: **an answered card is no longer re-typed into its producing manager after a controller restart — the fresh-entry transcript guard searches the wide tail, so a delivery the previous process typed is found instead of duplicated.** The pane carrier's at-most-once proof is `PaneDelivery.PendingLine` plus the transcript byte mark, both held only in the job's in-process `pending` map. A restart drops them, and the fresh-entry guard then fell back to the 256 KiB tail — so on a busy manager transcript a copy typed before the restart sat outside the tail, the guard missed it, and the answer was typed a second time at the retry backoff. Measured 2026-11-24 in manager `69d69dec`: one answer (`73b2ee96…`) arrived at `07:14:52` and again at `07:19:55`, ~1.75 MB apart. `HoldsLine` now treats a non-nil zero `since` as the wide tail (the last `transcriptReaderScanMaxBytes`), and the carrier asks for it only when the durable delivery report says an arm already looked (`retrying`/`failed`) — a never-attempted card keeps the cheap narrow-tail check, so a first delivery is unaffected and an undelivered answer is still typed (no silent drop). Regression tests drive the real job + store + carrier + transcript reader across a simulated restart: the second cycle types nothing, while a genuinely absent copy is still delivered.
