@@ -37,24 +37,22 @@ const ManagerWakeInterval = 10 * time.Second
 // `0` would mean "re-type on every pass", the hot loop this replaces.
 const ManagerWakeReemitAfter = time.Hour
 
-// ManagerWakeBatchWindow is how long one producer session's entering cards are
-// coalesced before they are typed as one line.
+// ManagerWakeBatchWindow is the longest one producer session's entering cards
+// are coalesced before they are typed as one line.
 //
 // ⚠️ It is a DELAY, never a drop: every card that enters inside the window is
 // named in the batched line when the window closes. The window exists because a
 // producer session often raises a burst of cards together — a manager turn spent
 // on the first one re-reads a board that is about to carry the rest.
 //
-// ⚠️ It is HALF THE TICK, and that ceiling is load-bearing. A burst is raised
-// inside ONE assistant turn, so its writes land within milliseconds and a
-// sub-tick window already coalesces them; a window longer than the tick buys no
-// extra coalescing and spends the difference as pure latency on every card. At
-// 60 s it was six times ManagerWakeInterval, so the job's own 10 s wake target
-// could not be met by construction: measured 2026-11-24 over the trailing 24 h,
-// `created_at → emitted_at` had a 90.4 s median with 127 of 212 rows in the
-// 65–130 s bucket, and it was 63 % of the gate-answerer's 142 s
-// gate-created → answered latency. Deriving it from the interval rather than
-// restating a literal keeps the two from drifting apart again.
+// ⚠️ It is a CAP, not the expected wait, and it may never exceed the tick. A
+// batch is normally typed on the first pass that finds it quiet, so the delay a
+// lone card pays is one tick; the window only bounds a batch that keeps growing.
+// A window longer than ManagerWakeInterval therefore buys no coalescing a tick
+// does not already give and spends the difference as pure latency on every card,
+// which is how a 60 s value here left the wake unable to meet the interval's own
+// `raised → woken` target. Deriving it from the interval rather than restating a
+// literal keeps the two from drifting apart again.
 const ManagerWakeBatchWindow = ManagerWakeInterval / 2
 
 // ManagerWakeEmissionLogPath is where every pane write is recorded.
@@ -268,6 +266,11 @@ type managerWakeBatch struct {
 	// from it, so a later arrival joins the batch instead of restarting the
 	// clock.
 	firstSeen libtime.DateTime
+	// lastSeen is when the batch last grew. A pass whose clock is later than
+	// this saw no new card, so the producer has stopped raising and the line may
+	// be typed — that is what bounds the delay at one tick rather than at the
+	// window.
+	lastSeen libtime.DateTime
 	// items are the batch's items, in the order they entered.
 	items []Item
 }
@@ -544,7 +547,7 @@ func (p *wakePass) wakeStore(manager string) {
 }
 
 // enqueue adds one item to its producer session's batch, starting the batch's
-// window on the first item.
+// window on the first item and recording the arrival that keeps it open.
 func (p *wakePass) enqueue(manager string, item Item) {
 	byProducer := p.job.pending[manager]
 	if byProducer == nil {
@@ -554,7 +557,7 @@ func (p *wakePass) enqueue(manager string, item Item) {
 	producer := wakeProducerKey(item)
 	batch := byProducer[producer]
 	if batch == nil {
-		batch = &managerWakeBatch{firstSeen: p.now}
+		batch = &managerWakeBatch{firstSeen: p.now, lastSeen: p.now}
 		byProducer[producer] = batch
 	}
 	for _, pending := range batch.items {
@@ -563,6 +566,7 @@ func (p *wakePass) enqueue(manager string, item Item) {
 		}
 	}
 	batch.items = append(batch.items, item)
+	batch.lastSeen = p.now
 }
 
 // wakeProducerKey groups an item by the session that raised it. An item naming
@@ -618,7 +622,13 @@ func (p *wakePass) flushPending(
 	sort.Strings(producers)
 	for _, producer := range producers {
 		batch := byProducer[producer]
-		if p.now.Sub(batch.firstSeen) < libtime.Duration(ManagerWakeBatchWindow) {
+		// A batch closes when the producer has gone quiet — a pass later than the
+		// last arrival, so no card joined this time — or when it has stayed open
+		// for the whole window. The quiet test is what keeps the delay at one
+		// tick: without it the flush waits for the window to elapse, and a lone
+		// card is then typed only on the pass after that, which is two ticks.
+		quiet := p.now.Sub(batch.lastSeen) > 0
+		if !quiet && p.now.Sub(batch.firstSeen) < libtime.Duration(ManagerWakeBatchWindow) {
 			continue
 		}
 		typed, parked, reason := p.typeBatch(manager, batch, kept)

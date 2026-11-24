@@ -177,10 +177,8 @@ var _ = Describe("manager wake job", func() {
 	It(
 		"TestBatchWindowStaysWithinOneTick — an entering card is typed within the job's own wake target",
 		func() {
-			// The coalescing window is a delay on every card, so it may never exceed
-			// the tick the job already promises (raised → woken within
-			// ManagerWakeInterval). At 60 s it was six times the tick and the target
-			// was unreachable by construction.
+			// The window is a delay on every card, so it may never exceed the tick
+			// the job already promises (raised → woken within ManagerWakeInterval).
 			Expect(pkg.ManagerWakeBatchWindow).To(BeNumerically("<=", pkg.ManagerWakeInterval))
 
 			oneManager()
@@ -766,21 +764,50 @@ var _ = Describe("manager wake job", func() {
 		}))
 	})
 
-	It("TestBatchWaitsFullWindow — a card is delayed, never typed inside the window", func() {
+	It("TestBatchFlushesOnTheFirstQuietPass — a lone card pays one pass, never the window", func() {
 		oneManager()
 		store.ReadReturns(pkg.Items{wakeItem("item-1", "w-1")}, nil)
 		job := newJob()
 
-		Expect(job.WakeOnce(context.Background())).To(Succeed())
-		advance(pkg.ManagerWakeBatchWindow - stdtime.Second)
+		// The pass that buffers the card types nothing: the card may be the first
+		// of a burst.
 		Expect(job.WakeOnce(context.Background())).To(Succeed())
 		Expect(carrier.recorded()).To(BeEmpty())
 
+		// The next pass sees no new card, so the producer has stopped raising and
+		// the line is typed — one tick, not the whole window.
 		advance(stdtime.Second)
 		Expect(job.WakeOnce(context.Background())).To(Succeed())
 		Expect(carrier.recorded()).To(HaveLen(1))
 		Expect(carrier.recorded()[0].text).To(ContainSubstring("item-1"))
 	})
+
+	It(
+		"TestBatchWindowCapsAGrowingBatch — a batch that never goes quiet is still typed at the window",
+		func() {
+			oneManager()
+			names := []string{"item-0", "item-1", "item-2", "item-3", "item-4", "item-5", "item-6"}
+			items := make(pkg.Items, 0, len(names))
+			job := newJob()
+
+			// A card on every pass keeps the batch from ever being quiet, so only the
+			// window can close it.
+			for i, name := range names {
+				items = append(items, wakeItem(name, "w-1"))
+				store.ReadReturns(items, nil)
+				Expect(job.WakeOnce(context.Background())).To(Succeed())
+				if i < len(names)-1 {
+					advance(stdtime.Second)
+				}
+			}
+
+			// Exactly one line, carrying the cards that had accumulated when the window
+			// elapsed; the card raised after that opened a fresh batch.
+			Expect(carrier.recorded()).To(HaveLen(1))
+			Expect(carrier.recorded()[0].text).To(ContainSubstring("item-0"))
+			Expect(carrier.recorded()[0].text).To(ContainSubstring("item-5"))
+		},
+	)
 
 	It("TestBatchJoinsLaterArrival — the window runs from the first card", func() {
 		oneManager()
