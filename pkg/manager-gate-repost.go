@@ -8,13 +8,16 @@ import (
 	libtime "github.com/bborbe/time"
 )
 
-// ManagerOpenView is the store's OPEN items, projected to the two fields the
-// re-post decision reads. A nil view means the store read FAILED.
+// ManagerOpenView is the store's OPEN items, projected to the fields the
+// re-post and retract decisions read. A nil view means the store read FAILED.
 type ManagerOpenView struct {
 	// Producers holds every open item's producer_id (the full session id).
 	Producers map[string]struct{}
 	// DedupKeys holds every open item's dedup key.
 	DedupKeys map[string]struct{}
+	// ParkItems maps each open `park:<sid8>` dedup key to its ItemID, so a card
+	// whose session has stopped being parked can be closed by the retract leg.
+	ParkItems map[string]ItemID
 }
 
 // ManagerParkAnswer is one answered `park:<sid8>` history row.
@@ -61,6 +64,14 @@ type ManagerRepostRequest struct {
 	Payload         Payload
 	AnswerMechanism AnswerMechanism
 	Options         AnswerOptions // always empty for an ack card
+}
+
+// ManagerRetractRequest is one open `park:<sid8>` card to close because its
+// session is tracked by this manager but is no longer parked. ItemID is the
+// store handle the wake job closes by.
+type ManagerRetractRequest struct {
+	ItemID   ItemID
+	DedupKey DedupKey
 }
 
 // managerRepostCandidate is one parked session that survived the open-card test.

@@ -694,6 +694,9 @@ func (p *wakePass) wakeTranscript(manager string) {
 	for _, request := range outcome.Reposts {
 		p.postRepost(manager, request)
 	}
+	for _, retract := range outcome.Retracts {
+		p.retractPark(manager, retract)
+	}
 }
 
 // managerStoreViews reads the store's open and answered views, and ONLY when the
@@ -704,10 +707,14 @@ func (p *wakePass) wakeTranscript(manager string) {
 func (p *wakePass) managerStoreViews(
 	states ManagerGateStates,
 ) (*ManagerOpenView, *ManagerAnswerView) {
-	if len(managerParkedSessions(states)) == 0 {
-		return nil, nil
-	}
+	// The open view is free — `p.items` was already read for the pass (a failed
+	// read aborts the pass in newPass). The retract leg needs it even when
+	// nothing is parked, so it is built unconditionally; the answered view (an
+	// extra History read) stays gated on a park, since only the mint path reads it.
 	open := managerOpenView(p.items)
+	if len(managerParkedSessions(states)) == 0 {
+		return open, nil
+	}
 	answered, err := p.job.store.History(
 		p.ctx, 0, 0, HistoryFilter{DedupKeyPrefix: "park:"},
 	)
@@ -724,6 +731,7 @@ func managerOpenView(items Items) *ManagerOpenView {
 	view := &ManagerOpenView{
 		Producers: make(map[string]struct{}, len(items)),
 		DedupKeys: make(map[string]struct{}, len(items)),
+		ParkItems: make(map[string]ItemID),
 	}
 	for _, item := range items {
 		if item.ProducerID != "" {
@@ -731,6 +739,9 @@ func managerOpenView(items Items) *ManagerOpenView {
 		}
 		if item.DedupKey != "" {
 			view.DedupKeys[string(item.DedupKey)] = struct{}{}
+			if strings.HasPrefix(string(item.DedupKey), "park:") {
+				view.ParkItems[string(item.DedupKey)] = item.ItemID
+			}
 		}
 	}
 	return view
@@ -842,6 +853,22 @@ func (p *wakePass) postRepost(manager string, request ManagerRepostRequest) {
 			"job=manager-wake action=repost_error manager=%s error=%v", manager, err,
 		)
 	}
+}
+
+// retractPark closes one open park card whose session has stopped being parked.
+// A producer retract carries no answering arm — the manager is withdrawing its
+// own card, not recording an operator decision.
+func (p *wakePass) retractPark(manager string, retract ManagerRetractRequest) {
+	if _, err := p.job.store.Close(p.ctx, retract.ItemID, "", nil); err != nil {
+		glog.Warningf(
+			"job=manager-wake action=park_retract_error manager=%s key=%s error=%v",
+			manager, retract.DedupKey, err,
+		)
+		return
+	}
+	glog.V(2).Infof(
+		"job=manager-wake action=park_retracted manager=%s key=%s", manager, retract.DedupKey,
+	)
 }
 
 // stale reports whether an entry's last emission is old enough to re-type. The
