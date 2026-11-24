@@ -176,4 +176,55 @@ var _ = Describe("session goal scope", func() {
 			Foreign("mgr-1", "w-nogoal")
 		Expect(ok).To(BeFalse())
 	})
+
+	It("TestGoalScopeResolvesAManagerProducerFromItsPage", func() {
+		// A MANAGER raises cards too, and a manager session anchors no task, so
+		// `tasks.Lookup` misses. Before this fallback `Foreign` answered ok=false
+		// and `keeps()` failed open to EVERY manager — measured 2026-11-24: topic
+		// manager `05238d74` produced two cards that reached goal managers
+		// `146c4ab0` and `9eef5c06`, neither goal declared by its topic.
+		writeGoal("Flagged Work", "goal-mgr")
+		writeTopic("Trading Strategy Factory", "topic-mgr", "Strategy Development Factory MVP")
+		writeGoal("Strategy Development Factory MVP", "factory-goal-mgr")
+		tasks := &stubTaskIndex{tasks: map[string]pkg.Task{
+			"w-factory": {Goals: []string{"Strategy Development Factory MVP"}},
+		}}
+		scope := pkg.NewGoalScope(dir, tasks)
+
+		// The topic manager's card, seen by a goal manager whose goal the topic
+		// does NOT declare: foreign, and resolved — the misroute W1 recorded.
+		goal, foreign, ok := scope.Foreign("goal-mgr", "topic-mgr")
+		Expect(ok).To(BeTrue(), "a page-stamped manager must resolve, not fail open")
+		Expect(foreign).To(BeTrue())
+		Expect(goal).To(Equal("Strategy Development Factory MVP"))
+
+		// The same card seen by the goal manager that DOES serve its goal: own.
+		_, foreign, ok = scope.Foreign("factory-goal-mgr", "topic-mgr")
+		Expect(ok).To(BeTrue())
+		Expect(foreign).To(BeFalse())
+
+		// A producer that is neither task-anchored nor page-stamped stays
+		// unresolvable — the unowned branch owns that case, not this helper.
+		_, _, ok = scope.Foreign("goal-mgr", "32ef2f41-nobody")
+		Expect(ok).To(BeFalse())
+	})
+
+	It("TestManagerProducerIsOwnedByTheGoalManagerOfItsGoal", func() {
+		// A goal manager stamped on a goal page produces a card about that same
+		// goal. It must be OWN, not foreign: the page-stamped fallback must not
+		// turn a manager's own cards against it.
+		writeGoal("Flagged Work", "goal-mgr")
+		tasks := &stubTaskIndex{}
+		scope := pkg.NewGoalScope(dir, tasks)
+
+		_, foreign, ok := scope.Foreign("goal-mgr", "goal-mgr")
+		Expect(ok).To(BeTrue())
+		Expect(foreign).To(BeFalse())
+
+		// And another goal's manager sees it as foreign.
+		writeGoal("Keep Vuln Lists", "other-mgr")
+		_, foreign, ok = pkg.NewGoalScope(dir, tasks).Foreign("other-mgr", "goal-mgr")
+		Expect(ok).To(BeTrue())
+		Expect(foreign).To(BeTrue())
+	})
 })

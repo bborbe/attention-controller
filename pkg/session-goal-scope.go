@@ -77,7 +77,15 @@ func (s *goalScope) Foreign(managerSession, session string) (string, bool, bool)
 	}
 	task, ok := s.tasks.Lookup(session)
 	if !ok {
-		return "", false, false
+		// The producer is not a task-anchored worker — it may be a MANAGER, and a
+		// manager raises cards too. Measured 2026-11-24: topic manager `05238d74`
+		// produced two cards that reached goal managers `146c4ab0` and `9eef5c06`,
+		// neither goal declared by its topic. `tasks.Lookup` missed, `Foreign`
+		// answered ok=false, and `keeps()` failed open to EVERY manager.
+		//
+		// Its subject is stamped on its own page, so resolve from there instead of
+		// failing open. `goalsOf` covers both stamps — a goal page and a topic page.
+		return s.foreignBySubject(session, managerGoals)
 	}
 	if len(task.Goals) == 0 {
 		// The task anchors a session but declares no goal. Distinct from foreign
@@ -90,6 +98,28 @@ func (s *goalScope) Foreign(managerSession, session string) (string, bool, bool)
 		}
 	}
 	return task.Goals[0], true, true
+}
+
+// foreignBySubject answers Foreign for a producer that anchors no task — a
+// MANAGER, whose subject is stamped on a goal or topic page rather than written
+// into a task row.
+//
+// ⚠️ ok stays false when the page yields no goal at all: a session that is
+// neither task-anchored nor page-stamped is genuinely unresolvable, and the
+// caller's unowned branch owns that case. This helper only stops a RESOLVABLE
+// manager from being treated as unresolvable, which is what let its cards
+// through to every manager.
+func (s *goalScope) foreignBySubject(session string, managerGoals []string) (string, bool, bool) {
+	producerGoals := s.goalsOf(session)
+	if len(producerGoals) == 0 {
+		return "", false, false
+	}
+	for _, goal := range producerGoals {
+		if slices.Contains(managerGoals, goal) {
+			return "", false, true
+		}
+	}
+	return producerGoals[0], true, true
 }
 
 // SessionResolved implements GoalScope.
