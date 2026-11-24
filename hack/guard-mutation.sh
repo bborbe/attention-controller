@@ -56,7 +56,7 @@ WakeEmitOnlyOnEnter|pkg/manager-wake-job.go|if last, seen := previous[item.ItemI
 WakeRearmReEmits|pkg/manager-wake-job.go|return p.now.Sub(last) > libtime.Duration(p.job.reemitAfter)|return true|TestRearmReEmitsEntryOlderThanReemitAfter
 WakeRoleHumanNeverWakes|pkg/manager-wake-job.go|if p.isHuman(sessionID) {|if false && p.isHuman(sessionID) {|TestRoleHumanNeverWakes
 WakeForeignGoalNeverWakes|pkg/manager-wake-job.go|if scoped && foreign {|if false && scoped && foreign {|TestForeignGoalNeverWakes
-WakeUnownedOnlyFleetManager|pkg/manager-wake-job.go|return p.isFleetManager(manager)|return true|TestUnownedClassGoesToTheFleetManagerOnly
+WakeUnownedOnlyFleetManager|pkg/manager-wake-job.go|!p.job.goalScope.SessionResolved(sessionID) {|p.job.goalScope.SessionResolved(sessionID) {|TestUnownedClassGoesToTheFleetManagerOnly
 WakeHop3bDropsLiveNonWorker|pkg/manager-wake-job.go|if p.isManager(sessionID) && p.isLive(sessionID) {|if false && p.isManager(sessionID) && p.isLive(sessionID) {|TestHop3bDropsOnLiveNonWorker
 WakePeerManagerDropped|pkg/manager-wake-job.go|return !p.isLive(spawner)|return true|TestProducerIDScopingIgnoresPeerCard
 WakeSelfProducedNeverWakes|pkg/manager-wake-job.go|if strings.TrimPrefix(string(item.ProducerID), sessionProducerPrefix) == manager {|if false && strings.TrimPrefix(string(item.ProducerID), sessionProducerPrefix) == manager {|TestSelfProducedCardNeverWakesItsProducer
