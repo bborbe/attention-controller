@@ -59,6 +59,7 @@ WakeForeignGoalNeverWakes|pkg/manager-wake-job.go|if scoped && foreign {|if fals
 WakeUnownedOnlyFleetManager|pkg/manager-wake-job.go|return p.isFleetManager(manager)|return true|TestUnownedClassGoesToTheFleetManagerOnly
 WakeHop3bDropsLiveNonWorker|pkg/manager-wake-job.go|if p.isManager(sessionID) && p.isLive(sessionID) {|if false && p.isManager(sessionID) && p.isLive(sessionID) {|TestHop3bDropsOnLiveNonWorker
 WakePeerManagerDropped|pkg/manager-wake-job.go|return !p.isLive(spawner)|return true|TestProducerIDScopingIgnoresPeerCard
+WakeSelfProducedNeverWakes|pkg/manager-wake-job.go|if strings.TrimPrefix(string(item.ProducerID), sessionProducerPrefix) == manager {|if false && strings.TrimPrefix(string(item.ProducerID), sessionProducerPrefix) == manager {|TestSelfProducedCardNeverWakesItsProducer
 WakeBatchWaitsWindow|pkg/manager-wake-job.go|if p.now.Sub(batch.firstSeen) < libtime.Duration(ManagerWakeBatchWindow) {|if p.now.Sub(batch.firstSeen) < 0 {|TestBatchWaitsFullWindow
 WakePruneDropsAnswered|pkg/manager-wake-job.go|if _, ok := kept[item.ItemID]; ok {|if _, ok := kept[item.ItemID]; ok == ok {|TestBatchSkipsCardAnsweredBeforeFlush
 WakeNoPaneParks|pkg/manager-wake-job.go|if parked {|if false && parked {|TestWakeNoPaneParks

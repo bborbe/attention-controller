@@ -25,21 +25,28 @@ row counts as a manager (`/supervisor:open` starts managers without a row), whil
 ## The kept-set rule
 
 For each live manager and each open item, the item's **session** is the item's `liveness_ref`
-(`session:` / `owner:` / `heartbeat:`) or its `producer_id`. The item's **spawner** is that
-session's `spawner_session_id` in the ledger.
+(`session:` / `owner:` / `heartbeat:`) or its `producer_id`. The item's **producer** is its
+`producer_id` alone. The item's **spawner** is that session's `spawner_session_id` in the ledger.
+
+**Drop the item first when its `producer_id` is the manager itself.** A card the manager raised is
+not a gate it can act on: the answer routes back to the producer, and `closed` is terminal, so
+typing it back replays a line the manager can neither answer (that would fabricate an operator
+decision) nor dismiss (that would retire an unanswered operator card) until it expires. The test is
+on `producer_id`, never on the resolved session: a card this manager merely **owns** — raised by
+another producer — is still kept.
 
 Keep the item when:
 
 | Case | Why |
 |---|---|
-| the session is the manager itself | its own gate is the one it exists to see |
+| the session is the manager itself, raised by another producer | its own gate is the one it exists to see |
 | the session's spawner is the manager | its own worker's panes are the panes it exists to see |
 | the spawner is not a manager | no manager owns the item (`worker-spawner`) |
 | the spawner is a manager but not live | **dead-manager keep** — nobody can act on it, so every manager inherits it |
 | there is no spawner and the session is not a live manager | unowned keep — an unknown destination is not a reason to drop |
 | nothing resolved at all | unowned keep |
 
-Drop the item when, and only when, its owner is a **live peer manager**:
+Otherwise drop the item when, and only when, its owner is a **live peer manager**:
 
 - the spawner is a live manager other than this one (`peer-manager`);
 - or the session has no spawner and is itself a live manager other than this one (`peer-manager-own`, hop 3b).
@@ -74,8 +81,9 @@ turn instead of one turn per card.
 
 - A later arrival joins the open buffer: the window runs from the **first** item, never from the
   latest one.
-- A card that leaves the kept set before the window closes (answered, expired, or dropped to a live
-  peer manager) is removed from the buffer — no wake is needed for it.
+- A card that leaves the kept set before the window closes (answered, expired, dropped as
+  self-produced, or dropped to a live peer manager) is removed from the buffer — no wake is needed
+  for it.
 - A card that is still in the kept set is **never dropped**, only delayed: the buffered line names
   every id it carries.
 - The per-entry last-emission dedupe still applies. A stale entry re-enters the buffer and is
@@ -122,7 +130,11 @@ if not spawner and is_manager(session_id, ledger):
 ```
 
 The branches deliberately NOT ported — ownership claims and the `role: human` exclusion — remain
-out of scope: the kept set is wide by design.
+out of scope: the kept set is wide by design, apart from the self-produced drop above.
+
+⚠️ The **self-produced drop** is NOT in the Python port. It was added 2026-11-24 after a manager was
+typed its own `decision` card six times: it sits above every branch in the pseudo-code and is keyed
+on `producer_id`, so an implementer following that block reproduces neither the branch nor the rule.
 
 **Fleet routing for the unowned class was added 2026-11-21.** A card whose producer anchors no task
 (`GoalScope.Foreign` answers `ok=false`) while the manager's OWN goal resolves is typed to the live
