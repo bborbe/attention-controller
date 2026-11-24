@@ -401,6 +401,16 @@ func expectCloserAskIsNormalized() {
 	Expect(decision).To(Equal(ManagerGateCleared))
 	Expect(reason).To(Equal("idle:no-ask"))
 
+	// ⚠️ The entity strip is only load-bearing when an entity HIDES a verb.
+	// `&nbsp;nothing` passes with or without the strip (neither spelling opens
+	// with an ask verb), so on its own it let the guard be deleted with the
+	// suite still green. An entity-padded `pick` flips: stripped it reads as an
+	// ask, unstripped the body opens with `&` and reads as none.
+	By("reading an entity-padded ask verb as an ask, so the entity strip is load-bearing")
+	entityAskBody, entityAskFound := managerCloserBody("👤 You: &nbsp;pick — 1. X")
+	Expect(entityAskFound).To(BeTrue())
+	Expect(managerIsAsk(entityAskBody)).To(BeTrue())
+
 	By("reading a later (on …) wait as no ask")
 	Expect(managerIsAsk("later (on PR #12 merge): nothing to do")).To(BeFalse())
 
