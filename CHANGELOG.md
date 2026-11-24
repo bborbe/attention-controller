@@ -11,6 +11,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 ## Unreleased
 
 - log `entrypoint`, `tty`, `verdict` and `reason` on a non-ok pane-delivery attempt, so the residual permission-timeout `undeliverable` shape (a pane-path retry on a session that looks headless) is diagnosable from the log rather than inferred post-hoc
+- chore: remove stale vulnerability ignore IDs that no longer apply (govulncheck, trivy)
 
 ## v0.108.11
 
