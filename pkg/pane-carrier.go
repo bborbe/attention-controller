@@ -223,7 +223,7 @@ func (c *paneCarrier) TypeIntoPane(
 	// inferred after the fact from a store whose session record is deleted on
 	// exit. Logged only on a non-ok verdict: a delivered answer needs no
 	// diagnosis, and reading the tty costs a `ps` exec.
-	if verdict != DeliveryOK {
+	if verdict != DeliveryOK && glog.V(2) {
 		entry, _ := c.writer.SessionEntry(ctx, delivery.SessionID)
 		glog.V(2).Infof(
 			"carrier=type-into-pane item=%s session=%s entrypoint=%q tty=%q verdict=%s reason=%q",
