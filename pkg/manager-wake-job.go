@@ -928,6 +928,20 @@ func (p *wakePass) keeps(manager string, item Item) bool {
 		!p.job.goalScope.SessionResolved(sessionID) {
 		return p.isFleetManager(manager)
 	}
+	// ⚠️ The task-with-no-goal class. `Foreign` answers `ok=false` here too — the
+	// session anchors a real task, but that task declares no `goals:` — and
+	// `SessionResolved` is TRUE for exactly that case, so the branch above misses
+	// it and hop 3b would keep the card for EVERY manager. No goal manager owns
+	// such a card, so it goes to the Fleet Manager alone: same destination, and
+	// the same reason, as the unowned class.
+	//
+	// Measured 2026-11-24: three cards of this class were typed to two goal
+	// managers (`2410e53c`, `146c4ab0`) inside one hour, while the Fleet Manager
+	// was the only manager that could act on them.
+	if p.job.goalScope != nil && !scoped &&
+		p.job.goalScope.SessionResolved(sessionID) {
+		return p.isFleetManager(manager)
+	}
 	if spawner == "" {
 		// HOP 3b — the item's own session IS the manager, and an operator-started
 		// manager was never spawned, so the spawn edge has nothing to say.
