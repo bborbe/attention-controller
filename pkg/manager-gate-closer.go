@@ -47,19 +47,39 @@ func managerNormalizeCloser(text string) string {
 	return strings.Join(strings.Fields(replaced), " ")
 }
 
-// managerIsAsk reports whether a closer body is a live ask. Not an ask: the
-// `nothing` panel and a `later (on …)` parked wait.
+// managerAskVerbs is the closed set of closer verbs that read as a live ask. A
+// closer body opening with any of these asks the operator to act. The set is
+// deliberately closed: an unseen verb reads as no ask, so a park is never
+// manufactured for a turn that asked nothing.
+var managerAskVerbs = []string{
+	"pick",
+	"approve:",
+	"review:",
+	"you run:",
+}
+
+// managerIsAsk reports whether a closer body is a live ask: one that opens with
+// exactly one of the four verbs in managerAskVerbs. Not an ask: the `nothing`
+// panel, a `later (on …)` parked wait, and every verb outside the four.
 //
 // ⚠️ It takes the RAW body and normalizes internally. That is why it is the only
 // caller of managerNormalizeCloser: wrapping the argument in that helper would
 // double-normalize and leave it with no caller.
 func managerIsAsk(body string) bool {
-	verb := managerNormalizeCloser(body)
+	verb := strings.ToLower(managerNormalizeCloser(body))
 	if verb == "" {
 		return false
 	}
-	if strings.HasPrefix(strings.ToLower(verb), managerNothingVerb) {
+	if strings.HasPrefix(verb, managerNothingVerb) {
 		return false
 	}
-	return !strings.HasPrefix(verb, managerParkedVerb)
+	if strings.HasPrefix(verb, managerParkedVerb) {
+		return false
+	}
+	for _, ask := range managerAskVerbs {
+		if strings.HasPrefix(verb, ask) {
+			return true
+		}
+	}
+	return false
 }

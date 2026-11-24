@@ -10,6 +10,7 @@ import (
 	"maps"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/bborbe/errors"
@@ -46,6 +47,9 @@ type ManagerGateOutcome struct {
 	Records []ManagerGateRecord
 	// Reposts are the cards to post for parks the store lost.
 	Reposts []ManagerRepostRequest
+	// Retracts are the open park cards to close because their session is no
+	// longer parked.
+	Retracts []ManagerRetractRequest
 }
 
 // NewManagerGateTracker creates the tracker.
@@ -108,12 +112,13 @@ func (t *managerGateTracker) Observe(
 	ages = managerAdvanceParkAges(ages, parkedNow, now)
 	records = append(records, managerAgedRecords(in.States, ages, now)...)
 	reposts := managerObserveReposts(in, parkedNow, ages)
+	retracts := managerObserveRetracts(in, parkedNow)
 
 	if err := t.persist(ctx, statePath, parkPath, prev, nextPrev, loaded, ages); err != nil {
 		return ManagerGateOutcome{}, err
 	}
 	t.pending[in.Manager] = gatedNow
-	return ManagerGateOutcome{Records: records, Reposts: reposts}, nil
+	return ManagerGateOutcome{Records: records, Reposts: reposts, Retracts: retracts}, nil
 }
 
 // persist writes the state and the park ages, skipping a file whose content did
@@ -201,6 +206,51 @@ func managerObserveReposts(
 		ParkSince: since,
 		Reasons:   reasons,
 	})
+}
+
+// managerObserveRetracts returns the open `park:<sid8>` cards to close: a card
+// whose session this manager still tracks but which is no longer parked.
+//
+// ⚠️ Scoped to THIS manager's tracked set (`in.States`), never every open park
+// card: `p.items` is the whole store, so an unscoped sweep would close another
+// manager's worker's card. A session absent from `in.States` is not this
+// manager's to retract — it is lost sight of, and its card expires on its own.
+func managerObserveRetracts(
+	in ManagerGateObserveInput,
+	parked []string,
+) []ManagerRetractRequest {
+	if in.Open == nil {
+		return nil
+	}
+	parkedSet := make(map[string]struct{}, len(parked))
+	for _, session := range parked {
+		parkedSet[managerSessionPrefix(session)] = struct{}{}
+	}
+	tracked := make(map[string]struct{}, len(in.States))
+	for _, state := range in.States {
+		tracked[managerSessionPrefix(state.SessionID)] = struct{}{}
+	}
+	retracts := make([]ManagerRetractRequest, 0)
+	for key, itemID := range in.Open.ParkItems {
+		session := strings.TrimPrefix(key, "park:")
+		if session == "" || session == key {
+			continue
+		}
+		if _, ok := tracked[session]; !ok {
+			continue
+		}
+		if _, ok := parkedSet[session]; ok {
+			continue
+		}
+		retracts = append(retracts, ManagerRetractRequest{
+			ItemID:   itemID,
+			DedupKey: DedupKey(key),
+		})
+	}
+	sort.Slice(retracts, func(i, j int) bool {
+		return retracts[i].DedupKey < retracts[j].DedupKey
+	})
+	return retracts
 }
 
 // managerGatedSessions returns, sorted, the session ids gated this pass.
