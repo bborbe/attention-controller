@@ -346,6 +346,29 @@ var _ = Describe("manager wake job", func() {
 		}}, nil)
 		flushBatch(newJob())
 		Expect(carrier.sessions()).To(ConsistOf("mgr-1"))
+
+		// A producer written with the `session:` marker names the same manager
+		// (`sessionIDFromItem` strips it as a last resort).
+		carrier = newWakeRecordingCarrier()
+		store.ReadReturns(pkg.Items{{
+			ItemID:     "item-1",
+			ProducerID: "session:mgr-1",
+			Payload:    "gate item-1",
+		}}, nil)
+		flushBatch(newJob())
+		Expect(carrier.sessions()).To(BeEmpty())
+
+		// An item whose `liveness_ref` resolves EMPTY but whose producer is the
+		// manager is still the manager's own card.
+		carrier = newWakeRecordingCarrier()
+		store.ReadReturns(pkg.Items{{
+			ItemID:      "item-1",
+			ProducerID:  "mgr-1",
+			LivenessRef: "session:   ",
+			Payload:     "gate item-1",
+		}}, nil)
+		flushBatch(newJob())
+		Expect(carrier.sessions()).To(BeEmpty())
 	})
 
 	It("TestHop3bDropsOnLiveNonWorker — a live peer manager's own gate is dropped", func() {

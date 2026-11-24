@@ -902,10 +902,6 @@ func (p *wakePass) stale(last libtime.DateTime) bool {
 //   - unowned         — no spawner resolved at all;
 //   - liveness unknown — a peer drop requires a RESOLVED live peer.
 func (p *wakePass) keeps(manager string, item Item) bool {
-	sessionID := sessionIDFromItem(item)
-	if sessionID == "" {
-		return true
-	}
 	// ⚠️ A card the manager ITSELF produced is not a gate it can act on: the
 	// answer routes back to the producer, and `closed` is terminal, so
 	// dismissing it would retire an unanswered OPERATOR card. Typing it back
@@ -916,8 +912,16 @@ func (p *wakePass) keeps(manager string, item Item) bool {
 	// sessionIDFromItem, which prefers `liveness_ref` and would also drop a card
 	// this manager merely OWNS (`owner:` / `heartbeat:`). Those are kept below:
 	// a manager still sees its own gate when another producer raised it.
+	//
+	// ⚠️ It sits ABOVE the empty-session return: an item whose `liveness_ref`
+	// resolves empty (a blank `session:` marker) but whose producer is the
+	// manager is still the manager's own card.
 	if strings.TrimPrefix(string(item.ProducerID), sessionProducerPrefix) == manager {
 		return false
+	}
+	sessionID := sessionIDFromItem(item)
+	if sessionID == "" {
+		return true
 	}
 	if sessionID == manager {
 		return true

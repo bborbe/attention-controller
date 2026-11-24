@@ -81,8 +81,9 @@ turn instead of one turn per card.
 
 - A later arrival joins the open buffer: the window runs from the **first** item, never from the
   latest one.
-- A card that leaves the kept set before the window closes (answered, expired, or dropped to a live
-  peer manager) is removed from the buffer — no wake is needed for it.
+- A card that leaves the kept set before the window closes (answered, expired, dropped as
+  self-produced, or dropped to a live peer manager) is removed from the buffer — no wake is needed
+  for it.
 - A card that is still in the kept set is **never dropped**, only delayed: the buffered line names
   every id it carries.
 - The per-entry last-emission dedupe still applies. A stale entry re-enters the buffer and is
@@ -129,7 +130,11 @@ if not spawner and is_manager(session_id, ledger):
 ```
 
 The branches deliberately NOT ported — ownership claims and the `role: human` exclusion — remain
-out of scope: the kept set is wide by design.
+out of scope: the kept set is wide by design, apart from the self-produced drop above.
+
+⚠️ The **self-produced drop** is NOT in the Python port. It was added 2026-11-24 after a manager was
+typed its own `decision` card six times: it sits above every branch in the pseudo-code and is keyed
+on `producer_id`, so an implementer following that block reproduces neither the branch nor the rule.
 
 **Fleet routing for the unowned class was added 2026-11-21.** A card whose producer anchors no task
 (`GoalScope.Foreign` answers `ok=false`) while the manager's OWN goal resolves is typed to the live
