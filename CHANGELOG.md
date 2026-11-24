@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- fix: **a card whose task declares no `goals:` now goes to the Fleet Manager alone, instead of being kept by every manager.** `GoalScope.Foreign` answers `ok=false` when a session anchors a task that declares no goal, and `SessionResolved` is `true` for exactly that case — so the unowned guard (`!scoped && !SessionResolved`) missed it, control fell through to hop 3b, and the card was kept for every manager. No goal manager owns such a card. Measured 2026-11-24: three cards of this class were typed to two goal managers (`2410e53c`, `146c4ab0`) inside one hour, while the Fleet Manager was the only manager that could act on them.
+
 ## v0.108.5
 
 - fix: **an `idle` row the unforwarded-closer scan already re-presented is no longer re-presented on every cycle — the check now honours delivery evidence for idle rows, not only for question rows.** `questionFinding` skipped a row the store or the delivery ledger proved delivered; `idleFinding` did not, so a session's `you run:` closer was carded again every 900 s for as long as the closer stayed in the 24 h window. Measured live 2026-11-23: one row (`f5fef254…`, `gh -R bborbe/trading-lib pr merge 666 --merge --admin`, a PR merged the day before) minted **33** `unforwarded:f5fef254` cards across 22 hours. ⚠️ The exemption reads the store's history in ANY state, so **dismissing a card no longer frees its row**: the store dedups a re-push only while the item is OPEN, and a scan keyed on "is a card open?" would re-mint immediately after every dismissal — which is exactly the loop the operator saw.
