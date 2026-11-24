@@ -37,14 +37,22 @@ const ManagerWakeInterval = 10 * time.Second
 // `0` would mean "re-type on every pass", the hot loop this replaces.
 const ManagerWakeReemitAfter = time.Hour
 
-// ManagerWakeBatchWindow is how long one producer session's entering cards are
-// coalesced before they are typed as one line.
+// ManagerWakeBatchWindow is the longest one producer session's entering cards
+// are coalesced before they are typed as one line.
 //
 // ⚠️ It is a DELAY, never a drop: every card that enters inside the window is
 // named in the batched line when the window closes. The window exists because a
 // producer session often raises a burst of cards together — a manager turn spent
 // on the first one re-reads a board that is about to carry the rest.
-const ManagerWakeBatchWindow = 60 * time.Second
+//
+// ⚠️ It is a CAP, not the expected wait, and it may never exceed the tick. A
+// batch normally closes on the first pass that finds it quiet, so the window
+// only bounds a batch that keeps growing. A window longer than
+// ManagerWakeInterval therefore buys no coalescing a tick does not already give
+// and spends the difference as pure latency on every card. Deriving it from the
+// interval rather than restating a literal keeps the two from drifting apart
+// again.
+const ManagerWakeBatchWindow = ManagerWakeInterval / 2
 
 // ManagerWakeEmissionLogPath is where every pane write is recorded.
 //
@@ -245,9 +253,9 @@ type managerWakeJob struct {
 	// the verdict that parked them. A park clears on liveness, exactly as a
 	// delivery park does.
 	parks map[string]string
-	// pending is, per manager session, the batches awaiting their window: keyed
-	// by producer session, each holding the items that entered and the time the
-	// first of them did. It is the buffer ManagerWakeBatchWindow closes.
+	// pending is, per manager session, the batches awaiting a quiet pass or the
+	// window cap: keyed by producer session, each holding the items that entered
+	// and the time the first of them did. It is the buffer flushPending closes.
 	pending map[string]map[string]*managerWakeBatch
 }
 
@@ -257,6 +265,15 @@ type managerWakeBatch struct {
 	// from it, so a later arrival joins the batch instead of restarting the
 	// clock.
 	firstSeen libtime.DateTime
+	// lastSeen is when the batch last grew. A pass whose clock is later than
+	// this saw no new card, so the producer has stopped raising and the line may
+	// be typed without waiting out the window.
+	lastSeen libtime.DateTime
+	// deferredAt is when a delivery attempt was deferred (a busy or unreadable
+	// pane). A batch carrying it waits out the window before it is re-probed, so
+	// a busy pane costs one probe per window rather than one per store-change
+	// signal. Zero means no attempt has been deferred.
+	deferredAt libtime.DateTime
 	// items are the batch's items, in the order they entered.
 	items []Item
 }
@@ -504,10 +521,11 @@ func (p *wakePass) wake(manager string) {
 // wakeStore computes one manager's kept set from the store and delivers the
 // entries that entered it as one batched line per producer session.
 //
-// ⚠️ An entering entry is BUFFERED, not typed: the batch closes when
-// ManagerWakeBatchWindow has elapsed since its first item, so a burst from one
-// producer session costs the manager one turn instead of one turn per card. A
-// card is never dropped — a batched line names every id it carries.
+// ⚠️ An entering entry is BUFFERED, not typed: the batch closes on the first pass
+// that finds the producer quiet, or once ManagerWakeBatchWindow has elapsed since
+// its first item, so a burst from one producer session costs the manager one turn
+// instead of one turn per card. A card is never dropped — a batched line names
+// every id it carries.
 func (p *wakePass) wakeStore(manager string) {
 	previous := p.job.emitted[manager]
 	next := make(map[ItemID]libtime.DateTime, len(previous))
@@ -533,7 +551,7 @@ func (p *wakePass) wakeStore(manager string) {
 }
 
 // enqueue adds one item to its producer session's batch, starting the batch's
-// window on the first item.
+// window on the first item and recording the arrival that keeps it open.
 func (p *wakePass) enqueue(manager string, item Item) {
 	byProducer := p.job.pending[manager]
 	if byProducer == nil {
@@ -543,7 +561,7 @@ func (p *wakePass) enqueue(manager string, item Item) {
 	producer := wakeProducerKey(item)
 	batch := byProducer[producer]
 	if batch == nil {
-		batch = &managerWakeBatch{firstSeen: p.now}
+		batch = &managerWakeBatch{firstSeen: p.now, lastSeen: p.now}
 		byProducer[producer] = batch
 	}
 	for _, pending := range batch.items {
@@ -552,6 +570,7 @@ func (p *wakePass) enqueue(manager string, item Item) {
 		}
 	}
 	batch.items = append(batch.items, item)
+	batch.lastSeen = p.now
 }
 
 // wakeProducerKey groups an item by the session that raised it. An item naming
@@ -589,8 +608,8 @@ func (p *wakePass) prunePending(manager string, kept map[ItemID]Item) {
 	}
 }
 
-// flushPending types every batch whose window has elapsed, one delivery per
-// producer session, and returns the items it delivered.
+// flushPending types every batch that has closed — one delivery per producer
+// session — and returns the items it delivered.
 func (p *wakePass) flushPending(
 	manager string,
 	kept map[ItemID]Item,
@@ -607,7 +626,20 @@ func (p *wakePass) flushPending(
 	sort.Strings(producers)
 	for _, producer := range producers {
 		batch := byProducer[producer]
-		if p.now.Sub(batch.firstSeen) < libtime.Duration(ManagerWakeBatchWindow) {
+		// A batch that was deferred waits out the window before another probe: a
+		// zero deferredAt makes this difference enormous, so an undeferred batch
+		// never takes it.
+		if p.now.Sub(batch.deferredAt) < libtime.Duration(ManagerWakeBatchWindow) {
+			continue
+		}
+		// A batch closes when the producer has gone quiet — a pass later than the
+		// last arrival, so no card joined this time — or when it has stayed open
+		// for the whole window. The quiet test is what lets a signal-driven pass
+		// inside the window type a lone card in milliseconds; the window alone
+		// would hold it until it elapsed. A batch that keeps growing closes on the
+		// window.
+		quiet := p.now.Sub(batch.lastSeen) > 0
+		if !quiet && p.now.Sub(batch.firstSeen) < libtime.Duration(ManagerWakeBatchWindow) {
 			continue
 		}
 		typed, parked, reason := p.typeBatch(manager, batch, kept)
@@ -616,6 +648,9 @@ func (p *wakePass) flushPending(
 			return delivered
 		}
 		if !typed {
+			// Deferred: nothing was typed and nothing failed. Record it so the next
+			// probe waits out the window instead of firing on the next signal.
+			batch.deferredAt = p.now
 			continue
 		}
 		for _, item := range batch.items {
