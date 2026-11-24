@@ -324,6 +324,48 @@ var _ = Describe("Driver", func() {
 		})
 	})
 
+	Context("an install whose promote leg did not run", func() {
+		// The checkout's HEAD is the commit the caller built; the installed file
+		// still carries the previous one. That is the 2026-11-24 measurement: the
+		// build was right and the promote was skipped.
+		BeforeEach(func() {
+			h.driver.Expect = "a1b2c3d4e5f6a7b8"
+			h.prober.result = deploy.ProbeResult{Ready: true, ServingCommit: failedCommit}
+		})
+
+		It("aborts before restarting anything, naming both commits", func() {
+			outcome, err := h.driver.Run(context.Background())
+
+			Expect(err).NotTo(BeNil())
+			// Aborted, not Healthy: exit 0 here is the defect the row exists to end.
+			Expect(outcome).To(Equal(deploy.Aborted))
+			Expect(err.Error()).To(ContainSubstring(deploy.PromoteNotRun))
+			Expect(err.Error()).To(ContainSubstring(failedCommit))
+			Expect(err.Error()).To(ContainSubstring("a1b2c3d4e5f6a7b8"))
+			Expect(h.supervisor.stops).To(Equal(0), "the running build is untouched")
+			Expect(h.supervisor.bootstraps).To(Equal(0))
+			Expect(h.board.posted()).To(BeEmpty())
+		})
+	})
+
+	Context("an install whose expected commit matches the installed binary", func() {
+		BeforeEach(func() {
+			// The installed identity is the 12-char display form; `make install`
+			// passes the full 40-char HEAD. They must still be recognised as the
+			// same revision, or every good deploy aborts.
+			h.driver.Expect = failedCommit + "567890abcdef0123456789abcdef"
+			h.prober.result = deploy.ProbeResult{Ready: true, ServingCommit: failedCommit}
+		})
+
+		It("serves it and reports healthy", func() {
+			outcome, err := h.driver.Run(context.Background())
+
+			Expect(err).To(BeNil())
+			Expect(outcome).To(Equal(deploy.Healthy))
+			Expect(h.supervisor.bootstraps).To(Equal(1))
+		})
+	})
+
 	Context("an installed binary with no VCS stamp", func() {
 		BeforeEach(func() {
 			h.binary.installed = buildidentity.Identity{}

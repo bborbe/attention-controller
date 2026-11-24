@@ -66,6 +66,15 @@ const (
 	// can be proven to be the build that was installed, and the board would
 	// render "no build identity" in its footer.
 	UnstampedCommit = "commit=unknown (no vcs stamp)"
+
+	// PromoteNotRun is what the driver reports when the binary on disk is not the
+	// build the caller expected. It is the signature of `install-bin`'s promote
+	// leg not having run: the build succeeded and the artifact is correct, but
+	// the installed path still carries the previous revision. Measured
+	// 2026-11-24: `make install` exited 0 while the live binary and `.prev` both
+	// stayed at the old commit, because the gate polled the identity of the
+	// stale file and the stale process served exactly that.
+	PromoteNotRun = "the promote leg did not run"
 )
 
 // FailureClass is which kind of failed start the driver observed. The two are
@@ -195,6 +204,12 @@ type Driver struct {
 	Prober Prober
 	// Binary is the installed artifact.
 	Binary Binary
+	// Expect is the commit the caller built and therefore expects to be
+	// installed. Empty means "whatever the installed binary's own identity is",
+	// which is correct for a restart-only deploy. When set, a mismatch is an
+	// abort BEFORE anything restarts: the promote leg did not run, so restarting
+	// would only re-serve the stale build and report success for it.
+	Expect string
 	// Board posts the failure card. It is only ever called after a rollback has
 	// the board serving again, because until then no store exists to post to.
 	Board CardPoster

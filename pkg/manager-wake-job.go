@@ -883,23 +883,47 @@ func (p *wakePass) stale(last libtime.DateTime) bool {
 	return p.now.Sub(last) > libtime.Duration(p.job.reemitAfter)
 }
 
-// keeps is the ownership rule: peer drop, role-human drop, dead-manager keep,
-// unowned keep.
+// keeps is the ownership rule: self-produced drop, peer drop, role-human drop,
+// dead-manager keep, unowned keep.
 //
-// The keep-set is wide on purpose. It drops on a live peer manager, reached by
-// the spawn edge (the item's spawner) or by hop 3b (the item's own session is
-// itself a live manager), and on a `role: human` row. Everything else is kept,
-// because an unresolvable owner is not a reason to silence a gate:
+// The keep-set is wide on purpose. It drops a card the manager ITSELF produced,
+// a live peer manager's card (reached by the spawn edge or by hop 3b), and a
+// `role: human` row. Everything else is kept, because an unresolvable owner is
+// not a reason to silence a gate:
 //
-//   - self            — the manager's own gate is the one it exists to see;
+//   - self-produced   — DROPPED: the answer routes back to the producer and
+//     `closed` is terminal, so typing it back replays a gate the manager can
+//     neither answer nor dismiss until it expires;
+//   - self-owned      — the manager's own gate, raised by someone else, is the
+//     one it exists to see;
 //   - own worker      — the panes a manager exists to see;
 //   - worker spawner  — not a manager, so no manager owns it;
 //   - dead manager    — nobody can act on it, so every manager inherits it;
 //   - unowned         — no spawner resolved at all;
 //   - liveness unknown — a peer drop requires a RESOLVED live peer.
 func (p *wakePass) keeps(manager string, item Item) bool {
+	// ⚠️ A card the manager ITSELF produced is not a gate it can act on: the
+	// answer routes back to the producer, and `closed` is terminal, so
+	// dismissing it would retire an unanswered OPERATOR card. Typing it back
+	// replayed the same line every re-emit until expiry (measured 2026-11-24:
+	// `374a0226…` typed six times to its own producer `0551a75f`).
+	//
+	// The test is on ProducerID — the field that names WHO ASKED — not on
+	// sessionIDFromItem, which prefers `liveness_ref` and would also drop a card
+	// this manager merely OWNS (`owner:` / `heartbeat:`). Those are kept below:
+	// a manager still sees its own gate when another producer raised it.
+	//
+	// ⚠️ It sits ABOVE the empty-session return: an item whose `liveness_ref`
+	// resolves empty (a blank `session:` marker) but whose producer is the
+	// manager is still the manager's own card.
+	if strings.TrimPrefix(string(item.ProducerID), sessionProducerPrefix) == manager {
+		return false
+	}
 	sessionID := sessionIDFromItem(item)
-	if sessionID == "" || sessionID == manager {
+	if sessionID == "" {
+		return true
+	}
+	if sessionID == manager {
 		return true
 	}
 	// The operator's own workspace is never a manager's to route. It sits above
