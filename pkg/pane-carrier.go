@@ -105,6 +105,19 @@ type PaneDelivery struct {
 	//
 	// Empty renders no stamp, as every delivery before this field did.
 	AnswerStamp string
+	// PriorAttempt reports whether a durable delivery record says an arm already
+	// looked at this answer (status retrying or failed — never
+	// never_attempted / pre_trail_unknown, which mean no arm has looked).
+	//
+	// ⚠️ It widens the fresh-entry transcript search. When the in-process
+	// PendingLine marker is gone — the controller restarted between the typing
+	// and the retry — the copy the previous process typed may sit further back
+	// than the reader's narrow tail, so a tail-only miss re-typed an answer that
+	// had already landed (measured 2026-11-24: one answer, 07:14:52 and
+	// 07:19:55, ~1.75 MB apart, the second on a fresh process). With it set the
+	// guard scans the wide tail before deciding to type again. A card no arm has
+	// touched leaves it false, so the common first-delivery check stays cheap.
+	PriorAttempt bool
 }
 
 // PaneCarrier types an answer into a session's pane and proves it landed.
@@ -274,7 +287,17 @@ func (c *paneCarrier) retypeGuard(
 		// the card's store id, so a match is card-specific. Bare trio commands
 		// are exempt: re-sending one is legitimate and the trio owns its own
 		// ordering.
-		if !bare && c.transcripts.HoldsLine(delivery.SessionID, line, nil) {
+		//
+		// ⚠️ With a prior attempt (a restart dropped the in-process marker) the
+		// search is the WIDE tail, not the narrow one: the copy may sit further
+		// back than the narrow tail on a busy transcript. Without it a restart
+		// re-typed a delivery that had already landed (measured 2026-11-24).
+		var since *int64
+		if delivery.PriorAttempt {
+			zero := int64(0)
+			since = &zero
+		}
+		if !bare && c.transcripts.HoldsLine(delivery.SessionID, line, since) {
 			return DeliveryOK, "already delivered to pane " + strconv.Itoa(pane) + " (transcript)"
 		}
 		state := c.writer.ComposerState(ctx, pane)
