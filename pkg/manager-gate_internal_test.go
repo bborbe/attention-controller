@@ -404,10 +404,14 @@ func expectCloserAskIsNormalized() {
 	By("reading a later (on …) wait as no ask")
 	Expect(managerIsAsk("later (on PR #12 merge): nothing to do")).To(BeFalse())
 
-	By("still reading real verbs as asks, so normalization is not refuse-all")
+	By("still reading the four ask verbs as asks, so normalization is not refuse-all")
 	Expect(managerIsAsk("approve: run it")).To(BeTrue())
 	Expect(managerIsAsk("pick — 1. X")).To(BeTrue())
-	Expect(managerIsAsk("ack")).To(BeTrue())
+	Expect(managerIsAsk("review: check the diff")).To(BeTrue())
+	Expect(managerIsAsk("you run: make deploy")).To(BeTrue())
+
+	By("reading a verb outside the four as no ask, so an unseen verb cannot gate")
+	Expect(managerIsAsk("ack")).To(BeFalse())
 }
 
 // expectChurnSuppressed asserts a flapping session emits nothing until two

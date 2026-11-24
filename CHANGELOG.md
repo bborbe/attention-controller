@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- fix: **a `park:` card is no longer minted for a closer verb that asks nothing, so a manager that ends a turn on any verb outside the four ask verbs (`pick`, `approve:`, `review:`, `you run:`) is not re-parked every pass.** `managerIsAsk` gated on every closer body that was not `nothing` and not `later (on …)`, so any invented verb — and `ack` — read as a live ask. It is now an allow-list of exactly four verbs: an unseen verb reads as no ask, and a regression test asserts both directions (the four gate; the invented verbs `foo —`/`bar:`/`baz —` and the category label `you decide` do not).
+
 ## v0.108.7
 
 - fix: **a card whose task declares no `goals:` now goes to the Fleet Manager alone, instead of being kept by every manager.** `GoalScope.Foreign` answers `ok=false` when a session anchors a task that declares no goal, and `SessionResolved` is `true` for exactly that case — so the unowned guard (`!scoped && !SessionResolved`) missed it, control fell through to hop 3b, and the card was kept for every manager. No goal manager owns such a card. Measured 2026-11-24: three cards of this class were typed to two goal managers (`2410e53c`, `146c4ab0`) inside one hour, while the Fleet Manager was the only manager that could act on them.
