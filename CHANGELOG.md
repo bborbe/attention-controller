@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- fix: **a card whose task declares no `goals:` now goes to the Fleet Manager alone, instead of being kept by every manager.** `GoalScope.Foreign` answers `ok=false` when a session anchors a task that declares no goal, and `SessionResolved` is `true` for exactly that case — so the unowned guard (`!scoped && !SessionResolved`) missed it, control fell through to hop 3b, and the card was kept for every manager. No goal manager owns such a card. Measured 2026-11-24: three cards of this class were typed to two goal managers (`2410e53c`, `146c4ab0`) inside one hour, while the Fleet Manager was the only manager that could act on them.
+
 ## v0.108.6
 
 - fix: **a card can no longer be minted `interrupt_class: pick` with no options, so the board stops asking a question it cannot render.** `pick` promises the operator a choice, but the park: re-post and several watch-job producers declared it on cards carrying an empty option set — the live board measured 2026-11-23T23:22:40Z showed 10 open cards, all `pick` + `park:` + `options: null`, their dedup keys re-emitting every cycle. The store now normalises the class at its single mint path (`Push`, covering both fresh pushes and dedup re-pushes): a `pick` with no selectable option — top-level or per-question — is downgraded to `ack`. It normalises the CLASS and never manufactures placeholder options, because a meaningless selection is the defect. A regression test asserts the class, not merely that `options` is non-empty.

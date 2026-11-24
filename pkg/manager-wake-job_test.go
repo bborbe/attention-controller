@@ -384,6 +384,44 @@ var _ = Describe("manager wake job", func() {
 	})
 
 	It(
+		"TestNoGoalTaskGoesToTheFleetManagerOnly — a card whose task declares no goal wakes only the Fleet Manager",
+		func() {
+			// The task EXISTS but declares no `goals:`, so Foreign answers
+			// ok=false while SessionResolved is true. Before this change that
+			// combination missed the unowned branch, fell through to hop 3b, and
+			// was kept by EVERY manager — measured 2026-11-24 as three cards typed
+			// to two goal managers in one hour.
+			carrier = newWakeRecordingCarrier()
+			live["mgr-1"] = true
+			live["fleet-1"] = true
+			ledger.ListReturns(pkg.SessionLedgerEntries{
+				ledgerRow("mgr-1", "manager", ""),
+				ledgerRow("fleet-1", "manager", ""),
+			}, nil)
+			fleet := &stubFleetRegistry{registrations: []pkg.FleetManagerRegistration{
+				{SessionID: "fleet-1", ResolvedAt: "2026-11-21T10:00:00+01:00"},
+			}}
+			store.ReadReturns(pkg.Items{wakeItem("item-nogoal", "w-nogoal")}, nil)
+			flushBatch(newJob(
+				pkg.WithManagerWakeGoalScope(&stubGoalScope{}),
+				pkg.WithManagerWakeFleetRegistry(fleet),
+			))
+			Expect(carrier.sessions()).To(Equal([]string{"fleet-1"}))
+
+			// With no live Fleet Manager it is typed nowhere, rather than into
+			// every manager.
+			carrier = newWakeRecordingCarrier()
+			live["fleet-1"] = false
+			store.ReadReturns(pkg.Items{wakeItem("item-nogoal", "w-nogoal")}, nil)
+			flushBatch(newJob(
+				pkg.WithManagerWakeGoalScope(&stubGoalScope{}),
+				pkg.WithManagerWakeFleetRegistry(&stubFleetRegistry{}),
+			))
+			Expect(carrier.recorded()).To(BeEmpty())
+		},
+	)
+
+	It(
 		"TestUnownedClassGoesToTheFleetManagerOnly — a card whose producer anchors no task wakes only the Fleet Manager",
 		func() {
 			twoManagers := func() {
