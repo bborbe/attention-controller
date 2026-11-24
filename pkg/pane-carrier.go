@@ -214,6 +214,33 @@ func (c *paneCarrier) TypeIntoPane(
 	text string,
 	bare bool,
 ) (DeliveryVerdict, string) {
+	verdict, reason := c.typeIntoPane(ctx, delivery, text, bare)
+	// ⚠️ Instrumentation for the residual-permission-timeout attribution: a
+	// non-ok attempt records the session's entrypoint and tty, so the
+	// `undeliverable` shape — a pane-path retry on a session whose registry
+	// record names a headless `sdk-cli` entrypoint but whose pid still resolves
+	// to a tty (a stale/recycled pid) — is visible in the log rather than
+	// inferred after the fact from a store whose session record is deleted on
+	// exit. Logged only on a non-ok verdict: a delivered answer needs no
+	// diagnosis, and reading the tty costs a `ps` exec.
+	if verdict != DeliveryOK {
+		entry, _ := c.writer.SessionEntry(ctx, delivery.SessionID)
+		glog.V(2).Infof(
+			"carrier=type-into-pane item=%s session=%s entrypoint=%q tty=%q verdict=%s reason=%q",
+			delivery.StoreItemID, shortID(delivery.SessionID), entry.Entrypoint,
+			c.writer.SessionTTY(ctx, delivery.SessionID), verdict, reason,
+		)
+	}
+	return verdict, reason
+}
+
+// typeIntoPane is the un-instrumented delivery attempt TypeIntoPane wraps.
+func (c *paneCarrier) typeIntoPane(
+	ctx context.Context,
+	delivery *PaneDelivery,
+	text string,
+	bare bool,
+) (DeliveryVerdict, string) {
 	// A bare send is one command of the compact trio, not the card's answer:
 	// resetting on it would restart the clock every time the trio advanced.
 	if !bare {
