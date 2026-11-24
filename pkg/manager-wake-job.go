@@ -253,9 +253,9 @@ type managerWakeJob struct {
 	// the verdict that parked them. A park clears on liveness, exactly as a
 	// delivery park does.
 	parks map[string]string
-	// pending is, per manager session, the batches awaiting their window: keyed
-	// by producer session, each holding the items that entered and the time the
-	// first of them did. It is the buffer ManagerWakeBatchWindow closes.
+	// pending is, per manager session, the batches awaiting a quiet pass or the
+	// window cap: keyed by producer session, each holding the items that entered
+	// and the time the first of them did. It is the buffer flushPending closes.
 	pending map[string]map[string]*managerWakeBatch
 }
 
