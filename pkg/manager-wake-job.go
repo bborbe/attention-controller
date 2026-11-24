@@ -269,6 +269,11 @@ type managerWakeBatch struct {
 	// this saw no new card, so the producer has stopped raising and the line may
 	// be typed without waiting out the window.
 	lastSeen libtime.DateTime
+	// deferredAt is when a delivery attempt was deferred (a busy or unreadable
+	// pane). A batch carrying it waits out the window before it is re-probed, so
+	// a busy pane costs one probe per window rather than one per store-change
+	// signal. Zero means no attempt has been deferred.
+	deferredAt libtime.DateTime
 	// items are the batch's items, in the order they entered.
 	items []Item
 }
@@ -621,6 +626,12 @@ func (p *wakePass) flushPending(
 	sort.Strings(producers)
 	for _, producer := range producers {
 		batch := byProducer[producer]
+		// A batch that was deferred waits out the window before another probe: a
+		// zero deferredAt makes this difference enormous, so an undeferred batch
+		// never takes it.
+		if p.now.Sub(batch.deferredAt) < libtime.Duration(ManagerWakeBatchWindow) {
+			continue
+		}
 		// A batch closes when the producer has gone quiet — a pass later than the
 		// last arrival, so no card joined this time — or when it has stayed open
 		// for the whole window. The quiet test is what lets a signal-driven pass
@@ -637,11 +648,9 @@ func (p *wakePass) flushPending(
 			return delivered
 		}
 		if !typed {
-			// Deferred: nothing was typed and nothing failed. Re-stamp the arrival so
-			// the next quiet pass does not retry immediately — a busy pane would
-			// otherwise be re-probed on every store-change signal rather than once
-			// per window.
-			batch.lastSeen = p.now
+			// Deferred: nothing was typed and nothing failed. Record it so the next
+			// probe waits out the window instead of firing on the next signal.
+			batch.deferredAt = p.now
 			continue
 		}
 		for _, item := range batch.items {

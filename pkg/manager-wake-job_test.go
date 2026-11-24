@@ -764,6 +764,32 @@ var _ = Describe("manager wake job", func() {
 		}))
 	})
 
+	It("TestBatchDeferredDeliveryBacksOff — a busy pane is re-probed once per window, not per pass", func() {
+		oneManager()
+		store.ReadReturns(pkg.Items{wakeItem("item-1", "w-1")}, nil)
+		job := newJob()
+
+		carrier.setVerdict(pkg.DeliveryRetry)
+		Expect(job.WakeOnce(context.Background())).To(Succeed())
+		advance(stdtime.Second)
+		Expect(job.WakeOnce(context.Background())).To(Succeed())
+		// The quiet pass tried and was deferred; the batch keeps its cards.
+		Expect(carrier.recorded()).To(HaveLen(1))
+
+		// The deferral restarted the batch's clock, so the next pass does not probe
+		// the pane again.
+		advance(stdtime.Second)
+		Expect(job.WakeOnce(context.Background())).To(Succeed())
+		Expect(carrier.recorded()).To(HaveLen(1))
+
+		// Once the window has elapsed it is retried, and this time it lands.
+		carrier.setVerdict(pkg.DeliveryOK)
+		advance(pkg.ManagerWakeBatchWindow)
+		Expect(job.WakeOnce(context.Background())).To(Succeed())
+		Expect(carrier.recorded()).To(HaveLen(2))
+		Expect(carrier.recorded()[1].text).To(ContainSubstring("item-1"))
+	})
+
 	It("TestBatchFlushesOnTheFirstQuietPass — a lone card pays one pass, never the window", func() {
 		oneManager()
 		store.ReadReturns(pkg.Items{wakeItem("item-1", "w-1")}, nil)
