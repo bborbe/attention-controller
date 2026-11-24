@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/bborbe/errors"
@@ -46,12 +47,28 @@ func (d *Driver) Run(ctx context.Context) (Outcome, error) {
 			d.Binary.Path(),
 		)
 	}
+	expected := installed.Commit
+	if d.Expect != "" && !sameCommit(installed.Commit, d.Expect) {
+		// ⚠️ Abort BEFORE the bootout. The build the caller asked for is not the
+		// build on disk, so restarting would kill the running process and start
+		// the SAME stale binary — a restart dressed as a deploy, which is exactly
+		// the exit-0 no-op measured on 2026-11-23 and 2026-11-24.
+		d.logf(
+			"deploy aborted %s installed=%s expected=%s binary=%s",
+			PromoteNotRun, installed.Commit, d.Expect, d.Binary.Path(),
+		)
+		return Aborted, errors.Errorf(
+			ctx,
+			"deploy aborted: %s; %s carries commit %s but the checkout is %s",
+			PromoteNotRun, d.Binary.Path(), installed.Commit, d.Expect,
+		)
+	}
 	t0 := d.Now()
 	d.logf(
 		"deploy start t_deploy_start=%s mode=%s commit=%s version=%s binary=%s",
-		formatTime(t0), d.Mode, installed.Commit, installed.Version, d.Binary.Path(),
+		formatTime(t0), d.Mode, expected, installed.Version, d.Binary.Path(),
 	)
-	probe, startErr := d.startAndWait(ctx, t0.Add(d.ReadinessTimeout), installed.Commit)
+	probe, startErr := d.startAndWait(ctx, t0.Add(d.ReadinessTimeout), expected)
 	if startErr != nil {
 		// The job was never stopped, so nothing was replaced: the old process is
 		// still serving and the new binary is only on disk. Reverting would be a
@@ -280,6 +297,24 @@ func (d *Driver) waitUntil(
 		d.Sleep(d.PollInterval)
 	}
 	return result
+}
+
+// sameCommit reports whether two commit ids name the same revision.
+//
+// ⚠️ A plain `==` is wrong here. The installed identity is shortened for display
+// (12 hex chars, so the board footer and the log lines stay readable) while a
+// checkout's HEAD is the full 40-char sha that `make install` passes as
+// `-expect`. An exact comparison therefore aborts a perfectly good deploy — the
+// opposite of the stale-binary case this guard exists for. A prefix match in
+// either direction, with a floor below git's 7-char abbreviation, is the test.
+func sameCommit(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	if len(a) > len(b) {
+		a, b = b, a
+	}
+	return len(a) >= 7 && strings.HasPrefix(b, a)
 }
 
 // classify names the failure class from launchd's own view of the job.

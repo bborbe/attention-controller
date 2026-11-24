@@ -107,7 +107,14 @@ launchd-baseline:
 # ⚠️ A restart with no rebuild runs the same gate. That is deliberate: the
 # 2026-11-17 outage was a start that never bound the port, and `launchd-reload`
 # alone can strand the board exactly the same way.
+#
+# `EXPECT` is the commit the gate must see serving. `make install` sets it to the
+# checkout's HEAD, so a stale binary aborts before anything restarts instead of
+# re-serving the old build and reporting exit 0. Left empty, the gate falls back
+# to the installed binary's own identity — correct for a restart-only reload,
+# which is meant to serve whatever is installed.
 DEPLOY_MODE ?= reload
+EXPECT ?=
 .PHONY: launchd-reload
 launchd-reload:
 	@test -f "$(LAUNCHD_PLIST)" || { echo "plist not installed: $(LAUNCHD_PLIST)" >&2; exit 1; }
@@ -115,7 +122,8 @@ launchd-reload:
 		-mode=$(DEPLOY_MODE) \
 		-bin="$(INSTALL_BIN)" \
 		-label="$(LAUNCHD_LABEL)" \
-		-plist="$(LAUNCHD_PLIST)"
+		-plist="$(LAUNCHD_PLIST)" \
+		$(if $(EXPECT),-expect="$(EXPECT)")
 
 # Builds, signs and installs the binary WITHOUT restarting the service.
 #
@@ -134,6 +142,18 @@ launchd-reload:
 # copying a half-built artifact into `.prev`. Measured 2026-11-17: two concurrent
 # runs left `.prev` and the installed binary identical, both the staged bad build,
 # with the board dark.
+#
+# ⚠️ The promote is PROVEN, not assumed. After the `mv`, the installed file's
+# `vcs.revision` is re-read and must equal the staged build's; a mismatch exits
+# non-zero naming both. Measured 2026-11-24: `make install` exited 0 while the
+# live binary and `.prev` both stayed at the old commit — the gate could not see
+# it because it polled the identity of the stale file. An unstamped build is
+# refused for the same reason: it would serve no identity at all.
+#
+# ⚠️ Orphaned `<bin>.new.<pid>` stages are swept after a successful promote, but
+# only those whose pid is no longer alive. A concurrent install's live stage is
+# left alone (the collision the per-shell staging path exists to prevent); a
+# killed install's corpse is removed so it cannot be mistaken for a live one.
 .PHONY: install-bin
 install-bin:
 	@security find-identity -p codesigning | grep -qF '"$(CODESIGN_IDENTITY)"' \
@@ -144,17 +164,32 @@ install-bin:
 		stage="$(INSTALL_BIN).new.$$$$"; \
 		trap 'rm -f "$$stage"' EXIT INT TERM; \
 		go build -o "$$stage" .; \
+		built="$$(go version -m "$$stage" | sed -n 's/.*vcs.revision=//p')"; \
+		if [ -z "$$built" ]; then \
+			echo "refusing to install an unstamped build: $(INSTALL_BIN) would serve no identity" >&2; \
+			exit 1; \
+		fi; \
 		codesign -f -s "$(CODESIGN_IDENTITY)" -i de.bborbe.attention-controller "$$stage"; \
 		codesign --verify --strict "$$stage"; \
 		codesign -d -r- "$$stage" 2>&1 | grep -q 'identifier "de.bborbe.attention-controller" and certificate leaf = H"'; \
-		if [ -f "$(INSTALL_BIN)" ] && \
-			[ "$$(go version -m "$(INSTALL_BIN)" | sed -n 's/.*vcs.revision=//p')" != \
-			  "$$(go version -m "$$stage" | sed -n 's/.*vcs.revision=//p')" ]; then \
+		if [ -f "$(INSTALL_BIN)" ] && [ "$$(go version -m "$(INSTALL_BIN)" | sed -n 's/.*vcs.revision=//p')" != "$$built" ]; then \
 			cp -p "$(INSTALL_BIN)" "$(INSTALL_BIN).prev.$$$$"; \
 			mv -f "$(INSTALL_BIN).prev.$$$$" "$(INSTALL_BIN).prev"; \
 			echo "retained previous binary: $(INSTALL_BIN).prev"; \
 		fi; \
-		mv -f "$$stage" "$(INSTALL_BIN)"
+		mv -f "$$stage" "$(INSTALL_BIN)"; \
+		installed="$$(go version -m "$(INSTALL_BIN)" | sed -n 's/.*vcs.revision=//p')"; \
+		if [ "$$installed" != "$$built" ]; then \
+			echo "promote failed: built $$built but $(INSTALL_BIN) carries $$installed" >&2; \
+			exit 1; \
+		fi; \
+		for orphan in "$(INSTALL_BIN)".new.*; do \
+			[ -e "$$orphan" ] || continue; \
+			pid="$${orphan##*.}"; \
+			case "$$pid" in ''|*[!0-9]*) continue;; esac; \
+			kill -0 "$$pid" 2>/dev/null || { rm -f "$$orphan"; echo "removed orphaned stage: $$orphan"; }; \
+		done; \
+		echo "installed $(INSTALL_BIN) commit=$$built"
 	@set -e; \
 		stage="$(INSTALL_HOOK_BIN).new.$$$$"; \
 		trap 'rm -f "$$stage"' EXIT INT TERM; \
@@ -181,7 +216,7 @@ install-approve-run:
 .PHONY: install
 install: install-bin
 	$(MAKE) launchd-baseline
-	$(MAKE) launchd-reload DEPLOY_MODE=install
+	$(MAKE) launchd-reload DEPLOY_MODE=install EXPECT="$(shell git rev-parse HEAD)"
 
 deps:
 	go install github.com/bborbe/teamvault-utils/cmd/teamvault-config-parser@latest

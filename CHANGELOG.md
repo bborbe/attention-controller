@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- fix: **`make install` now proves the promote leg ran, so a stale binary can no longer exit 0.** `install-bin` re-reads the installed file's `vcs.revision` after the `mv` and exits non-zero unless it equals the staged build's, refuses an unstamped build, and sweeps `<bin>.new.<pid>` stages whose pid is dead; `install` passes the checkout's HEAD as `cmd/deploy -expect`, which aborts (exit 3) before any restart when the installed commit is not that HEAD. Measured 2026-11-24: `make install` exited 0 while the live binary and `.prev` both stayed at the previous commit, because the gate polled the identity of the stale file — the same shape as the 2026-11-23 run.
+
 ## v0.108.8
 
 - fix: **a `park:` card is no longer minted for a closer verb that asks nothing, so a manager that ends a turn on any verb outside the four ask verbs (`pick`, `approve:`, `review:`, `you run:`) is not re-parked every pass.** `managerIsAsk` gated on every closer body that was not `nothing` and not `later (on …)`, so any invented verb — and `ack` — read as a live ask. It is now an allow-list of exactly four verbs: an unseen verb reads as no ask, and a regression test asserts both directions (the four gate; the invented verbs `foo —`/`bar:`/`baz —` and the category label `you decide` do not).
