@@ -92,10 +92,12 @@ type TranscriptReader interface {
 	Offset(sessionID string) (int64, bool)
 
 	// HoldsLine reports whether the transcript already carries line as a
-	// delivered message at or after since. A nil since falls back to the tail
-	// window. It never fails: an unreadable transcript reports false, which is
-	// the conservative direction — the caller then treats the delivery as not
-	// yet proven and does not drop the answer.
+	// delivered message at or after since. A nil since falls back to the narrow
+	// tail window; a non-nil zero asks for the WIDE tail (the last
+	// transcriptReaderScanMaxBytes), which a fresh-entry delivery guard uses to
+	// find a copy that landed before a restart. It never fails: an unreadable
+	// transcript reports false, which is the conservative direction — the caller
+	// then treats the delivery as not yet proven and does not drop the answer.
 	HoldsLine(sessionID string, line string, since *int64) bool
 
 	// TurnEnded reports whether the session's last timestamped record is a
@@ -414,6 +416,12 @@ func (r *transcriptReader) rememberBoundaries(path string, info os.FileInfo, cou
 // 17 min, 17.8 GB of 34.5 GB allocated from this one path. The proof is keyed
 // on the file's (size, mtime), so an append invalidates it and a line that
 // arrived after the scan is never masked by the earlier miss.
+//
+// ⚠️ The scan window is chosen by `since`: nil is the narrow tail (256 KiB),
+// a non-nil zero is the WIDE tail (the last transcriptReaderScanMaxBytes), and
+// a positive value scans from that byte mark. The wide tail exists for the
+// fresh-entry delivery guard, which has no marker after a restart and must still
+// find a copy the previous process typed.
 func (r *transcriptReader) HoldsLine(sessionID string, line string, since *int64) bool {
 	path := r.Path(sessionID)
 	if path == "" {
@@ -459,13 +467,13 @@ func (r *transcriptReader) HoldsLine(sessionID string, line string, since *int64
 	return false
 }
 
-// transcriptAbsenceKey identifies one (line, since) question. A nil since and a
-// non-positive one ask the same question — the tail window — so they share a
-// key; readTranscriptWindow treats `since <= 0` as "no offset" for the same
-// reason.
+// transcriptAbsenceKey identifies one (line, since) question. Three questions
+// are distinct: no offset (the narrow tail), a zero offset (the WIDE tail — see
+// readTranscriptWindow), and a positive offset (from that byte mark). They must
+// not share a key, or a wide-tail miss would mask a narrow-tail hit.
 func transcriptAbsenceKey(line string, since *int64) string {
-	if since == nil || *since <= 0 {
-		return line + "\x00"
+	if since == nil {
+		return line + "\x00tail"
 	}
 	return line + "\x00" + strconv.FormatInt(*since, 10)
 }
@@ -746,8 +754,18 @@ func readTranscriptWindow(path string, since *int64) ([]byte, bool) {
 	}
 	size := info.Size()
 	start := size - transcriptReaderTailBytes
-	if since != nil && *since > 0 {
+	switch {
+	case since != nil && *since > 0:
 		start = *since - transcriptReaderBackupBytes
+	case since != nil:
+		// ⚠️ A non-nil zero offset asks for the WIDE tail, not the narrow one. The
+		// delivery carrier's fresh-entry guard uses it: after a controller restart
+		// the in-process pending marker is gone, and a copy the previous process
+		// typed may sit further back than the narrow tail on a busy transcript.
+		// Without this a restart re-typed a delivery that had already landed
+		// (measured 2026-11-24: one answer arrived at 07:14:52 and again at
+		// 07:19:55, ~1.75 MB apart, the second on a fresh process).
+		start = size - transcriptReaderScanMaxBytes
 	}
 	if start < 0 {
 		start = 0

@@ -488,7 +488,17 @@ func (j *attentionWatcherJob) deliverable(
 //
 // Pane 0 makes the carrier resolve the pane from the session's own tty, which is
 // the correct path for a card whose recorded pane was never ours.
-func (j *attentionWatcherJob) deliveryFor(item Item, sessionID string) *PaneDelivery {
+//
+// ⚠️ PriorAttempt is set from the DURABLE report, not from the in-process map:
+// the map is empty after a restart, so it cannot answer "did a previous process
+// already type this answer?". The report can — retrying/failed mean an arm
+// looked, never_attempted/pre_trail_unknown mean none did — and the carrier uses
+// it to widen the fresh-entry transcript search. See PaneDelivery.PriorAttempt.
+func (j *attentionWatcherJob) deliveryFor(
+	item Item,
+	sessionID string,
+	report *DeliveryReport,
+) *PaneDelivery {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	if j.pending == nil {
@@ -510,6 +520,8 @@ func (j *attentionWatcherJob) deliveryFor(item Item, sessionID string) *PaneDeli
 	if item.AnsweredAt != nil {
 		delivery.AnswerStamp = item.AnsweredAt.Time().UTC().Format(time.RFC3339)
 	}
+	delivery.PriorAttempt = report != nil && report.Status != "" &&
+		report.Status != NeverAttemptedStatus && report.Status != PreTrailUnknownStatus
 	return delivery
 }
 
@@ -537,7 +549,7 @@ func (j *attentionWatcherJob) deliver(
 	if !ok {
 		return
 	}
-	delivery := j.deliveryFor(item, sessionID)
+	delivery := j.deliveryFor(item, sessionID, report)
 	verdict, reason := j.carrier.TypeIntoPane(ctx, delivery, text, false)
 	glog.V(2).Infof(
 		"job=attention-watcher action=deliver item=%s verdict=%s reason=%q",
