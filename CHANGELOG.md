@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.108.8
 
 - fix: **a `park:` card is no longer minted for a closer verb that asks nothing, so a manager that ends a turn on any verb outside the four ask verbs (`pick`, `approve:`, `review:`, `you run:`) is not re-parked every pass.** `managerIsAsk` gated on every closer body that was not `nothing` and not `later (on …)`, so any invented verb — and `ack` — read as a live ask. It is now an allow-list of exactly four verbs: an unseen verb reads as no ask, and a regression test asserts both directions (the four gate; the invented verbs `foo —`/`bar:`/`baz —` and the category label `you decide` do not).
 - fix: **an open `park:` card now closes when its session stops being parked, instead of outliving its condition until the 24 h expiry.** The wake job minted park cards but nothing retracted them, so a session that cleared minutes after its card was minted still woke its manager for the rest of the day. `ManagerGateOutcome` now carries `Retracts`, computed in `Observe` from the open `park:` cards whose session this manager still tracks but which is no longer in `managerParkedSessions`; `wakeTranscript` closes each by `store.Close` (a producer retract, no answering arm). Scoped to the manager's own tracked set so a sweep never closes another manager's worker's card. A regression test asserts a cleared session's card is retracted while a still-parked session's card is kept.
