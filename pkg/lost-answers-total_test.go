@@ -85,7 +85,7 @@ var _ = Describe("Lost-answer total across a restart", func() {
 		_, err = store.Answer(
 			ctx,
 			item.ItemID,
-			"arm",
+			"attention-board",
 			"session",
 			pkg.Decision(""),
 			&pkg.Answer{Kind: pkg.OptionAnswerKind, Value: "Yes"},
@@ -184,7 +184,7 @@ var _ = Describe("Lost-answer total across a restart", func() {
 			_, err = store.Answer(
 				ctx,
 				item.ItemID,
-				"arm",
+				"attention-board",
 				"session",
 				pkg.Decision(""),
 				&pkg.Answer{Kind: pkg.OptionAnswerKind, Value: "Yes"},
@@ -274,7 +274,7 @@ var _ = Describe("Lost-answer total excludes answers with nothing to deliver", f
 		_, err = store.Answer(
 			ctx,
 			item.ItemID,
-			"arm",
+			"attention-board",
 			"session",
 			decision,
 			answer,

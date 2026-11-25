@@ -79,8 +79,21 @@ func answerTransitionAllowed(
 	ctx context.Context,
 	item *Item,
 	itemID ItemID,
+	answeredBy string,
 	resolvedBy string,
 ) error {
+	// An operator-tier message card may not be answered by a lower arm. Unlike
+	// the close route, the empty arm is NOT allowed here: an answer must name who
+	// gave it, and an armless answer cannot be shown to be the operator's.
+	if operatorTierLowerArmRefused(item, answeredBy, false) {
+		return errors.Wrapf(
+			ctx,
+			ErrOperatorTierLowerArm,
+			"item %s is operator-tier and arm %q may not answer it",
+			itemID,
+			answeredBy,
+		)
+	}
 	switch item.State {
 	case OpenState:
 		// ⚠️ The HOLD: a card answered but not yet delivered stays OPEN, so it

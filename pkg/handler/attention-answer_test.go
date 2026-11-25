@@ -177,6 +177,22 @@ var _ = Describe("AttentionAnswerHandler", func() {
 		return item
 	}
 
+	// pushApproveMessage pushes a message-class `approve` card: operator-tier, so
+	// only an operator arm may answer it.
+	pushApproveMessage := func(dedupKey pkg.DedupKey) *pkg.Item {
+		item, err := store.Push(ctx, pkg.PushRequest{
+			ProducerID:      "session-a",
+			ProducerKind:    pkg.SessionProducerKind,
+			LivenessRef:     pkg.LivenessRef("session:session-a"),
+			DedupKey:        dedupKey,
+			InterruptClass:  "approve",
+			Payload:         "open the PR?",
+			AnswerMechanism: pkg.MessageAnswerMechanism,
+		})
+		Expect(err).To(BeNil())
+		return item
+	}
+
 	// The answerer decides the voice every carrier delivers in, so both
 	// answerers are asserted on the STORED item, one card each.
 	DescribeTable("records the answerer the body names",
@@ -339,4 +355,24 @@ var _ = Describe("AttentionAnswerHandler", func() {
 		Expect(errorResponse.Error.Code).To(Equal(pkg.ErrorCodeAlreadyAnswered))
 		Expect(errorResponse.Error.Message).To(ContainSubstring("telegram"))
 	})
+
+	It(
+		"answers the answer route's own code for an operator-tier card answered by a lower arm",
+		func() {
+			item := pushApproveMessage(pkg.DedupKey("approve-message-answer"))
+
+			rec := answer(item.ItemID, `{"answered_by":"manager"}`)
+
+			Expect(rec.Code).To(Equal(http.StatusConflict))
+
+			var errorResponse libhttp.ErrorResponse
+			Expect(json.NewDecoder(rec.Body).Decode(&errorResponse)).To(BeNil())
+			Expect(errorResponse.Error.Code).To(Equal(pkg.ErrorCodeOperatorTierLowerArm))
+			Expect(errorResponse.Error.Code).NotTo(Equal(libhttp.ErrorCodeValidation))
+
+			got, err := store.Get(ctx, item.ItemID)
+			Expect(err).To(BeNil())
+			Expect(got.AnsweredAt).To(BeNil())
+		},
+	)
 })

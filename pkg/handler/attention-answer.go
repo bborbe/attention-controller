@@ -208,6 +208,16 @@ func wrapAnswerError(
 		)
 	case errors.Is(err, pkg.ErrIllegalTransition):
 		return wrapItemClosedError(ctx, err, itemID, store)
+	case errors.Is(err, pkg.ErrOperatorTierLowerArm):
+		// The card is open and operator-tier; the arm that named itself may not
+		// answer it. The fix is to leave it to the operator, not to correct a
+		// body — so this is not ErrorCodeValidation.
+		return libhttp.WrapWithDetails(
+			errors.Wrap(ctx, err, "answer failed"),
+			pkg.ErrorCodeOperatorTierLowerArm,
+			http.StatusConflict,
+			map[string]any{"item_id": itemID.String()},
+		)
 	default:
 		return libhttp.WrapWithDetails(
 			errors.Wrap(ctx, err, "answer failed"),

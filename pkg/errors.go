@@ -113,6 +113,24 @@ var (
 	// "this close is not an acceptable way to end a gate".
 	ErrPermissionCloseWithoutDecision = stderrors.New("permission close without decision")
 
+	// ErrOperatorTierLowerArm is returned when an arm that is not the operator's
+	// tries to answer or close an operator-tier item.
+	//
+	// Two message-class interrupt classes are operator-tier by construction — an
+	// `approve` card (and its `decision` alias), and a `pick` the placement table
+	// rates operator (a manager producer, or a session producer whose payload
+	// carries an operator-only word). `answered_by` is a caller declaration, so
+	// the store can refuse only the declared arm, never verify it; that is the
+	// same trust model every other actor field carries. The `permission` class is
+	// deliberately NOT governed here — it is tiered by permission-tier.py, and a
+	// manager-tier permission answer must keep landing.
+	//
+	// ⚠️ It is deliberately NOT ErrIllegalTransition. `open -> answered` and
+	// `open -> closed` are both rows of the schema's table, so a caller told
+	// "illegal transition" would be told the wrong thing — and could not tell
+	// "this transition does not exist" from "this arm may not cause it".
+	ErrOperatorTierLowerArm = stderrors.New("operator-tier item settled by a lower arm")
+
 	// ErrHeldCardCloseNeedsArm is returned when a close naming NO arm is
 	// attempted on a HELD card — an item that is `open` with `answered_at` set,
 	// because the store recorded an answer it has not yet delivered.

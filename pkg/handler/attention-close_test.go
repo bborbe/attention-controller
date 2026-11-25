@@ -103,6 +103,22 @@ var _ = Describe("AttentionCloseHandler", func() {
 		return item
 	}
 
+	// pushApproveMessage pushes a message-class `approve` card: operator-tier, so
+	// only an operator arm may close it.
+	pushApproveMessage := func() *pkg.Item {
+		item, err := store.Push(ctx, pkg.PushRequest{
+			ProducerID:      "session-d",
+			ProducerKind:    pkg.SessionProducerKind,
+			LivenessRef:     pkg.LivenessRef("session:session-d"),
+			DedupKey:        "approve-message-1",
+			InterruptClass:  "approve",
+			Payload:         "open the PR?",
+			AnswerMechanism: pkg.MessageAnswerMechanism,
+		})
+		Expect(err).To(BeNil())
+		return item
+	}
+
 	// closeItem posts a body to the item's close route. The path var is set with
 	// SetURLVars rather than by mounting a router: the handler reads it through
 	// mux.Vars, and a router would add a second thing to get wrong without
@@ -211,6 +227,25 @@ var _ = Describe("AttentionCloseHandler", func() {
 		Expect(stored.State).To(Equal(pkg.OpenState))
 		Expect(stored.ClosedAt).To(BeNil())
 	})
+
+	It(
+		"answers the close route's own code for an operator-tier card closed by a lower arm",
+		func() {
+			item := pushApproveMessage()
+
+			resp := closeItem(item.ItemID, `{"answered_by":"manager"}`)
+
+			// The wire mapping, not only the store refusal: a 409 carrying
+			// VALIDATION_ERROR would leave the caller unable to tell "this arm may
+			// not settle it" from "this request is malformed".
+			Expect(resp.Code).To(Equal(http.StatusConflict))
+			Expect(resp.Body.String()).To(ContainSubstring(pkg.ErrorCodeOperatorTierLowerArm))
+			Expect(resp.Body.String()).NotTo(ContainSubstring("VALIDATION_ERROR"))
+			stored, err := store.Get(ctx, item.ItemID)
+			Expect(err).To(BeNil())
+			Expect(stored.State).To(Equal(pkg.OpenState))
+		},
+	)
 
 	// ⚠️ Added 2026-11-22 with the close-path fix. A held card — open with
 	// answered_at set — holds an answer the delivery arm has not carried. A

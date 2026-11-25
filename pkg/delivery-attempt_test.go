@@ -225,7 +225,7 @@ var _ = Describe("Delivery trail", func() {
 		store := storeAt(pkg.DeliveryTrailEpoch.Add(-stdtime.Hour))
 		item := push(store, "gate-1")
 		setClock(pkg.DeliveryTrailEpoch.Add(stdtime.Hour))
-		_, err := store.Answer(ctx, item.ItemID, "arm", "sess-1", "", nil, nil, nil)
+		_, err := store.Answer(ctx, item.ItemID, "attention-board", "sess-1", "", nil, nil, nil)
 		Expect(err).To(BeNil())
 
 		report, err := store.Delivery(ctx, item.ItemID)

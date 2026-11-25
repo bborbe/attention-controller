@@ -97,4 +97,16 @@ const (
 	// ErrorCodeRatingInvalid is the code a caller receives when a rating is not
 	// "up", "down" or "" (clear).
 	ErrorCodeRatingInvalid = "RATING_INVALID"
+
+	// ErrorCodeOperatorTierLowerArm is the code a caller receives when an arm
+	// that is not the operator's tries to answer or close an operator-tier
+	// message card — an `approve`/`decision` card, or a `pick` the placement
+	// table rates operator.
+	//
+	// It is deliberately not ErrorCodeValidation: the request was well formed
+	// and named a real, open item, so the caller's fix is to leave the card to
+	// the operator rather than to correct a body. It is deliberately not
+	// ITEM_CLOSED or ALREADY_ANSWERED either — the card is still open and no
+	// answer was routed.
+	ErrorCodeOperatorTierLowerArm = "OPERATOR_TIER_LOWER_ARM"
 )

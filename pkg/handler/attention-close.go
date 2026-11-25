@@ -119,6 +119,18 @@ func wrapItemError(ctx context.Context, err error, itemID pkg.ItemID, what strin
 			http.StatusConflict,
 			itemID,
 		)
+	case errors.Is(err, pkg.ErrOperatorTierLowerArm):
+		// The card is open and operator-tier; the arm that named itself may not
+		// settle it. The fix is to leave it to the operator, not to correct a
+		// body — so this is not ErrorCodeValidation.
+		return wrapItemResponse(
+			ctx,
+			err,
+			what,
+			pkg.ErrorCodeOperatorTierLowerArm,
+			http.StatusConflict,
+			itemID,
+		)
 	case errors.Is(err, pkg.ErrHeldCardCloseNeedsArm):
 		// The card is open and holds an answer the delivery arm has not carried
 		// yet. A caller that names its arm (the board's corner X names
