@@ -96,6 +96,12 @@ type attentionPageRow struct {
 	// here would silently drop the derivation, and the row would colour itself
 	// by whatever the producer claimed.
 	Risk pkg.Risk
+	// BlastRadius is what the board states this card touches, derived from the
+	// item's consequence class rather than read from the card's own wording. It
+	// is non-empty exactly when the card is an irreversible infrastructure
+	// change, so the operator reads the cost on the card even when the producer
+	// did not state one. See pkg.BlastRadiusOf.
+	BlastRadius string
 	// Dimmed reports whether this row is the dimmed record of an item that has
 	// already been answered, rather than an open card. It is what the template
 	// branches on to render a record instead of a prompt: a dimmed row carries

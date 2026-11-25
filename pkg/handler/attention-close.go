@@ -102,10 +102,22 @@ func NewAttentionCloseHandler(store pkg.AttentionStore) http.Handler {
 func wrapItemError(ctx context.Context, err error, itemID pkg.ItemID, what string) error {
 	switch {
 	case errors.Is(err, pkg.ErrItemNotFound):
-		return wrapItemResponse(ctx, err, what, libhttp.ErrorCodeNotFound, http.StatusNotFound, itemID)
+		return wrapItemResponse(
+			ctx,
+			err,
+			what,
+			libhttp.ErrorCodeNotFound,
+			http.StatusNotFound,
+			itemID,
+		)
 	case errors.Is(err, pkg.ErrPermissionCloseWithoutDecision):
 		return wrapItemResponse(
-			ctx, err, what, pkg.ErrorCodePermissionCloseWithoutDecision, http.StatusConflict, itemID,
+			ctx,
+			err,
+			what,
+			pkg.ErrorCodePermissionCloseWithoutDecision,
+			http.StatusConflict,
+			itemID,
 		)
 	case errors.Is(err, pkg.ErrHeldCardCloseNeedsArm):
 		// The card is open and holds an answer the delivery arm has not carried
@@ -117,7 +129,14 @@ func wrapItemError(ctx context.Context, err error, itemID pkg.ItemID, what strin
 			ctx, err, what, pkg.ErrorCodeHeldCardCloseNeedsArm, http.StatusConflict, itemID,
 		)
 	default:
-		return wrapItemResponse(ctx, err, what, libhttp.ErrorCodeValidation, http.StatusConflict, itemID)
+		return wrapItemResponse(
+			ctx,
+			err,
+			what,
+			libhttp.ErrorCodeValidation,
+			http.StatusConflict,
+			itemID,
+		)
 	}
 }
 

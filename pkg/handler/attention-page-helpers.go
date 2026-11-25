@@ -119,6 +119,10 @@ func newAttentionPageRow(
 	// consumer: the read was parsed on every page load and consumed by nothing
 	// until now. See pkg.RiskOf.
 	row.Risk = pkg.RiskOf(item, provenance.ProductionTouching)
+	// BlastRadius is the same consequence class the risk derivation reads,
+	// stated on the card so the operator sees what the change touches even when
+	// the producer wrote no blast radius of its own. Empty for a routine card.
+	row.BlastRadius = pkg.BlastRadiusOf(item)
 	// Info is the single gate for both the info-toggle and its panel, so the
 	// control and the panel it opens cannot disagree about whether this row
 	// carries machine identity. It is the implementation of
