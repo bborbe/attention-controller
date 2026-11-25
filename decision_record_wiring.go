@@ -14,10 +14,10 @@ import (
 // is configured.
 //
 // ⚠️ Without a writer the store still suppresses an irreversible-infrastructure
-// `pick` — the safety property does not depend on a vault being present — but
-// it has no directory to write the page into (the cluster backend's case) and
-// points the acknowledgement at the record's title instead of a page it cannot
-// write.
+// `pick` — the safety property does not depend on a vault being present. It has
+// no directory to write the page into (the cluster backend's case), so the card
+// announces the class and blast radius without pointing at a page it cannot
+// write; the operator records and acknowledges it out of band.
 func decisionRecordStoreOptions(vaultDir string) []pkg.AttentionStoreOption {
 	if vaultDir == "" {
 		return nil

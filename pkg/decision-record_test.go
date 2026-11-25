@@ -276,6 +276,54 @@ var _ = Describe("Decision Record mint path", func() {
 			Expect(err).To(BeNil())
 			Expect(decisionRecordPages(vaultDir)).To(HaveLen(1))
 		})
+
+		It("still suppresses the pick when no writer (no vault) is configured", func() {
+			noWriterStore := pkg.NewAttentionStore(
+				db,
+				pkg.NewItemIDGenerator(),
+				livenessChecker,
+				libtime.NewCurrentDateTime(),
+				libtime.Duration(15*60*1e9),
+			)
+			item, err := noWriterStore.Push(ctx, storedSpecimen())
+			Expect(err).To(BeNil())
+			Expect(item.InterruptClass).To(Equal(pkg.AckInterruptClass))
+			Expect(item.AnswerMechanism).To(Equal(pkg.AckAnswerMechanism))
+			Expect(item.Options).To(BeEmpty())
+			Expect(item.Risk).To(Equal(pkg.ElevatedRisk))
+			// It does not claim a page it cannot write.
+			Expect(item.Payload.String()).To(ContainSubstring("no Decision Record vault"))
+			Expect(decisionRecordPages(vaultDir)).To(BeEmpty())
+		})
+
+		It(
+			"fully converts an existing pick when a re-push becomes an irreversible decision",
+			func() {
+				seeded, err := store.Push(ctx, request(
+					"convert-on-repush",
+					"Approve starting task: clean the stale build cache?",
+					"approve — start the task", "decline — leave it",
+				))
+				Expect(err).To(BeNil())
+				Expect(seeded.InterruptClass).To(Equal(pkg.PickInterruptClass))
+				Expect(seeded.AnswerMechanism).To(Equal(pkg.MessageAnswerMechanism))
+
+				// Re-push the SAME dedup key with an irreversible-infra payload. The
+				// rule rewrites it to an ack; the stored item must be fully converted,
+				// not left class=ack with mechanism=message.
+				converted, err := store.Push(ctx, request(
+					"convert-on-repush",
+					storedSpecimenPayload,
+					"approve — migrate to nuke", "decline — don't migrate; keep sun up as fallback",
+				))
+				Expect(err).To(BeNil())
+				Expect(converted.InterruptClass).To(Equal(pkg.AckInterruptClass))
+				Expect(converted.AnswerMechanism).To(Equal(pkg.AckAnswerMechanism))
+				Expect(converted.Options).To(BeEmpty())
+				Expect(converted.Questions).To(BeEmpty())
+				Expect(converted.Risk).To(Equal(pkg.ElevatedRisk))
+			},
+		)
 	})
 
 	Describe("Answer", func() {

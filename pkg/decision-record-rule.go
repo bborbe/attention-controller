@@ -15,6 +15,11 @@ import (
 // it never asks for it.
 const decisionWaitingForAckPrefix = "decision waiting for ack: "
 
+// decisionNoVaultPayload is the card text when an irreversible-infrastructure
+// decision reaches a store with no vault to record it. It suppresses the pick —
+// the safety property — without pointing at a page that was never written.
+const decisionNoVaultPayload = "irreversible infrastructure decision — no Decision Record vault is configured, so this is not carded as a pick; record and acknowledge it out of band."
+
 // applyDecisionRecordRule is the mint-path half of [[Decision Table]] row 46:
 // a push that would card an irreversible infrastructure decision is turned into
 // a Decision Record page plus an acknowledgement pointer, never a `pick`.
@@ -44,17 +49,22 @@ func applyDecisionRecordRule(
 		request.AnswerMechanism != MessageAnswerMechanism {
 		return request, nil
 	}
-	// No writer means no vault to write the page into (the cluster backend's
-	// case). Do not rewrite the card to point at a page that will never exist:
-	// leave the request as a pick, which the render backstop escalates to `risk`
-	// with its blast radius. A fake pointer is worse than an honestly-risky card.
-	if writer == nil {
-		return request, nil
-	}
 	if RequestConsequence(request) != IrreversibleInfraConsequence {
 		return request, nil
 	}
 	record := NewDecisionRecord(request)
+	// No writer means no vault to write the page into (the cluster backend's
+	// case). The safety property — this class is never carded as a `pick` — does
+	// NOT depend on a vault: the card is still rewritten to an `ack` announcing
+	// the class and blast radius. It deliberately does NOT claim a page it cannot
+	// write; the operator records and acknowledges it out of band.
+	if writer == nil {
+		ack := decisionRecordAckRequest(request, record, decisionNoVaultPayload)
+		if err := ack.Validate(ctx); err != nil {
+			return request, errors.Wrap(ctx, err, "validate decision record card failed")
+		}
+		return ack, nil
+	}
 	// Build and validate the rewritten request BEFORE writing the page, so a
 	// declaration that cannot become a legal card does not leave an orphan page
 	// behind.
@@ -69,9 +79,10 @@ func applyDecisionRecordRule(
 	return decisionRecordPushRequest(request, record, pagePath), nil
 }
 
-// decisionRecordPushRequest builds the acknowledgement card. pagePath is empty
-// on the pre-write validation pass, in which case the card points at the
-// record's title rather than a path that does not exist yet.
+// decisionRecordPushRequest builds the acknowledgement card that points at the
+// written page. pagePath is empty on the pre-write validation pass, in which
+// case the card points at the record's title rather than a path that does not
+// exist yet.
 func decisionRecordPushRequest(
 	request PushRequest,
 	record DecisionRecord,
@@ -81,6 +92,19 @@ func decisionRecordPushRequest(
 	if reference == "" {
 		reference = record.Title
 	}
+	return decisionRecordAckRequest(request, record, decisionWaitingForAckPrefix+reference)
+}
+
+// decisionRecordAckRequest builds the acknowledgement card that replaces a pick.
+// payload is the card's text — an ack pointer to the written page, or, with no
+// vault to write into, an honest statement that the class was refused without a
+// page. Either way the card carries no options and no answer routing, so
+// answering it can never release the work.
+func decisionRecordAckRequest(
+	request PushRequest,
+	record DecisionRecord,
+	payload string,
+) PushRequest {
 	return PushRequest{
 		ProducerID:      request.ProducerID,
 		ProducerKind:    request.ProducerKind,
@@ -89,7 +113,7 @@ func decisionRecordPushRequest(
 		DedupKey:        request.DedupKey,
 		InterruptClass:  AckInterruptClass,
 		Risk:            ElevatedRisk,
-		Payload:         Payload(decisionWaitingForAckPrefix + reference),
+		Payload:         Payload(payload),
 		// The blast radius rides the context so the operator sees the cost on
 		// the card, while the full reasoning lives on the page.
 		Context: ItemContext(record.BlastRadius),
