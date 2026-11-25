@@ -378,7 +378,16 @@ var _ = Describe("AttentionStore", func() {
 			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
 			Expect(err).To(BeNil())
 
-			answered, err := store.Answer(ctx, item.ItemID, "telegram", "", "", nil, nil, nil)
+			answered, err := store.Answer(
+				ctx,
+				item.ItemID,
+				"attention-board",
+				"",
+				"",
+				nil,
+				nil,
+				nil,
+			)
 			Expect(err).To(BeNil())
 			Expect(answered.ResolvedBy).To(BeEmpty())
 		})
@@ -463,7 +472,7 @@ var _ = Describe("AttentionStore", func() {
 			allowed, err := store.Answer(
 				ctx,
 				first.ItemID,
-				"telegram",
+				"attention-board",
 				"",
 				pkg.AllowDecision,
 				nil,
@@ -474,7 +483,7 @@ var _ = Describe("AttentionStore", func() {
 			denied, err := store.Answer(
 				ctx,
 				second.ItemID,
-				"telegram",
+				"attention-board",
 				"",
 				pkg.DenyDecision,
 				nil,
@@ -495,7 +504,16 @@ var _ = Describe("AttentionStore", func() {
 			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
 			Expect(err).To(BeNil())
 
-			answered, err := store.Answer(ctx, item.ItemID, "telegram", "", "", nil, nil, nil)
+			answered, err := store.Answer(
+				ctx,
+				item.ItemID,
+				"attention-board",
+				"",
+				"",
+				nil,
+				nil,
+				nil,
+			)
 			Expect(err).To(BeNil())
 			Expect(answered.Decision).To(BeEmpty())
 
@@ -525,7 +543,16 @@ var _ = Describe("AttentionStore", func() {
 			Expect(err).To(BeNil())
 			closed, err := store.Push(ctx, pushRequest("session-a", "gate-3"))
 			Expect(err).To(BeNil())
-			_, err = store.Answer(ctx, answered.ItemID, "telegram", "manager-1", "", nil, nil, nil)
+			_, err = store.Answer(
+				ctx,
+				answered.ItemID,
+				"attention-board",
+				"manager-1",
+				"",
+				nil,
+				nil,
+				nil,
+			)
 			Expect(err).To(BeNil())
 			_, err = store.SettleAnswer(ctx, answered.ItemID)
 			Expect(err).To(BeNil())
@@ -686,22 +713,33 @@ var _ = Describe("AttentionStore", func() {
 			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
 			Expect(err).To(BeNil())
 
-			answered, err := store.Answer(ctx, item.ItemID, "telegram", "", "", nil, nil, nil)
+			answered, err := store.Answer(
+				ctx,
+				item.ItemID,
+				"attention-board",
+				"",
+				"",
+				nil,
+				nil,
+				nil,
+			)
 			Expect(err).To(BeNil())
 			// A `message` card is not held: it moves open -> answered immediately.
 			// (The hold applies only to `permission` cards.)
 			Expect(answered.State).To(Equal(pkg.AnsweredState))
-			Expect(answered.AnsweredBy).To(Equal("telegram"))
+			Expect(answered.AnsweredBy).To(Equal("attention-board"))
 			Expect(answered.AnsweredAt).NotTo(BeNil())
 		})
 
 		It("rejects a second answer as already-answered", func() {
 			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
 			Expect(err).To(BeNil())
-			_, err = store.Answer(ctx, item.ItemID, "telegram", "", "", nil, nil, nil)
+			_, err = store.Answer(ctx, item.ItemID, "attention-board", "", "", nil, nil, nil)
 			Expect(err).To(BeNil())
 
-			_, err = store.Answer(ctx, item.ItemID, "discord", "", "", nil, nil, nil)
+			// A second operator-arm answer on an `approve` card: the tier rule
+			// allows the arm, so the compare-and-set is what refuses it.
+			_, err = store.Answer(ctx, item.ItemID, "attention-board", "", "", nil, nil, nil)
 			Expect(err).NotTo(BeNil())
 			Expect(errors.Is(err, pkg.ErrAlreadyAnswered)).To(BeTrue())
 		})
@@ -712,7 +750,7 @@ var _ = Describe("AttentionStore", func() {
 			_, err = store.Close(ctx, item.ItemID, "", nil)
 			Expect(err).To(BeNil())
 
-			_, err = store.Answer(ctx, item.ItemID, "telegram", "", "", nil, nil, nil)
+			_, err = store.Answer(ctx, item.ItemID, "attention-board", "", "", nil, nil, nil)
 			Expect(err).NotTo(BeNil())
 			Expect(errors.Is(err, pkg.ErrIllegalTransition)).To(BeTrue())
 		})
@@ -721,7 +759,7 @@ var _ = Describe("AttentionStore", func() {
 			_, err := store.Answer(
 				ctx,
 				pkg.ItemID("does-not-exist"),
-				"telegram",
+				"attention-board",
 				"",
 				"",
 				nil,
@@ -755,7 +793,7 @@ var _ = Describe("AttentionStore", func() {
 			alreadyAnswered := 0
 
 			for _, itemID := range itemIDs {
-				for _, arm := range []string{"telegram", "discord"} {
+				for _, arm := range []string{"attention-board", "supervisor:attention-next-x"} {
 					done.Add(1)
 					go func(itemID pkg.ItemID, arm string) {
 						defer done.Done()
@@ -936,7 +974,7 @@ var _ = Describe("AttentionStore", func() {
 		It("rejects escalation of an answered item", func() {
 			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
 			Expect(err).To(BeNil())
-			_, err = store.Answer(ctx, item.ItemID, "telegram", "", "", nil, nil, nil)
+			_, err = store.Answer(ctx, item.ItemID, "attention-board", "", "", nil, nil, nil)
 			Expect(err).To(BeNil())
 			_, err = store.SettleAnswer(ctx, item.ItemID)
 			Expect(err).To(BeNil())
@@ -1074,7 +1112,7 @@ var _ = Describe("AttentionStore", func() {
 		It("refuses an answered item and leaves the record unchanged", func() {
 			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
 			Expect(err).To(BeNil())
-			_, err = store.Answer(ctx, item.ItemID, "telegram", "", "", nil, nil, nil)
+			_, err = store.Answer(ctx, item.ItemID, "attention-board", "", "", nil, nil, nil)
 			Expect(err).To(BeNil())
 			_, err = store.SettleAnswer(ctx, item.ItemID)
 			Expect(err).To(BeNil())
@@ -1303,7 +1341,7 @@ var _ = Describe("AttentionStore", func() {
 		It("returns an answered item that Read omits", func() {
 			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
 			Expect(err).To(BeNil())
-			_, err = store.Answer(ctx, item.ItemID, "telegram", "", "", nil, nil, nil)
+			_, err = store.Answer(ctx, item.ItemID, "attention-board", "", "", nil, nil, nil)
 			Expect(err).To(BeNil())
 			_, err = store.SettleAnswer(ctx, item.ItemID)
 			Expect(err).To(BeNil())
@@ -1364,7 +1402,7 @@ var _ = Describe("AttentionStore", func() {
 		It("returns an answered item whose producer is gone, without pruning it", func() {
 			item, err := store.Push(ctx, pushRequest("session-dead", "gate-answered"))
 			Expect(err).To(BeNil())
-			_, err = store.Answer(ctx, item.ItemID, "telegram", "", "", nil, nil, nil)
+			_, err = store.Answer(ctx, item.ItemID, "attention-board", "", "", nil, nil, nil)
 			Expect(err).To(BeNil())
 			_, err = store.SettleAnswer(ctx, item.ItemID)
 			Expect(err).To(BeNil())
@@ -1391,7 +1429,16 @@ var _ = Describe("AttentionStore", func() {
 			func() {
 				answered, err := store.Push(ctx, pushRequest("session-dead-a", "gate-answered"))
 				Expect(err).To(BeNil())
-				_, err = store.Answer(ctx, answered.ItemID, "telegram", "", "", nil, nil, nil)
+				_, err = store.Answer(
+					ctx,
+					answered.ItemID,
+					"attention-board",
+					"",
+					"",
+					nil,
+					nil,
+					nil,
+				)
 				Expect(err).To(BeNil())
 				_, err = store.SettleAnswer(ctx, answered.ItemID)
 				Expect(err).To(BeNil())
@@ -1835,7 +1882,16 @@ var _ = Describe("AttentionStore", func() {
 			Expect(err).To(BeNil())
 
 			hooked := storeHookedOnPrune(func() {
-				_, answerErr := store.Answer(ctx, item.ItemID, "telegram", "", "", nil, nil, nil)
+				_, answerErr := store.Answer(
+					ctx,
+					item.ItemID,
+					"attention-board",
+					"",
+					"",
+					nil,
+					nil,
+					nil,
+				)
 				Expect(answerErr).To(BeNil())
 				_, settleErr := store.SettleAnswer(ctx, item.ItemID)
 				Expect(settleErr).To(BeNil())

@@ -48,7 +48,16 @@ var _ = Describe("AttentionStore answered retention", func() {
 	// answer pushes a fresh ask and answers it, returning its id.
 	answer := func(producer pkg.ProducerID, dedup pkg.DedupKey) pkg.ItemID {
 		id := push(producer, dedup)
-		_, err := store.Answer(ctx, id, "arm", "session", pkg.Decision(""), nil, nil, nil)
+		_, err := store.Answer(
+			ctx,
+			id,
+			"attention-board",
+			"session",
+			pkg.Decision(""),
+			nil,
+			nil,
+			nil,
+		)
 		Expect(err).To(BeNil())
 		_, err = store.SettleAnswer(ctx, id)
 		Expect(err).To(BeNil())
@@ -204,7 +213,16 @@ var _ = Describe("AttentionStore answered retention", func() {
 		Expect(err).To(BeNil())
 		Expect(ids(read)).To(HaveKey(id))
 
-		_, err = store.Answer(ctx, id, "arm", "session", pkg.Decision(""), nil, nil, nil)
+		_, err = store.Answer(
+			ctx,
+			id,
+			"attention-board",
+			"session",
+			pkg.Decision(""),
+			nil,
+			nil,
+			nil,
+		)
 		Expect(err).To(BeNil())
 		_, err = store.SettleAnswer(ctx, id)
 		Expect(err).To(BeNil())
@@ -213,7 +231,7 @@ var _ = Describe("AttentionStore answered retention", func() {
 		Expect(err).To(BeNil())
 		Expect(ids(read)).NotTo(HaveKey(id))
 
-		_, err = store.Close(ctx, id, "arm", nil)
+		_, err = store.Close(ctx, id, "attention-board", nil)
 		Expect(err).To(BeNil())
 
 		read, err = store.Read(ctx)

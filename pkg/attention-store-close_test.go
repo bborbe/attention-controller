@@ -74,7 +74,10 @@ var _ = Describe("AttentionStore Close", func() {
 		It("applies answered -> closed", func() {
 			item, err := store.Push(ctx, pushRequest("session-a", "gate-1"))
 			Expect(err).To(BeNil())
-			_, err = store.Answer(ctx, item.ItemID, "telegram", "", "", nil, nil, nil)
+			// `attention-board` is an operator arm: this builder pushes an
+			// `approve` card, which is operator-tier, so a lower arm would now
+			// be refused (see operator-tier_test.go).
+			_, err = store.Answer(ctx, item.ItemID, "attention-board", "", "", nil, nil, nil)
 			Expect(err).To(BeNil())
 			closed, err := store.Close(ctx, item.ItemID, "", nil)
 			Expect(err).To(BeNil())

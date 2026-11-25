@@ -89,7 +89,7 @@ var _ = Describe("AttentionStore lost-answer counter", func() {
 		_, err := store.Answer(
 			ctx,
 			id,
-			"arm",
+			"attention-board",
 			"session",
 			pkg.Decision(""),
 			&pkg.Answer{Kind: pkg.OptionAnswerKind, Value: "Yes"},

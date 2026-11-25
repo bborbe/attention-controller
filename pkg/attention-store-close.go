@@ -158,6 +158,18 @@ func stampCloseArm(
 			answeredBy,
 		)
 	}
+	// An operator-tier message card may not be closed by a lower arm. The empty
+	// arm is allowed here: a producer withdrawing its own card names no actor and
+	// answers nothing.
+	if operatorTierLowerArmRefused(item, answeredBy, true) {
+		return errors.Wrapf(
+			ctx,
+			ErrOperatorTierLowerArm,
+			"item %s is operator-tier and arm %q may not close it",
+			itemID,
+			answeredBy,
+		)
+	}
 	item.AnsweredBy = answeredBy
 	if answeredBy != "" {
 		item.AnsweredClient = answeredClient

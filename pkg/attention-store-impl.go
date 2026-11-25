@@ -1270,7 +1270,7 @@ func (a *attentionStore) Answer(
 		// on a `permission` item only when the write is an ARM answer — see the
 		// AnsweredState arm. The failure modes are distinct and a caller can
 		// tell them apart.
-		if err := answerTransitionAllowed(ctx, item, itemID, resolvedBy); err != nil {
+		if err := answerTransitionAllowed(ctx, item, itemID, answeredBy, resolvedBy); err != nil {
 			return err
 		}
 		now := a.currentDateTimeGetter.Now()
