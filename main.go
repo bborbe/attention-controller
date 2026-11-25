@@ -515,6 +515,9 @@ func (a *application) createAttentionStore(
 		pkg.WithSessionPaneLookup(pkg.NewLedgerSessionPaneLookup(sessionLedger)),
 		pkg.WithPaneLister(pkg.NewWeztermPaneLister(libtime.NewCurrentDateTime())),
 	)
+	// ⚠️ The Decision Record writer is attached only when a vault is configured.
+	// See decisionRecordStoreOptions.
+	options = append(options, decisionRecordStoreOptions(a.VaultDir)...)
 	return pkg.NewAttentionStore(
 		db,
 		pkg.NewItemIDGenerator(),

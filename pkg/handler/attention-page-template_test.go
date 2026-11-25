@@ -94,14 +94,14 @@ var _ = Describe("buildAttentionPage", func() {
 		// digest only when the served page is meant to change.
 		sum := sha256.Sum256([]byte(attentionPageTemplate))
 
-		// ⚠️ Regenerated 2026-11-21: the served page changed on purpose — the
-		// corner X now renders on every row, dimmed records and held cards
-		// included — so the assembled document legitimately grew. The previous
-		// pair was 146746 /
-		// 1ac3d0b8e397bf7b7974c6b140dfab806498ac5fbd1283689e74494cf4ef29ea.
-		Expect(len(attentionPageTemplate)).To(Equal(147363))
+		// ⚠️ Regenerated 2026-11-24: the served page changed on purpose — an
+		// irreversible-infrastructure card now carries a derived blast radius
+		// (data-blast-radius + the .blast-radius body line) — so the assembled
+		// document legitimately grew. The previous pair was 147363 /
+		// c92b535783cd474995ede74e50ffc921e2ac2fd01caad8025b251048a1a9a2a3.
+		Expect(len(attentionPageTemplate)).To(Equal(147537))
 		Expect(hex.EncodeToString(sum[:])).To(Equal(
-			"c92b535783cd474995ede74e50ffc921e2ac2fd01caad8025b251048a1a9a2a3",
+			"83810b90c61f7091c3b710eb9d5181858cf4bb3e05d98353b6f3fc477276a3e2",
 		))
 	})
 })

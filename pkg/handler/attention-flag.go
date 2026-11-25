@@ -100,10 +100,31 @@ func wrapFlagError(ctx context.Context, err error, itemID pkg.ItemID, what strin
 			ctx, err, what, pkg.ErrorCodeFlagReasonRequired, http.StatusBadRequest, itemID,
 		)
 	case errors.Is(err, pkg.ErrItemNotFound):
-		return wrapItemResponse(ctx, err, what, libhttp.ErrorCodeNotFound, http.StatusNotFound, itemID)
+		return wrapItemResponse(
+			ctx,
+			err,
+			what,
+			libhttp.ErrorCodeNotFound,
+			http.StatusNotFound,
+			itemID,
+		)
 	case errors.Is(err, pkg.ErrItemNotOpen):
-		return wrapItemResponse(ctx, err, what, pkg.ErrorCodeItemNotOpen, http.StatusConflict, itemID)
+		return wrapItemResponse(
+			ctx,
+			err,
+			what,
+			pkg.ErrorCodeItemNotOpen,
+			http.StatusConflict,
+			itemID,
+		)
 	default:
-		return wrapItemResponse(ctx, err, what, libhttp.ErrorCodeValidation, http.StatusConflict, itemID)
+		return wrapItemResponse(
+			ctx,
+			err,
+			what,
+			libhttp.ErrorCodeValidation,
+			http.StatusConflict,
+			itemID,
+		)
 	}
 }

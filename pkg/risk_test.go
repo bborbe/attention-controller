@@ -85,6 +85,30 @@ var _ = Describe("Risk", func() {
 				To(Equal(pkg.ElevatedRisk))
 		})
 
+		It(
+			"escalates on an irreversible-infrastructure consequence with no irreversible verb",
+			func() {
+				// The 2026-11-24 miss: "migrate"/"move" are not on the verb list, and
+				// the destructive work lives one step downstream. The consequence class
+				// is what the render backstop reads.
+				Expect(
+					pkg.RiskOf(item("", "move `vg0/data` from `hell` to `nuke-dev`", ""), false),
+				).To(Equal(pkg.ElevatedRisk))
+				Expect(
+					pkg.RiskOf(item("", "Approve migrating sun's 2 k3s VMs to nuke?", ""), false),
+				).To(Equal(pkg.ElevatedRisk))
+			},
+		)
+
+		It("leaves a routine pick at decision, so the consequence rule is not a blanket", func() {
+			Expect(
+				pkg.RiskOf(
+					item("", "Approve starting task: clean the stale build cache?", ""),
+					false,
+				),
+			).To(Equal(pkg.DecisionRisk))
+		})
+
 		It("keeps a producer's own higher declaration", func() {
 			Expect(pkg.RiskOf(item(pkg.ElevatedRisk, "Which surface?", ""), false)).
 				To(Equal(pkg.ElevatedRisk))

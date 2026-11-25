@@ -140,6 +140,13 @@ func RiskOf(item Item, productionTouching bool) Risk {
 	if productionTouching {
 		return ElevatedRisk
 	}
+	// The consequence class is the backstop the 2026-11-24 miss needed: a card
+	// whose own words carry no irreversible verb can still unleash a host or
+	// disk change, and that downstream effect is what the operator is really
+	// approving. See ConsequenceOf.
+	if ItemConsequence(item) == IrreversibleInfraConsequence {
+		return ElevatedRisk
+	}
 	if irreversibleRiskVerbPattern.MatchString(item.Payload.String()) {
 		return ElevatedRisk
 	}
