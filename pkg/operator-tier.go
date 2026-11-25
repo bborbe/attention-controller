@@ -59,15 +59,45 @@ var OperatorTierArms = []OperatorArm{
 	{Kind: OperatorArmPrefix, Value: "supervisor:attention-next"},
 }
 
-// operatorOnlyWords compiles OperatorTierWords into the case-insensitive,
-// word-bounded pattern the probe uses (`re.I` + `\b`).
+// operatorOnlyWords compiles OperatorTierWords into the case-insensitive pattern
+// the probe uses (`re.I`), with one correction the probe needs: a word is bounded
+// on the RIGHT only when it ends in a word character. `approve:` ends in a colon,
+// so the probe's trailing `\b` never matches the canonical `approve: repair` form
+// (a space after the colon is not a word boundary) and the token is a no-op
+// there. The store bounds `approve:` on the left only, so it matches.
 var operatorOnlyWords = func() *regexp.Regexp {
-	parts := make([]string, 0, len(OperatorTierWords))
+	closed := make([]string, 0, len(OperatorTierWords))
+	open := make([]string, 0, len(OperatorTierWords))
 	for _, word := range OperatorTierWords {
-		parts = append(parts, regexp.QuoteMeta(word))
+		quoted := regexp.QuoteMeta(word)
+		if endsWithWordCharacter(word) {
+			closed = append(closed, quoted)
+		} else {
+			open = append(open, quoted)
+		}
 	}
-	return regexp.MustCompile(`(?i)\b(` + strings.Join(parts, "|") + `)\b`)
+	parts := make([]string, 0, 2)
+	if len(closed) > 0 {
+		parts = append(parts, `\b(`+strings.Join(closed, "|")+`)\b`)
+	}
+	if len(open) > 0 {
+		parts = append(parts, `\b(`+strings.Join(open, "|")+`)`)
+	}
+	return regexp.MustCompile(`(?i)(` + strings.Join(parts, "|") + `)`)
 }()
+
+// endsWithWordCharacter reports whether the last byte of word is a regex word
+// character, so a trailing `\b` can follow it.
+func endsWithWordCharacter(word string) bool {
+	if word == "" {
+		return false
+	}
+	last := word[len(word)-1]
+	return last == '_' ||
+		(last >= 'a' && last <= 'z') ||
+		(last >= 'A' && last <= 'Z') ||
+		(last >= '0' && last <= '9')
+}
 
 // operatorTier reports whether an item may be settled only by the operator.
 //

@@ -63,15 +63,23 @@ misdeclaration.
 
 ## The probe it mirrors
 
-The placement control that measures this population is
-`attention-placement.py` in the operator's private vault, pinned here so a drift is auditable:
+The placement control that measures this population is `attention-placement.py`, a script in the
+operator's private vault (not vendored in this repo). It is pinned here by commit and content
+hash so a drift is auditable:
 
-- path: `~/Documents/Obsidian/private-personal/.claude/scripts/attention-placement.py`
+- script: `attention-placement.py` (operator's private vault, not in this repo)
 - commit: `67925e3e3b6eced83ed8e969838830ca41e5a8ef` (2026-11-20)
 - sha256: `250688b15d6e6cb56846d6fb5a5e737742ab76437f38fe0ef44008855ccfb899`
 - functions: `expected_tier` (the word list and the `producer_kind` branch), `answer_tier` (the
   operator set)
 
-⚠️ One deliberate divergence: the answer route refuses an empty `answered_by` on an
-operator-tier item, while the probe treats an armless answer with no `answered_at` as unrated
-(`None`, not a breach). The store is stricter than the probe here.
+⚠️ Two deliberate divergences, both in the store's favour:
+
+- **The empty arm on the answer route.** The store refuses an empty `answered_by` on an
+  operator-tier item, while the probe treats an armless answer with no `answered_at` as unrated
+  (`None`, not a breach). The store is stricter than the probe here.
+- **`approve:` on its canonical payload.** The probe's word list is one `\b`-bounded alternation,
+  so its trailing `\b` after the `:` in `approve:` fails on the canonical `approve: repair` form
+  (the colon is followed by a space, not a word character) and the token never matches. The store
+  bounds `approve:` on the left only, so it matches `approve: repair` — the form the cards
+  actually carry.

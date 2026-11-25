@@ -59,7 +59,7 @@ After this change, an `approve`/`decision` message card, and a `pick` card that 
 - [ ] A producer close naming no arm (`answered_by: ""`) on an operator-tier card still succeeds. Evidence: Ginkgo spec.
 - [ ] Every fixture that answers an `approve`- or `decision`-class card with a non-operator arm is updated to an operator arm, so the suite is green. Evidence: `make test` exits 0; the named fixtures `pkg/attention-store-close_test.go:77`, `pkg/answer_test.go:260,287,354`, `pkg/attention-store_test.go:381,466,477,498,689,694,701` are reviewed and updated where the item is approve/decision-class.
 - [ ] `docs/operator-tier.md` and the code table agree. Evidence: a Ginkgo spec that parses the doc's operator-word and operator-arm tables and asserts each row matches the Go table.
-- [ ] `grep -n 'ErrOperatorTierLowerArm' pkg/errors.go pkg/attention-error-codes.go pkg/attention-store-close.go pkg/attention-store-hold.go pkg/handler/attention-close.go pkg/handler/attention-answer.go` returns ≥1 match per file. Evidence: grep output.
+- [ ] `grep -n 'ErrOperatorTierLowerArm' pkg/errors.go pkg/attention-store-close.go pkg/attention-store-hold.go pkg/handler/attention-close.go pkg/handler/attention-answer.go` returns ≥1 match per file, and `grep -n 'ErrorCodeOperatorTierLowerArm' pkg/attention-error-codes.go` returns ≥1 match (the code file names the wire code, not the sentinel). Evidence: grep output.
 - [ ] **Post-Deploy (Rung-2):** the refusal is live on the Mac board — a manager-arm close of an operator-tier approve card returns the `ErrOperatorTierLowerArm` wire code.
   - `deploy_check:` `go version -m ~/.local/bin/attention-controller | sed -n 's/.*vcs.revision=//p'`
   - `deploy_target:` `$(git rev-parse HEAD)`
@@ -70,7 +70,8 @@ After this change, an `approve`/`decision` message card, and a `pick` card that 
 
 - `make precommit` — exit 0
 - `make test` — the Ginkgo suite passes, including the specs above
-- `grep -n 'ErrOperatorTierLowerArm' pkg/errors.go pkg/attention-error-codes.go pkg/attention-store-close.go pkg/attention-store-hold.go pkg/handler/attention-close.go pkg/handler/attention-answer.go` — ≥1 match per file
+- `grep -n 'ErrOperatorTierLowerArm' pkg/errors.go pkg/attention-store-close.go pkg/attention-store-hold.go pkg/handler/attention-close.go pkg/handler/attention-answer.go` — ≥1 match per file
+- `grep -n 'ErrorCodeOperatorTierLowerArm' pkg/attention-error-codes.go` — ≥1 match
 
 ### Operator-executable (runs on the host after PR merge, spec verification ladder)
 
@@ -153,11 +154,11 @@ The control "no operator-tier gate answered by a lower tier" is a stated safety 
 
 | # | Prompt focus | Covers DBs | Covers ACs | Depends on |
 |---|---|---|---|---|
-| 1 | `docs/operator-tier.md` (probe pinned) + Go table + doc-matches-code test | 7 | 21 | — |
+| 1 | `docs/operator-tier.md` (probe pinned by name + commit, no machine path) + Go table + doc-matches-code test | 7 | 22 | — |
 | 2 | Tier predicate + operator-word table + operator-arm set + sentinel + wire code, unit-tested directly | 1–3, 6 | 12, 13 | prompt 1 |
-| 3 | Close-route refusal + Ginkgo specs | 1–3 | 2, 3, 4, 5, 6, 11, 14, 15, 18, 19 | prompt 2 |
-| 4 | Answer-route refusal (incl. the empty-arm rule) + Ginkgo specs | 1–5 | 7, 8, 9, 10, 16, 17 | prompt 2 |
-| 5 | Handler error mapping + fixture updates + `make precommit`/Post-Deploy | 6 | 1, 20, 22, 23 | prompts 3, 4 |
+| 3 | Close-route refusal + Ginkgo specs | 1–3 | 2, 3, 4, 5, 6, 11, 14, 18, 19 | prompt 2 |
+| 4 | Answer-route refusal (incl. the empty-arm rule) + Ginkgo specs | 1–5 | 7, 8, 9, 10, 15, 16, 17 | prompt 2 |
+| 5 | Handler error mapping + handler-level 409 test + fixture updates + `make precommit`/Post-Deploy | 6 | 1, 20, 21, 23, 24 | prompts 3, 4 |
 
 ## Do-Nothing Option
 

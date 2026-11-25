@@ -6,7 +6,6 @@ package pkg_test
 
 import (
 	"context"
-	"strings"
 
 	libboltkv "github.com/bborbe/boltkv"
 	"github.com/bborbe/errors"
@@ -257,19 +256,14 @@ var _ = Describe("operator-tier message card", func() {
 			expectOperatorTierRefusal(err)
 		})
 
-		It("matches every operator word in the table", func() {
+		It("matches every operator word in the table, on the canonical payload form", func() {
 			for index, word := range pkg.OperatorTierWords {
-				// The pattern is word-bounded, so `approve:` needs a word char after
-				// the colon to close the trailing boundary; every other word is
-				// followed by a space.
-				payload := "please " + word + " now"
-				if strings.HasSuffix(word, ":") {
-					payload = "please " + word + "yes"
-				}
+				// Canonical form: the word followed by a space. `approve:` must match
+				// here — `approve: repair` is the shape the cards actually carry.
 				item := push(
 					pkg.PickInterruptClass,
 					pkg.SessionProducerKind,
-					payload,
+					"please "+word+" now",
 					pkg.DedupKey("word-"+word),
 				)
 				_, err := store.Close(ctx, item.ItemID, "manager", nil)
