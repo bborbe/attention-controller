@@ -1,6 +1,7 @@
 ---
-status: draft
-kind: bug
+status: approved
+approved: "2026-11-25T12:13:26Z"
+branch: dark-factory/bug-operator-tier-message-card-settled-by-lower-arm
 ---
 
 ## Summary
