@@ -988,12 +988,21 @@ func (p *wakePass) keeps(manager string, item Item) bool {
 		}
 	}
 	spawner := p.owners[sessionID].SpawnerSessionID
-	if spawner == manager {
+	if spawner == manager && sameVaultDir(p.owners[manager].Cwd, p.owners[sessionID].Cwd) {
 		// A manager's OWN workers are the panes it EXISTS to see, so the UNOWNED
 		// class must never silence them — a wrapper-backed worker writes no
 		// `worker-manager` record and would otherwise lose its card. (The foreign
 		// branch above still applies: a resolved foreign goal outranks the spawn
 		// edge, which is the documented contract.)
+		//
+		// ⚠️ The spawn edge confers ownership only WITHIN one vault. A manager
+		// registered in vault A that spawns a worker in vault B is not that
+		// worker's owner: the vault cannot see the manager, so the foreign guard
+		// above never fires, and an unguarded `spawner == manager` return hands it
+		// every card its cross-vault worker raises. Measured 2026-11-25: `2410e53c`
+		// (seibert-brogrammers) spawned `76e9af4b` (private-personal) and kept 142
+		// emission rows. When the two vaults differ the branch falls through, and
+		// the unowned / no-goal routing below decides instead.
 		return true
 	}
 	// The unowned class — the task index knows NO task for this session — goes
@@ -1040,6 +1049,34 @@ func (p *wakePass) keeps(manager string, item Item) bool {
 		return true
 	}
 	return !p.isLive(spawner)
+}
+
+// sameVaultDir reports whether two cwds resolve to the same Obsidian vault.
+//
+// ⚠️ It answers true when either side cannot be resolved to a vault name: an
+// unknown vault is not evidence of a cross-vault spawn, and keeping is the
+// fail-open direction every other unresolvable case in keeps() takes.
+func sameVaultDir(a, b string) bool {
+	va, vb := vaultNameOf(a), vaultNameOf(b)
+	if va == "" || vb == "" {
+		return true
+	}
+	return va == vb
+}
+
+// vaultNameOf returns the vault directory name a cwd sits in, or "".
+func vaultNameOf(cwd string) string {
+	const marker = "/documents/obsidian/"
+	lower := strings.ToLower(cwd)
+	i := strings.Index(lower, marker)
+	if i < 0 {
+		return ""
+	}
+	rest := cwd[i+len(marker):]
+	if j := strings.Index(rest, "/"); j >= 0 {
+		rest = rest[:j]
+	}
+	return rest
 }
 
 // typeBatch types one producer session's batch as one line and records one
