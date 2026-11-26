@@ -172,6 +172,107 @@ var managerGateTestCases = []managerGateTestCase{
 		ManagerGateHeld,
 		"held:shell",
 	},
+	{
+		"row 5 open item",
+		managerGateInput{
+			HeadlessLive: true,
+			CloserKnown:  true,
+			CloserBody:   "done",
+			SessionID:    "s1",
+			OpenItems:    map[string]struct{}{"s1": {}},
+		},
+		ManagerGateGated,
+		"store:open-item",
+	},
+	{
+		"row 9 open item",
+		managerGateInput{
+			Status:      managerGateTestStatus("idle"),
+			CloserKnown: true,
+			CloserBody:  "done",
+			SessionID:   "s1",
+			OpenItems:   map[string]struct{}{"s1": {}},
+		},
+		ManagerGateGated,
+		"store:open-item",
+	},
+}
+
+// expectOpenItemOutranksNoAsk proves an open store item beats the two no-ask
+// rows, and that a nil set leaves them exactly as they were.
+func expectOpenItemOutranksNoAsk() {
+	open := map[string]struct{}{"s1": {}}
+
+	By("gating a headless session that holds an open item")
+	decision, reason := managerGateVerdict(managerGateInput{
+		HeadlessLive: true,
+		CloserKnown:  true,
+		CloserBody:   "done",
+		SessionID:    "s1",
+		OpenItems:    open,
+	})
+	Expect(decision).To(Equal(ManagerGateGated))
+	Expect(reason).To(Equal("store:open-item"))
+
+	By("gating an idle session that holds an open item")
+	decision, reason = managerGateVerdict(managerGateInput{
+		Status:      managerGateTestStatus("idle"),
+		CloserKnown: true,
+		CloserBody:  "done",
+		SessionID:   "s1",
+		OpenItems:   open,
+	})
+	Expect(decision).To(Equal(ManagerGateGated))
+	Expect(reason).To(Equal("store:open-item"))
+
+	By("leaving both rows cleared when the store was not read")
+	decision, reason = managerGateVerdict(managerGateInput{
+		HeadlessLive: true,
+		CloserKnown:  true,
+		CloserBody:   "done",
+		SessionID:    "s1",
+	})
+	Expect(decision).To(Equal(ManagerGateCleared))
+	Expect(reason).To(Equal("headless:no-ask"))
+	decision, reason = managerGateVerdict(managerGateInput{
+		Status:      managerGateTestStatus("idle"),
+		CloserKnown: true,
+		CloserBody:  "done",
+		SessionID:   "s1",
+	})
+	Expect(decision).To(Equal(ManagerGateCleared))
+	Expect(reason).To(Equal("idle:no-ask"))
+
+	By("keeping the registry gate's own reason")
+	decision, reason = managerGateVerdict(managerGateInput{
+		Status:      managerGateTestStatus("waiting"),
+		CloserKnown: true,
+		CloserBody:  "done",
+		SessionID:   "s1",
+		OpenItems:   open,
+	})
+	Expect(decision).To(Equal(ManagerGateGated))
+	Expect(reason).To(Equal("registry:waiting"))
+
+	By("keeping the closer ask's own reason")
+	decision, reason = managerGateVerdict(managerGateInput{
+		HeadlessLive: true,
+		CloserKnown:  true,
+		CloserBody:   "approve: run it",
+		SessionID:    "s1",
+		OpenItems:    open,
+	})
+	Expect(decision).To(Equal(ManagerGateGated))
+	Expect(reason).To(Equal("headless+closer"))
+	decision, reason = managerGateVerdict(managerGateInput{
+		Status:      managerGateTestStatus("idle"),
+		CloserKnown: true,
+		CloserBody:  "approve: run it",
+		SessionID:   "s1",
+		OpenItems:   open,
+	})
+	Expect(decision).To(Equal(ManagerGateGated))
+	Expect(reason).To(Equal("idle+closer"))
 }
 
 // expectGateTableMirrorsRows pins the code's own table, row for row, so a
@@ -182,7 +283,11 @@ func expectGateTableMirrorsRows() {
 		{"stuck truthy", "gated", "stuck:<cause> or stuck-tab:<cause>"},
 		{"status is None and closer unknown", "held", "closer-unknown"},
 		{"status is None and closer is an ask", "gated", "headless+closer"},
-		{"status is None and closer is not an ask", "cleared", "headless:no-ask"},
+		{
+			"status is None and closer is not an ask",
+			"gated / cleared",
+			"store:open-item / headless:no-ask",
+		},
 		{`status == "waiting"`, "gated", "registry:waiting"},
 		{
 			`status == "busy" and pending == "AskUserQuestion" and frozen`,
@@ -190,7 +295,7 @@ func expectGateTableMirrorsRows() {
 			"busy+parked-modal",
 		},
 		{"closer unknown", "held", "closer-unknown"},
-		{`status == "idle"`, "gated / cleared", "idle+closer / idle:no-ask"},
+		{`status == "idle"`, "gated / cleared", "idle+closer / store:open-item / idle:no-ask"},
 		{"anything else (busy, shell)", "held", "held:<status>"},
 	}))
 }
@@ -659,5 +764,11 @@ var _ = Describe("manager gate computation", func() {
 
 	It("RegistryStatusParses", func() {
 		expectRegistryStatusParses()
+	})
+})
+
+var _ = Describe("OpenItemOutranksNoAsk", func() {
+	It("OpenItemOutranksNoAsk", func() {
+		expectOpenItemOutranksNoAsk()
 	})
 })

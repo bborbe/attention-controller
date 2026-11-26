@@ -573,6 +573,19 @@ func (p *wakePass) enqueue(manager string, item Item) {
 	batch.lastSeen = p.now
 }
 
+// managerOpenSessionSet is the set of sessions holding at least one open store
+// item, resolved through sessionIDFromItem so every liveness model counts. An
+// item that names no session is skipped rather than keyed on "".
+func managerOpenSessionSet(items Items) map[string]struct{} {
+	set := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		if session := sessionIDFromItem(item); session != "" {
+			set[session] = struct{}{}
+		}
+	}
+	return set
+}
+
 // wakeProducerKey groups an item by the session that raised it. An item naming
 // no session is grouped with the other session-less items.
 func wakeProducerKey(item Item) string {
@@ -705,7 +718,7 @@ func (p *wakePass) wakeTranscript(manager string) {
 	if _, parked := p.job.parks[manager]; parked {
 		return
 	}
-	states, err := source.GateStates(p.ctx, p.trackedFor(manager))
+	states, err := source.GateStates(p.ctx, p.trackedFor(manager), managerOpenSessionSet(p.items))
 	if err != nil {
 		glog.Warningf(
 			"job=manager-wake action=transcript_error manager=%s error=%v", manager, err,

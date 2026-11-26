@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- fix: a manager is no longer told a session's gate cleared while that session still holds an open card in the attention store — the verdict's two `no-ask` rows now lose to an open item and report `store:open-item`.
+
 ## v0.111.2
 
 - fix: a manager is no longer woken about its own gate — `typeGateRecords` skips a gate record whose session is the manager's own, ending the repeating `attention gate: <sid8> (...): <minutes>` self-wake whose token the consumer could not resolve as an item id.

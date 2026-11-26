@@ -21,11 +21,11 @@ Evaluated in this order; the order is load-bearing.
 | 2 | stuck truthy | gated | stuck:<cause> or stuck-tab:<cause> |
 | 3 | status is None and closer unknown | held | closer-unknown |
 | 4 | status is None and closer is an ask | gated | headless+closer |
-| 5 | status is None and closer is not an ask | cleared | headless:no-ask |
+| 5 | status is None and closer is not an ask | gated / cleared | store:open-item / headless:no-ask |
 | 6 | status == "waiting" | gated | registry:waiting |
 | 7 | status == "busy" and pending == "AskUserQuestion" and frozen | gated | busy+parked-modal |
 | 8 | closer unknown | held | closer-unknown |
-| 9 | status == "idle" | gated / cleared | idle+closer / idle:no-ask |
+| 9 | status == "idle" | gated / cleared | idle+closer / store:open-item / idle:no-ask |
 | 10 | anything else (busy, shell) | held | held:<status> |
 
 The dead test (row 1) runs ahead of the stall test (row 2): a session with no registry entry and

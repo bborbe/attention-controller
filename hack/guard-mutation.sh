@@ -26,6 +26,7 @@ TranscriptReaderLastAssistantText|pkg/transcript-reader.go|found = true|found = 
 TranscriptReaderPendingToolCall|pkg/transcript-reader.go|return pendingName, pending|return pendingName, false
 StuckReasonCauses|pkg/manager-gate-stuck.go|return managerStuckCauseStreamClosed|return ""
 GatedUnionMatchesTable|pkg/manager-gate.go|if in.Stuck != ""|if false && in.Stuck != ""
+OpenItemOutranksNoAsk|pkg/manager-gate.go|_, ok := in.OpenItems[in.SessionID]|_, ok := in.OpenItems[in.SessionID]; ok = false
 ClearedFromBothFalseSites|pkg/manager-gate.go|return ManagerGateCleared, "headless:no-ask"|return ManagerGateHeld, "headless:no-ask"
 HeldCausesAreDistinct|pkg/manager-gate.go|strings.HasPrefix(reason, "held:")|false && strings.HasPrefix(reason, "held:")
 BusyParkedModalIsGated|pkg/manager-gate.go|&& in.Frozen|&& true
@@ -60,7 +61,7 @@ WakeUnownedOnlyFleetManager|pkg/manager-wake-job.go|!p.job.goalScope.SessionReso
 WakeHop3bDropsLiveNonWorker|pkg/manager-wake-job.go|if p.isManager(sessionID) && p.isLive(sessionID) {|if false && p.isManager(sessionID) && p.isLive(sessionID) {|TestHop3bDropsOnLiveNonWorker
 WakePeerManagerDropped|pkg/manager-wake-job.go|return !p.isLive(spawner)|return true|TestProducerIDScopingIgnoresPeerCard
 WakeSelfProducedNeverWakes|pkg/manager-wake-job.go|if strings.TrimPrefix(string(item.ProducerID), sessionProducerPrefix) == manager {|if false && strings.TrimPrefix(string(item.ProducerID), sessionProducerPrefix) == manager {|TestSelfProducedCardNeverWakesItsProducer
-WakeBatchWaitsWindow|pkg/manager-wake-job.go|if p.now.Sub(batch.firstSeen) < libtime.Duration(ManagerWakeBatchWindow) {|if p.now.Sub(batch.firstSeen) < 0 {|TestBatchWaitsFullWindow
+WakeBatchWaitsWindow|pkg/manager-wake-job.go|if !quiet && p.now.Sub(batch.firstSeen) < libtime.Duration(ManagerWakeBatchWindow) {|if !quiet && p.now.Sub(batch.firstSeen) < 0 {|TestBatchWindowStaysWithinOneTick
 WakePruneDropsAnswered|pkg/manager-wake-job.go|if _, ok := kept[item.ItemID]; ok {|if _, ok := kept[item.ItemID]; ok == ok {|TestBatchSkipsCardAnsweredBeforeFlush
 WakeNoPaneParks|pkg/manager-wake-job.go|if parked {|if false && parked {|TestWakeNoPaneParks
 WakeEmissionRecorded|pkg/manager-wake-job.go|func (p *wakePass) recordBatch(manager string, items []Item) {|func (p *wakePass) recordBatch(manager string, items []Item) { return|TestWakeWritesEmissionRecord
