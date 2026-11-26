@@ -74,11 +74,18 @@ func (s *managerTranscriptSource) GateStates(
 	statuses, registryErr := readSessionStatuses(ctx, s.registryDir)
 	registryReadable := registryErr == nil
 	now := s.currentDateTimeGetter.Now()
+	// ⚠️ ONE scan for every session, resolved before the loop. Resolving a path
+	// inside gateState cost four whole-tree filepath.Glob walks per session per
+	// pass (LastAssistantText, PendingToolCall, ModifiedAt and transcriptTails
+	// each resolved their own), which measured 63.3 % of process CPU on the live
+	// daemon at the 10 s wake interval (2026-11-26). Paths() answers every session
+	// from a single walk — the same reason the interface documents it.
+	paths := s.transcripts.Paths()
 	states := make(ManagerGateStates, 0, len(sessionIDs))
 	for _, sessionID := range sessionIDs {
 		states = append(
 			states,
-			s.gateState(ctx, sessionID, statuses, registryReadable, now),
+			s.gateState(ctx, sessionID, paths[sessionID], statuses, registryReadable, now),
 		)
 	}
 	return states, nil
@@ -88,26 +95,34 @@ func (s *managerTranscriptSource) GateStates(
 func (s *managerTranscriptSource) gateState(
 	ctx context.Context,
 	sessionID string,
+	path string,
 	statuses map[string]string,
 	registryReadable bool,
 	now libtime.DateTime,
 ) ManagerGateState {
 	status := managerRegisteredStatus(statuses, sessionID, registryReadable)
 	headlessLive := managerHeartbeatLive(ctx, s.heartbeats, sessionID, now)
-	text, closerKnown := s.transcripts.LastAssistantText(sessionID)
-	closerBody, _ := managerCloserBody(text)
-	pending, _ := s.transcripts.PendingToolCall(sessionID)
-	modifiedAt, mtimeOK := s.transcripts.ModifiedAt(sessionID)
-	frozen := managerTranscriptFrozen(modifiedAt, mtimeOK, now.Time(), managerLiveWindow)
-	tail, channelTail := s.transcriptTails(sessionID)
-	stuck := managerStuckReason(text, tail, channelTail)
+	// ⚠️ One evidence read for all four facts, from the path already resolved.
+	evidence := s.transcripts.GateEvidence(path)
+	closerBody, _ := managerCloserBody(evidence.LastAssistantText)
+	frozen := managerTranscriptFrozen(
+		evidence.ModifiedAt,
+		evidence.ModifiedAtKnown,
+		now.Time(),
+		managerLiveWindow,
+	)
+	stuck := managerStuckReason(
+		evidence.LastAssistantText,
+		evidence.CloserTail,
+		evidence.ChannelTail,
+	)
 	decision, reason := managerGateVerdict(managerGateInput{
 		Status:       status,
 		HeadlessLive: headlessLive,
 		Stuck:        stuck,
-		CloserKnown:  closerKnown,
+		CloserKnown:  evidence.AssistantTextKnown,
 		CloserBody:   closerBody,
-		PendingTool:  pending,
+		PendingTool:  evidence.PendingToolCall,
 		Frozen:       frozen,
 	})
 	return ManagerGateState{
@@ -117,19 +132,6 @@ func (s *managerTranscriptSource) gateState(
 		Reason:    reason,
 		Detail:    managerGateDetail(reason, closerBody),
 	}
-}
-
-// transcriptTails reads the two windows managerStuckReason needs: the closer
-// tail and the wider permission-channel tail.
-func (s *managerTranscriptSource) transcriptTails(sessionID string) ([]byte, []byte) {
-	path := s.transcripts.Path(sessionID)
-	tail, _ := readTranscriptWindow(path, nil)
-	channelTail, _ := readRecentTail(
-		path,
-		managerStuckPermChannelWindow,
-		managerStuckReadMaxBytes,
-	)
-	return tail, channelTail
 }
 
 // managerRegisteredStatus returns the registry status for a session, or nil when

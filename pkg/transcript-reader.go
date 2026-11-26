@@ -141,6 +141,37 @@ type TranscriptReader interface {
 	// does not claim the session is parked — the caller supplies that from the
 	// transcript's mtime.
 	PendingToolCall(sessionID string) (string, bool)
+
+	// GateEvidence returns the per-transcript facts the manager wake gate needs,
+	// read from an ALREADY-RESOLVED path.
+	//
+	// ⚠️ A caller holding a path from Paths() MUST use this rather than the
+	// sessionID methods above. Each of those resolves its own path by globbing the
+	// whole project tree, and the gate needs four of them per session, so the
+	// sessionID form costs four whole-tree walks per session on every pass — the
+	// same O(sessions × files) shape Paths() exists to remove. Measured
+	// 2026-11-26 on the live daemon: 63.3 % of process CPU in filepath.Glob from
+	// this caller alone, at a 10 s tick. This answers all four facts from ONE tail
+	// read plus one stat.
+	GateEvidence(path string) TranscriptGateEvidence
+}
+
+// TranscriptGateEvidence is the per-transcript evidence the manager wake gate
+// reads: the closer text, the pending tool call, the mtime, and the two tails.
+//
+// ⚠️ Every field comes from ONE tail read plus one stat. Before this type the
+// gate read the same tail three times and globbed the tree four times per
+// session; the tail is identical for all four questions, so the repetition was
+// pure cost.
+type TranscriptGateEvidence struct {
+	LastAssistantText  string
+	AssistantTextKnown bool
+	PendingToolCall    string
+	PendingToolKnown   bool
+	ModifiedAt         time.Time
+	ModifiedAtKnown    bool
+	CloserTail         []byte
+	ChannelTail        []byte
 }
 
 // NewTranscriptReader creates the reader the delivery carrier uses.
@@ -280,6 +311,33 @@ func (r *transcriptReader) ModifiedAt(sessionID string) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	return info.ModTime(), true
+}
+
+// GateEvidence reads the gate's facts for an already-resolved transcript path.
+//
+// ⚠️ An empty path yields the zero value — every Known flag false — which is the
+// same conservative direction the sessionID methods take for an absent
+// transcript: the caller withholds rather than guessing. A failed tail read
+// leaves CloserTail nil and both Known flags false for the same reason.
+func (r *transcriptReader) GateEvidence(path string) TranscriptGateEvidence {
+	var evidence TranscriptGateEvidence
+	if path == "" {
+		return evidence
+	}
+	if tail, ok := r.readWindow(path, nil); ok {
+		evidence.LastAssistantText, evidence.AssistantTextKnown = lastAssistantTextFromTail(tail)
+		evidence.PendingToolCall, evidence.PendingToolKnown = pendingToolCallFromTail(tail)
+		evidence.CloserTail = tail
+	}
+	if info, err := os.Stat(path); err == nil {
+		evidence.ModifiedAt, evidence.ModifiedAtKnown = info.ModTime(), true
+	}
+	evidence.ChannelTail, _ = readRecentTail(
+		path,
+		managerStuckPermChannelWindow,
+		managerStuckReadMaxBytes,
+	)
+	return evidence
 }
 
 // compactionBoundaryMarker is the substring every compaction record carries.
