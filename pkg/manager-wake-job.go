@@ -822,11 +822,15 @@ func (p *wakePass) typeGateRecords(
 		if record.Kind == ManagerGateRecordHeld && record.Detail == managerUntrackedDetail {
 			continue
 		}
+		line, ok := managerGateRecordLine(manager, record)
+		if !ok {
+			continue
+		}
 		state := bySession[record.Session]
 		verdict, reason := p.job.carrier.TypeIntoPane(
 			p.ctx,
 			&PaneDelivery{SessionID: manager},
-			managerGateRecordLine(record),
+			line,
 			true,
 		)
 		if verdict == DeliveryNoPane || verdict == DeliveryRefuse {
@@ -846,12 +850,23 @@ func (p *wakePass) typeGateRecords(
 }
 
 // managerGateRecordLine renders one transition as the line the pane carries.
-func managerGateRecordLine(record ManagerGateRecord) string {
+//
+// It returns ok=false when the record names the manager's OWN session: a manager
+// is never woken about its own gate. Without this, a manager whose own session is
+// in the tracked set (a goal page carries the manager's `claude_session_id`) types
+// `attention gate: <sid8> (...): <N> minutes` into its own pane at every AGED
+// threshold — a self-wake loop whose token is a session prefix the consumer
+// cannot resolve as an item id. Mirrors the self-produced drop the card path
+// applies in keeps().
+func managerGateRecordLine(manager string, record ManagerGateRecord) (string, bool) {
+	if record.Session == manager {
+		return "", false
+	}
 	sid8 := managerSessionPrefix(record.Session)
 	if record.Kind == ManagerGateRecordCleared {
-		return managerClearedLinePrefix + " " + sid8
+		return managerClearedLinePrefix + " " + sid8, true
 	}
-	return managerWakeLinePrefix + " " + sid8 + " (" + record.Label + "): " + record.Detail
+	return managerWakeLinePrefix + " " + sid8 + " (" + record.Label + "): " + record.Detail, true
 }
 
 // recordGateEmission appends one emission with a zero ItemID: a transcript wake

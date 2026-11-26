@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- fix: a manager is no longer woken about its own gate — `typeGateRecords` skips a gate record whose session is the manager's own, ending the repeating `attention gate: <sid8> (...): <minutes>` self-wake whose token the consumer could not resolve as an item id.
+
 ## v0.111.0
 
 - fix: the spawn edge no longer confers ownership across vaults, so a manager cannot keep a worker's cards from another vault
