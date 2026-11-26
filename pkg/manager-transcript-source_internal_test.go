@@ -94,6 +94,10 @@ var _ = Describe("manager transcript source", func() {
 
 		By("(c) the same unreadable registry leaves a headless-live session to the transcript half")
 		heartbeats.fresh["live"] = true
+		// The gate now resolves every session's path once via Paths() and reads its
+		// evidence from that path, so a session with a transcript must be mapped —
+		// exactly as the real reader maps it from the project tree.
+		transcripts.pathBySess = map[string]string{"live": "live.jsonl"}
 		transcripts.lastAssistantText["live"] = "👤 You: nothing"
 		states, err = source.GateStates(context.Background(), []string{"live"})
 		Expect(err).NotTo(HaveOccurred())

@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- perf: the manager wake gate resolves each session's transcript path once per pass instead of four times. `gateState` called `LastAssistantText`, `PendingToolCall`, `ModifiedAt` and `transcriptTails`, and each resolved its own path by globbing the whole project tree — four whole-tree `filepath.Glob` walks per session on every 10 s pass, the O(sessions × files) shape `Paths()` already exists to remove. A new `TranscriptReader.GateEvidence(path)` answers all four facts from one tail read plus one stat, and `GateStates` resolves every path from a single `Paths()` scan. Measured on the live daemon 2026-11-26: `filepath.Glob` was **63.3 % of process CPU**, the wake job 83.9 % cumulative, and the process allocated **446 GB in 31 min** against a 60 MB in-use heap — a 577 MB footprint held by allocation churn rather than retained objects.
+
 ## v0.111.2
 
 - fix: a manager is no longer woken about its own gate — `typeGateRecords` skips a gate record whose session is the manager's own, ending the repeating `attention gate: <sid8> (...): <minutes>` self-wake whose token the consumer could not resolve as an item id.

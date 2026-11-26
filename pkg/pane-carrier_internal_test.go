@@ -144,6 +144,36 @@ func (f *fakeTranscriptReader) PendingToolCall(sessionID string) (string, bool) 
 	return name, ok
 }
 
+// GateEvidence answers from the same scripted maps as the sessionID methods,
+// reverse-resolving the path the caller got from Paths(). The two tails are read
+// from the path exactly as the real reader reads them, so a spec that writes a
+// temp transcript keeps the same behaviour it had when gateState called
+// transcriptTails. A path matching no session yields the zero value — the
+// fail-closed direction the real reader takes for an empty path.
+func (f *fakeTranscriptReader) GateEvidence(path string) TranscriptGateEvidence {
+	var evidence TranscriptGateEvidence
+	sessionID := ""
+	for id, sessionPath := range f.pathBySess {
+		if sessionPath == path {
+			sessionID = id
+			break
+		}
+	}
+	if sessionID == "" {
+		return evidence
+	}
+	evidence.LastAssistantText, evidence.AssistantTextKnown = f.LastAssistantText(sessionID)
+	evidence.PendingToolCall, evidence.PendingToolKnown = f.PendingToolCall(sessionID)
+	evidence.ModifiedAt, evidence.ModifiedAtKnown = f.ModifiedAt(sessionID)
+	evidence.CloserTail, _ = readTranscriptWindow(path, nil)
+	evidence.ChannelTail, _ = readRecentTail(
+		path,
+		managerStuckPermChannelWindow,
+		managerStuckReadMaxBytes,
+	)
+	return evidence
+}
+
 var _ = Describe("pane carrier", func() {
 	const (
 		sessionID = "11111111-2222-3333-4444-555555555555"
