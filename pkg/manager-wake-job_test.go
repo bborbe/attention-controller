@@ -1046,3 +1046,118 @@ var _ = Describe("manager wake transcript source wiring", func() {
 		Expect(source.seen).NotTo(HaveKey(""))
 	})
 })
+
+// openItemStateSource computes a tracked session's gate decision FROM the open
+// set the pass hands it: gated when the session holds an open item, cleared
+// otherwise. It is the seam the two arms exercise — the store item reaching the
+// source as `openItems` is what must change the typed line.
+type openItemStateSource struct {
+	seen map[string]struct{}
+}
+
+func (s *openItemStateSource) GateStates(
+	_ context.Context,
+	sessionIDs []string,
+	openItems map[string]struct{},
+) (pkg.ManagerGateStates, error) {
+	s.seen = openItems
+	states := make(pkg.ManagerGateStates, 0, len(sessionIDs))
+	for _, id := range sessionIDs {
+		state := pkg.ManagerGateState{SessionID: id, Label: id, Decision: pkg.ManagerGateCleared}
+		if _, open := openItems[id]; open {
+			state.Decision = pkg.ManagerGateGated
+			state.Reason = "store:open-item"
+		}
+		states = append(states, state)
+	}
+	return states, nil
+}
+
+// clearedOnlyTracker is the real tracker's CLEARED-only-on-Cleared rule reduced
+// to the emit seam these arms exercise: it emits a CLEARED record for a cleared
+// state and nothing for a gated one. The real tracker's multi-pass stability and
+// persistence are covered by its own specs.
+type clearedOnlyTracker struct{}
+
+func (t *clearedOnlyTracker) Observe(
+	_ context.Context,
+	in pkg.ManagerGateObserveInput,
+) (pkg.ManagerGateOutcome, error) {
+	records := make([]pkg.ManagerGateRecord, 0, len(in.States))
+	for _, state := range in.States {
+		if state.Decision != pkg.ManagerGateCleared {
+			continue
+		}
+		records = append(records, pkg.ManagerGateRecord{
+			Kind:    pkg.ManagerGateRecordCleared,
+			Session: state.SessionID,
+			Label:   state.Label,
+			Detail:  "left the gated set",
+		})
+	}
+	return pkg.ManagerGateOutcome{Records: records}, nil
+}
+
+// hasClearedLine reports whether any recorded call typed the cleared line for
+// the given manager.
+func hasClearedLine(calls []wakeCall, manager string) bool {
+	const prefix = "attention cleared: "
+	for _, call := range calls {
+		if call.session == manager && len(call.text) >= len(prefix) &&
+			call.text[:len(prefix)] == prefix {
+			return true
+		}
+	}
+	return false
+}
+
+var _ = Describe("GateArmsOpenItemSuppressesClear", func() {
+	var (
+		store      *mocks.AttentionStore
+		ledger     *mocks.SessionLedgerStore
+		provenance *mocks.ProvenanceResolver
+		notifier   *mocks.AttentionChangeNotifier
+		carrier    *wakeRecordingCarrier
+		source     *openItemStateSource
+		job        pkg.ManagerWakeJob
+	)
+
+	BeforeEach(func() {
+		store = &mocks.AttentionStore{}
+		ledger = &mocks.SessionLedgerStore{}
+		provenance = &mocks.ProvenanceResolver{}
+		provenance.ResolveReturns(pkg.Provenances{})
+		notifier = &mocks.AttentionChangeNotifier{}
+		notifier.SubscribeReturns(make(chan struct{}), func() {})
+		carrier = newWakeRecordingCarrier()
+		clock := libtime.CurrentDateTimeGetterFunc(func() libtime.DateTime {
+			return libtime.DateTime(stdtime.Date(2026, 11, 18, 12, 0, 0, 0, stdtime.UTC))
+		})
+		store.IsSessionLiveReturns(true)
+		ledger.ListReturns(pkg.SessionLedgerEntries{
+			ledgerRow("mgr-1", "manager", ""),
+			ledgerRow("w-1", "agent", "mgr-1"),
+		}, nil)
+		source = &openItemStateSource{}
+		job = pkg.NewManagerWakeJob(
+			store, ledger, provenance, carrier, notifier, clock,
+			&recordingEmissionSink{},
+			pkg.WithManagerWakeTranscriptSource(source, &clearedOnlyTracker{}),
+		)
+	})
+
+	It("types the cleared line for a parked session holding no open item", func() {
+		store.ReadReturns(pkg.Items{}, nil)
+		Expect(job.WakeOnce(context.Background())).To(Succeed())
+		Expect(hasClearedLine(carrier.recorded(), "mgr-1")).To(BeTrue())
+	})
+
+	It("types no cleared line for a parked session holding an open item", func() {
+		store.ReadReturns(pkg.Items{
+			{ItemID: "i1", ProducerID: "w-1", LivenessRef: "session:w-1", State: pkg.OpenState},
+		}, nil)
+		Expect(job.WakeOnce(context.Background())).To(Succeed())
+		Expect(source.seen).To(HaveKey("w-1"))
+		Expect(hasClearedLine(carrier.recorded(), "mgr-1")).To(BeFalse())
+	})
+})
