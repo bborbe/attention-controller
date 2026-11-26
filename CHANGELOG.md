@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.111.0
 
 - fix: the spawn edge no longer confers ownership across vaults, so a manager cannot keep a worker's cards from another vault
 
