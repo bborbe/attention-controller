@@ -114,6 +114,19 @@ func ledgerRow(session string, role string, spawner string) pkg.SessionLedgerEnt
 	}
 }
 
+// ledgerRowInVault builds one spawn-ledger row carrying the cwd the vault
+// comparison reads.
+func ledgerRowInVault(
+	session string,
+	role string,
+	spawner string,
+	cwd string,
+) pkg.SessionLedgerEntry {
+	row := ledgerRow(session, role, spawner)
+	row.Cwd = cwd
+	return row
+}
+
 var _ = Describe("manager wake job", func() {
 	var (
 		store      *mocks.AttentionStore
@@ -451,6 +464,43 @@ var _ = Describe("manager wake job", func() {
 		},
 	)
 
+	It(
+		"TestCrossVaultSpawnerNeverWakes — a manager does not keep a worker it spawned in another vault",
+		func() {
+			live["mgr-1"] = true
+			ledger.ListReturns(pkg.SessionLedgerEntries{
+				ledgerRowInVault(
+					"mgr-1", "manager", "", "/Users/x/Documents/Obsidian/seibert-brogrammers",
+				),
+				ledgerRowInVault(
+					"w-1", "agent", "mgr-1", "/Users/x/Documents/Obsidian/private-personal",
+				),
+			}, nil)
+			store.ReadReturns(pkg.Items{wakeItem("item-cross", "w-1")}, nil)
+
+			// The spawn edge names mgr-1, but the two vaults differ, so ownership is
+			// not conferred and the card is dropped. Measured 2026-11-25: `2410e53c`
+			// (seibert-brogrammers) spawned `76e9af4b` (private-personal) and kept 142
+			// emission rows.
+			flushBatch(newJob())
+			Expect(carrier.recorded()).To(BeEmpty())
+
+			// Positive control: the same spawn edge inside ONE vault still keeps the
+			// card, so the drop is the vault comparison and not the spawn edge.
+			carrier = newWakeRecordingCarrier()
+			ledger.ListReturns(pkg.SessionLedgerEntries{
+				ledgerRowInVault(
+					"mgr-1", "manager", "", "/Users/x/Documents/Obsidian/private-personal",
+				),
+				ledgerRowInVault(
+					"w-1", "agent", "mgr-1", "/Users/x/Documents/Obsidian/private-personal",
+				),
+			}, nil)
+			flushBatch(newJob())
+			Expect(carrier.recorded()).To(HaveLen(1))
+		},
+	)
+
 	It("TestForeignGoalNeverWakes — another goal's worker does not wake this manager", func() {
 		oneManager()
 		store.ReadReturns(pkg.Items{wakeItem("item-foreign", "w-1")}, nil)
@@ -764,31 +814,34 @@ var _ = Describe("manager wake job", func() {
 		}))
 	})
 
-	It("TestBatchDeferredDeliveryBacksOff — a busy pane is re-probed once per window, not per pass", func() {
-		oneManager()
-		store.ReadReturns(pkg.Items{wakeItem("item-1", "w-1")}, nil)
-		job := newJob()
+	It(
+		"TestBatchDeferredDeliveryBacksOff — a busy pane is re-probed once per window, not per pass",
+		func() {
+			oneManager()
+			store.ReadReturns(pkg.Items{wakeItem("item-1", "w-1")}, nil)
+			job := newJob()
 
-		carrier.setVerdict(pkg.DeliveryRetry)
-		Expect(job.WakeOnce(context.Background())).To(Succeed())
-		advance(stdtime.Second)
-		Expect(job.WakeOnce(context.Background())).To(Succeed())
-		// The quiet pass tried and was deferred; the batch keeps its cards.
-		Expect(carrier.recorded()).To(HaveLen(1))
+			carrier.setVerdict(pkg.DeliveryRetry)
+			Expect(job.WakeOnce(context.Background())).To(Succeed())
+			advance(stdtime.Second)
+			Expect(job.WakeOnce(context.Background())).To(Succeed())
+			// The quiet pass tried and was deferred; the batch keeps its cards.
+			Expect(carrier.recorded()).To(HaveLen(1))
 
-		// The deferral restarted the batch's clock, so the next pass does not probe
-		// the pane again.
-		advance(stdtime.Second)
-		Expect(job.WakeOnce(context.Background())).To(Succeed())
-		Expect(carrier.recorded()).To(HaveLen(1))
+			// The deferral restarted the batch's clock, so the next pass does not probe
+			// the pane again.
+			advance(stdtime.Second)
+			Expect(job.WakeOnce(context.Background())).To(Succeed())
+			Expect(carrier.recorded()).To(HaveLen(1))
 
-		// Once the window has elapsed it is retried, and this time it lands.
-		carrier.setVerdict(pkg.DeliveryOK)
-		advance(pkg.ManagerWakeBatchWindow)
-		Expect(job.WakeOnce(context.Background())).To(Succeed())
-		Expect(carrier.recorded()).To(HaveLen(2))
-		Expect(carrier.recorded()[1].text).To(ContainSubstring("item-1"))
-	})
+			// Once the window has elapsed it is retried, and this time it lands.
+			carrier.setVerdict(pkg.DeliveryOK)
+			advance(pkg.ManagerWakeBatchWindow)
+			Expect(job.WakeOnce(context.Background())).To(Succeed())
+			Expect(carrier.recorded()).To(HaveLen(2))
+			Expect(carrier.recorded()[1].text).To(ContainSubstring("item-1"))
+		},
+	)
 
 	It("TestBatchFlushesOnTheFirstQuietPass — a lone card pays one pass, never the window", func() {
 		oneManager()

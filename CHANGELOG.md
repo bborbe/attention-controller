@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- fix: the spawn edge no longer confers ownership across vaults, so a manager cannot keep a worker's cards from another vault
+
 ## v0.110.0
 
 - fix: **an operator-tier message card can no longer be answered or closed by a lower arm.** An `approve`/`decision` card, and a `pick` the placement table rates operator (a manager producer, or a session producer whose payload carries an operator-only word), may be moved `open → answered` or `open → closed` only by an operator arm — the exact `operator`, any arm containing `attention-board`, or any arm beginning `supervisor:attention-next`. Any other declared `answered_by` is refused with the new `ErrOperatorTierLowerArm` / `OPERATOR_TIER_LOWER_ARM`, on both the close and the answer route, and the item is left unchanged. The close route permits the empty arm (a producer withdrawing its own card answers nothing); the answer route refuses it (an armless answer names no operator). The `permission` class is untouched — `permission-tier.py` tiers it — and so is `ack`. Measured before the fix, trailing 24 h to 2026-11-25T09:57Z: 5 `approve` and 2 `worker-pick-operator-words` cards settled by a non-operator arm. The rule mirrors `attention-placement.py`'s expected-state table; `docs/operator-tier.md` carries the table and pins the probe. Change set: `pkg/operator-tier.go`, `pkg/errors.go`, `pkg/attention-error-codes.go`, `pkg/attention-store-close.go`, `pkg/attention-store-hold.go`, `pkg/attention-store-impl.go`, `pkg/handler/attention-close.go`, `pkg/handler/attention-answer.go`, `docs/operator-tier.md`, tests, `CHANGELOG.md`.
