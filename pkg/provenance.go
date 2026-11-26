@@ -1177,6 +1177,14 @@ const (
 	// belongs to. It is the join key, and it is already written by the vault —
 	// no new stored field is needed on the item.
 	taskSessionKey = "claude_session_id"
+	// metricsSessionKey is the frontmatter list recording every session that
+	// ran work-on against a task page. A work-on that spawns a session against a
+	// page already carrying another owner appends here and leaves
+	// taskSessionKey untouched, so the stamp is not the whole record.
+	metricsSessionKey = "metrics_sessions"
+	// metricsSessionIDKey is the key inside each metrics_sessions entry that
+	// carries the session id.
+	metricsSessionIDKey = "session_id"
 	// taskStatusKey is the frontmatter key carrying the task's status. Read
 	// only to break a tie between task files sharing one session id.
 	taskStatusKey = "status"
