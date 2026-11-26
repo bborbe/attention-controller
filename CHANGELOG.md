@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.111.1
 
 - fix: **a task page now owns every session it records, not only its `claude_session_id` stamp.** A `work-on` that spawns a session against a page already carrying a live or indeterminate owner appends a `metrics_sessions` entry for the new session and leaves the stamp untouched, so the page recorded a session that worked it while the index read only the stamp — and every card that session produced resolved to no task. The index now indexes each task file under its stamp **and** every `metrics_sessions[].session_id`, de-duplicated; the per-session tie-break gains a rank so a page that stamps the session beats one that only lists it, which keeps a widened candidate set from stealing an existing mapping. Measured on the live board: producer `720ec151-333d-…` produced six cards that resolved to no owner (`~/.cache/sc1-window/result.json` `owner_unresolved`, reason `no_owners`), while `25 Tasks/Add Security Review Step to github-pr-review-agent.md` already carried that id in `metrics_sessions` and `d678e974-…` as its stamp. Change set: `pkg/task-index.go`, `pkg/provenance.go`, `pkg/task-index-session-owners_internal_test.go`, `CHANGELOG.md`.
 
