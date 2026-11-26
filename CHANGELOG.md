@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.111.3
 
 - fix: a manager is no longer told a session's gate cleared while that session still holds an open card in the attention store — the verdict's two `no-ask` rows now lose to an open item and report `store:open-item`.
 
