@@ -290,7 +290,12 @@ type taskEntry struct {
 // for every work-on that ran against it. See taskSessionIDs.
 type taskCandidate struct {
 	sessionIDs []string
-	entry      taskEntry
+	// stampID is the file's `claude_session_id`, or "" when the file records
+	// only metrics_sessions entries. It ranks a candidate above one that merely
+	// lists the session in metrics_sessions — the stamp is the explicit
+	// ownership record, the metrics entry is a weaker one.
+	stampID string
+	entry   taskEntry
 }
 
 // fileStamp is the identity a reconcile compares a task file against. Size and
@@ -820,7 +825,7 @@ func (t *taskIndex) refreshSlice(
 		// Unchanged by size and modification time, so the file is not re-read.
 		// ⚠️ Its goal and topic are still re-derived: those two fields depend on
 		// the rungs, which were just re-read, not on the task file's bytes.
-		fresh.addCandidate(path, held.sessionIDs, fresh.reresolve(held.entry))
+		fresh.addCandidate(path, held.stampID, held.sessionIDs, fresh.reresolve(held.entry))
 	}
 	return reached, last
 }
@@ -854,7 +859,7 @@ func (t *taskIndex) carryForward(
 			continue
 		}
 		fresh.fileStamps[path] = previousStamps[path]
-		fresh.addCandidate(path, held.sessionIDs, fresh.reresolve(held.entry))
+		fresh.addCandidate(path, held.stampID, held.sessionIDs, fresh.reresolve(held.entry))
 	}
 }
 
@@ -1092,6 +1097,7 @@ func rootStat(root *os.Root, name string) (fileStamp, bool) {
 // interpretation is how the incremental path and the full path come to
 // disagree about the same file.
 func (t *taskIndex) indexContent(path, name string, content []byte) {
+	stamp := frontmatterValue(content, taskSessionKey)
 	sessionIDs := taskSessionIDs(content)
 	if len(sessionIDs) == 0 {
 		// No frontmatter, no session key, or no session recorded at all: the
@@ -1119,7 +1125,7 @@ func (t *taskIndex) indexContent(path, name string, content []byte) {
 			task.TopicPath = topic.path
 		}
 	}
-	t.addCandidate(path, sessionIDs, taskEntry{
+	t.addCandidate(path, stamp, sessionIDs, taskEntry{
 		task:          task,
 		terminal:      isTerminalTaskStatus(frontmatterValue(content, taskStatusKey)),
 		declaredGoals: declared,
@@ -1168,8 +1174,8 @@ func resolveGoal(declared []string, goals map[string]struct{}) (string, string) 
 
 // addCandidate records one candidate under every session the file records and
 // re-derives each of those sessions' winner.
-func (t *taskIndex) addCandidate(path string, sessionIDs []string, entry taskEntry) {
-	t.byPath[path] = taskCandidate{sessionIDs: sessionIDs, entry: entry}
+func (t *taskIndex) addCandidate(path, stampID string, sessionIDs []string, entry taskEntry) {
+	t.byPath[path] = taskCandidate{sessionIDs: sessionIDs, stampID: stampID, entry: entry}
 	for _, sessionID := range sessionIDs {
 		paths, ok := t.bySessionPaths[sessionID]
 		if !ok {
@@ -1207,10 +1213,14 @@ func (t *taskIndex) forgetPath(path string) {
 // session's own candidates.
 //
 // ⚠️ Several files may carry the same claude_session_id — measured in the live
-// vault, 33 session ids map to between 2 and 6 task files. The tie-break is:
-// prefer the file whose `status` is neither `completed` nor `aborted`, because
-// that is the task the session is still anchored to; if every candidate is
-// terminal, the lexicographically last path wins.
+// vault, 33 session ids map to between 2 and 6 task files. A session can also
+// now be listed in another page's `metrics_sessions`, which widens its candidate
+// set further. The tie-break, in order: prefer the file whose `status` is
+// neither `completed` nor `aborted`, because that is the task the session is
+// still anchored to; then prefer the file that names the session as its
+// `claude_session_id` over one that only lists it in `metrics_sessions`, because
+// the stamp is the explicit ownership record; then the lexicographically last
+// path wins.
 //
 // ⚠️ Candidates are visited in **ascending path order**, which is the order
 // os.ReadDir produced them in during the boot walk, so an incremental update
@@ -1228,17 +1238,30 @@ func (t *taskIndex) recomputeSession(sessionID string) {
 		ordered = append(ordered, path)
 	}
 	sort.Strings(ordered)
-	winner := t.byPath[ordered[0]].entry
+	winner := ordered[0]
 	for _, path := range ordered[1:] {
-		candidate := t.byPath[path].entry
-		if !winner.terminal && candidate.terminal {
-			// The winner is in flight and the candidate is not: keep the one
-			// the session is still working on.
-			continue
+		if beatsForSession(t.byPath[path], t.byPath[winner], sessionID) {
+			winner = path
 		}
-		winner = candidate
 	}
-	t.bySession[sessionID] = winner
+	t.bySession[sessionID] = t.byPath[winner].entry
+}
+
+// beatsForSession reports whether candidate a outranks b for sessionID.
+//
+// The ranking, in order: a page the session is still anchored to (not terminal)
+// beats a terminal one; then the page naming the session as its
+// `claude_session_id` stamp beats one that only lists it in `metrics_sessions`;
+// then the caller's ascending path order decides, so the later path wins — which
+// is why an otherwise equal pair returns true.
+func beatsForSession(a, b taskCandidate, sessionID string) bool {
+	if a.entry.terminal != b.entry.terminal {
+		return !a.entry.terminal
+	}
+	if (a.stampID == sessionID) != (b.stampID == sessionID) {
+		return a.stampID == sessionID
+	}
+	return true
 }
 
 // isTerminalTaskStatus reports whether a task's `status` means it is no longer
@@ -1418,7 +1441,9 @@ func taskSessionIDs(content []byte) []string {
 	var ids []string
 	seen := make(map[string]struct{})
 	add := func(id string) {
-		id = strings.TrimSpace(id)
+		// The vault writes both `claude_session_id: abc` and
+		// `claude_session_id: "abc"`; the id is the unquoted value either way.
+		id = strings.Trim(strings.TrimSpace(id), `"'`)
 		if id == "" {
 			return
 		}
@@ -1445,6 +1470,11 @@ func taskSessionIDs(content []byte) []string {
 // each whole list item, and the id sits inside an item alongside `started_at`.
 // The list ends at the first line that is neither a list item nor an indented
 // continuation of one, which is how the next top-level key terminates it.
+//
+// The supported encoding is block style — `- session_id: <id>`, or a bare `-`
+// followed by an indented `session_id:` — which is the form vault-cli writes. A
+// flow-style list (`metrics_sessions: [{...}]`) is not parsed; the vault does
+// not emit one.
 func frontmatterMetricsSessionIDs(content []byte) []string {
 	var ids []string
 	inList := false
@@ -1493,8 +1523,16 @@ func metricsSessionIDFromLine(line string) (string, bool) {
 	if name != metricsSessionIDKey {
 		return "", false
 	}
+	value = strings.TrimSpace(value)
+	// Drop a trailing YAML comment; a session id never contains " #".
+	if i := strings.Index(value, " #"); i >= 0 {
+		value = value[:i]
+	}
 	id := strings.Trim(strings.TrimSpace(value), `"'`)
-	return id, id != ""
+	if id == "" || id == "null" || id == "~" {
+		return "", false
+	}
+	return id, true
 }
 
 // wikilinkTitle returns the title one `goals:` list item names.

@@ -52,6 +52,25 @@ var _ = Describe("taskSessionIDs", func() {
 		))).To(Equal([]string{"session-a", "session-b"}))
 	})
 
+	It("reads quoted ids, a bare item with an indented id, and stops at the next key", func() {
+		Expect(taskSessionIDs([]byte(
+			"---\n" +
+				"claude_session_id: \"session-stamp\"\n" +
+				"metrics_sessions:\n" +
+				"    - session_id: \"session-quoted\"\n" +
+				"    -\n" +
+				"      session_id: session-indented\n" +
+				"    - session_id: session-commented # note\n" +
+				"goals:\n" +
+				"    - '[[G]]'\n" +
+				"---\n",
+		))).To(Equal([]string{"session-stamp", "session-quoted", "session-indented", "session-commented"}))
+	})
+
+	It("returns nothing for the inline empty form", func() {
+		Expect(taskSessionIDs([]byte("---\nmetrics_sessions: []\n---\n"))).To(BeEmpty())
+	})
+
 	It("returns nothing for a page that records no session", func() {
 		Expect(taskSessionIDs([]byte("---\nstatus: in_progress\n---\n"))).To(BeEmpty())
 	})
@@ -144,5 +163,29 @@ var _ = Describe("TaskIndex session owners", func() {
 		Expect(stamped).To(BeFalse())
 		_, worker := index.Lookup("session-worker")
 		Expect(worker).To(BeFalse(), "a deleted page must not keep any of its sessions")
+	})
+
+	It("prefers the page that stamps a session over one that only lists it", func() {
+		// "A Stamp.md" sorts before "B Mention.md" and both are in flight, so
+		// only the stamp rank separates them: without it the later path wins and
+		// the session's own page loses its mapping.
+		Expect(os.WriteFile(
+			filepath.Join(tasksDir, "A Stamp.md"),
+			[]byte("---\nclaude_session_id: session-shared\nstatus: in_progress\n---\n"),
+			0o600,
+		)).To(Succeed())
+		Expect(os.WriteFile(
+			filepath.Join(tasksDir, "B Mention.md"),
+			[]byte("---\nclaude_session_id: session-other\nstatus: in_progress\n"+
+				"metrics_sessions:\n    - session_id: session-shared\n---\n"),
+			0o600,
+		)).To(Succeed())
+
+		index := NewTaskIndex(ctx, vault, clock)
+
+		task, ok := index.Lookup("session-shared")
+		Expect(ok).To(BeTrue())
+		Expect(task.Name).To(Equal("A Stamp"),
+			"the page that stamps the session must outrank one that only lists it")
 	})
 })
