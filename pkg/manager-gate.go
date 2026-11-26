@@ -72,6 +72,22 @@ type managerGateInput struct {
 	CloserBody   string
 	PendingTool  string
 	Frozen       bool
+	// SessionID is the session this verdict is about.
+	SessionID string
+	// OpenItems is the set of sessions holding at least one open store item.
+	// nil means "the store was not consulted" and reproduces the rows as they
+	// were before this field existed.
+	OpenItems map[string]struct{}
+}
+
+// managerGateOpenItem reports whether the session holds an open store item.
+//
+// ⚠️ It is one helper, called from both no-ask rows, so a single mutation of
+// its body proves both rows at once — the two call sites are textually
+// identical and could not be anchored individually.
+func managerGateOpenItem(in managerGateInput) bool {
+	_, ok := in.OpenItems[in.SessionID]
+	return ok
 }
 
 // managerGateVerdict computes one session's verdict as the ten-row union.
@@ -104,6 +120,9 @@ func managerGateVerdict(in managerGateInput) (ManagerGateDecision, string) {
 		if managerIsAsk(in.CloserBody) {
 			return ManagerGateGated, "headless+closer"
 		}
+		if managerGateOpenItem(in) {
+			return ManagerGateGated, "store:open-item"
+		}
 		return ManagerGateCleared, "headless:no-ask"
 	}
 	// Row 6 — a session parked on a harness gate.
@@ -126,6 +145,9 @@ func managerGateVerdict(in managerGateInput) (ManagerGateDecision, string) {
 	if *in.Status == "idle" {
 		if managerIsAsk(in.CloserBody) {
 			return ManagerGateGated, "idle+closer"
+		}
+		if managerGateOpenItem(in) {
+			return ManagerGateGated, "store:open-item"
 		}
 		return ManagerGateCleared, "idle:no-ask"
 	}
@@ -150,11 +172,15 @@ var ManagerGateRows = []ManagerGateRow{
 	{"stuck truthy", "gated", "stuck:<cause> or stuck-tab:<cause>"},
 	{"status is None and closer unknown", "held", "closer-unknown"},
 	{"status is None and closer is an ask", "gated", "headless+closer"},
-	{"status is None and closer is not an ask", "cleared", "headless:no-ask"},
+	{
+		"status is None and closer is not an ask",
+		"gated / cleared",
+		"store:open-item / headless:no-ask",
+	},
 	{`status == "waiting"`, "gated", "registry:waiting"},
 	{`status == "busy" and pending == "AskUserQuestion" and frozen`, "gated", "busy+parked-modal"},
 	{"closer unknown", "held", "closer-unknown"},
-	{`status == "idle"`, "gated / cleared", "idle+closer / idle:no-ask"},
+	{`status == "idle"`, "gated / cleared", "idle+closer / store:open-item / idle:no-ask"},
 	{"anything else (busy, shell)", "held", "held:<status>"},
 }
 

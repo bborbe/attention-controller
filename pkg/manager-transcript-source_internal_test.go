@@ -75,7 +75,7 @@ var _ = Describe("manager transcript source", func() {
 
 		By("(a) an unreadable transcript removes only that session's transcript half")
 		source := NewManagerTranscriptSource(registryDir, heartbeats, transcripts, clock)
-		states, err := source.GateStates(context.Background(), []string{"waiting", "silent"})
+		states, err := source.GateStates(context.Background(), []string{"waiting", "silent"}, nil)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(states).To(HaveLen(2))
 		// The waiting session is still gated by the registry half.
@@ -87,7 +87,7 @@ var _ = Describe("manager transcript source", func() {
 		By("(b) an unreadable registry holds a session without a fresh heartbeat")
 		missing := filepath.Join(registryDir, "does-not-exist")
 		source = NewManagerTranscriptSource(missing, heartbeats, transcripts, clock)
-		states, err = source.GateStates(context.Background(), []string{"dead"})
+		states, err = source.GateStates(context.Background(), []string{"dead"}, nil)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(states[0].Decision).To(Equal(ManagerGateHeld))
 		Expect(states[0].Reason).To(Equal("unregistered"))
@@ -95,9 +95,40 @@ var _ = Describe("manager transcript source", func() {
 		By("(c) the same unreadable registry leaves a headless-live session to the transcript half")
 		heartbeats.fresh["live"] = true
 		transcripts.lastAssistantText["live"] = "👤 You: nothing"
-		states, err = source.GateStates(context.Background(), []string{"live"})
+		states, err = source.GateStates(context.Background(), []string{"live"}, nil)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(states[0].Decision).To(Equal(ManagerGateCleared))
 		Expect(states[0].Reason).To(Equal("headless:no-ask"))
+	})
+
+	It("OpenItemSetGates", func() {
+		registryDir := GinkgoT().TempDir()
+		Expect(os.WriteFile(
+			filepath.Join(registryDir, "idle.json"),
+			[]byte(`{"sessionId":"idle","status":"idle"}`),
+			0o600,
+		)).To(Succeed())
+		transcripts.lastAssistantText["idle"] = "👤 You: nothing"
+		source := NewManagerTranscriptSource(registryDir, heartbeats, transcripts, clock)
+
+		By("gating an idle session the open set names")
+		states, err := source.GateStates(
+			context.Background(),
+			[]string{"idle"},
+			map[string]struct{}{"idle": {}},
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(states[0].Decision).To(Equal(ManagerGateGated))
+		Expect(states[0].Reason).To(Equal("store:open-item"))
+
+		By("leaving it cleared when the set does not name it")
+		states, err = source.GateStates(
+			context.Background(),
+			[]string{"idle"},
+			map[string]struct{}{},
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(states[0].Decision).To(Equal(ManagerGateCleared))
+		Expect(states[0].Reason).To(Equal("idle:no-ask"))
 	})
 })

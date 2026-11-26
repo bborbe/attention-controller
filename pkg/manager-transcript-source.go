@@ -30,7 +30,16 @@ const managerGateDetailMax = 150
 // failure the port exists to avoid.
 type ManagerTranscriptSource interface {
 	// GateStates returns one reading per session, in the order given.
-	GateStates(ctx context.Context, sessionIDs []string) (ManagerGateStates, error)
+	//
+	// openItems is the set of sessions holding at least one open store item,
+	// read once per pass by the caller. A nil set means the store was NOT
+	// consulted and must reproduce the rows as they were before the set
+	// existed — an unread store is never evidence that nothing is open.
+	GateStates(
+		ctx context.Context,
+		sessionIDs []string,
+		openItems map[string]struct{},
+	) (ManagerGateStates, error)
 }
 
 // NewManagerTranscriptSource creates the source over the registry directory, the
@@ -70,6 +79,7 @@ type managerTranscriptSource struct {
 func (s *managerTranscriptSource) GateStates(
 	ctx context.Context,
 	sessionIDs []string,
+	openItems map[string]struct{},
 ) (ManagerGateStates, error) {
 	statuses, registryErr := readSessionStatuses(ctx, s.registryDir)
 	registryReadable := registryErr == nil
@@ -78,7 +88,7 @@ func (s *managerTranscriptSource) GateStates(
 	for _, sessionID := range sessionIDs {
 		states = append(
 			states,
-			s.gateState(ctx, sessionID, statuses, registryReadable, now),
+			s.gateState(ctx, sessionID, statuses, registryReadable, now, openItems),
 		)
 	}
 	return states, nil
@@ -91,6 +101,7 @@ func (s *managerTranscriptSource) gateState(
 	statuses map[string]string,
 	registryReadable bool,
 	now libtime.DateTime,
+	openItems map[string]struct{},
 ) ManagerGateState {
 	status := managerRegisteredStatus(statuses, sessionID, registryReadable)
 	headlessLive := managerHeartbeatLive(ctx, s.heartbeats, sessionID, now)
@@ -109,6 +120,8 @@ func (s *managerTranscriptSource) gateState(
 		CloserBody:   closerBody,
 		PendingTool:  pending,
 		Frozen:       frozen,
+		SessionID:    sessionID,
+		OpenItems:    openItems,
 	})
 	return ManagerGateState{
 		SessionID: sessionID,

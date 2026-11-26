@@ -985,3 +985,64 @@ type stubFleetRegistry struct {
 func (s *stubFleetRegistry) Registrations(_ context.Context) []pkg.FleetManagerRegistration {
 	return s.registrations
 }
+
+// recordingTranscriptSource records the open-item set the pass hands it.
+type recordingTranscriptSource struct {
+	seen map[string]struct{}
+}
+
+func (r *recordingTranscriptSource) GateStates(
+	_ context.Context,
+	sessionIDs []string,
+	openItems map[string]struct{},
+) (pkg.ManagerGateStates, error) {
+	r.seen = openItems
+	states := make(pkg.ManagerGateStates, 0, len(sessionIDs))
+	for _, sessionID := range sessionIDs {
+		states = append(states, pkg.ManagerGateState{SessionID: sessionID, Label: sessionID})
+	}
+	return states, nil
+}
+
+// stubGateTracker accepts every pass and emits nothing.
+type stubGateTracker struct{}
+
+func (s *stubGateTracker) Observe(
+	_ context.Context,
+	_ pkg.ManagerGateObserveInput,
+) (pkg.ManagerGateOutcome, error) {
+	return pkg.ManagerGateOutcome{}, nil
+}
+
+var _ = Describe("manager wake transcript source wiring", func() {
+	It("OpenItemSetReachesTheTranscriptSource", func() {
+		store := &mocks.AttentionStore{}
+		ledger := &mocks.SessionLedgerStore{}
+		provenance := &mocks.ProvenanceResolver{}
+		provenance.ResolveReturns(pkg.Provenances{})
+		notifier := &mocks.AttentionChangeNotifier{}
+		notifier.SubscribeReturns(make(chan struct{}), func() {})
+		clock := libtime.CurrentDateTimeGetterFunc(func() libtime.DateTime {
+			return libtime.DateTime(stdtime.Date(2026, 11, 18, 12, 0, 0, 0, stdtime.UTC))
+		})
+		store.IsSessionLiveReturns(true)
+		ledger.ListReturns(pkg.SessionLedgerEntries{
+			ledgerRow("mgr-1", "manager", ""),
+			ledgerRow("w-1", "agent", "mgr-1"),
+		}, nil)
+		store.ReadReturns(pkg.Items{
+			{ItemID: "i1", ProducerID: "w-1", LivenessRef: "session:w-1", State: pkg.OpenState},
+			{ItemID: "i2", State: pkg.OpenState},
+		}, nil)
+
+		source := &recordingTranscriptSource{}
+		job := pkg.NewManagerWakeJob(
+			store, ledger, provenance, newWakeRecordingCarrier(), notifier, clock,
+			&recordingEmissionSink{},
+			pkg.WithManagerWakeTranscriptSource(source, &stubGateTracker{}),
+		)
+		Expect(job.WakeOnce(context.Background())).To(Succeed())
+		Expect(source.seen).To(HaveKey("w-1"))
+		Expect(source.seen).NotTo(HaveKey(""))
+	})
+})
