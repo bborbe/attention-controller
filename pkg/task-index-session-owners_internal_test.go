@@ -188,4 +188,80 @@ var _ = Describe("TaskIndex session owners", func() {
 		Expect(task.Name).To(Equal("A Stamp"),
 			"the page that stamps the session must outrank one that only lists it")
 	})
+
+	It("applies the stamp rank to a quoted claude_session_id", func() {
+		// The vault writes both `claude_session_id: abc` and `"abc"`. A quoted
+		// stamp must normalise to the same id the metrics entry carries, or the
+		// stamp rank silently never applies.
+		Expect(os.WriteFile(
+			filepath.Join(tasksDir, "A Stamp.md"),
+			[]byte("---\nclaude_session_id: \"session-shared\"\nstatus: in_progress\n---\n"),
+			0o600,
+		)).To(Succeed())
+		Expect(os.WriteFile(
+			filepath.Join(tasksDir, "B Mention.md"),
+			[]byte("---\nclaude_session_id: session-other\nstatus: in_progress\n"+
+				"metrics_sessions:\n    - session_id: session-shared\n---\n"),
+			0o600,
+		)).To(Succeed())
+
+		index := NewTaskIndex(ctx, vault, clock)
+
+		task, ok := index.Lookup("session-shared")
+		Expect(ok).To(BeTrue())
+		Expect(task.Name).To(Equal("A Stamp"),
+			"a quoted stamp must normalise and still outrank a metrics-only mention")
+	})
+
+	It("keeps the in-flight page over a terminal page that stamps the session", func() {
+		// Terminal-first is the older rule and still wins: the session is
+		// anchored to the page it is still working, even when a completed page
+		// carries its stamp.
+		Expect(os.WriteFile(
+			filepath.Join(tasksDir, "A Done Stamp.md"),
+			[]byte("---\nclaude_session_id: session-shared\nstatus: completed\n---\n"),
+			0o600,
+		)).To(Succeed())
+		Expect(os.WriteFile(
+			filepath.Join(tasksDir, "B Live Mention.md"),
+			[]byte("---\nclaude_session_id: session-other\nstatus: in_progress\n"+
+				"metrics_sessions:\n    - session_id: session-shared\n---\n"),
+			0o600,
+		)).To(Succeed())
+
+		index := NewTaskIndex(ctx, vault, clock)
+
+		task, ok := index.Lookup("session-shared")
+		Expect(ok).To(BeTrue())
+		Expect(task.Name).To(Equal("B Live Mention"),
+			"an in-flight page outranks a terminal one before the stamp rank is consulted")
+	})
+
+	It("reverts a shared session to its remaining page when the stamped page is deleted", func() {
+		Expect(os.WriteFile(
+			filepath.Join(tasksDir, "A Stamp.md"),
+			[]byte("---\nclaude_session_id: session-shared\nstatus: in_progress\n---\n"),
+			0o600,
+		)).To(Succeed())
+		Expect(os.WriteFile(
+			filepath.Join(tasksDir, "B Mention.md"),
+			[]byte("---\nclaude_session_id: session-other\nstatus: in_progress\n"+
+				"metrics_sessions:\n    - session_id: session-shared\n---\n"),
+			0o600,
+		)).To(Succeed())
+
+		index := NewTaskIndex(ctx, vault, clock)
+		first, ok := index.Lookup("session-shared")
+		Expect(ok).To(BeTrue())
+		Expect(first.Name).To(Equal("A Stamp"))
+
+		Expect(os.Remove(filepath.Join(tasksDir, "A Stamp.md"))).To(Succeed())
+		index.ApplyPaths(ctx, []string{"25 Tasks/A Stamp.md"})
+
+		second, ok := index.Lookup("session-shared")
+		Expect(ok).To(BeTrue(),
+			"a session shared by two pages must keep resolving while one remains")
+		Expect(second.Name).To(Equal("B Mention"),
+			"with the stamped page gone, the remaining mention page takes over")
+	})
 })

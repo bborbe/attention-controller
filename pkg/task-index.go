@@ -1097,7 +1097,7 @@ func rootStat(root *os.Root, name string) (fileStamp, bool) {
 // interpretation is how the incremental path and the full path come to
 // disagree about the same file.
 func (t *taskIndex) indexContent(path, name string, content []byte) {
-	stamp := frontmatterValue(content, taskSessionKey)
+	stamp := normalizeSessionID(frontmatterValue(content, taskSessionKey))
 	sessionIDs := taskSessionIDs(content)
 	if len(sessionIDs) == 0 {
 		// No frontmatter, no session key, or no session recorded at all: the
@@ -1441,9 +1441,7 @@ func taskSessionIDs(content []byte) []string {
 	var ids []string
 	seen := make(map[string]struct{})
 	add := func(id string) {
-		// The vault writes both `claude_session_id: abc` and
-		// `claude_session_id: "abc"`; the id is the unquoted value either way.
-		id = strings.Trim(strings.TrimSpace(id), `"'`)
+		id = normalizeSessionID(id)
 		if id == "" {
 			return
 		}
@@ -1523,16 +1521,27 @@ func metricsSessionIDFromLine(line string) (string, bool) {
 	if name != metricsSessionIDKey {
 		return "", false
 	}
-	value = strings.TrimSpace(value)
-	// Drop a trailing YAML comment; a session id never contains " #".
+	id := normalizeSessionID(value)
+	return id, id != ""
+}
+
+// normalizeSessionID trims a frontmatter session value to the bare id: the
+// surrounding quotes the vault writes in either form (`claude_session_id: abc`
+// and `claude_session_id: "abc"`), a trailing YAML comment, and the null forms.
+//
+// ⚠️ One normaliser for every reader: the stamp and a metrics entry must compare
+// equal to the same session id, or the stamp rank in beatsForSession silently
+// never applies to a quoted stamp.
+func normalizeSessionID(raw string) string {
+	value := strings.TrimSpace(raw)
 	if i := strings.Index(value, " #"); i >= 0 {
 		value = value[:i]
 	}
-	id := strings.Trim(strings.TrimSpace(value), `"'`)
-	if id == "" || id == "null" || id == "~" {
-		return "", false
+	value = strings.Trim(strings.TrimSpace(value), `"'`)
+	if value == "null" || value == "~" {
+		return ""
 	}
-	return id, true
+	return value
 }
 
 // wikilinkTitle returns the title one `goals:` list item names.
