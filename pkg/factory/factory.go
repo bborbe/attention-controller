@@ -26,6 +26,12 @@ func CreateAttentionReadHandler(store pkg.AttentionStore) http.Handler {
 	return handler.NewAttentionReadHandler(store)
 }
 
+// CreateAttentionBoardReadHandler creates the handler the board page reads: the
+// open items plus the answered records it renders dimmed.
+func CreateAttentionBoardReadHandler(store pkg.AttentionStore) http.Handler {
+	return handler.NewAttentionBoardReadHandler(store)
+}
+
 // CreateWhoNeedsMeHandler creates the handler that returns who-needs-me's answer
 // as joined JSON data, so a manager reads it from this service instead of
 // spawning the per-tick Python script.

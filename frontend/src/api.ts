@@ -2,7 +2,19 @@
 import type { Item } from "./types";
 
 export const ATTENTION_URL = "/api/1.0/attention";
+export const BOARD_URL = "/api/1.0/attention/board";
 export const ATTENTION_STREAM_URL = "/api/1.0/attention/stream";
+
+// fetchBoard reads the board's population: open items plus the answered records
+// it renders dimmed. Distinct from fetchItems (GET /attention), which returns
+// only the open items an arm should act on.
+export async function fetchBoard(signal?: AbortSignal): Promise<Item[]> {
+  const response = await fetch(BOARD_URL, { signal });
+  if (!response.ok) {
+    throw new Error(`GET ${BOARD_URL} failed: ${response.status}`);
+  }
+  return (await response.json()) as Item[];
+}
 
 export async function fetchItems(signal?: AbortSignal): Promise<Item[]> {
   const response = await fetch(ATTENTION_URL, { signal });

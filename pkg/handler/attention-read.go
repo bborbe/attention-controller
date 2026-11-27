@@ -43,3 +43,28 @@ func NewAttentionReadHandler(store pkg.AttentionStore) http.Handler {
 		),
 	)
 }
+
+// NewAttentionBoardReadHandler creates the handler the board page reads: the
+// open items plus the answered ones it renders as dimmed records. It is
+// distinct from NewAttentionReadHandler, which returns only the open items an
+// arm should act on — the board must show what was answered, an arm must not.
+func NewAttentionBoardReadHandler(store pkg.AttentionStore) http.Handler {
+	return libhttp.NewJSONErrorHandler(
+		libhttp.WithErrorFunc(
+			func(ctx context.Context, resp http.ResponseWriter, req *http.Request) error {
+				items, err := store.ReadBoard(ctx)
+				if err != nil {
+					return libhttp.WrapWithCode(
+						errors.Wrap(ctx, err, "read board failed"),
+						libhttp.ErrorCodeInternal,
+						http.StatusInternalServerError,
+					)
+				}
+				if err := libhttp.SendJSONResponse(ctx, resp, items, http.StatusOK); err != nil {
+					return errors.Wrap(ctx, err, "send response failed")
+				}
+				return nil
+			},
+		),
+	)
+}

@@ -1789,6 +1789,11 @@ func registerAttentionAPIRoutes(
 	router.Path("/api/1.0/attention").
 		Methods(http.MethodGet).
 		Handler(factory.CreateAttentionReadHandler(store))
+	// The board page's own read: open items plus the answered records it renders
+	// dimmed. Registered before /{itemID} so "board" is never read as an id.
+	router.Path("/api/1.0/attention/board").
+		Methods(http.MethodGet).
+		Handler(factory.CreateAttentionBoardReadHandler(store))
 	// Every item regardless of state, for counting what resolved and what
 	// escalated. Registered before /{itemID} so "history" is never read as
 	// an item id.
