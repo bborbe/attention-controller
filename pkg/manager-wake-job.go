@@ -1091,7 +1091,7 @@ func (p *wakePass) keeps(manager string, item Item) bool {
 	// Fleet Manager test is the REGISTRY check, never a vault read.
 	if p.job.goalScope != nil && !scoped &&
 		!p.job.goalScope.SessionResolved(sessionID) {
-		return p.fleetOnly(spawner, manager)
+		return p.fleetOnly(sessionID, spawner, manager)
 	}
 	// ⚠️ The task-with-no-goal class. `Foreign` answers `ok=false` here too — the
 	// session anchors a real task, but that task declares no `goals:` — and
@@ -1105,7 +1105,7 @@ func (p *wakePass) keeps(manager string, item Item) bool {
 	// was the only manager that could act on them.
 	if p.job.goalScope != nil && !scoped &&
 		p.job.goalScope.SessionResolved(sessionID) {
-		return p.fleetOnly(spawner, manager)
+		return p.fleetOnly(sessionID, spawner, manager)
 	}
 	if spawner == "" {
 		// HOP 3b — the item's own session IS the manager, and an operator-started
@@ -1129,8 +1129,8 @@ func (p *wakePass) keeps(manager string, item Item) bool {
 // receive it. Without this guard the Fleet Manager — now enumerable without a
 // ledger row — would be woken for every scope-unresolved card a goal manager
 // already owns.
-func (p *wakePass) fleetOnly(spawner, manager string) bool {
-	if p.ownedOnSpawnEdge(spawner, manager) {
+func (p *wakePass) fleetOnly(sessionID, spawner, manager string) bool {
+	if p.ownedOnSpawnEdge(sessionID, spawner, manager) {
 		return false
 	}
 	return p.isFleetManager(manager)
@@ -1141,11 +1141,22 @@ func (p *wakePass) fleetOnly(spawner, manager string) bool {
 //
 // It exists so the Fleet Manager routing for the unowned and task-with-no-goal
 // classes does not also fire for a card a goal manager already owns.
-func (p *wakePass) ownedOnSpawnEdge(spawner, manager string) bool {
+//
+// ⚠️ It must mirror the own-worker branch's conditions EXACTLY, vault comparison
+// included. That branch confers ownership only when the spawner is a live
+// manager AND both sessions sit in the same vault; a cross-vault manager
+// deliberately falls through to the unowned routing. Dropping the vault check
+// here would return "owned elsewhere" for a card the own-worker branch declined,
+// so neither that manager nor the Fleet Manager would be woken — the
+// woken-to-nobody class this change exists to remove.
+func (p *wakePass) ownedOnSpawnEdge(sessionID, spawner, manager string) bool {
 	if spawner == "" || spawner == manager {
 		return false
 	}
-	return p.isManager(spawner) && p.isLive(spawner)
+	if !p.isManager(spawner) || !p.isLive(spawner) {
+		return false
+	}
+	return sameVaultDir(p.owners[spawner].Cwd, p.owners[sessionID].Cwd)
 }
 
 // sameVaultDir reports whether two cwds resolve to the same Obsidian vault.

@@ -672,6 +672,37 @@ var _ = Describe("manager wake job", func() {
 		},
 	)
 
+	It(
+		"TestCrossVaultSpawnerStillReachesTheFleetManager — a manager in another vault does not suppress the Fleet Manager",
+		func() {
+			// ⚠️ The bot's round-2 finding. The own-worker branch confers ownership
+			// only when the spawner is live AND both sessions sit in one vault; a
+			// cross-vault manager deliberately falls through to the unowned
+			// routing. A guard that omitted the vault check would answer "owned
+			// elsewhere" for a card the own-worker branch declined, and the card
+			// would be woken to NOBODY — the class this change exists to remove.
+			fleet := &stubFleetRegistry{registrations: []pkg.FleetManagerRegistration{
+				{SessionID: "fleet-1", ResolvedAt: "2026-11-21T10:00:00+01:00"},
+			}}
+			live["mgr-1"] = true
+			live["fleet-1"] = true
+			ledger.ListReturns(pkg.SessionLedgerEntries{
+				ledgerRowInVault(
+					"mgr-1", "manager", "", "/Users/x/Documents/Obsidian/private-personal",
+				),
+				ledgerRowInVault(
+					"w-cross", "agent", "mgr-1", "/Users/x/Documents/Obsidian/seibert-brogrammers",
+				),
+			}, nil)
+			store.ReadReturns(pkg.Items{wakeItem("item-cross", "w-cross")}, nil)
+			flushBatch(newJob(
+				pkg.WithManagerWakeGoalScope(&stubGoalScope{noTask: true}),
+				pkg.WithManagerWakeFleetRegistry(fleet),
+			))
+			Expect(carrier.sessions()).To(Equal([]string{"fleet-1"}))
+		},
+	)
+
 	It("TestExpiredItemNeverWakes — the population read drops an expired item", func() {
 		oneManager()
 		// The store's own Read already excludes the expired card, so the job
