@@ -437,6 +437,11 @@ func (p *wakePass) resolveFleetManager() string {
 	}
 	best, bestAt := "", ""
 	for _, registration := range p.job.fleet.Registrations(p.ctx) {
+		select {
+		case <-p.ctx.Done():
+			return ""
+		default:
+		}
 		if !p.isLive(registration.SessionID) {
 			continue
 		}
