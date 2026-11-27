@@ -1080,15 +1080,7 @@ func (p *wakePass) keeps(manager string, item Item) bool {
 	// Fleet Manager test is the REGISTRY check, never a vault read.
 	if p.job.goalScope != nil && !scoped &&
 		!p.job.goalScope.SessionResolved(sessionID) {
-		// ⚠️ A live manager on the spawn edge owns the card already (the
-		// own-worker branch above kept it for that manager), so the Fleet Manager
-		// must not also receive it. Without this guard the Fleet Manager — now
-		// enumerable without a ledger row — would be woken for every
-		// scope-unresolved card a goal manager already owns.
-		if p.ownedOnSpawnEdge(spawner, manager) {
-			return false
-		}
-		return p.isFleetManager(manager)
+		return p.fleetOnly(spawner, manager)
 	}
 	// ⚠️ The task-with-no-goal class. `Foreign` answers `ok=false` here too — the
 	// session anchors a real task, but that task declares no `goals:` — and
@@ -1102,10 +1094,7 @@ func (p *wakePass) keeps(manager string, item Item) bool {
 	// was the only manager that could act on them.
 	if p.job.goalScope != nil && !scoped &&
 		p.job.goalScope.SessionResolved(sessionID) {
-		if p.ownedOnSpawnEdge(spawner, manager) {
-			return false
-		}
-		return p.isFleetManager(manager)
+		return p.fleetOnly(spawner, manager)
 	}
 	if spawner == "" {
 		// HOP 3b — the item's own session IS the manager, and an operator-started
@@ -1119,6 +1108,21 @@ func (p *wakePass) keeps(manager string, item Item) bool {
 		return true
 	}
 	return !p.isLive(spawner)
+}
+
+// fleetOnly reports whether a card with no resolvable goal owner is kept for
+// the Fleet Manager alone.
+//
+// ⚠️ A live manager on the spawn edge owns the card already (the own-worker
+// branch above kept it for that manager), so the Fleet Manager must not also
+// receive it. Without this guard the Fleet Manager — now enumerable without a
+// ledger row — would be woken for every scope-unresolved card a goal manager
+// already owns.
+func (p *wakePass) fleetOnly(spawner, manager string) bool {
+	if p.ownedOnSpawnEdge(spawner, manager) {
+		return false
+	}
+	return p.isFleetManager(manager)
 }
 
 // ownedOnSpawnEdge reports whether a manager OTHER than the one being evaluated
