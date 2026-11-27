@@ -428,6 +428,12 @@ func (p *wakePass) liveManagers() []string {
 // resolveFleetManager returns the newest LIVE Fleet Manager registration, or ""
 // when no registry is attached and none is live.
 //
+// ⚠️ It also returns "" when the pass's context is cancelled mid-scan. That is
+// deliberate and never a silent partial state: a cancelled pass aborts
+// `newPass`, so no manager is woken for any item and the next pass re-resolves
+// the registry from scratch. Returning the half-scanned best would route on
+// stale input while the rest of the pass is dying.
+//
 // ⚠️ Resolved once per pass and cached on `fleetManager`: `isFleetManager` is
 // called from `keeps()` for every (manager, item) pair, so a registry read there
 // would turn one file scan into thousands.
