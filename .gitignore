@@ -16,3 +16,8 @@
 gha-creds-*.json
 /specs/log
 /.crush
+# Frontend build output: the dist dir must exist for go:embed, but only .gitkeep
+# is committed. node_modules is never committed.
+/frontend/node_modules
+/frontend/dist/*
+!/frontend/dist/.gitkeep
