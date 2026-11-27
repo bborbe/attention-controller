@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- fix: a gate in the unowned or task-with-no-goal class is woken to the Fleet Manager again — `liveManagers()` now includes the registry's live Fleet Manager, which writes no session-ledger row, so `keeps()` no longer kept those cards for a manager the wake pass never iterated.
+
 ## v0.111.3
 
 - fix: a manager is no longer told a session's gate cleared while that session still holds an open card in the attention store — the verdict's two `no-ask` rows now lose to an open item and report `store:open-item`.

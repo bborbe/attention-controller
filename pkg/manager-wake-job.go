@@ -356,6 +356,7 @@ func (j *managerWakeJob) newPass(ctx context.Context) (*wakePass, error) {
 		live:   map[string]bool{},
 		now:    j.currentDateTimeGetter.Now(),
 	}
+	pass.fleetManager = pass.resolveFleetManager()
 	pass.managers = pass.liveManagers()
 	pass.clearParksNotLive()
 	pass.provenance = pass.resolveProvenance()
@@ -366,14 +367,15 @@ func (j *managerWakeJob) newPass(ctx context.Context) (*wakePass, error) {
 // liveness cache, so a pass asks the registry once per session rather than once
 // per (manager, item) pair.
 type wakePass struct {
-	job        *managerWakeJob
-	ctx        context.Context
-	items      Items
-	owners     map[string]SessionLedgerEntry
-	provenance Provenances
-	managers   []string
-	live       map[string]bool
-	now        libtime.DateTime
+	job          *managerWakeJob
+	ctx          context.Context
+	items        Items
+	owners       map[string]SessionLedgerEntry
+	provenance   Provenances
+	managers     []string
+	fleetManager string
+	live         map[string]bool
+	now          libtime.DateTime
 }
 
 // ledgerBySession indexes the ledger by session id.
@@ -389,22 +391,71 @@ func ledgerBySession(entries SessionLedgerEntries) map[string]SessionLedgerEntry
 }
 
 // liveManagers returns the sessions this pass computes a kept set for: the
-// ledger's live `role: manager` rows, sorted so a pass is reproducible.
+// ledger's live `role: manager` rows PLUS the registry's live Fleet Manager,
+// sorted so a pass is reproducible.
 //
-// ⚠️ The ledger is the only enumerable source. A manager started in a plain
-// tab writes no row, so it is not woken by this job — the same population the
-// Python filter could only reach through a fleet-wide feed, and the reason the
-// supervisor arming-site removal is a separate change.
+// ⚠️ The ledger alone is not enough, and the gap was silent. `keeps()` routes
+// the unowned class and the task-with-no-goal class to the Fleet Manager ALONE
+// (via `isFleetManager`, which reads the REGISTRY), but a Fleet Manager started
+// in a plain tab writes no ledger row — measured 2026-11-26: `9564fdf5`,
+// `7f512f18`, `52b0bf3e` and `1b75167a` are all absent from
+// `GET /api/1.0/session-ledger`. So `keeps()` kept those cards for a manager
+// this loop never iterated, and no wake was typed for them at all. Measured
+// 2026-11-25T19:49Z → 2026-11-26T19:49Z: 62 of the 118 operator-answered
+// manager-tier gates were in exactly that class.
+//
+// ⚠️ It is added only when LIVE and not already present from the ledger: a dead
+// registration would route the unowned class to a black hole with extra steps.
 func (p *wakePass) liveManagers() []string {
-	managers := make([]string, 0, len(p.owners))
+	managers := make([]string, 0, len(p.owners)+1)
+	seen := make(map[string]struct{}, len(p.owners)+1)
 	for sessionID, entry := range p.owners {
 		if entry.Role != managerLedgerRole || !p.isLive(sessionID) {
 			continue
 		}
 		managers = append(managers, sessionID)
+		seen[sessionID] = struct{}{}
+	}
+	if fleet := p.fleetManager; fleet != "" {
+		if _, ok := seen[fleet]; !ok {
+			managers = append(managers, fleet)
+		}
 	}
 	sort.Strings(managers)
 	return managers
+}
+
+// resolveFleetManager returns the newest LIVE Fleet Manager registration, or ""
+// when no registry is attached and none is live.
+//
+// ⚠️ It also returns "" when the pass's context is cancelled mid-scan. That is
+// deliberate and never a silent partial state: a cancelled pass aborts
+// `newPass`, so no manager is woken for any item and the next pass re-resolves
+// the registry from scratch. Returning the half-scanned best would route on
+// stale input while the rest of the pass is dying.
+//
+// ⚠️ Resolved once per pass and cached on `fleetManager`: `isFleetManager` is
+// called from `keeps()` for every (manager, item) pair, so a registry read there
+// would turn one file scan into thousands.
+func (p *wakePass) resolveFleetManager() string {
+	if p.job.fleet == nil {
+		return ""
+	}
+	best, bestAt := "", ""
+	for _, registration := range p.job.fleet.Registrations(p.ctx) {
+		select {
+		case <-p.ctx.Done():
+			return ""
+		default:
+		}
+		if !p.isLive(registration.SessionID) {
+			continue
+		}
+		if best == "" || registration.ResolvedAt >= bestAt {
+			best, bestAt = registration.SessionID, registration.ResolvedAt
+		}
+	}
+	return best
 }
 
 // isLive answers whether a session is live, from the pass's cache.
@@ -470,16 +521,7 @@ func (p *wakePass) isFleetManager(manager string) bool {
 	if p.job.fleet == nil || manager == "" {
 		return false
 	}
-	best, bestAt := "", ""
-	for _, registration := range p.job.fleet.Registrations(p.ctx) {
-		if !p.isLive(registration.SessionID) {
-			continue
-		}
-		if best == "" || registration.ResolvedAt >= bestAt {
-			best, bestAt = registration.SessionID, registration.ResolvedAt
-		}
-	}
-	return best == manager
+	return p.fleetManager == manager
 }
 
 // clearParksNotLive drops the parks of managers that are no longer live, so a
@@ -1049,7 +1091,7 @@ func (p *wakePass) keeps(manager string, item Item) bool {
 	// Fleet Manager test is the REGISTRY check, never a vault read.
 	if p.job.goalScope != nil && !scoped &&
 		!p.job.goalScope.SessionResolved(sessionID) {
-		return p.isFleetManager(manager)
+		return p.fleetOnly(sessionID, spawner, manager)
 	}
 	// ⚠️ The task-with-no-goal class. `Foreign` answers `ok=false` here too — the
 	// session anchors a real task, but that task declares no `goals:` — and
@@ -1063,7 +1105,7 @@ func (p *wakePass) keeps(manager string, item Item) bool {
 	// was the only manager that could act on them.
 	if p.job.goalScope != nil && !scoped &&
 		p.job.goalScope.SessionResolved(sessionID) {
-		return p.isFleetManager(manager)
+		return p.fleetOnly(sessionID, spawner, manager)
 	}
 	if spawner == "" {
 		// HOP 3b — the item's own session IS the manager, and an operator-started
@@ -1077,6 +1119,44 @@ func (p *wakePass) keeps(manager string, item Item) bool {
 		return true
 	}
 	return !p.isLive(spawner)
+}
+
+// fleetOnly reports whether a card with no resolvable goal owner is kept for
+// the Fleet Manager alone.
+//
+// ⚠️ A live manager on the spawn edge owns the card already (the own-worker
+// branch above kept it for that manager), so the Fleet Manager must not also
+// receive it. Without this guard the Fleet Manager — now enumerable without a
+// ledger row — would be woken for every scope-unresolved card a goal manager
+// already owns.
+func (p *wakePass) fleetOnly(sessionID, spawner, manager string) bool {
+	if p.ownedOnSpawnEdge(sessionID, spawner, manager) {
+		return false
+	}
+	return p.isFleetManager(manager)
+}
+
+// ownedOnSpawnEdge reports whether a manager OTHER than the one being evaluated
+// owns the card through the spawn edge: a live manager spawned the producer.
+//
+// It exists so the Fleet Manager routing for the unowned and task-with-no-goal
+// classes does not also fire for a card a goal manager already owns.
+//
+// ⚠️ It must mirror the own-worker branch's conditions EXACTLY, vault comparison
+// included. That branch confers ownership only when the spawner is a live
+// manager AND both sessions sit in the same vault; a cross-vault manager
+// deliberately falls through to the unowned routing. Dropping the vault check
+// here would return "owned elsewhere" for a card the own-worker branch declined,
+// so neither that manager nor the Fleet Manager would be woken — the
+// woken-to-nobody class this change exists to remove.
+func (p *wakePass) ownedOnSpawnEdge(sessionID, spawner, manager string) bool {
+	if spawner == "" || spawner == manager {
+		return false
+	}
+	if !p.isManager(spawner) || !p.isLive(spawner) {
+		return false
+	}
+	return sameVaultDir(p.owners[spawner].Cwd, p.owners[sessionID].Cwd)
 }
 
 // sameVaultDir reports whether two cwds resolve to the same Obsidian vault.
