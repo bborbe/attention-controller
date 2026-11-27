@@ -631,6 +631,47 @@ var _ = Describe("manager wake job", func() {
 		},
 	)
 
+	It(
+		"TestFleetManagerWithoutLedgerRowIsStillWoken — the unowned class reaches a tab-started Fleet Manager",
+		func() {
+			// ⚠️ The regression this change exists for. `keeps()` routes the
+			// unowned and task-with-no-goal classes to the Fleet Manager ALONE,
+			// reading the REGISTRY — but `liveManagers()` enumerated the ledger,
+			// and a Fleet Manager started in a plain tab writes no ledger row.
+			// Measured 2026-11-26: `9564fdf5`, `7f512f18`, `52b0bf3e` and
+			// `1b75167a` are all absent from `GET /api/1.0/session-ledger`, and
+			// 62 of the 118 operator-answered manager-tier gates were in that
+			// class with no wake typed for any of them.
+			fleet := &stubFleetRegistry{registrations: []pkg.FleetManagerRegistration{
+				{SessionID: "fleet-1", ResolvedAt: "2026-11-21T10:00:00+01:00"},
+			}}
+			live["mgr-1"] = true
+			live["fleet-1"] = true
+			// The ledger carries the goal manager ONLY: fleet-1 has no row.
+			ledger.ListReturns(pkg.SessionLedgerEntries{
+				ledgerRow("mgr-1", "manager", ""),
+			}, nil)
+			store.ReadReturns(pkg.Items{wakeItem("item-cron", "exit-observer-keeper")}, nil)
+			flushBatch(newJob(
+				pkg.WithManagerWakeGoalScope(&stubGoalScope{noTask: true}),
+				pkg.WithManagerWakeFleetRegistry(fleet),
+			))
+			Expect(carrier.sessions()).To(Equal([]string{"fleet-1"}))
+
+			// Negative control: the same registration, not live, is still typed
+			// nowhere — adding it must never route an unowned card to a dead
+			// session.
+			carrier = newWakeRecordingCarrier()
+			live["fleet-1"] = false
+			store.ReadReturns(pkg.Items{wakeItem("item-cron", "exit-observer-keeper")}, nil)
+			flushBatch(newJob(
+				pkg.WithManagerWakeGoalScope(&stubGoalScope{noTask: true}),
+				pkg.WithManagerWakeFleetRegistry(fleet),
+			))
+			Expect(carrier.recorded()).To(BeEmpty())
+		},
+	)
+
 	It("TestExpiredItemNeverWakes — the population read drops an expired item", func() {
 		oneManager()
 		// The store's own Read already excludes the expired card, so the job
