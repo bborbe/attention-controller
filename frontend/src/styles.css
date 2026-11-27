@@ -1,6 +1,6 @@
-// The house palette — plain CSS variables, declared once at the root.
-// color-scheme: dark is load-bearing: it makes the browser render scrollbars,
-// form controls and the canvas backdrop dark too.
+/* The house palette — plain CSS variables, declared once at the root.
+   color-scheme: dark is load-bearing: it makes the browser render scrollbars,
+   form controls and the canvas backdrop dark too. */
 :root {
   color-scheme: dark;
   --bg: #111418;

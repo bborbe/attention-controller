@@ -35,9 +35,30 @@ run:
 # temp DATADIR and a temp session registry, so it never touches the launchd
 # service on :18080.
 .PHONY: e2e
-e2e:
+e2e: frontend
 	go run $(PLAYWRIGHT_GO_MODULE)/cmd/playwright@$(PLAYWRIGHT_GO_VERSION) install chromium
 	go test -mod=mod -tags e2e -count=1 -timeout 15m ./e2e/
+	cd $(FRONTEND_DIR) && npx playwright install chromium && npm run e2e
+
+# The React frontend (frontend/), built into frontend/dist and embedded with
+# go:embed. types first: tsc imports ./types, which tygo generates from pkg.
+FRONTEND_DIR ?= frontend
+
+.PHONY: frontend
+frontend:
+	cd $(FRONTEND_DIR) && npm ci && npm run build
+
+.PHONY: types
+types:
+	go run github.com/gzuidhof/tygo@$(TYGO_VERSION) generate
+
+.PHONY: test-frontend
+test-frontend:
+	cd $(FRONTEND_DIR) && npm ci && npm test
+
+.PHONY: check-frontend
+check-frontend:
+	cd $(FRONTEND_DIR) && npm ci && npm audit --audit-level=high
 
 # Builds the launchd binary and signs it with a stable local identity, then
 # restarts the service.
