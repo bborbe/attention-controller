@@ -229,11 +229,11 @@ const (
 
 // legacyJumpPageCSS is the house style of the local service pages. The shared
 // `:root` tokens (--bg, --panel, --border, --text, --muted, --warn) and the `body`
-// block carry the same values attention-page.go declares (itself matching the
-// tts-mcp page); --ok and --err are this page's own additions for the success and
-// refusal headings. They are repeated here rather than shared
-// because the board's palette lives inside its page template string, and
-// extracting it is a change to the board, not to this route.
+// block carry the same values the board's frontend/src/styles.css declares
+// (itself matching the tts-mcp page); --ok and --err are this page's own
+// additions for the success and refusal headings. They are repeated here rather
+// than shared because the board's palette lives in the React build, and sharing
+// it is a change to the board, not to this route.
 const legacyJumpPageCSS = `
 :root {
   color-scheme: dark;

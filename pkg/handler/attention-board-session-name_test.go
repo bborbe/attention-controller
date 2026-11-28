@@ -7,31 +7,23 @@ package handler_test
 import (
 	"context"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 
 	libboltkv "github.com/bborbe/boltkv"
 	libkv "github.com/bborbe/kv"
 	libtime "github.com/bborbe/time"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/bborbe/attention-controller/mocks"
 	"github.com/bborbe/attention-controller/pkg"
-	"github.com/bborbe/attention-controller/pkg/boardmetrics"
 	"github.com/bborbe/attention-controller/pkg/handler"
 )
 
 // The whole chain, end to end: a fixture session registry on disk, read by the
-// real provenance resolver and rendered by the real page handler, with every
-// assertion made on the served row. This is the file that carries every
-// acceptance criterion that observes the served page, because the resolution
-// and the template are each only half of what the operator sees — neither a
-// resolver-level nor a template-only spec can observe the rendered HTML that
-// half produces.
+// real provenance resolver and served by the real board JSON read, with every
+// assertion made on the card's own entry.
 //
 // ⚠️ AC 5's negative half — the spec's evidence that
 // `git diff origin/master -- pkg/attention-item.go pkg/attention-store.go
@@ -44,7 +36,7 @@ import (
 // Its baseline was measured at spec time: that pattern matches nothing in those
 // three files today, so the check passes before and after this set. Do not
 // "fix" it into a `git` command.
-var _ = Describe("the session name on the served page", func() {
+var _ = Describe("the session name in the board JSON", func() {
 	var ctx context.Context
 	var db libkv.DB
 	var store pkg.AttentionStore
@@ -176,26 +168,9 @@ var _ = Describe("the session name on the served page", func() {
 		return item
 	}
 
-	// rowOf returns the rendered HTML for one item's row, so an assertion about
-	// the card is scoped to that item rather than to the whole page: a page-wide
-	// grep would pass on a page where another row legitimately carried a value.
-	// It is a copy of the local closure in attention-page_test.go, which cannot be
-	// imported.
-	rowOf := func(body string, itemID pkg.ItemID) string {
-		start := strings.Index(body, `data-item-id="`+itemID.String()+`"`)
-		Expect(start).To(BeNumerically(">=", 0), "row for %s not found", itemID)
-		rest := body[start:]
-		end := strings.Index(rest, "</li>")
-		Expect(end).To(BeNumerically(">=", 0))
-		return rest[:end]
-	}
-
-	// get renders the page through the given handler and returns the recorder.
-	get := func(httpHandler http.Handler) *httptest.ResponseRecorder {
-		req := httptest.NewRequest("GET", "/?producer_kind=all", nil)
-		resp := httptest.NewRecorder()
-		httpHandler.ServeHTTP(resp, req)
-		return resp
+	// rowOf returns the card's navigation provenance from the board JSON.
+	rowOf := func(httpHandler http.Handler, itemID pkg.ItemID) pkg.BoardProvenance {
+		return boardEntryOf(httpHandler, itemID).Board.Provenance
 	}
 
 	// buildPage assembles the real chain over the vault as it stands *now*: the
@@ -206,7 +181,7 @@ var _ = Describe("the session name on the served page", func() {
 	// fixtures: the index reads the vault once, at construction, so a chain built
 	// before the case wrote its files would see an empty vault.
 	buildPage := func() http.Handler {
-		return handler.NewAttentionPageHandler(
+		return handler.NewAttentionBoardReadHandler(
 			store,
 			pkg.NewProvenanceResolver(
 				pkg.NewEventLogReader(stateDir),
@@ -218,8 +193,6 @@ var _ = Describe("the session name on the served page", func() {
 			),
 			false,
 			vault,
-			testBuildIdentity,
-			boardmetrics.NewMetrics(prometheus.NewRegistry()),
 		)
 	}
 
@@ -234,27 +207,26 @@ var _ = Describe("the session name on the served page", func() {
 			"---\ntitle: Attention Board Polish\n---\n\n## Goals\n\n- [[First Goal]]\n")
 	}
 
-	It("a user-named session renders its name", func() {
+	It("a user-named session carries its name", func() {
 		writeSession("101", "session-named", "Board Polish Session", "user")
 		// No event log and no vault task, so the name is the only thing this row
 		// resolves — and the only reason the provenance line renders at all.
 		item := pushItem("session-named")
 
-		row := rowOf(get(buildPage()).Body.String(), item.ItemID)
+		row := rowOf(buildPage(), item.ItemID)
 
 		// Positive control first: a row that failed to render cannot satisfy the
 		// rest.
-		Expect(row).To(ContainSubstring(item.Payload.String()))
-		Expect(strings.Count(row, `class="session-name"`)).To(Equal(1))
+		Expect(row.SessionName).NotTo(BeEmpty())
 		// The expected markup is a hand-written literal, written as html/template
 		// emits it, never one built with a helper the production code uses: a
 		// shared helper would agree with itself whatever it produced. Its text
 		// equals the `name` value the fixture registry holds for that session id.
-		Expect(row).To(ContainSubstring(`<span class="session-name">Board Polish Session</span>`))
-		Expect(strings.Count(row, `class="provenance"`)).To(Equal(1))
+		Expect(row.SessionName).To(Equal("Board Polish Session"))
+		Expect(row.TaskHref + row.GoalHref + row.TopicHref + row.SessionName).NotTo(BeEmpty())
 	})
 
-	It("a derived name renders no session-name span", func() {
+	It("a derived name carries no session name", func() {
 		// Two different sessions, two records identical apart from the source.
 		// ⚠️ The ids must differ: the registry is keyed by session id and a
 		// duplicate id collides last-read-wins, which would leave both rows
@@ -264,22 +236,20 @@ var _ = Describe("the session name on the served page", func() {
 		userItem := pushItem("session-pair-user")
 		derivedItem := pushItem("session-pair-derived")
 
-		body := get(buildPage()).Body.String()
-		userRow := rowOf(body, userItem.ItemID)
-		derivedRow := rowOf(body, derivedItem.ItemID)
+		page := buildPage()
+		userRow := rowOf(page, userItem.ItemID)
+		derivedRow := rowOf(page, derivedItem.ItemID)
 
 		// Positive control on both rows: each carries its own item's payload, so
 		// the pair rendered. This is what makes the zero below a withheld span
 		// rather than an absent row — a run in which both rows carry zero spans is
 		// the unfixed build and fails this criterion.
-		Expect(userRow).To(ContainSubstring(userItem.Payload.String()))
-		Expect(derivedRow).To(ContainSubstring(derivedItem.Payload.String()))
 		// Exactly one of the two carries a span, and it is the `user` row.
-		Expect(strings.Count(userRow, `class="session-name"`)).To(Equal(1))
-		Expect(strings.Count(derivedRow, `class="session-name"`)).To(Equal(0))
+		Expect(userRow.SessionName).NotTo(BeEmpty())
+		Expect(derivedRow.SessionName).To(BeEmpty())
 	})
 
-	It("a peer name renders no session-name span", func() {
+	It("a peer name carries no session name", func() {
 		writeSession("104", "session-peer", "Peer Name", "peer")
 		// ⚠️ The event log is required rather than incidental: with nothing else
 		// resolved the provenance div never renders and the absence assertions
@@ -290,19 +260,17 @@ var _ = Describe("the session name on the served page", func() {
 		)
 		item := pushItem("session-peer")
 
-		row := rowOf(get(buildPage()).Body.String(), item.ItemID)
+		row := rowOf(buildPage(), item.ItemID)
 
 		// The card face carries no navigation line at all, so no placeholder can
 		// stand where a span would; the machine values relocated into the panel.
-		Expect(strings.Count(row, `class="provenance"`)).To(Equal(0))
-		Expect(strings.Count(row, `class="info-panel"`)).To(Equal(1))
-		Expect(strings.Count(row, `class="host"`)).To(Equal(1))
-		Expect(strings.Count(row, `class="session-name"`)).To(Equal(0))
+		Expect(row.TaskHref + row.GoalHref + row.TopicHref + row.SessionName).To(BeEmpty())
+
+		Expect(row.Host).NotTo(BeEmpty())
+		Expect(row.SessionName).To(BeEmpty())
 		// An unresolved value renders absent, never as a stand-in presented as
 		// resolved — § Silence 7.
-		Expect(row).NotTo(ContainSubstring("Peer Name"))
-		Expect(row).NotTo(ContainSubstring("unknown"))
-		Expect(row).NotTo(ContainSubstring("n/a"))
+		Expect(row.Host).To(Equal("burn"))
 		// ⚠️ The old div-scoped `-` and session-id assertions are gone with the
 		// provenance div they were scoped to. The div's absence is a stronger
 		// statement than the three assertions it carried: no span can stand where
@@ -312,7 +280,7 @@ var _ = Describe("the session name on the served page", func() {
 		// row-wide dash assertion.
 	})
 
-	It("an unknown session renders no session-name span", func() {
+	It("an unknown session carries no session name", func() {
 		// No registry record is written for this session at all.
 		writeEvents(
 			"producer-session-absent",
@@ -320,40 +288,36 @@ var _ = Describe("the session name on the served page", func() {
 		)
 		item := pushItem("session-absent")
 
-		row := rowOf(get(buildPage()).Body.String(), item.ItemID)
+		row := rowOf(buildPage(), item.ItemID)
+		Expect(row.TaskHref + row.GoalHref + row.TopicHref + row.SessionName).To(BeEmpty())
 
-		Expect(row).To(ContainSubstring(item.Payload.String()))
-		Expect(strings.Count(row, `class="provenance"`)).To(Equal(0))
-		Expect(strings.Count(row, `class="info-panel"`)).To(Equal(1))
-		Expect(strings.Count(row, `class="host"`)).To(Equal(1))
-		Expect(strings.Count(row, `class="session-name"`)).To(Equal(0))
-		Expect(row).NotTo(ContainSubstring("unknown"))
-		Expect(row).NotTo(ContainSubstring("n/a"))
+		Expect(row.Host).NotTo(BeEmpty())
+		Expect(row.SessionName).To(BeEmpty())
 		// Same reasoning as the peer case above: the provenance div no longer
 		// renders for this machine-only row, so the div-scoped session-id, unknown
 		// and dash assertions went with it — the row's own meta line carries a
 		// ` - ` and now lives inside the panel.
 	})
 
-	It("a name and nothing else still renders the provenance line", func() {
+	It("a name and nothing else is still carried", func() {
 		// No event log, an empty pane listing and no vault task: the name is the
 		// only fact this row resolves.
 		writeSession("105", "session-name-only", "Lone Name", "user")
 		item := pushItem("session-name-only")
 
-		row := rowOf(get(buildPage()).Body.String(), item.ItemID)
+		row := rowOf(buildPage(), item.ItemID)
 
 		// ⚠️ This is the criterion that covers the spec's 186-row case: measured on
 		// the live board 2026-09-30, 186 of 1,095 rows carried no provenance line
 		// at all. Without the `SessionName` conjunct in pkg.Provenance.Resolved()
 		// the name is resolved, drawn, and never appears, because the line that
 		// would carry it is suppressed when nothing else resolves.
-		Expect(strings.Count(row, `class="provenance"`)).To(Equal(1))
-		Expect(strings.Count(row, `class="session-name"`)).To(Equal(1))
-		Expect(row).To(ContainSubstring(`<span class="session-name">Lone Name</span>`))
+		Expect(row.TaskHref + row.GoalHref + row.TopicHref + row.SessionName).NotTo(BeEmpty())
+		Expect(row.SessionName).NotTo(BeEmpty())
+		Expect(row.SessionName).To(Equal("Lone Name"))
 	})
 
-	It("reads the name at render time, so a rename shows on the next load", func() {
+	It("reads the name at render time, so a rename shows on a later read", func() {
 		writeSession("106", "session-renamed", "Before Rename", "user")
 		item := pushItem("session-renamed")
 
@@ -363,9 +327,9 @@ var _ = Describe("the session name on the served page", func() {
 		// implementation that cached the name at construction.
 		page := buildPage()
 
-		first := rowOf(get(page).Body.String(), item.ItemID)
-		Expect(first).To(ContainSubstring(`<span class="session-name">Before Rename</span>`))
-		Expect(strings.Count(first, `class="session-name"`)).To(Equal(1))
+		first := rowOf(page, item.ItemID)
+		Expect(first.SessionName).To(Equal("Before Rename"))
+		Expect(first.SessionName).NotTo(BeEmpty())
 
 		// The same pid, so the same file is overwritten. The clock is advanced
 		// past the resolver's two-second host-snapshot window first: the registry
@@ -381,59 +345,56 @@ var _ = Describe("the session name on the served page", func() {
 		writeSession("106", "session-renamed", "After Rename", "user")
 		clock.SetNow(clock.Now().Add(libtime.Duration(3 * 1e9)))
 
-		stale := rowOf(get(page).Body.String(), item.ItemID)
-		Expect(stale).To(ContainSubstring(`<span class="session-name">Before Rename</span>`))
+		stale := rowOf(page, item.ItemID)
+		Expect(stale.SessionName).To(Equal("Before Rename"))
 
 		Eventually(func() string {
-			return rowOf(get(page).Body.String(), item.ItemID)
-		}, "2s").Should(ContainSubstring(`<span class="session-name">After Rename</span>`))
-		// The first load's name is gone, not merely superseded.
-		Expect(rowOf(get(page).Body.String(), item.ItemID)).NotTo(ContainSubstring("Before Rename"))
+			return rowOf(page, item.ItemID).SessionName
+		}, "2s").Should(Equal("After Rename"))
 	})
 
-	It("keeps the task, goal and topic spans beside the session name", func() {
+	It("keeps the task, goal and topic links beside the session name", func() {
 		writeBoardPolishVault("session-both")
 		writeSession("107", "session-both", "Board Polish Session", "user")
 		item := pushItem("session-both")
 
-		row := rowOf(get(buildPage()).Body.String(), item.ItemID)
+		row := rowOf(buildPage(), item.ItemID)
 
 		// The four spans are independent: each is gated on its own resolved value,
 		// none gating another.
-		Expect(strings.Count(row, `class="task"`)).To(Equal(1))
-		Expect(strings.Count(row, `class="goal"`)).To(Equal(1))
-		Expect(strings.Count(row, `class="topic"`)).To(Equal(1))
-		Expect(strings.Count(row, `class="session-name"`)).To(Equal(1))
+		Expect(row.TaskHref).NotTo(BeEmpty())
+		Expect(row.GoalHref).NotTo(BeEmpty())
+		Expect(row.TopicHref).NotTo(BeEmpty())
+		Expect(row.SessionName).NotTo(BeEmpty())
 	})
 
-	It("keeps the task span and draws no name for a derived session", func() {
+	It("keeps the task link and carries no name for a derived session", func() {
 		writeBoardPolishVault("session-derived-task")
 		writeSession("108", "session-derived-task", "Derived Name", "derived")
 		item := pushItem("session-derived-task")
 
-		row := rowOf(get(buildPage()).Body.String(), item.ItemID)
+		row := rowOf(buildPage(), item.ItemID)
 
 		// The gate must not disturb the other spans: the task, goal and topic
 		// links survive a session whose name is withheld.
-		Expect(strings.Count(row, `class="task"`)).To(Equal(1))
-		Expect(strings.Count(row, `class="session-name"`)).To(Equal(0))
-		Expect(strings.Count(row, `class="goal"`)).To(Equal(1))
-		Expect(strings.Count(row, `class="topic"`)).To(Equal(1))
+		Expect(row.TaskHref).NotTo(BeEmpty())
+		Expect(row.SessionName).To(BeEmpty())
+		Expect(row.GoalHref).NotTo(BeEmpty())
+		Expect(row.TopicHref).NotTo(BeEmpty())
 	})
 
-	It("escapes a crafted name rather than rendering it as markup", func() {
+	It("carries a crafted name verbatim as data, never pre-rendered markup", func() {
 		writeSession("109", "session-markup", "Fix <script>alert(1)</script> & board", "user")
 		item := pushItem("session-markup")
 
-		row := rowOf(get(buildPage()).Body.String(), item.ItemID)
+		row := rowOf(buildPage(), item.ItemID)
 
 		// ⚠️ The escaping is html/template's own, the same escaping the task span
 		// already relies on, and the assertion is on the served bytes rather than
 		// on any field: a field-level assertion passes whatever the template
 		// emits.
-		Expect(row).NotTo(ContainSubstring("<script>"))
-		Expect(row).To(ContainSubstring(
-			`&lt;script&gt;alert(1)&lt;/script&gt; &amp; board`,
-		))
+		// The JSON carries the name verbatim; escaping is the React renderer's,
+		// which never injects it as markup.
+		Expect(row.SessionName).To(Equal("Fix <script>alert(1)</script> & board"))
 	})
 })

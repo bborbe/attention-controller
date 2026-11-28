@@ -177,57 +177,6 @@ func CreateAttentionWatcherCycleHandler(metrics pkg.Metrics) http.Handler {
 	return handler.NewAttentionWatcherCycleHandler(metrics)
 }
 
-// CreateAttentionPageHandler creates the read-only HTML page an operator opens
-// to see what currently needs attention, without Claude Code, vault-cli or the
-// task system.
-//
-// The resolver is injected rather than constructed here: `pkg/factory` is pure
-// plumbing with no business logic, and which directory the provenance is read
-// from is a decision `main` owns alongside the session registry's.
-//
-// speakEnabled gates the read-aloud control. It is passed rather than derived
-// from ttsURL so the page and the route agree by construction: a control that
-// renders while its endpoint is unrouted is a value presented as working that
-// is not.
-//
-// ⚠️ The jump token is no longer a parameter. The Jump button is gated on the
-// resolved pane alone, because the endpoint it points at performs the jump
-// in-process and reads no token — see handler.NewAttentionPageHandler.
-//
-// vaultDir is the configured vault directory, threaded to the handler so a card
-// can link to the vault task its session is anchored to. It is passed rather
-// than read from an environment here for the same reason the provenance
-// directories are: which vault a host serves is a decision `main` owns, and an
-// empty directory renders no task link rather than failing.
-// buildIdentity is the running binary's own provenance, threaded to the page so
-// its footer can say which build is being read. It is passed rather than read
-// here for the same reason vaultDir is: it is a fact about the process, and
-// `pkg/factory` is pure plumbing that decides nothing.
-//
-// metrics is threaded through so the page reports its requests through the one
-// process-wide instance, which is built once in `main` on the registry /metrics
-// already serves. It is passed rather than constructed here for the same reason
-// the stream handler's is: `pkg/factory` is pure plumbing, and a second instance
-// would count every request on a private registry the deployed /metrics cannot
-// see.
-func CreateAttentionPageHandler(
-	store pkg.AttentionStore,
-	provenance pkg.ProvenanceResolver,
-	speakEnabled bool,
-	vaultDir string,
-	buildIdentity buildidentity.Identity,
-	metrics pkg.Metrics,
-) http.Handler {
-	return handler.NewAttentionPageHandler(
-		store,
-		provenance,
-		speakEnabled,
-		vaultDir,
-		buildIdentity,
-		metrics,
-	)
-}
-
 // CreateAttentionReactPageHandler serves the embedded React frontend as the
 // board page. dist is the frontend/dist sub-tree, opened by main with fs.Sub so
 // this package stays pure plumbing and decides nothing about the embed root;

@@ -1096,7 +1096,9 @@ func (a *application) createHTTPServer(
 		router.Path("/jump/{itemID}").
 			Methods(http.MethodGet, http.MethodHead).
 			Handler(factory.CreateAttentionJumpHandler(store, provenance, activator))
-		a.registerBoardRoutes(ctx, router, deps, provenance, buildIdentity)
+		if err := a.registerBoardRoutes(ctx, router, deps, provenance, buildIdentity); err != nil {
+			return err
+		}
 
 		// Business routes live under /api/1.0/, never in the admin block above.
 		registerAttentionAPIRoutes(router, store, a.TTSURL)

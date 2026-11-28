@@ -57,8 +57,8 @@ census can still find it by name.
 
 ## Scope: the board only
 
-The exclusion applies to `ReadBoard` — the read the board page
-(`pkg/handler/attention-page.go`) and the board's live stream
+The exclusion applies to `ReadBoard` — the read the board JSON
+(`GET /api/1.0/attention/board`, `pkg/handler/attention-read.go`) and the board's live stream
 (`pkg/handler/attention-stream.go`) both consume. `Read` is unchanged, so the
 JSON read API and every arm that acts on what it returns see exactly what they
 saw before.
