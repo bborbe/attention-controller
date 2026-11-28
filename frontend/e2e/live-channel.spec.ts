@@ -1,10 +1,7 @@
 // parity.md § Live channel (GET /api/1.0/attention/stream, SSE). The React page
 // subscribes with EventSource and reloads the board read on every message, so
-// the observable is a row appearing/disappearing with no page reload.
-//
-// The stale indicator and the uncovered markers are known gaps (no element in
-// the React page); the stale row is a failing test, the rest are marked in
-// their own specs.
+// the observable is a row appearing/disappearing with no page reload. A stream
+// error shows the stale indicator ([data-stream-stale]).
 
 import {
   answerViaAPI,
@@ -86,7 +83,7 @@ test("a shown failure note survives a stream re-render", async ({ page, request,
   );
 });
 
-test("GAP: the stream stale indicator appears when the stream errors", async ({
+test("the stream stale indicator appears when the stream errors", async ({
   page,
   st,
 }) => {
@@ -95,7 +92,7 @@ test("GAP: the stream stale indicator appears when the stream errors", async ({
   await openBoard(page, st, "?producer_kind=all");
 
   // parity.md: "Stream stale indicator: shown on stream error, hidden on the
-  // next message." The React page renders no such element.
+  // next message."
   await expect(page.locator("[data-stream-stale]")).toBeVisible();
 });
 

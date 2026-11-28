@@ -1,7 +1,6 @@
 // parity.md § Ack + record cards — ack cards and dimmed records close with
-// POST /api/1.0/attention/<id>/close. The React card routes its corner X
-// through the answer path instead, so the two corner-X rows are failing gap
-// tests rather than weakened ones.
+// POST /api/1.0/attention/<id>/close, and the card's corner X routes through
+// that close path.
 
 import {
   answerViaAPI,
@@ -32,7 +31,7 @@ test("Acknowledge posts /close and the card leaves", async ({ page, request, st 
   await expect(row(page, itemID)).toHaveCount(0);
 });
 
-test("GAP: Acknowledge shows the 'Acknowledged.' note", async ({ page, request, st }) => {
+test("Acknowledge shows the 'Acknowledged.' note", async ({ page, request, st }) => {
   const itemID = await pushAck(request, st, "e2e: acknowledge note");
   await openBoard(page, st, "?producer_kind=all");
 
@@ -41,13 +40,12 @@ test("GAP: Acknowledge shows the 'Acknowledged.' note", async ({ page, request, 
   await pending;
 
   // parity.md: "Acknowledge: posts /close; the card leaves; note
-  // 'Acknowledged.'". The React handler reloads the board and sets no note, so
-  // the card leaves with no confirmation.
+  // 'Acknowledged.'".
   await expect(row(page, itemID)).toHaveCount(0);
   await expect(page.locator(".note")).toContainText("Acknowledged.");
 });
 
-test("GAP: the corner X on an ack card posts /close", async ({ page, request, st }) => {
+test("the corner X on an ack card posts /close", async ({ page, request, st }) => {
   const itemID = await pushAck(request, st, "e2e: ack corner X");
   await openBoard(page, st, "?producer_kind=all");
 
@@ -64,7 +62,7 @@ test("GAP: the corner X on an ack card posts /close", async ({ page, request, st
   ]);
 });
 
-test("GAP: a dimmed record's corner X posts /close and answers nothing", async ({
+test("a dimmed record's corner X posts /close and answers nothing", async ({
   page,
   request,
   st,

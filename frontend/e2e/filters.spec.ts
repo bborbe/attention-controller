@@ -1,8 +1,8 @@
 // parity.md § View filters — client-only. Each toggle must change the DOM and
 // the URL (via replaceState, no navigation) and issue NO item-scoped request.
 //
-// The "N hidden" count is a known gap: the React board controls carry no
-// [data-kind-hidden] element, so that row is a failing test.
+// The "N hidden" count renders in the controls as [data-kind-hidden] whenever
+// the kind filter withholds a card.
 
 import {
   FLEET_SESSION_ID,
@@ -140,7 +140,7 @@ test("an uncovered session card is shown on the managers-only view", async ({
   await expect(row(page, coveredItem)).toHaveCount(0);
 });
 
-test("GAP: the kind view reports how many cards it is withholding", async ({
+test("the kind view reports how many cards it is withholding", async ({
   page,
   request,
   st,
@@ -149,7 +149,7 @@ test("GAP: the kind view reports how many cards it is withholding", async ({
   await openBoard(page, st, "");
 
   // parity.md: "Producer-kind link: ... renders the 'N hidden' count when cards
-  // are withheld." The React controls have no such element.
+  // are withheld."
   await expect(page.locator("[data-kind-hidden]")).toBeVisible();
 });
 

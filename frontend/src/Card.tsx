@@ -3,6 +3,7 @@ import type { BoardItem, Item, Question } from "./types";
 import { answer, boardClient, close, flag, jump, rate, speak, cancel, unflag } from "./api";
 import { updateCardState, useCardState } from "./cardState";
 import type { CardState, Note } from "./cardState";
+import { renderCardText } from "./cardText";
 import {
   answerFailureMessage,
   boardViewOf,
@@ -73,6 +74,13 @@ export default function Card({ item, onChanged, onDecide, onClosed }: Props) {
   const ack = item.answer_mechanism === "ack";
   const view = boardViewOf(item);
   const prov = view.provenance;
+  // The risk the card RENDERS is the server-derived level, which may be raised
+  // above the producer's declaration by the production-touching marker and the
+  // payload's consequence class (pkg.RiskOf) — so a producer that under-declares
+  // cannot make a destructive card read routine. The declared value is only the
+  // fallback for a board read that carried none.
+  const risk = view.risk || item.risk || "decision";
+  const blastRadius = view.blast_radius || "";
 
   const set = (patch: Partial<CardState> | ((s: CardState) => Partial<CardState>)) =>
     updateCardState(itemID, patch);
@@ -331,7 +339,7 @@ export default function Card({ item, onChanged, onDecide, onClosed }: Props) {
         data-question={unit.tab}
         data-multi-pick={multiPick}
       >
-        {multi ? <div className="question">{unit.payload}</div> : null}
+        {multi ? <div className="question">{renderCardText(unit.payload)}</div> : null}
         {unit.options.length > 0 ? (
           <div className="options">
             {unit.options.map((o) => (
@@ -394,9 +402,11 @@ export default function Card({ item, onChanged, onDecide, onClosed }: Props) {
 
   return (
     <li
-      className={`item risk-${item.risk || "decision"}${dimmed ? " dimmed" : ""}`}
+      className={`item risk-${risk}${dimmed ? " dimmed" : ""}`}
       data-item-id={itemID}
       data-held={held ? "true" : "false"}
+      data-risk={risk}
+      data-blast-radius={blastRadius || undefined}
       data-producer-kind={item.producer_kind}
       data-uncovered={view.uncovered ? "true" : undefined}
       data-flagged={item.flag_reason ? "true" : "false"}
@@ -487,19 +497,28 @@ export default function Card({ item, onChanged, onDecide, onClosed }: Props) {
 
       {dimmed ? null : message ? (
         multi ? (
-          <div className="card-title">{item.payload}</div>
+          <div className="card-title">{renderCardText(item.payload)}</div>
         ) : (
-          <div className="question card-title">{item.payload}</div>
+          <div className="question card-title">{renderCardText(item.payload)}</div>
         )
       ) : (
-        <div className="payload card-title">{item.payload}</div>
+        <div className="payload card-title">{renderCardText(item.payload)}</div>
       )}
 
-      {item.context ? <div className="context">{item.context}</div> : null}
+      {item.context ? <div className="context">{renderCardText(item.context)}</div> : null}
+
+      {/* The consequence class's blast radius, stated on the card even when the
+          producer wrote none of its own (pkg.BlastRadiusOf). Empty for a routine
+          card, so the element is absent rather than blank. */}
+      {blastRadius ? (
+        <div className="blast-radius" data-blast-radius-text>
+          {renderCardText(blastRadius)}
+        </div>
+      ) : null}
 
       {dimmed ? (
         <div className="record">
-          <div className="record-question">{item.payload}</div>
+          <div className="record-question">{renderCardText(item.payload)}</div>
           <div className="record-answer">answered: {recordAnswer(item)}</div>
           {client ? <div className="record-client">client: {client}</div> : null}
         </div>

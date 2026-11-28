@@ -56,6 +56,7 @@ export interface PushOverrides {
   producer_kind?: string;
   liveness_ref?: string;
   payload?: string;
+  interrupt_class?: string;
   answer_mechanism?: string;
   options?: { label: string; recommended?: boolean; exclusive?: boolean; description?: string }[];
   answer_cardinality?: string;

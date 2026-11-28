@@ -3,10 +3,8 @@
 // request that left the page; the store's own state does not settle in this
 // harness (the answer-hold waits on delivery), so it is never the assertion.
 //
-// Two rows are known gaps in the React page and are written as failing tests
-// rather than weakened ones: the corner X on a permission card posts
-// answer{kind:hidden} instead of dispatching Deny, and the U handler ignores
-// neither a focused text field nor a held modifier.
+// The corner X on a permission card dispatches Deny; the U handler ignores a
+// keystroke typed into a focused text field.
 
 import {
   expect,
@@ -92,7 +90,7 @@ test("the U key cancels the hold like Undo", async ({ page, request, st }) => {
   expect(item.answered_at).toBeUndefined();
 });
 
-test("GAP: the U handler ignores a focused text field", async ({ page, request, st }) => {
+test("the U handler ignores a focused text field", async ({ page, request, st }) => {
   const itemID = await pushPermission(request, st, "e2e: U while typing");
   const messageID = await pushMessage(request, st, { payload: "e2e: U while typing anchor" });
   await openBoard(page, st, "?producer_kind=all");
@@ -100,9 +98,8 @@ test("GAP: the U handler ignores a focused text field", async ({ page, request, 
   await row(page, itemID).locator('[data-decision="allow"]').click();
   await expect(page.locator("[data-undo-bar]")).toHaveClass(/is-active/);
 
-  // parity.md: "U key: same as Undo; ignored while typing in a field". The
-  // React handler listens on window with no target check, so a `u` typed into
-  // a field cancels the hold.
+  // parity.md: "U key: same as Undo; ignored while typing in a field". A `u`
+  // typed into a field must not cancel the hold.
   await row(page, messageID).locator("[data-other]").focus();
   await page.keyboard.type("u");
 
@@ -160,7 +157,7 @@ test("pagehide delivers the held answer", async ({ page, request, st }) => {
     .toContain("allow");
 });
 
-test("GAP: the corner X on a permission card dispatches Deny", async ({ page, request, st }) => {
+test("the corner X on a permission card dispatches Deny", async ({ page, request, st }) => {
   const itemID = await pushPermission(request, st, "e2e: permission corner X");
   await openBoard(page, st, "?producer_kind=all");
 
@@ -169,6 +166,5 @@ test("GAP: the corner X on a permission card dispatches Deny", async ({ page, re
 
   const { body } = await pending;
   // parity.md: "Corner X on a permission card: dispatches the Deny control."
-  // The React card posts answer{kind:hidden} here instead.
   expect(body).toMatchObject({ decision: "deny" });
 });

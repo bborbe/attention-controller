@@ -1,6 +1,6 @@
-// parity.md § Card states — three rows with no React implementation yet. Each
-// is a failing test rather than a weakened one: the parity checklist names the
-// observable, and the React page does not emit it.
+// parity.md § Card states — a held card stays dimmed and visible under the
+// answerable filter, the info panel carries the item's timeline, and a card no
+// live manager can relay carries the uncovered marker.
 
 import {
   FLEET_SESSION_ID,
@@ -12,7 +12,7 @@ import {
   test,
 } from "./support";
 
-test("GAP: a held card renders dimmed with data-held and stays visible", async ({
+test("a held card renders dimmed with data-held and stays visible", async ({
   page,
   request,
   st,
@@ -24,24 +24,23 @@ test("GAP: a held card renders dimmed with data-held and stays visible", async (
   await expect(page.locator("[data-undo-bar]")).toHaveClass(/is-active/);
 
   // parity.md: "Held card: renders like a dimmed record but stays visible under
-  // the answerable filter (data-held)." The React board removes the held card
-  // from the visible list instead of marking it.
+  // the answerable filter (data-held)."
   await expect(row(page, itemID)).toHaveAttribute("data-held", "true");
   await expect(row(page, itemID)).toHaveClass(/dimmed/);
 });
 
-test("GAP: the info panel shows the item's timeline entries", async ({ page, request, st }) => {
+test("the info panel shows the item's timeline entries", async ({ page, request, st }) => {
   const itemID = await pushMessage(request, st, { payload: "e2e: timeline card" });
   await openBoard(page, st, "?producer_kind=all");
 
   await row(page, itemID).locator("[data-info-toggle]").click();
 
   // parity.md: "Timeline panel: the card's info panel shows the item's timeline
-  // entries." The React panel shows item/producer/state/risk only.
+  // entries."
   await expect(row(page, itemID).locator("[data-timeline]")).toBeVisible();
 });
 
-test("GAP: a card no live manager can relay carries the uncovered marker", async ({
+test("a card no live manager can relay carries the uncovered marker", async ({
   page,
   request,
   st,
@@ -58,6 +57,6 @@ test("GAP: a card no live manager can relay carries the uncovered marker", async
   await openBoard(page, st, "?producer_kind=all");
 
   // parity.md: "Producer-kind / uncovered markers: a card no live manager can
-  // relay is shown whatever its kind." The React card emits no marker.
+  // relay is shown whatever its kind."
   await expect(row(page, itemID)).toHaveAttribute("data-uncovered", "true");
 });

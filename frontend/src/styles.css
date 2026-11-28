@@ -12,6 +12,14 @@
   --ok: #38c172;
   --warn: #d08b5b;
   --err: #e55b5b;
+  /* The three risk tokens, in the operator's own vocabulary: gray for routine,
+     yellow for a decision, red for risk. They colour a card's left band and
+     nothing else — never its order. The class is set from the DERIVED level
+     (board.risk), which is what lets a card whose payload names a destructive
+     operation read red even though its producer declared routine. */
+  --risk-routine: #6b7280;
+  --risk-decision: #d0a35b;
+  --risk-risk: #d05b5b;
 }
 
 body {
@@ -59,6 +67,20 @@ body {
 
 .item.dimmed {
   opacity: 0.6;
+}
+
+/* The rendered risk level, as a left band. Per-card colour only: the board's
+   order stays the store's, so a red card is no higher than a green one. */
+.item.risk-routine {
+  border-left: 4px solid var(--risk-routine);
+}
+
+.item.risk-decision {
+  border-left: 4px solid var(--risk-decision);
+}
+
+.item.risk-risk {
+  border-left: 4px solid var(--risk-risk);
 }
 
 .card-head {
