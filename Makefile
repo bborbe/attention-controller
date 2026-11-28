@@ -19,7 +19,7 @@ SERVICE = bborbe/attention-controller
 # local rung does not need it — this repo has no deployed stage yet, so nothing
 # here depends on the flag.
 run:
-	@go run -mod=mod main.go \
+	@go run -mod=mod . \
 	-listen="localhost:${ATTENTION_CONTROLLER_PORT}" \
 	-datadir="data" \
 	-v=2
@@ -38,6 +38,26 @@ run:
 e2e:
 	go run $(PLAYWRIGHT_GO_MODULE)/cmd/playwright@$(PLAYWRIGHT_GO_VERSION) install chromium
 	go test -mod=mod -tags e2e -count=1 -timeout 15m ./e2e/
+
+# The React frontend (frontend/), built into frontend/dist and embedded with
+# go:embed. types first: tsc imports ./types, which tygo generates from pkg.
+FRONTEND_DIR ?= frontend
+
+.PHONY: frontend
+frontend:
+	cd $(FRONTEND_DIR) && npm ci && npm run build
+
+.PHONY: types
+types:
+	go run github.com/gzuidhof/tygo@$(TYGO_VERSION) generate
+
+.PHONY: test-frontend
+test-frontend:
+	cd $(FRONTEND_DIR) && npm ci && npm test
+
+.PHONY: check-frontend
+check-frontend:
+	cd $(FRONTEND_DIR) && npm ci && npm audit --audit-level=high
 
 # Builds the launchd binary and signs it with a stable local identity, then
 # restarts the service.
