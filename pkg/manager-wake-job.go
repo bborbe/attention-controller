@@ -1139,6 +1139,20 @@ func (p *wakePass) keeps(manager string, item Item) bool {
 // ledger row — would be woken for every scope-unresolved card a goal manager
 // already owns.
 func (p *wakePass) fleetOnly(sessionID, spawner, manager string) bool {
+	// The item's goal's own manager decides first. If it is live it keeps the card
+	// itself (the goal-owner branch in keeps()), so the Fleet must not double-keep
+	// it; if it is dead, no manager owns the card and the Fleet takes it. Without
+	// this, a live spawner that is FOREIGN to the item's goal blocked the Fleet via
+	// ownedOnSpawnEdge while the dead goal owner never kept it — the card reached no
+	// manager (the C2 no-live-manager class).
+	if p.job.goalScope != nil {
+		if owner, ok := p.job.goalScope.GoalOwner(sessionID); ok {
+			if p.isLive(owner) {
+				return false
+			}
+			return p.isFleetManager(manager)
+		}
+	}
 	if p.ownedOnSpawnEdge(sessionID, spawner, manager) {
 		return false
 	}

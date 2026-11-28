@@ -11,6 +11,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 ## Unreleased
 
 - fix: a manager-tier gate whose goal belongs to a manager other than its spawner is now kept by the goal's own manager. Before, the spawner dropped it as foreign and the goal's manager dropped it on the spawn-edge liveness branch, so the card reached no manager (the C2 foreign-drop class). The Fleet Manager still does not double-keep it (`ownedOnSpawnEdge`).
+- fix: a manager-tier gate whose goal's manager is not live now falls back to the Fleet Manager. Before, the live spawner was foreign to the goal (dropped it) and `ownedOnSpawnEdge` blocked the Fleet, so the card reached no manager (the C2 no-live-manager class). `GoalScope` gained `GoalOwner()`.
 
 ## v0.111.4
 

@@ -45,6 +45,14 @@ type GoalScope interface {
 	// second to the Fleet Manager would drop a genuine task's card for the very
 	// manager that owns it.
 	SessionResolved(session string) bool
+
+	// GoalOwner returns the manager session that serves the goal the session's
+	// work belongs to, or ok=false when it cannot be resolved (no task, a task
+	// with no goal, or a goal page with no stamp). It lets the Fleet Manager
+	// fallback fire when the goal's own manager is not live: without it a spawner
+	// that is foreign to the item's goal drops the card and the dead goal owner
+	// never keeps it, so the card reaches no manager (the C2 no-live-manager class).
+	GoalOwner(session string) (managerSession string, ok bool)
 }
 
 // NewGoalScope returns a GoalScope reading vaultDir's goal and task pages.
@@ -129,6 +137,38 @@ func (s *goalScope) SessionResolved(session string) bool {
 	}
 	_, ok := s.tasks.Lookup(session)
 	return ok
+}
+
+// GoalOwner implements GoalScope.
+func (s *goalScope) GoalOwner(session string) (string, bool) {
+	if s.tasks == nil || session == "" {
+		return "", false
+	}
+	task, ok := s.tasks.Lookup(session)
+	if !ok || len(task.Goals) == 0 {
+		return "", false
+	}
+	for _, goal := range task.Goals {
+		if mgr := s.managerOfGoal(goal); mgr != "" {
+			return mgr, true
+		}
+	}
+	return "", false
+}
+
+// managerOfGoal returns the session stamped on the goal's own page, or "".
+//
+// ⚠️ It is the reverse of `goalOf` (session → goal): here the goal NAME is known
+// and the manager that serves it is what the caller needs. An unreadable or
+// unstamped page yields "", which the caller reads as "no goal owner", not as a
+// dead one.
+func (s *goalScope) managerOfGoal(goal string) string {
+	content, err := os.ReadFile(filepath.Join(s.vaultDir, goalDirName, goal+".md"))
+	if err != nil {
+		glog.V(2).Infof("goal scope: read goal %s failed: %v", goal, err)
+		return ""
+	}
+	return sweepGateOwnerID(frontmatterValue(content, taskSessionKey))
 }
 
 // goalOf returns the title of the goal page stamped with sessionID, or "".
