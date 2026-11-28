@@ -19,7 +19,7 @@ SERVICE = bborbe/attention-controller
 # local rung does not need it — this repo has no deployed stage yet, so nothing
 # here depends on the flag.
 run:
-	@go run -mod=mod main.go \
+	@go run -mod=mod . \
 	-listen="localhost:${ATTENTION_CONTROLLER_PORT}" \
 	-datadir="data" \
 	-v=2
@@ -176,7 +176,7 @@ launchd-reload:
 # left alone (the collision the per-shell staging path exists to prevent); a
 # killed install's corpse is removed so it cannot be mistaken for a live one.
 .PHONY: install-bin
-install-bin:
+install-bin: frontend
 	@security find-identity -p codesigning | grep -qF '"$(CODESIGN_IDENTITY)"' \
 		|| { echo "codesign identity '$(CODESIGN_IDENTITY)' not in keychain; check: security find-identity -p codesigning" >&2; exit 1; }
 	@test -f "$(LAUNCHD_PLIST)" || { echo "plist not installed: $(LAUNCHD_PLIST)" >&2; exit 1; }

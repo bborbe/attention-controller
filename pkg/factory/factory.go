@@ -5,6 +5,7 @@
 package factory
 
 import (
+	"io/fs"
 	"net/http"
 
 	libsentry "github.com/bborbe/sentry"
@@ -217,6 +218,19 @@ func CreateAttentionPageHandler(
 		buildIdentity,
 		metrics,
 	)
+}
+
+// CreateAttentionReactPageHandler serves the embedded React frontend as the
+// board page. dist is the frontend/dist sub-tree, opened by main with fs.Sub so
+// this package stays pure plumbing and decides nothing about the embed root;
+// identity is injected into the served index.html footer so the deploy gate's
+// commit probe keeps working.
+func CreateAttentionReactPageHandler(
+	dist fs.FS,
+	identity buildidentity.Identity,
+	metrics pkg.Metrics,
+) http.Handler {
+	return handler.NewAttentionReactPageHandler(dist, identity, metrics)
 }
 
 // CreateAttentionStreamHandler creates the board's live channel: the
