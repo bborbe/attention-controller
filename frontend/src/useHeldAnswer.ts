@@ -136,11 +136,14 @@ export function useHeldAnswer(
       if (current) {
         answerKeepalive(current.itemID, { ...boardClient(), decision: current.decision });
         heldRef.current = null;
+        // The hold timer must not survive the page: a back/forward-cache restore
+        // would fire it and POST the answer a second time.
+        clearTimer();
       }
     };
     window.addEventListener("pagehide", onHide);
     return () => window.removeEventListener("pagehide", onHide);
-  }, []);
+  }, [clearTimer]);
 
   return { held, decide, undo, cancelIfAnswered };
 }

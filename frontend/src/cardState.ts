@@ -1,11 +1,13 @@
 // cardState.ts — per-card UI state that must outlive the card's DOM node.
 //
-// A row is re-mounted whenever its item changes (the stream echo of a rating, a
-// re-push, an answer from another arm), so an in-progress answer, a typed flag
-// reason, a shown failure note, the info panel and the speaking toggle live here,
-// keyed by item id, rather than in the component. A re-push that changes the
-// question resets the picks: a pick carried onto a reworded question would answer
-// something the operator never read.
+// A row is keyed on its item id, so an echo (a rating, a flag, a pane
+// re-resolve) re-renders the same node and a field being typed in keeps focus.
+// The in-progress answer, a typed flag reason, a shown failure note, the info
+// panel and the speaking toggle still live here, keyed by item id, so they
+// survive a card leaving and re-entering the visible set under a filter. A
+// re-push that changes the question resets the picks through syncSignature: a
+// pick carried onto a reworded question would answer something the operator
+// never read.
 import { useSyncExternalStore } from "react";
 
 export interface Note {
@@ -70,6 +72,15 @@ export function syncSignature(itemID: string, signature: string): void {
     otherText: {},
   });
   emit();
+}
+
+// pruneCardStates drops the state of every card not in keep — called after each
+// board read with the board's ids (plus a held answer's), so the map does not
+// grow with every item the board ever showed.
+export function pruneCardStates(keep: Set<string>): void {
+  for (const id of states.keys()) {
+    if (!keep.has(id)) states.delete(id);
+  }
 }
 
 export function getCardState(itemID: string, signature: string): CardState {

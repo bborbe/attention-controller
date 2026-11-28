@@ -18,7 +18,9 @@ SERVICE = bborbe/attention-controller
 # the server started. Sentry is error reporting for a deployed stage, and the
 # local rung does not need it — this repo has no deployed stage yet, so nothing
 # here depends on the flag.
-run:
+# Depends on frontend so `go run .` embeds a real build rather than whatever
+# frontend/dist last held (or the empty placeholder, which serves a 503).
+run: frontend
 	@go run -mod=mod . \
 	-listen="localhost:${ATTENTION_CONTROLLER_PORT}" \
 	-datadir="data" \
@@ -56,6 +58,11 @@ frontend:
 .PHONY: types
 types:
 	go run github.com/gzuidhof/tygo@$(TYGO_VERSION) generate
+
+# Fails when frontend/src/types.ts is stale against the Go types tygo reads.
+.PHONY: check-types
+check-types: types
+	git diff --exit-code $(FRONTEND_DIR)/src/types.ts
 
 .PHONY: test-frontend
 test-frontend:
