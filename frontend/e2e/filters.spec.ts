@@ -5,7 +5,9 @@
 // [data-kind-hidden] element, so that row is a failing test.
 
 import {
+  FLEET_SESSION_ID,
   answerViaAPI,
+  boardEntry,
   captureItemRequests,
   expect,
   flagViaAPI,
@@ -89,6 +91,10 @@ test("the producer-kind link switches the view and the withheld cards appear", a
     payload: "e2e: manager kind",
     producer_kind: "manager",
   });
+  // The session card is a COVERED one: the harness's live Fleet Manager relays
+  // it, so the managers-only view withholds it. An uncovered session card is
+  // shown on that view instead — see the spec below.
+  expect((await boardEntry(request, st, sessionItem)).board.uncovered).toBe(false);
 
   // No producer_kind param: the board defaults to manager-kind only.
   await openBoard(page, st, "");
@@ -106,6 +112,32 @@ test("the producer-kind link switches the view and the withheld cards appear", a
   expect(new URL(page.url()).searchParams.get("producer_kind")).toBe("all");
   await expect(page.locator("[data-board-kind]")).toHaveText("Show manager cards");
   await expect(page.locator("[data-board-kind]")).toHaveAttribute("data-all-kinds", "true");
+});
+
+test("an uncovered session card is shown on the managers-only view", async ({
+  page,
+  request,
+  st,
+}) => {
+  // The server board's rule (filterByProducerKind): a card no live manager can
+  // relay is shown whatever its kind. The Fleet Manager's own card has no
+  // relaying parent, so it is uncovered.
+  const uncoveredItem = await pushMessage(request, st, {
+    payload: "e2e: uncovered session card",
+    producer_kind: "session",
+    liveness_ref: `session:${FLEET_SESSION_ID}`,
+  });
+  const coveredItem = await pushMessage(request, st, {
+    payload: "e2e: covered session card",
+    producer_kind: "session",
+  });
+  expect((await boardEntry(request, st, uncoveredItem)).board.uncovered).toBe(true);
+  expect((await boardEntry(request, st, coveredItem)).board.uncovered).toBe(false);
+
+  await openBoard(page, st, "");
+  await expect(row(page, uncoveredItem)).toBeVisible();
+  await expect(row(page, uncoveredItem)).toHaveAttribute("data-uncovered", "true");
+  await expect(row(page, coveredItem)).toHaveCount(0);
 });
 
 test("GAP: the kind view reports how many cards it is withholding", async ({

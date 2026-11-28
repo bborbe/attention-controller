@@ -410,7 +410,9 @@ export default function Card({ item, onChanged, onDecide, onClosed }: Props) {
       >
         ✕
       </button>
-      {!dimmed ? (
+      {/* No read-aloud control when the server has no tts server configured:
+          its endpoint is unrouted, so the control could only fail. */}
+      {!dimmed && view.speak_enabled ? (
         <button
           type="button"
           className="speak"

@@ -3,6 +3,7 @@
 // observable, and the React page does not emit it.
 
 import {
+  FLEET_SESSION_ID,
   expect,
   openBoard,
   pushMessage,
@@ -46,12 +47,13 @@ test("GAP: a card no live manager can relay carries the uncovered marker", async
   st,
 }) => {
   // Uncovered is resolved only for session-kind cards (pkg/provenance.go
-  // uncoveredItems); a fixture session with no task and no live manager is
-  // uncovered in this hermetic harness. The board JSON carries no provenance
-  // yet, so the React page cannot know it.
+  // uncoveredItems). The harness registers a live Fleet Manager, which covers
+  // the fixture sessions; the Fleet Manager's OWN card has no relaying parent,
+  // so it is the uncovered session card (pkg/worker-coverage.go).
   const itemID = await pushMessage(request, st, {
     payload: "e2e: uncovered card",
     producer_kind: "session",
+    liveness_ref: `session:${FLEET_SESSION_ID}`,
   });
   await openBoard(page, st, "?producer_kind=all");
 

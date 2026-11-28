@@ -66,7 +66,7 @@ export default function App() {
           // answered/flag filter parks it, but only for the kind view's rows —
           // a card the kind view withholds was never painted.
           const kind = kindRef.current;
-          const painted = kind === KIND_ALL || item.producer_kind === kind;
+          const painted = kind === KIND_ALL || item.producer_kind === kind || !!item.board?.uncovered;
           if (painted && !item.displayed_at && !seenRef.current.has(item.item_id)) {
             seenRef.current.add(item.item_id);
             seen(item.item_id);
@@ -121,7 +121,12 @@ export default function App() {
   if (!items) return <p className="subtitle">Loading…</p>;
 
   const kindAll = filters.kind === KIND_ALL;
-  const kindMatches = (item: BoardItem) => kindAll || item.producer_kind === filters.kind;
+  // A card no live manager can relay is shown whatever its kind, the server
+  // board's rule (pkg/handler/attention-page-producer-kind.go
+  // filterByProducerKind): the managers-only view rests on a manager relaying
+  // the worker's question, and an uncovered card has no manager to relay it.
+  const kindMatches = (item: BoardItem) =>
+    kindAll || item.producer_kind === filters.kind || !!item.board?.uncovered;
 
   // The rows the kind filter withholds that the operator would otherwise see:
   // under the answered filter an answered record is already parked by that

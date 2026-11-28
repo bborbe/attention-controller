@@ -317,12 +317,30 @@ func startBinary(port int) error {
 		if err == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
-				return nil
+				return waitReady(deadline)
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 	return fmt.Errorf("binary did not become healthy at %s", baseURL)
+}
+
+// waitReady polls /readiness until the binary's init steps have finished.
+// /healthz answers 200 while the store is still opening, and every API route
+// answers 503 {"status":"starting"} until then, so seeding the ledger straight
+// after /healthz raced that window.
+func waitReady(deadline time.Time) error {
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(baseURL + "readiness")
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return nil
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return fmt.Errorf("binary did not become ready at %s", baseURL)
 }
 
 var _ = BeforeSuite(func() {
@@ -950,6 +968,10 @@ var _ = Describe("the attention board", func() {
 			// Read before the push: the store carries cards from earlier specs, so
 			// the count has a non-zero starting point and an absolute assertion
 			// would encode the suite's ordering.
+			// Wait for the board read first: the React page renders the list (or
+			// the empty statement) and the count only once it has resolved.
+			Eventually(func() (int, error) { return page.Locator("ul.items, p.empty").Count() }).
+				Should(BeNumerically(">=", 1))
 			hiddenBefore := kindHiddenCount(page)
 
 			agentID := pushOfKind(
@@ -1305,7 +1327,8 @@ var _ = Describe("the attention board", func() {
 		rowSpeak := page.Locator(
 			fmt.Sprintf("%s %s", fmt.Sprintf(rowSelectorFmt, itemID), speakSelector),
 		)
-		Expect(rowSpeak.Count()).To(Equal(1))
+		// Eventually: the React page renders its rows after the board read, not at load.
+		Eventually(rowSpeak.Count).Should(Equal(1))
 		Expect(rowSpeak.Click()).To(Succeed())
 
 		Eventually(tts.utterances).Should(ContainElement("e2e: read this aloud"))

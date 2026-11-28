@@ -20,6 +20,9 @@ export const STATE_PATH = path.join(
 // their liveness_ref, so the store resolves them live and renders them.
 export const SESSION_ID = "11111111-1111-4111-8111-111111111111";
 export const TAB_SESSION_ID = "22222222-2222-4222-8222-222222222222";
+// The live "Fleet Manager" session. Its presence covers the two fixture
+// sessions above; a card it raises itself is the one uncovered session card.
+export const FLEET_SESSION_ID = "33333333-3333-4333-8333-333333333333";
 
 export interface State {
   baseURL: string;
@@ -51,6 +54,7 @@ function dedupKey(): string {
 
 export interface PushOverrides {
   producer_kind?: string;
+  liveness_ref?: string;
   payload?: string;
   answer_mechanism?: string;
   options?: { label: string; recommended?: boolean; exclusive?: boolean; description?: string }[];
@@ -157,6 +161,24 @@ export async function getItem(
   const res = await request.get(`${st.baseURL}/api/1.0/attention/${itemID}`);
   expect(res.status()).toBe(200);
   return (await res.json()) as StoredItem;
+}
+
+// boardEntry reads one item's entry off the board JSON, including the `board`
+// render data the server derives for it (jump target, uncovered marker, …).
+export async function boardEntry(
+  request: APIRequestContext,
+  st: State,
+  itemID: string,
+): Promise<{ item_id: string; board: { uncovered: boolean; jump_url: string; no_jump: string } }> {
+  const res = await request.get(`${st.baseURL}/api/1.0/attention/board`);
+  expect(res.status()).toBe(200);
+  const entries = (await res.json()) as {
+    item_id: string;
+    board: { uncovered: boolean; jump_url: string; no_jump: string };
+  }[];
+  const entry = entries.find((e) => e.item_id === itemID);
+  expect(entry, `item ${itemID} is not on the board read`).toBeTruthy();
+  return entry!;
 }
 
 // --- the board page --------------------------------------------------------

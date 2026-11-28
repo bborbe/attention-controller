@@ -13,11 +13,12 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
+import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 
-import { SESSION_ID, STATE_PATH, TAB_SESSION_ID } from "./support";
+import { FLEET_SESSION_ID, SESSION_ID, STATE_PATH, TAB_SESSION_ID } from "./support";
 
 function frontendDir(): string {
   const cwd = process.cwd();
@@ -56,13 +57,67 @@ async function waitHealthy(baseURL: string, deadlineMs = 40000): Promise<void> {
   throw new Error(`binary did not become healthy at ${baseURL}: ${lastError}`);
 }
 
+// waitReady polls /readiness until the binary has finished its init steps.
+// /healthz answers 200 while the store is still opening, and every API route
+// answers 503 {"status":"starting"} until then — seeding the ledger right after
+// /healthz raced that window.
+async function waitReady(baseURL: string, deadlineMs = 40000): Promise<void> {
+  const deadline = Date.now() + deadlineMs;
+  let lastError = "no attempt";
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(`${baseURL}/readiness`);
+      if (res.ok) return;
+      lastError = `status ${res.status}`;
+    } catch (err) {
+      lastError = String(err);
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  throw new Error(`binary did not become ready at ${baseURL}: ${lastError}`);
+}
+
+// startTTSStub stands in for the tts server, mirroring the Go suite's ttsStub
+// (e2e/board_test.go): the board proxies its read-aloud control to POST /say
+// and the stub answers with a message id. It lives in the runner process for
+// the whole run; unref() keeps it from holding the process open.
+function startTTSStub(): Promise<string> {
+  const server = http.createServer((req, res) => {
+    if (req.url !== "/say") {
+      res.statusCode = 404;
+      res.end();
+      return;
+    }
+    req.resume();
+    req.on("end", () => {
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ message_id: "stub-message-1" }));
+    });
+  });
+  return new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.unref();
+      const addr = server.address();
+      const port = typeof addr === "object" && addr ? addr.port : 0;
+      resolve(`http://127.0.0.1:${port}`);
+    });
+  });
+}
+
 function writeSessionRegistry(dir: string): void {
   fs.mkdirSync(dir, { recursive: true });
   // `nameSource: user` is load-bearing: only that source renders a session
   // name, and the name is what a navigation line would show.
+  //
+  // The live "Fleet Manager" entry is load-bearing too: a live Fleet Manager
+  // covers every session with no live ancestor (pkg/worker-coverage.go), so the
+  // e2e and e2e-tab cards are COVERED — hidden on the managers-only view — while
+  // the Fleet Manager's own card has no relaying parent and is UNCOVERED.
   for (const [file, sessionId, name] of [
     ["e2e.json", SESSION_ID, "e2e"],
     ["e2e-tab.json", TAB_SESSION_ID, "e2e-tab"],
+    ["e2e-fleet.json", FLEET_SESSION_ID, "Fleet Manager"],
   ] as const) {
     fs.writeFileSync(
       path.join(dir, file),
@@ -113,6 +168,7 @@ export default async function globalSetup(): Promise<void> {
   const sessionsDir = path.join(root, "sessions");
   writeSessionRegistry(sessionsDir);
 
+  const ttsURL = await startTTSStub();
   const port = await freePort();
   const baseURL = `http://127.0.0.1:${port}`;
   const logPath = path.join(root, "server.log");
@@ -136,9 +192,10 @@ export default async function globalSetup(): Promise<void> {
       // Empty leaves the routine-gate settle arm unregistered: it would answer
       // gates in a wrapper process this run does not own.
       "-attention-wrapper-url", "",
-      // Empty disables read-aloud server-side; the speak specs intercept the
-      // request in the browser.
-      "-tts-url", "",
+      // The stub tts server, so the board renders its read-aloud control as
+      // it does in production; the speak specs still intercept the request
+      // in the browser to assert its shape.
+      "-tts-url", ttsURL,
       "-v", "0",
     ],
     { cwd: repoRoot, detached: true, stdio: ["ignore", log, log] },
@@ -154,6 +211,7 @@ export default async function globalSetup(): Promise<void> {
 
   try {
     await waitHealthy(baseURL);
+    await waitReady(baseURL);
     await seedLedger(baseURL, SESSION_ID, "headless");
     await seedLedger(baseURL, TAB_SESSION_ID, "interactive");
   } catch (err) {

@@ -2,16 +2,17 @@
 // The info toggle is client-only and is asserted to issue NO item-scoped
 // request; every other control is asserted by METHOD + PATH + body.
 //
-// Jump and seen are known gaps and are marked fixme with their reason: the
-// board JSON carries no jump_url and the React card renders no jump control,
-// and nothing in the page calls the seen endpoint.
+// Jump: the board JSON carries each card's jump target (board.jump_url /
+// board.no_jump) and the card renders the corner control from it.
 
 import {
+  boardEntry,
   captureItemRequests,
   expect,
   flagViaAPI,
   openBoard,
   pushMessage,
+  pushPermission,
   requestsFor,
   row,
   test,
@@ -173,10 +174,70 @@ test("the info toggle is client-only: it shows the panel and posts no request", 
   expect(page.url()).toBe(urlBefore);
 });
 
-test("jump control", async () => {
-  // The board JSON carries no jump_url and Card.tsx renders no jump control,
-  // so the parity row has no observable in the React page yet.
-  test.fixme(true, "no jump control: the board JSON carries no jump_url and Card renders none");
+test("jump control: disabled with its reason when no pane validates", async ({
+  page,
+  request,
+  st,
+}) => {
+  // No fixture session owns a WezTerm pane, so no pane validates in this
+  // hermetic harness: the server reports the reason and the corner renders the
+  // control present but disabled, carrying no data-jump.
+  const itemID = await pushPermission(request, st, "e2e: jump without a pane");
+  const entry = await boardEntry(request, st, itemID);
+  expect(entry.board.jump_url).toBe("");
+  expect(entry.board.no_jump).toBe(
+    "No pane was recorded for this item, so there is no session to jump to.",
+  );
+
+  await openBoard(page, st, "?producer_kind=all");
+  const card = row(page, itemID);
+  const corner = card.locator("button.jump-corner");
+  await expect(corner).toHaveCount(1);
+  await expect(corner).toBeDisabled();
+  await expect(card.locator("[data-jump]")).toHaveCount(0);
+  await expect(card.locator(".jump-reason .no-jump")).toHaveText(entry.board.no_jump);
+});
+
+test("jump control: a validated pane renders data-jump and the click GETs /jump/{id}", async ({
+  page,
+  request,
+  st,
+}) => {
+  // A pane cannot validate in this harness (see the spec above), so the
+  // validated arm is established at the board read: the entry is given the
+  // jump_url the server derives for a validated pane, `/jump/{itemID}`.
+  const itemID = await pushMessage(request, st, { payload: "e2e: jump with a pane" });
+  const jumpPath = `/jump/${itemID}`;
+  await page.route("**/api/1.0/attention/board", async (route) => {
+    const response = await route.fetch();
+    const entries = (await response.json()) as { item_id: string; board: Record<string, unknown> }[];
+    for (const entry of entries) {
+      if (entry.item_id === itemID) {
+        entry.board = { ...entry.board, jump_url: jumpPath, no_jump: "" };
+      }
+    }
+    await route.fulfill({ response, json: entries });
+  });
+  let jumps = 0;
+  await page.route(`**${jumpPath}`, (route) => {
+    jumps += 1;
+    return route.fulfill({ status: 204, body: "" });
+  });
+
+  await openBoard(page, st, "?producer_kind=all");
+  const card = row(page, itemID);
+  const control = card.locator("button.jump-corner[data-jump]");
+  await expect(control).toHaveAttribute("data-jump", jumpPath);
+  await expect(control).toBeEnabled();
+
+  const jumped = page.waitForRequest(
+    (req) => req.method() === "GET" && new URL(req.url()).pathname === jumpPath,
+  );
+  await control.click();
+  await jumped;
+  expect(jumps).toBe(1);
+  // The board stays where it is: the jump is performed server-side.
+  expect(new URL(page.url()).pathname).toBe("/");
 });
 
 test("seen endpoint", async ({ page, request, st }) => {
