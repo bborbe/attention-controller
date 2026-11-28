@@ -11,9 +11,20 @@ import (
 
 	"github.com/bborbe/errors"
 	libhttp "github.com/bborbe/http"
+	"github.com/golang/glog"
 
 	"github.com/bborbe/attention-controller/pkg"
 )
+
+// pendingWakeItemIDs renders a drained set for the log line, in order, so two
+// lines for the same batch compare directly.
+func pendingWakeItemIDs(items pkg.Items) []string {
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item.ItemID.String())
+	}
+	return ids
+}
 
 // NewPendingWakesHandler creates an HTTP handler that drains the wakes owed to
 // one manager session and returns them.
@@ -47,6 +58,17 @@ func NewPendingWakesHandler(store pkg.AttentionStore) http.Handler {
 						errors.Wrap(ctx, err, "drain pending wakes failed"),
 						libhttp.ErrorCodeInternal,
 						http.StatusInternalServerError,
+					)
+				}
+				// ⚠️ `source=store` is the field that makes a drain attributable
+				// to THIS path. The pre-existing `wake_drained` line is emitted by
+				// the pass-boundary retry and proves nothing on its own — a build
+				// without the store record produces the same pair whenever a busy
+				// composer frees inside the batch window.
+				if len(items) > 0 {
+					glog.V(2).Infof(
+						"job=manager-wake action=wake_drained source=store manager=%s items=%v",
+						session, pendingWakeItemIDs(items),
 					)
 				}
 				resp.Header().Set("Content-Type", "application/json")
