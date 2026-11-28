@@ -1,7 +1,8 @@
 // parity.md § Permission cards — the Allow/Deny pair is held client-side for
 // HOLD_MS (4.5 s) and then posted as answer{decision}. Each test asserts the
-// request that left the page; the store's own state does not settle in this
-// harness (the answer-hold waits on delivery), so it is never the assertion.
+// request that left the page; the item never closes in this harness (the
+// store-side hold waits on the producer reading the decision), so a closed
+// item is never the assertion.
 //
 // The corner X on a permission card dispatches Deny; the U handler ignores a
 // keystroke typed into a focused text field.
@@ -26,17 +27,22 @@ test("Allow is held, then posts answer{decision:allow}", async ({ page, request,
 
   await card.locator('[data-decision="allow"]').click();
 
-  // Immediately after the click the bar is active and the card is still there.
+  // While the answer is held client-side the bar is active and the card is
+  // hidden from the list (App filters the held item out of `visible`).
   await expect(page.locator("[data-undo-bar]")).toHaveClass(/is-active/);
-  await expect(row(page, itemID)).toBeVisible();
+  await expect(row(page, itemID)).toHaveCount(0);
 
   const { body } = await pending;
   expect(body).toMatchObject({ decision: "allow" });
   // The hold is load-bearing: the answer cannot have left immediately.
   expect(Date.now() - clickedAt).toBeGreaterThanOrEqual(3000);
 
-  // Once delivered the bar goes quiet again.
+  // Once delivered the bar goes quiet again, and the item — answered but still
+  // open in the store until its producer reads the decision — comes back as a
+  // dimmed store-held record, not as an answerable card.
   await expect(page.locator("[data-undo-bar]")).not.toHaveClass(/is-active/);
+  await expect(row(page, itemID)).toHaveAttribute("data-held", "true");
+  await expect(row(page, itemID).locator('[data-decision="allow"]')).toHaveCount(0);
 });
 
 test("Deny posts answer{decision:deny}", async ({ page, request, st }) => {

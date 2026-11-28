@@ -124,9 +124,14 @@ test("speak starts reading and cancel stops it", async ({ page, request, st }) =
 
   // The server's read-aloud route is disabled in this harness; the control's
   // contract is the request it posts, so both routes are fulfilled in the
-  // browser.
+  // browser. /speak answers the tts message id, which Stop must cancel by: the
+  // server's cancel handler refuses an empty message_id with 400.
   await page.route("**/api/1.0/attention/*/speak", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: "{}" }),
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: '{"message_id":"e2e-tts-msg"}',
+    }),
   );
   await page.route("**/api/1.0/attention/*/cancel", (route) =>
     route.fulfill({ status: 200, contentType: "application/json", body: "{}" }),
@@ -145,7 +150,7 @@ test("speak starts reading and cancel stops it", async ({ page, request, st }) =
 
   const cancelReq = waitForRequestTo(page, itemID, "cancel");
   await speak.click();
-  expect((await cancelReq).body).toEqual({ message_id: "" });
+  expect((await cancelReq).body).toEqual({ message_id: "e2e-tts-msg" });
   await expect(speak).toHaveAttribute("aria-pressed", "false");
   await expect(speak).toHaveAttribute("aria-label", "Read aloud");
 });

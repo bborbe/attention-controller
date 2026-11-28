@@ -23,6 +23,8 @@ export interface CardState {
   flagReason: string;
   note: Note | null;
   speaking: boolean;
+  // The tts message id /speak returned; Stop cancels by it. Empty when idle.
+  speakMessageID: string;
   infoOpen: boolean;
   // The rating shown before the store echoes it; null when the stored one shows.
   optimisticRating: string | null;
@@ -39,6 +41,7 @@ function fresh(signature: string): CardState {
     flagReason: "",
     note: null,
     speaking: false,
+    speakMessageID: "",
     infoOpen: false,
     optimisticRating: null,
     optimisticBase: null,
