@@ -2,3 +2,10 @@
 prompts/
 specs/
 mocks/
+
+# npm's resolved dependency tree — machine-written, reproducible from
+# package.json, and it would otherwise dominate every frontend diff.
+frontend/package-lock.json
+
+# tygo-generated from pkg (make types) — generated, never hand-edited.
+frontend/src/types.ts
