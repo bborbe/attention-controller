@@ -307,14 +307,18 @@ export default function Card({ item, onChanged, onDecide, onClosed }: Props) {
   }
 
   async function toggleSpeak() {
-    if (state.speaking) {
-      await cancel(itemID, "");
-      set({ speaking: false });
-      return;
+    try {
+      if (state.speaking) {
+        await cancel(itemID, "");
+        set({ speaking: false });
+        return;
+      }
+      const res = await speak(itemID);
+      if (res.ok) set({ speaking: true, note: null });
+      else setNote({ text: `Read aloud failed - HTTP ${res.status}`, error: true });
+    } catch (err) {
+      setNote({ text: `Read aloud failed - ${String(err)}`, error: true });
     }
-    const res = await speak(itemID);
-    if (res.ok) set({ speaking: true, note: null });
-    else setNote({ text: `Read aloud failed - HTTP ${res.status}`, error: true });
   }
 
   function onOtherKeyDown(event: KeyboardEvent<HTMLInputElement>) {
@@ -409,7 +413,8 @@ export default function Card({ item, onChanged, onDecide, onClosed }: Props) {
       data-blast-radius={blastRadius || undefined}
       data-producer-kind={item.producer_kind}
       data-uncovered={view.uncovered ? "true" : undefined}
-      data-flagged={item.flag_reason ? "true" : "false"}
+      // The same field the board's Hide-flagged filter reads (App.tsx).
+      data-flagged={item.flagged_at ? "true" : "false"}
     >
       <button
         type="button"
