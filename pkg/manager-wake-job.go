@@ -274,6 +274,10 @@ type managerWakeBatch struct {
 	// a busy pane costs one probe per window rather than one per store-change
 	// signal. Zero means no attempt has been deferred.
 	deferredAt libtime.DateTime
+	// queued is set when a delivery attempt was deferred and logged as a
+	// wake_queued; the successful delivery then logs wake_drained with the same
+	// item ids, so the retention is observable rather than asserted.
+	queued bool
 	// items are the batch's items, in the order they entered.
 	items []Item
 }
@@ -703,10 +707,25 @@ func (p *wakePass) flushPending(
 			return delivered
 		}
 		if !typed {
-			// Deferred: nothing was typed and nothing failed. Record it so the next
-			// probe waits out the window instead of firing on the next signal.
+			// Deferred: nothing was typed and nothing failed. Log the queued state so
+			// the retention is observable (a later wake_drained names the same ids),
+			// then record it so the next probe waits out the window instead of firing
+			// on the next signal.
+			if !batch.queued {
+				batch.queued = true
+				glog.V(2).Infof(
+					"job=manager-wake action=wake_queued manager=%s items=%v",
+					manager, batchItemIDs(batch),
+				)
+			}
 			batch.deferredAt = p.now
 			continue
+		}
+		if batch.queued {
+			glog.V(2).Infof(
+				"job=manager-wake action=wake_drained manager=%s items=%v",
+				manager, batchItemIDs(batch),
+			)
 		}
 		for _, item := range batch.items {
 			delivered[item.ItemID] = struct{}{}
@@ -1042,20 +1061,9 @@ func (p *wakePass) keeps(manager string, item Item) bool {
 	// another goal is not this manager's. ⚠️ It sits ABOVE the own-worker branch
 	// deliberately — a positively-foreign pane is foreign even when this manager
 	// spawned it, which is the case `TestForeignGoalNeverWakes` pins.
-	var (
-		goal    string
-		foreign bool
-		scoped  bool
-	)
-	if p.job.goalScope != nil {
-		goal, foreign, scoped = p.job.goalScope.Foreign(manager, sessionID)
-		if scoped && foreign {
-			glog.V(3).Infof(
-				"job=manager-wake action=foreign_goal item=%s manager=%s goal=%q",
-				item.ItemID, manager, goal,
-			)
-			return false
-		}
+	keep, decided, scoped := p.goalScopeDecision(manager, item, sessionID)
+	if decided {
+		return keep
 	}
 	spawner := p.owners[sessionID].SpawnerSessionID
 	if spawner == manager && sameVaultDir(p.owners[manager].Cwd, p.owners[sessionID].Cwd) {
@@ -1121,6 +1129,33 @@ func (p *wakePass) keeps(manager string, item Item) bool {
 	return !p.isLive(spawner)
 }
 
+// goalScopeDecision settles a card for this manager from the vault goal scope: a
+// foreign goal drops it, and the manager's OWN goal keeps it. decided=false when
+// the scope cannot answer, so keeps() falls through to the spawn-edge branches.
+//
+// ⚠️ The goal-owner keep lives here, not in the spawn-edge tail, because the
+// tail's `return !isLive(spawner)` drops the card when a DIFFERENT live manager
+// spawned the producer — which is exactly the C2 foreign-drop class. The Fleet
+// Manager does not double-keep it (`ownedOnSpawnEdge` blocks the fleet for a live
+// same-vault spawner).
+func (p *wakePass) goalScopeDecision(manager string, item Item, sessionID string) (keep bool, decided bool, scoped bool) {
+	if p.job.goalScope == nil {
+		return false, false, false
+	}
+	goal, foreign, isScoped := p.job.goalScope.Foreign(manager, sessionID)
+	if !isScoped {
+		return false, false, false
+	}
+	if foreign {
+		glog.V(3).Infof(
+			"job=manager-wake action=foreign_goal item=%s manager=%s goal=%q",
+			item.ItemID, manager, goal,
+		)
+		return false, true, true
+	}
+	return true, true, true
+}
+
 // fleetOnly reports whether a card with no resolvable goal owner is kept for
 // the Fleet Manager alone.
 //
@@ -1130,6 +1165,20 @@ func (p *wakePass) keeps(manager string, item Item) bool {
 // ledger row — would be woken for every scope-unresolved card a goal manager
 // already owns.
 func (p *wakePass) fleetOnly(sessionID, spawner, manager string) bool {
+	// The item's goal's own manager decides first. If it is live it keeps the card
+	// itself (the goal-owner branch in keeps()), so the Fleet must not double-keep
+	// it; if it is dead, no manager owns the card and the Fleet takes it. Without
+	// this, a live spawner that is FOREIGN to the item's goal blocked the Fleet via
+	// ownedOnSpawnEdge while the dead goal owner never kept it — the card reached no
+	// manager (the C2 no-live-manager class).
+	if p.job.goalScope != nil {
+		if owner, ok := p.job.goalScope.GoalOwner(sessionID); ok {
+			if p.isLive(owner) {
+				return false
+			}
+			return p.isFleetManager(manager)
+		}
+	}
 	if p.ownedOnSpawnEdge(sessionID, spawner, manager) {
 		return false
 	}
@@ -1245,6 +1294,16 @@ func batchItems(batch *managerWakeBatch, kept map[ItemID]Item) []Item {
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].ItemID < items[j].ItemID })
 	return items
+}
+
+// batchItemIDs returns the batch's item ids in order, for the wake_queued and
+// wake_drained log lines that make a busy-composer deferral observable.
+func batchItemIDs(batch *managerWakeBatch) []ItemID {
+	ids := make([]ItemID, 0, len(batch.items))
+	for _, item := range batch.items {
+		ids = append(ids, item.ItemID)
+	}
+	return ids
 }
 
 // recordBatch appends one emission naming every item the batch carried,

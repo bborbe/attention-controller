@@ -526,6 +526,93 @@ var _ = Describe("manager wake job", func() {
 	})
 
 	It(
+		"TestGoalOwnerWakesForForeignSpawnedWorker — the goal's manager is woken for a worker another manager spawned",
+		func() {
+			live["mgr-goal"] = true
+			live["mgr-spawn"] = true
+			ledger.ListReturns(pkg.SessionLedgerEntries{
+				ledgerRow("mgr-goal", "manager", ""),
+				ledgerRow("mgr-spawn", "manager", ""),
+				ledgerRow("w-1", "agent", "mgr-spawn"),
+			}, nil)
+			store.ReadReturns(pkg.Items{wakeItem("item-1", "w-1")}, nil)
+
+			// mgr-spawn spawned w-1 but the card's goal belongs to mgr-goal, so
+			// mgr-spawn sees it as foreign. Before the fix the spawner dropped it
+			// (foreign) and the goal's own manager dropped it on the spawn-edge
+			// liveness branch — kept by nobody. After the fix the goal's manager keeps
+			// it, the spawner does not, and no fleet double-keep (ownedOnSpawnEdge).
+			flushBatch(newJob(pkg.WithManagerWakeGoalScope(&stubGoalScope{
+				perManager: map[string]stubGoalVerdict{
+					"mgr-goal":  {foreign: false, ok: true},
+					"mgr-spawn": {goal: "Other Goal", foreign: true, ok: true},
+				},
+			})))
+			Expect(carrier.recorded()).To(HaveLen(1))
+			Expect(carrier.recorded()[0].session).To(Equal("mgr-goal"))
+		},
+	)
+
+	It(
+		"TestDeadGoalOwnerFallsBackToFleetManager — a card whose goal manager is dead reaches the Fleet Manager",
+		func() {
+			live["mgr-spawn"] = true
+			live["fleet-1"] = true
+			// mgr-dead is NOT live.
+			ledger.ListReturns(pkg.SessionLedgerEntries{
+				ledgerRow("mgr-spawn", "manager", ""),
+				ledgerRow("w-1", "agent", "mgr-spawn"),
+			}, nil)
+			store.ReadReturns(pkg.Items{wakeItem("item-1", "w-1")}, nil)
+
+			fleet := &stubFleetRegistry{registrations: []pkg.FleetManagerRegistration{
+				{SessionID: "fleet-1", ResolvedAt: "2026-11-21T10:00:00+01:00"},
+			}}
+			// The card's goal belongs to mgr-dead (not live) and mgr-spawn sees it as
+			// foreign, so the spawner drops it and no goal manager keeps it. Before the
+			// fix ownedOnSpawnEdge blocked the Fleet (the spawner is a live manager) and
+			// the card reached nobody; after the fix the Fleet keeps it.
+			flushBatch(newJob(
+				pkg.WithManagerWakeGoalScope(&stubGoalScope{
+					perManager: map[string]stubGoalVerdict{
+						"mgr-spawn": {goal: "Dead Goal", foreign: true, ok: true},
+					},
+					goalOwner: map[string]string{"w-1": "mgr-dead"},
+				}),
+				pkg.WithManagerWakeFleetRegistry(fleet),
+			))
+			Expect(carrier.recorded()).To(HaveLen(1))
+			Expect(carrier.recorded()[0].session).To(Equal("fleet-1"))
+		},
+	)
+
+	It(
+		"TestBusyComposerRetainsTheWakeUntilFree — a busy-composer deferral is not lost and delivers once the composer frees",
+		func() {
+			oneManager()
+			store.ReadReturns(pkg.Items{wakeItem("item-1", "w-1")}, nil)
+			job := newJob()
+			carrier.setVerdict(pkg.DeliveryRetry)
+
+			// The composer is busy: the wake is deferred (retained), never delivered — no
+			// emission is recorded, so the busy attempt did not land.
+			Expect(job.WakeOnce(context.Background())).To(Succeed())
+			advance(pkg.ManagerWakeBatchWindow)
+			Expect(job.WakeOnce(context.Background())).To(Succeed())
+			Expect(sink.records).To(BeEmpty())
+
+			// The composer frees; the retained wake is delivered on a later pass — the
+			// deferral was not a drop. (The wake_queued / wake_drained lines make this
+			// retention observable in production.)
+			carrier.setVerdict(pkg.DeliveryOK)
+			advance(pkg.ManagerWakeBatchWindow)
+			Expect(job.WakeOnce(context.Background())).To(Succeed())
+			Expect(sink.records).To(HaveLen(1))
+			Expect(sink.records[0].ItemIDs).To(ConsistOf(pkg.ItemID("item-1")))
+		},
+	)
+
+	It(
 		"TestNoGoalTaskGoesToTheFleetManagerOnly — a card whose task declares no goal wakes only the Fleet Manager",
 		func() {
 			// The task EXISTS but declares no `goals:`, so Foreign answers
@@ -1036,10 +1123,33 @@ type stubGoalScope struct {
 	foreign bool
 	ok      bool
 	noTask  bool
+	// perManager overrides the fixed answer for a named manager, so one pass can
+	// model a goal's own manager (foreign=false) and a different spawner
+	// (foreign=true) at once.
+	perManager map[string]stubGoalVerdict
+	// goalOwner scripts GoalOwner per session id.
+	goalOwner map[string]string
 }
 
-func (s *stubGoalScope) Foreign(_, _ string) (string, bool, bool) {
+// stubGoalVerdict is one manager's scripted Foreign answer.
+type stubGoalVerdict struct {
+	goal    string
+	foreign bool
+	ok      bool
+}
+
+func (s *stubGoalScope) Foreign(managerSession, _ string) (string, bool, bool) {
+	if v, ok := s.perManager[managerSession]; ok {
+		return v.goal, v.foreign, v.ok
+	}
 	return s.goal, s.foreign, s.ok
+}
+
+func (s *stubGoalScope) GoalOwner(session string) (string, bool) {
+	if owner, ok := s.goalOwner[session]; ok {
+		return owner, true
+	}
+	return "", false
 }
 
 // SessionResolved separates the cron class (no task row) from a real task that
