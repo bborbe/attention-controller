@@ -19,11 +19,9 @@ import (
 	"github.com/gorilla/mux"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/bborbe/attention-controller/mocks"
 	"github.com/bborbe/attention-controller/pkg"
-	"github.com/bborbe/attention-controller/pkg/boardmetrics"
 	"github.com/bborbe/attention-controller/pkg/handler"
 )
 
@@ -32,7 +30,7 @@ var _ = Describe("Attention rate handler and board controls", func() {
 	var db libkv.DB
 	var store pkg.AttentionStore
 	var rateHandler http.Handler
-	var pageHandler http.Handler
+	var boardHandler http.Handler
 	var provenance *mocks.ProvenanceResolver
 
 	BeforeEach(func() {
@@ -51,13 +49,11 @@ var _ = Describe("Attention rate handler and board controls", func() {
 		)
 		rateHandler = handler.NewAttentionRateHandler(store)
 		provenance = &mocks.ProvenanceResolver{}
-		pageHandler = handler.NewAttentionPageHandler(
+		boardHandler = handler.NewAttentionBoardReadHandler(
 			store,
 			provenance,
 			false,
 			filepath.Join(GinkgoT().TempDir(), "Personal"),
-			testBuildIdentity,
-			boardmetrics.NewMetrics(prometheus.NewRegistry()),
 		)
 	})
 
@@ -96,23 +92,6 @@ var _ = Describe("Attention rate handler and board controls", func() {
 		var errorResponse libhttp.ErrorResponse
 		Expect(json.NewDecoder(rec.Body).Decode(&errorResponse)).To(BeNil())
 		return errorResponse.Error.Code
-	}
-
-	render := func() string {
-		req := httptest.NewRequest(http.MethodGet, "/?producer_kind=all&hide=none", nil)
-		resp := httptest.NewRecorder()
-		pageHandler.ServeHTTP(resp, req)
-		Expect(resp.Code).To(Equal(http.StatusOK))
-		return resp.Body.String()
-	}
-
-	rowOf := func(body string, itemID pkg.ItemID) string {
-		start := strings.Index(body, `data-item-id="`+itemID.String()+`"`)
-		Expect(start).To(BeNumerically(">=", 0), "row for %s not found", itemID)
-		rest := body[start:]
-		end := strings.Index(rest, "</li>")
-		Expect(end).To(BeNumerically(">=", 0))
-		return rest[:end]
 	}
 
 	It("stores up and answers 200 without answering the item", func() {
@@ -159,7 +138,7 @@ var _ = Describe("Attention rate handler and board controls", func() {
 		Expect(rec.Code).To(Equal(http.StatusNotFound))
 	})
 
-	It("renders both controls on open and answered rows, highlighting the stored value", func() {
+	It("carries the stored rating on open and answered cards in the board JSON", func() {
 		open := push("rate-page-open")
 		answered := push("rate-page-answered")
 		_, err := store.Answer(ctx, answered.ItemID, "attention-board", "", "", nil, nil, nil)
@@ -171,23 +150,13 @@ var _ = Describe("Attention rate handler and board controls", func() {
 			answered.ItemID: pkg.Provenance{},
 		})
 
-		body := render()
+		board := readBoardByID(boardHandler)
 
-		openRow := rowOf(body, open.ItemID)
-		Expect(openRow).To(ContainSubstring(`data-rate-control data-rating=""`))
-		Expect(openRow).To(ContainSubstring(`data-rate="up"`))
-		Expect(openRow).To(ContainSubstring(`data-rate="down"`))
-		Expect(openRow).NotTo(ContainSubstring(`rate-btn rated`))
-
-		answeredRow := rowOf(body, answered.ItemID)
-		Expect(answeredRow).To(ContainSubstring(`data-rating="down"`))
-		Expect(answeredRow).To(ContainSubstring(`class="rate-btn rated" data-rate="down"`))
-		Expect(answeredRow).To(ContainSubstring(`class="rate-btn" data-rate="up"`))
-	})
-
-	It("carries the delegated rate listener that posts to /rate, never /answer", func() {
-		body := render()
-		Expect(body).To(ContainSubstring(`closest('button[data-rate]')`))
-		Expect(body).To(ContainSubstring(`'/rate'`))
+		Expect(board).To(HaveKey(open.ItemID))
+		Expect(board[open.ItemID].Rating).To(BeEmpty())
+		// A rating is a measurement on any state, so the answered record keeps it.
+		Expect(board).To(HaveKey(answered.ItemID))
+		Expect(board[answered.ItemID].State).To(Equal(pkg.AnsweredState))
+		Expect(board[answered.ItemID].Rating).To(Equal(pkg.DownRating))
 	})
 })

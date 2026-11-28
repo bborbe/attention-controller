@@ -14,20 +14,22 @@ the handler opens no request body. A consumer opens it and reads.
 
 ## The event shape
 
-Each event is one `data: <json>` line followed by a blank line, and the JSON carries three fields:
+Each event is one `data: <json>` line followed by a blank line, and the JSON carries two fields:
 
 | Field | Present | Meaning |
 |---|---|---|
 | `type` | always | `upsert` for a row that appeared or changed, `remove` for a row that left the board. |
 | `item_id` | always | The row this event is about — the key a consumer matches on. |
-| `html` | `upsert` only | The rendered row, exactly as the board renders it. A `remove` carries no `html`. |
+
+An earlier version also carried `html`, the server-rendered row. It was dropped with the
+server-rendered board: the React board (`frontend/`) ignores frame bodies and re-reads
+`GET /api/1.0/attention/board`, and no other consumer read the field.
 
 ## It is a change signal, not the item
 
-`html` is the board's rendered row, not the record. A consumer that needs the item — its state,
-its decision, its answer — reads it back by id, `GET /api/1.0/attention/{item_id}`, when the
-event arrives. Recovering a field by parsing the row's HTML builds a second renderer, and a second
-renderer drifts from the first.
+The event names a row; it is not the record. A consumer that needs the item — its state, its
+decision, its answer — reads it back by id, `GET /api/1.0/attention/{item_id}`, when the event
+arrives. The React board re-reads the whole board JSON on every frame.
 
 ## The baseline
 
@@ -37,9 +39,10 @@ baselined: it is attached to the change feed and its snapshot is the board as of
 consumer's own read taken before it subscribes is therefore *outside* the stream's baseline.
 
 A change landing between the client's own read and the subscription is **still missed**. The diff
-emits only rows whose rendered HTML changed *since the baseline*, so anything already in the
+emits only rows whose board entry (the item plus its `board` render data, as
+`GET /api/1.0/attention/board` serves it) changed *since the baseline*, so anything already in the
 baseline produces no event: an answer that landed before the snapshot is in the baseline, and the
-consumer never hears of it. A change landing after the baseline changes its row's HTML and emits
+consumer never hears of it. A change landing after the baseline changes its row's entry and emits
 an `upsert`; a change landing in the gap is corrected only by the next one.
 
 ## What a consumer must therefore do

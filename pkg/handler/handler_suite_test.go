@@ -5,6 +5,9 @@
 package handler_test
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -12,8 +15,35 @@ import (
 	. "github.com/onsi/gomega"
 	"github.com/onsi/gomega/format"
 
+	"github.com/bborbe/attention-controller/pkg"
 	"github.com/bborbe/attention-controller/pkg/buildidentity"
 )
+
+// readBoardByID serves `GET /api/1.0/attention/board` through the given board
+// read handler and returns the decoded entries keyed by item id, so a spec
+// asserts on one card's render data rather than on the whole board.
+func readBoardByID(httpHandler http.Handler) map[pkg.ItemID]pkg.BoardItem {
+	req := httptest.NewRequest(http.MethodGet, "/api/1.0/attention/board", nil)
+	resp := httptest.NewRecorder()
+	httpHandler.ServeHTTP(resp, req)
+	Expect(resp.Code).To(Equal(http.StatusOK), resp.Body.String())
+	var decoded []pkg.BoardItem
+	Expect(json.Unmarshal(resp.Body.Bytes(), &decoded)).To(Succeed())
+	result := make(map[pkg.ItemID]pkg.BoardItem, len(decoded))
+	for _, entry := range decoded {
+		result[entry.ItemID] = entry
+	}
+	Expect(result).To(HaveLen(len(decoded)), "duplicate item ids on the board")
+	return result
+}
+
+// boardEntryOf is readBoardByID narrowed to one item, failing when the board
+// does not carry it.
+func boardEntryOf(httpHandler http.Handler, itemID pkg.ItemID) pkg.BoardItem {
+	entry, ok := readBoardByID(httpHandler)[itemID]
+	Expect(ok).To(BeTrue(), "board entry for %s not found", itemID)
+	return entry
+}
 
 // testBuildIdentity is the provenance every page spec renders. It is a fixed
 // value rather than buildidentity.Read() so the footer is exercised in the

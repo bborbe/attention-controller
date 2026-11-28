@@ -840,6 +840,18 @@ export interface BoardView {
    * SpeakEnabled reports whether a tts server is configured.
    */
   speak_enabled: boolean;
+  /**
+   * Risk is the derived risk class (RiskOf): the declared level, raised and
+   * never lowered by the production-touching marker and the payload's
+   * consequence class, so a producer that under-declares still cannot make a
+   * destructive card read as routine.
+   */
+  risk: Risk;
+  /**
+   * BlastRadius is the consequence class's blast-radius statement
+   * (BlastRadiusOf). Empty for a routine card.
+   */
+  blast_radius: string;
 }
 /**
  * BoardProvenance is the subset of a resolved Provenance the board renders.

@@ -1,6 +1,7 @@
-// itemView.ts — pure derivations from a board item, mirroring the Go page
-// builders (pkg/handler/attention-page-helpers.go, attention-page-timeline.go)
-// so the React card renders what the server-rendered board rendered.
+// itemView.ts — pure derivations from a board item. The server-derived half
+// (jump target, navigation links, timeline, delivery outcome) arrives in
+// item.board, built by pkg/handler/attention-board-row.go; this file derives the
+// rest so the React card renders what the retired server-rendered board did.
 import type { Answer, BoardItem, BoardView, Item } from "./types";
 
 // isAnswered: the item is a record (answered, out of the open set).
@@ -67,6 +68,8 @@ const EMPTY_VIEW: BoardView = {
   delivery_outcome: "",
   undeliverable: false,
   speak_enabled: false,
+  risk: "",
+  blast_radius: "",
 };
 
 // boardViewOf returns the entry's server-derived render data

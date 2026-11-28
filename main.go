@@ -1112,10 +1112,9 @@ func (a *application) createHTTPServer(
 			return errors.Wrap(ctx, distErr, "open embedded frontend dist failed")
 		}
 		// ⚠️ The page is mounted at BOTH the exact root and the /assets/ prefix.
-		// The vanilla page inlined its script, so `Path("/")` was enough; the React
-		// build loads a hashed JS/CSS bundle from /assets/, and an exact root route
-		// leaves those unmatched, so gorilla mux 404s them and the page renders an
-		// empty #root. A PathPrefix("/") registered here would instead shadow every
+		// The React build loads a hashed JS/CSS bundle from /assets/, and an exact
+		// root route leaves those unmatched, so gorilla mux 404s them and the page
+		// renders an empty #root. A PathPrefix("/") registered here would instead shadow every
 		// API route registered below it, so the prefix is narrowed to the asset tree
 		// the build actually emits.
 		reactPage := factory.CreateAttentionReactPageHandler(dist, buildIdentity, boardMetrics)

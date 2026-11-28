@@ -7,32 +7,24 @@ package handler_test
 import (
 	"context"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 
 	libboltkv "github.com/bborbe/boltkv"
 	libkv "github.com/bborbe/kv"
 	libtime "github.com/bborbe/time"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/bborbe/attention-controller/mocks"
 	"github.com/bborbe/attention-controller/pkg"
-	"github.com/bborbe/attention-controller/pkg/boardmetrics"
 	"github.com/bborbe/attention-controller/pkg/handler"
 )
 
 // The whole chain, end to end: a fixture vault on disk, read by the real
-// pkg.NewTaskIndex, joined by the real pkg.NewProvenanceResolver and rendered by
-// the real page handler, with every assertion made on the served row. This is
-// the file that carries the spec's served-page acceptance criteria, because the
-// resolution and the template are each only half of what the operator sees —
-// neither a resolver-level nor a template-only spec can observe the rendered
-// HTML that half produces.
-var _ = Describe("the goal and topic spans on the served page", func() {
+// pkg.NewTaskIndex, joined by the real pkg.NewProvenanceResolver and served by
+// the real board JSON read, with every assertion made on the card's own entry.
+var _ = Describe("the goal and topic links in the board JSON", func() {
 	var ctx context.Context
 	var db libkv.DB
 	var store pkg.AttentionStore
@@ -58,16 +50,12 @@ var _ = Describe("the goal and topic spans on the served page", func() {
 	// between them would re-read the moved-away vault and lose the links.
 	var clock libtime.CurrentDateTime
 
-	// The served markup each link is asserted against, written as html/template
-	// actually emits it. ⚠️ Hand-written literals, never ones built with
-	// vaultFileURL or any other helper the production code uses: a shared helper
-	// would agree with itself whatever it produced, so neither the `%20`/`%2F`
-	// escaping nor the dropped `.md` would be asserted at all. The `&amp;` is the
-	// template's own HTML-escaping of the `&` in the attribute, which is why the
-	// assertions are raw-string matches over the served HTML.
-	goalAnchor := `<span class="goal"><a href="obsidian://open?vault=Personal&amp;file=24%20Goals%2FFirst%20Goal">First Goal</a></span>`
-	topicAnchor := `<span class="topic"><a href="obsidian://open?vault=Personal&amp;file=23%20Topics%2FAttention%20Board%20Polish">Attention Board Polish</a></span>`
-	soloGoalAnchor := `<span class="goal"><a href="obsidian://open?vault=Personal&amp;file=24%20Goals%2FSolo%20Goal">Solo Goal</a></span>`
+	// Hand-written literals, never built with the helper the production code
+	// uses: a shared helper would agree with itself whatever it produced, so
+	// neither the `%20`/`%2F` escaping nor the dropped `.md` would be asserted.
+	goalHref := "obsidian://open?vault=Personal&file=24%20Goals%2FFirst%20Goal"
+	topicHref := "obsidian://open?vault=Personal&file=23%20Topics%2FAttention%20Board%20Polish"
+	soloGoalHref := "obsidian://open?vault=Personal&file=24%20Goals%2FSolo%20Goal"
 
 	BeforeEach(func() {
 		ctx = context.Background()
@@ -142,38 +130,21 @@ var _ = Describe("the goal and topic spans on the served page", func() {
 		return item
 	}
 
-	// rowOf returns the rendered HTML for one item's row, so an assertion about
-	// the card is scoped to that item rather than to the whole page: a page-wide
-	// grep would pass on a page where another row legitimately carried a link.
-	// It is a copy of the local closure in attention-page_test.go, which cannot be
-	// imported.
-	rowOf := func(body string, itemID pkg.ItemID) string {
-		start := strings.Index(body, `data-item-id="`+itemID.String()+`"`)
-		Expect(start).To(BeNumerically(">=", 0), "row for %s not found", itemID)
-		rest := body[start:]
-		end := strings.Index(rest, "</li>")
-		Expect(end).To(BeNumerically(">=", 0))
-		return rest[:end]
-	}
-
-	// get renders the page through the given handler and returns the recorder.
-	get := func(httpHandler http.Handler) *httptest.ResponseRecorder {
-		req := httptest.NewRequest("GET", "/?producer_kind=all", nil)
-		resp := httptest.NewRecorder()
-		httpHandler.ServeHTTP(resp, req)
-		return resp
+	// rowOf returns the card's navigation provenance from the board JSON.
+	rowOf := func(httpHandler http.Handler, itemID pkg.ItemID) pkg.BoardProvenance {
+		return boardEntryOf(httpHandler, itemID).Board.Provenance
 	}
 
 	// buildPageWith assembles the real chain over the vault as it stands *now*:
 	// the caller's index, the real resolver reading empty state and session
-	// directories and an empty pane listing, and the real page handler over the
+	// directories and an empty pane listing, and the real board read over the
 	// real store.
 	//
 	// ⚠️ It must be called per case and never in the BeforeEach ahead of the
 	// fixtures: the index reads the vault once, at construction, so a chain built
 	// before the case wrote its files would see an empty vault.
 	buildPageWith := func(index pkg.TaskIndex) http.Handler {
-		return handler.NewAttentionPageHandler(
+		return handler.NewAttentionBoardReadHandler(
 			store,
 			pkg.NewProvenanceResolver(
 				pkg.NewEventLogReader(stateDir),
@@ -185,8 +156,6 @@ var _ = Describe("the goal and topic spans on the served page", func() {
 			),
 			false,
 			vault,
-			testBuildIdentity,
-			boardmetrics.NewMetrics(prometheus.NewRegistry()),
 		)
 	}
 
@@ -222,25 +191,22 @@ var _ = Describe("the goal and topic spans on the served page", func() {
 			"---\ntitle: Attention Board Polish\n---\n\n## Goals\n\n- [[First Goal]]\n")
 		item := pushItem("session-both")
 
-		row := rowOf(get(buildPage()).Body.String(), item.ItemID)
+		row := rowOf(buildPage(), item.ItemID)
 
 		// The three spans are three, not one unit: the task link survives beside
 		// the goal, and the goal beside the topic.
-		Expect(strings.Count(row, `class="task"`)).To(Equal(1))
-		Expect(strings.Count(row, `class="goal"`)).To(Equal(1))
-		Expect(strings.Count(row, `class="topic"`)).To(Equal(1))
-		Expect(row).To(ContainSubstring(goalAnchor))
-		Expect(row).To(ContainSubstring(topicAnchor))
+		Expect(row.TaskHref).NotTo(BeEmpty())
+		Expect(row.GoalHref).NotTo(BeEmpty())
+		Expect(row.TopicHref).NotTo(BeEmpty())
+		Expect(row.GoalHref).To(Equal(goalHref))
+		Expect(row.TopicHref).To(Equal(topicHref))
 		// ⚠️ The first entry is the one rendered and the second is unrendered —
 		// deliberately, not by omission.
-		Expect(row).NotTo(ContainSubstring("Second Goal"))
-		// The href is a real URL rather than the URL filter's sentinel, which is
-		// what a plain-string field would render while every field-level assertion
-		// still passed.
-		Expect(row).NotTo(ContainSubstring("#ZgotmplZ"))
+		Expect(row.GoalName).To(Equal("First Goal"))
+		Expect(row.TopicName).To(Equal("Attention Board Polish"))
 	})
 
-	It("a goal no topic lists renders no topic span", func() {
+	It("a goal no topic lists carries no topic link", func() {
 		writeVault(vault, "25 Tasks", "Solo Goal Task.md",
 			"---\nclaude_session_id: session-solo\ngoals:\n  - \"[[Solo Goal]]\"\n---\n")
 		writeVault(vault, "24 Goals", "Solo Goal.md", "---\ntitle: Solo Goal\n---\n")
@@ -256,60 +222,42 @@ var _ = Describe("the goal and topic spans on the served page", func() {
 		)
 		item := pushItem("session-solo")
 
-		row := rowOf(get(buildPage()).Body.String(), item.ItemID)
+		row := rowOf(buildPage(), item.ItemID)
 
 		// The dominant live case: 1,148 of 1,619 goal-carrying tasks resolve a
 		// goal span and no topic span.
-		Expect(strings.Count(row, `class="goal"`)).To(Equal(1))
-		Expect(row).To(ContainSubstring(soloGoalAnchor))
-		Expect(strings.Count(row, `class="topic"`)).To(Equal(0))
-		Expect(strings.Count(row, `class="task"`)).To(Equal(1))
+		Expect(row.GoalHref).NotTo(BeEmpty())
+		Expect(row.GoalHref).To(Equal(soloGoalHref))
+		Expect(row.TopicHref).To(BeEmpty())
+		Expect(row.TaskHref).NotTo(BeEmpty())
 	})
 
-	It("draws no goal and no topic for a task carrying goals: []", func() {
+	It("carries no goal and no topic for a task carrying goals: []", func() {
 		writeVault(vault, "25 Tasks", "Empty Goals Task.md",
 			"---\nclaude_session_id: session-emptygoals\ngoals: []\n---\n")
 		item := pushItem("session-emptygoals")
 
-		row := rowOf(get(buildPage()).Body.String(), item.ItemID)
+		row := rowOf(buildPage(), item.ItemID)
 
 		// The three spans are not one unit: the task link must survive a task that
 		// names no goal.
-		Expect(strings.Count(row, `class="task"`)).To(Equal(1))
-		Expect(strings.Count(row, `class="goal"`)).To(Equal(0))
-		Expect(strings.Count(row, `class="topic"`)).To(Equal(0))
+		Expect(row.TaskHref).NotTo(BeEmpty())
+		Expect(row.GoalHref).To(BeEmpty())
+		Expect(row.TopicHref).To(BeEmpty())
 	})
 
-	It("draws no span at all for a session that resolves to no task", func() {
+	It("carries no link at all for a session that resolves to no task", func() {
 		// The vault is genuinely readable and simply holds nothing for this
 		// session, so the absence below is a miss rather than an unread vault.
 		writeVault(vault, "25 Tasks", "Someone Else.md",
 			"---\nclaude_session_id: session-someone-else\n---\n")
 		item := pushItem("session-nowhere")
 
-		row := rowOf(get(buildPage()).Body.String(), item.ItemID)
+		row := rowOf(buildPage(), item.ItemID)
 
-		// Positive control first: a row that failed to render at all must not be
-		// able to satisfy the absences below.
-		Expect(row).To(ContainSubstring(item.Payload.String()))
-		Expect(strings.Count(row, `class="task"`)).To(Equal(0))
-		Expect(strings.Count(row, `class="goal"`)).To(Equal(0))
-		Expect(strings.Count(row, `class="topic"`)).To(Equal(0))
-		// Nothing resolved for this item, so the provenance line itself is absent
-		// rather than drawn empty.
-		//
-		// ⚠️ The provenance DIV is what is asserted, and deliberately not the
-		// absence of `-`. The spec lists `-` among the placeholders, but the row's
-		// own meta line renders `{{ .Meta }}` (inside the info panel), so a
-		// bare dash is present on every row of the board and an assertion on it
-		// could never hold. The placeholder this case is about would stand where a
-		// span would — inside the provenance div — so the div's absence is the
-		// assertion, and it is the correct one. Do not "fix" this back.
-		Expect(strings.Count(row, `class="provenance"`)).To(Equal(0))
-		// An unresolvable value renders absent, never as a stand-in presented as
-		// resolved.
-		Expect(row).NotTo(ContainSubstring("unknown"))
-		Expect(row).NotTo(ContainSubstring("n/a"))
+		// Nothing resolved for this item, so every navigation value is absent —
+		// never a stand-in like `unknown` presented as resolved.
+		Expect(row).To(Equal(pkg.BoardProvenance{}))
 	})
 
 	It("keeps a task title from resolving as a goal", func() {
@@ -337,14 +285,14 @@ var _ = Describe("the goal and topic spans on the served page", func() {
 
 		item := pushItem("session-collision")
 
-		row := rowOf(get(buildPage()).Body.String(), item.ItemID)
+		row := rowOf(buildPage(), item.ItemID)
 
-		Expect(strings.Count(row, `class="goal"`)).To(Equal(0))
-		Expect(strings.Count(row, `class="topic"`)).To(Equal(0))
-		Expect(strings.Count(row, `class="task"`)).To(Equal(1))
+		Expect(row.GoalHref).To(BeEmpty())
+		Expect(row.TopicHref).To(BeEmpty())
+		Expect(row.TaskHref).NotTo(BeEmpty())
 	})
 
-	It("reads the vault once, so a later load still serves the links", func() {
+	It("reads the vault once, so a later read still serves the links", func() {
 		writeBoardPolishVault("session-readonce")
 		item := pushItem("session-readonce")
 
@@ -355,14 +303,14 @@ var _ = Describe("the goal and topic spans on the served page", func() {
 		index.LookupStub = real.Lookup
 		page := buildPageWith(index)
 
-		first := rowOf(get(page).Body.String(), item.ItemID)
-		Expect(first).To(ContainSubstring(goalAnchor))
-		Expect(first).To(ContainSubstring(topicAnchor))
+		first := rowOf(page, item.ItemID)
+		Expect(first.GoalHref).To(Equal(goalHref))
+		Expect(first.TopicHref).To(Equal(topicHref))
 		// The positive half, which a delta-only check cannot supply: a reader that
 		// is never invoked at all would pass a delta check vacuously.
 		Expect(index.LookupCallCount()).To(BeNumerically(">=", 1))
 
-		// ⚠️ Move the vault away and load the page again. This is what proves the
+		// ⚠️ Move the vault away and read the board again. This is what proves the
 		// vault is not re-read: a load that re-read the vault would find no
 		// `24 Goals/` and no `23 Topics/` and render no spans. The handler was built
 		// once and the index holds the vault's contents in memory, so the links
@@ -370,9 +318,9 @@ var _ = Describe("the goal and topic spans on the served page", func() {
 		// removes the whole tree.
 		Expect(os.Rename(vault, vault+"-moved")).To(BeNil())
 
-		second := rowOf(get(page).Body.String(), item.ItemID)
-		Expect(second).To(ContainSubstring(goalAnchor))
-		Expect(second).To(ContainSubstring(topicAnchor))
+		second := rowOf(page, item.ItemID)
+		Expect(second.GoalHref).To(Equal(goalHref))
+		Expect(second.TopicHref).To(Equal(topicHref))
 	})
 
 	It("serves the card unchanged on a host with no vault configured", func() {
@@ -381,7 +329,7 @@ var _ = Describe("the goal and topic spans on the served page", func() {
 
 		// A second handler over the same store, with no vault directory and an
 		// index built from none.
-		page := handler.NewAttentionPageHandler(
+		page := handler.NewAttentionBoardReadHandler(
 			store,
 			pkg.NewProvenanceResolver(
 				pkg.NewEventLogReader(stateDir),
@@ -393,20 +341,13 @@ var _ = Describe("the goal and topic spans on the served page", func() {
 			),
 			false,
 			"",
-			testBuildIdentity,
-			boardmetrics.NewMetrics(prometheus.NewRegistry()),
 		)
 
-		resp := get(page)
-		Expect(resp.Code).To(Equal(http.StatusOK))
+		row := rowOf(page, item.ItemID)
 
-		row := rowOf(resp.Body.String(), item.ItemID)
-
-		// The card renders exactly what it rendered before this change: no error
-		// status, no partial line, and none of the three links.
-		Expect(row).To(ContainSubstring(item.Payload.String()))
-		Expect(strings.Count(row, `class="task"`)).To(Equal(0))
-		Expect(strings.Count(row, `class="goal"`)).To(Equal(0))
-		Expect(strings.Count(row, `class="topic"`)).To(Equal(0))
+		// No error status, and none of the three links.
+		Expect(row.TaskHref).To(BeEmpty())
+		Expect(row.GoalHref).To(BeEmpty())
+		Expect(row.TopicHref).To(BeEmpty())
 	})
 })

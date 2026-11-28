@@ -121,10 +121,10 @@ export default function App() {
   if (!items) return <p className="subtitle">Loading…</p>;
 
   const kindAll = filters.kind === KIND_ALL;
-  // A card no live manager can relay is shown whatever its kind, the server
-  // board's rule (pkg/handler/attention-page-producer-kind.go
-  // filterByProducerKind): the managers-only view rests on a manager relaying
-  // the worker's question, and an uncovered card has no manager to relay it.
+  // A card no live manager can relay is shown whatever its kind (the retired
+  // server-rendered board's filterByProducerKind rule): the managers-only view
+  // rests on a manager relaying the worker's question, and an uncovered card has
+  // no manager to relay it.
   const kindMatches = (item: BoardItem) =>
     kindAll || item.producer_kind === filters.kind || !!item.board?.uncovered;
 

@@ -85,7 +85,7 @@ The renderer must not invent a meaning for either. An answer that is `held` was 
 
 ## The undeliverable marker, and its widening
 
-The board already ships a row-level marker, `delivery-undeliverable`, rendered from `attentionPageRow.Undeliverable()`. Its predicate was `DeliveryStatus == FailedStatus` only, on the recorded rationale that *"only a recorded failure is something the operator can act on, and the other three would put a marker on every card"*.
+The board already ships a row-level marker, `delivery-undeliverable`, rendered from `boardRow.Undeliverable()` (carried in the board JSON as `board.undeliverable`). Its predicate was `DeliveryStatus == FailedStatus` only, on the recorded rationale that *"only a recorded failure is something the operator can act on, and the other three would put a marker on every card"*.
 
 **That rationale is superseded for `never_attempted`, and only for it.** The measurement above shows `never_attempted` is the larger half of undelivered answers (166 of 736) and the silent one, while `held` (245) is a deliberate state that must not be marked and `pre_trail_unknown` predates the trail. The predicate therefore widens to `failed || never_attempted`.
 

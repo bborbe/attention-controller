@@ -4,9 +4,8 @@
 
 // Package-level note: this file holds the card's info-panel timeline — the
 // seven-stage list and the delivery-outcome line — computed in Go from the
-// item's stored timestamps and the store's own delivery report. It lives in its
-// own file rather than in attention-page-helpers.go, which is already over
-// 1,100 lines.
+// item's stored timestamps and the store's own delivery report, and carried in
+// the board JSON as BoardView.Timeline / DeliveryOutcome.
 package handler
 
 import (
@@ -28,7 +27,7 @@ import (
 const absentStageMark = "—"
 
 // Timeline returns the panel's stage lines, in stage order.
-func (r attentionPageRow) Timeline() []string {
+func (r boardRow) Timeline() []string {
 	return attentionTimeline(r.Item, r.DeliveryStatus, r.DeliveryAttemptedAt)
 }
 
@@ -41,7 +40,7 @@ func (r attentionPageRow) Timeline() []string {
 // hold: an attempt and its timestamp exist, so rendering "—" would be false,
 // and rendering the literal "held" would name a fifth outcome the contract
 // does not list. Silence is the interim rendering until that gap is resolved.
-func (r attentionPageRow) DeliveryOutcome() string {
+func (r boardRow) DeliveryOutcome() string {
 	if r.DeliveryStatus == "" || r.DeliveryStatus == pkg.HeldStatus {
 		return ""
 	}

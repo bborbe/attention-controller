@@ -17,11 +17,9 @@ import (
 	"github.com/gorilla/mux"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/bborbe/attention-controller/mocks"
 	"github.com/bborbe/attention-controller/pkg"
-	"github.com/bborbe/attention-controller/pkg/boardmetrics"
 	"github.com/bborbe/attention-controller/pkg/handler"
 )
 
@@ -34,7 +32,7 @@ var _ = Describe("Attention seen handler", func() {
 	var db libkv.DB
 	var store pkg.AttentionStore
 	var seenHandler http.Handler
-	var pageHandler http.Handler
+	var boardHandler http.Handler
 
 	// now is the store's clock, movable so the first-write-wins half can be
 	// observed: a second call under a later clock must leave the first instant.
@@ -62,13 +60,11 @@ var _ = Describe("Attention seen handler", func() {
 			libtime.Duration(15*60*1e9),
 		)
 		seenHandler = handler.NewAttentionSeenHandler(store)
-		pageHandler = handler.NewAttentionPageHandler(
+		boardHandler = handler.NewAttentionBoardReadHandler(
 			store,
 			&mocks.ProvenanceResolver{},
 			false,
 			"",
-			testBuildIdentity,
-			boardmetrics.NewMetrics(prometheus.NewRegistry()),
 		)
 	})
 
@@ -148,23 +144,14 @@ var _ = Describe("Attention seen handler", func() {
 		Expect(errors.Is(err, pkg.ErrItemNotFound)).To(BeTrue())
 	})
 
-	It("issues the seen call before the filter parks a row", func() {
-		push()
+	It("serves the stamped displayed_at in the board JSON", func() {
+		item := push()
+		Expect(boardEntryOf(boardHandler, item.ItemID).DisplayedAt).To(BeNil())
 
-		req := httptest.NewRequest(http.MethodGet, "/?producer_kind=all", nil)
-		rec := httptest.NewRecorder()
-		pageHandler.ServeHTTP(rec, req)
-		Expect(rec.Code).To(Equal(http.StatusOK))
-		body := rec.Body.String()
+		Expect(seen(seenHandler, item.ItemID).Code).To(Equal(http.StatusNoContent))
 
-		Expect(body).To(ContainSubstring("'/seen'"))
-		Expect(body).To(ContainSubstring("function markSeen("))
-		Expect(body).To(ContainSubstring("function markEverySeen("))
-		// The call is adjacent to the load-time filter block, in this exact
-		// order: a script that stamped only after the filter would leave every
-		// parked card unstamped, which is the failure the ordering prevents.
-		Expect(body).To(ContainSubstring(
-			"markEverySeen();\n  applyFilter();\n  syncKindHref();\n  updateKindCount();",
-		))
+		displayed := boardEntryOf(boardHandler, item.ItemID).DisplayedAt
+		Expect(displayed).NotTo(BeNil())
+		Expect(displayed.Time().Equal(now)).To(BeTrue())
 	})
 })

@@ -74,7 +74,7 @@ test("the flag filter is independent of the hide switch", async ({ page, request
 
   await flagToggle.click();
   await expect(row(page, itemID)).toHaveCount(0);
-  // The old page writes the on-spelling explicitly (attention-page.js FLAGS_FLAGGED).
+  // The on-spelling is written explicitly, as the retired server-rendered page did.
   expect(new URL(page.url()).searchParams.get("flags")).toBe("flagged");
 });
 
@@ -119,7 +119,7 @@ test("an uncovered session card is shown on the managers-only view", async ({
   request,
   st,
 }) => {
-  // The server board's rule (filterByProducerKind): a card no live manager can
+  // The kind filter's coverage rule: a card no live manager can
   // relay is shown whatever its kind. The Fleet Manager's own card has no
   // relaying parent, so it is uncovered.
   const uncoveredItem = await pushMessage(request, st, {
