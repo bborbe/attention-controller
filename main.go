@@ -1096,50 +1096,7 @@ func (a *application) createHTTPServer(
 		router.Path("/jump/{itemID}").
 			Methods(http.MethodGet, http.MethodHead).
 			Handler(factory.CreateAttentionJumpHandler(store, provenance, activator))
-		// The attention page sits at / rather than under /api/1.0/ because it
-		// renders HTML for a human rather than JSON for an API client — it is
-		// the store's operator-facing surface, not a business endpoint. It is
-		// read-only, so GET and HEAD are the only methods routed here; without
-		// .Methods, gorilla mux would route POST and DELETE to it as well.
-		router.Path("/").
-			Methods(http.MethodGet, http.MethodHead).
-			Handler(factory.CreateAttentionPageHandler(
-				store, provenance, a.TTSURL != "", a.VaultDir, buildIdentity, boardMetrics))
-
-		// The board's live channel. It is registered here, ahead of the
-		// `/api/1.0/attention/{itemID}` route below, because gorilla mux matches
-		// in registration order: registered after it, this path would resolve as
-		// an item whose id is literally `stream`.
-		//
-		// ⚠️ Wrapped so each stream ends when this process's context does:
-		// Shutdown never cancels a request context, so an open stream would
-		// otherwise outlive the graceful drain and hold SIGTERM up.
-		router.Path("/api/1.0/attention/stream").
-			Methods(http.MethodGet).
-			Handler(handler.NewShutdownAwareHandler(ctx.Done(), factory.CreateAttentionStreamHandler(
-				store,
-				notifier,
-				provenance,
-				a.TTSURL != "",
-				a.VaultDir,
-				boardMetrics,
-			)))
-
-		// The board page's own read: open items plus the answered records it
-		// renders dimmed, each with its render data (jump target, navigation line,
-		// uncovered marker, timeline). Registered here, before the shared table's
-		// `/{itemID}` routes so "board" is never read as an id, and ⚠️ on the
-		// board's router only, like the stream: it resolves host-local provenance
-		// (panes, the session registry, the vault), which the cluster-reachable
-		// bearer listener built from registerAttentionAPIRoutes does not carry.
-		router.Path("/api/1.0/attention/board").
-			Methods(http.MethodGet).
-			Handler(factory.CreateAttentionBoardReadHandler(
-				store,
-				provenance,
-				a.TTSURL != "",
-				a.VaultDir,
-			))
+		a.registerBoardRoutes(ctx, router, deps, provenance, buildIdentity)
 
 		// Business routes live under /api/1.0/, never in the admin block above.
 		registerAttentionAPIRoutes(router, store, a.TTSURL)
