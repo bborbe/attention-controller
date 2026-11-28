@@ -15,6 +15,11 @@ var (
 	// ErrItemNotFound is returned when no item carries the requested id.
 	ErrItemNotFound = stderrors.New("item not found")
 
+	// ErrManagerSessionRequired refuses a pending-wake write or drain with no
+	// manager session. The session is the record's key half: without it a wake
+	// could be queued for nobody and would never be drained.
+	ErrManagerSessionRequired = stderrors.New("manager session required")
+
 	// ErrIllegalTransition is returned when a move is not a row of the schema's
 	// transitions table — it is illegal from every state, not merely from the
 	// one the item happens to be in.

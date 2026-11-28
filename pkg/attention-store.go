@@ -377,6 +377,44 @@ type AttentionStore interface {
 		reason string,
 	) (int, error)
 
+	// PutPendingWake records that a wake for itemID is owed to managerSession
+	// because the manager's pane composer was busy.
+	//
+	// ⚠️ It is the DURABLE half of a deferral that flushPending otherwise keeps
+	// only in memory (wakePass.pending): a controller restart would forget the
+	// wake was owed, and a manager continuously busy past every pass never frees.
+	// Written by the arm that ATTEMPTS delivery, on the deferral verdict — never
+	// by the arm that records the answer.
+	//
+	// The item must exist: a pending wake against an unknown item is
+	// ErrItemNotFound rather than an orphan record, because the drain returns the
+	// items it drains and a record with nothing to return could never be read.
+	// An empty manager session is ErrManagerSessionRequired — the session is the
+	// key half, and a wake queued for nobody is never drained.
+	PutPendingWake(
+		ctx context.Context,
+		managerSession string,
+		itemID ItemID,
+	) error
+
+	// DrainPendingWakes returns the wakes owed to managerSession and deletes
+	// their records in ONE transaction — drain-and-mark, never drain-and-hope.
+	//
+	// ⚠️ The atomicity IS the idempotency: the `Stop` hook that drains can fire
+	// more than once for one turn boundary, and a second call finds the bucket
+	// empty because the first committed the deletion, so a wake is delivered
+	// exactly once.
+	//
+	// An item no longer open is dropped rather than returned — the wake is moot —
+	// but its record is still deleted. The items are returned as they stood when
+	// queued, not re-read.
+	DrainPendingWakes(ctx context.Context, managerSession string) (Items, error)
+
+	// PendingWakes returns the wakes owed to managerSession without draining
+	// them. It is the read half the tests and the no-double-delivery check use;
+	// the drain never calls it.
+	PendingWakes(ctx context.Context, managerSession string) (Items, error)
+
 	// DeliveryAttemptCounts returns every attempt count, keyed by item id, in
 	// one read transaction — the deliver arm consults it for every item on every
 	// cycle.
