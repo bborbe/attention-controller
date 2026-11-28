@@ -110,7 +110,7 @@ test("the producer-kind link switches the view and the withheld cards appear", a
   await expect(row(page, sessionItem)).toBeVisible();
   await expect(row(page, managerItem)).toBeVisible();
   expect(new URL(page.url()).searchParams.get("producer_kind")).toBe("all");
-  await expect(page.locator("[data-board-kind]")).toHaveText("Show manager cards");
+  await expect(page.locator("[data-board-kind]")).toHaveText("Managers only");
   await expect(page.locator("[data-board-kind]")).toHaveAttribute("data-all-kinds", "true");
 });
 

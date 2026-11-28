@@ -198,7 +198,7 @@ export default function App() {
       <div className="board-controls">
         <a className="board-filter" href={kindHref} data-board-kind data-all-kinds={kindAll}>
           {SWITCH}
-          <span className="switch-label">{kindAll ? "Show manager cards" : "Show all kinds"}</span>
+          <span className="switch-label">{kindAll ? "Managers only" : "Show all kinds"}</span>
         </a>
         {kindHidden > 0 ? (
           <span className="kind-hidden" data-kind-hidden>
