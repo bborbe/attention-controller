@@ -1,6 +1,6 @@
 import type { FormEvent, KeyboardEvent, MouseEvent } from "react";
 import type { BoardItem, Item, Question } from "./types";
-import { answer, boardClient, close, flag, jump, rate, speak, cancel, unflag } from "./api";
+import { answer, boardClient, close, flag, jump, rate, speak, speakMessageID, cancel, unflag } from "./api";
 import { updateCardState, useCardState } from "./cardState";
 import type { CardState, Note } from "./cardState";
 import { renderCardText } from "./cardText";
@@ -306,15 +306,41 @@ export default function Card({ item, onChanged, onDecide, onClosed }: Props) {
     }
   }
 
+  // Stop cancels by the message id /speak returned: the cancel endpoint refuses
+  // an empty id, because the tts server's only default drains the shared queue.
+  // So the control shows "speaking" only once it holds an id to stop, and only
+  // a confirmed stop clears it — a failed one keeps it so a retry is possible.
   async function toggleSpeak() {
     if (state.speaking) {
-      await cancel(itemID, "");
-      set({ speaking: false });
+      try {
+        const res = await cancel(itemID, state.speakMessageID);
+        // A 404 means the id aged out of the tts server's status table: the
+        // reading is already over, so there is nothing left to stop.
+        if (res.ok || res.status === 404) {
+          set({ speaking: false, speakMessageID: "", note: null });
+          return;
+        }
+        setNote({ text: `Stop reading failed - HTTP ${res.status}`, error: true });
+      } catch (err) {
+        setNote({ text: `Stop reading failed - ${String(err)}`, error: true });
+      }
       return;
     }
-    const res = await speak(itemID);
-    if (res.ok) set({ speaking: true, note: null });
-    else setNote({ text: `Read aloud failed - HTTP ${res.status}`, error: true });
+    try {
+      const res = await speak(itemID);
+      if (!res.ok) {
+        setNote({ text: `Read aloud failed - HTTP ${res.status}`, error: true });
+        return;
+      }
+      const messageID = await speakMessageID(res);
+      if (!messageID) {
+        setNote({ text: "Read aloud returned no message id - it cannot be stopped here", error: true });
+        return;
+      }
+      set({ speaking: true, speakMessageID: messageID, note: null });
+    } catch (err) {
+      setNote({ text: `Read aloud failed - ${String(err)}`, error: true });
+    }
   }
 
   function onOtherKeyDown(event: KeyboardEvent<HTMLInputElement>) {
