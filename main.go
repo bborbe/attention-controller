@@ -1125,6 +1125,22 @@ func (a *application) createHTTPServer(
 				boardMetrics,
 			)))
 
+		// The board page's own read: open items plus the answered records it
+		// renders dimmed, each with its render data (jump target, navigation line,
+		// uncovered marker, timeline). Registered here, before the shared table's
+		// `/{itemID}` routes so "board" is never read as an id, and ⚠️ on the
+		// board's router only, like the stream: it resolves host-local provenance
+		// (panes, the session registry, the vault), which the cluster-reachable
+		// bearer listener built from registerAttentionAPIRoutes does not carry.
+		router.Path("/api/1.0/attention/board").
+			Methods(http.MethodGet).
+			Handler(factory.CreateAttentionBoardReadHandler(
+				store,
+				provenance,
+				a.TTSURL != "",
+				a.VaultDir,
+			))
+
 		// Business routes live under /api/1.0/, never in the admin block above.
 		registerAttentionAPIRoutes(router, store, a.TTSURL)
 		a.registerWhoNeedsMeRoute(ctx, router, store, provenance, panes)

@@ -20,8 +20,6 @@ package handler
 
 import (
 	"html/template"
-	"net/url"
-	"path/filepath"
 	"strings"
 
 	"github.com/bborbe/attention-controller/pkg"
@@ -94,9 +92,9 @@ func newAttentionPageRow(
 		JumpURL:    jumpURL(item, provenance),
 		NoJump:     noJumpReason(item, provenance),
 		Speak:      speak,
-		TaskURL:    vaultFileURL(vaultName, provenance.TaskPath),
-		GoalURL:    vaultFileURL(vaultName, provenance.GoalPath),
-		TopicURL:   vaultFileURL(vaultName, provenance.TopicPath),
+		TaskURL:    vaultFileHref(vaultName, provenance.TaskPath),
+		GoalURL:    vaultFileHref(vaultName, provenance.GoalPath),
+		TopicURL:   vaultFileHref(vaultName, provenance.TopicPath),
 		AnsweredAt: item.AnsweredAt,
 	}
 	// A nil report leaves both fields at their zero values, which is the
@@ -217,42 +215,6 @@ func recordAnswer(item pkg.Item) string {
 	}
 }
 
-// recordClient renders the client evidence the store recorded for an answer, as
-// the dimmed card shows it beside the record. It exists so "who answered this"
-// is readable from the board itself rather than inferred from a log.
-//
-// ⚠️ The rendered order is deliberate: the user agent leads because it is what
-// separates a browser from a script, and the address follows. A forwarded
-// address renders in its own parenthetical because it is a caller declaration —
-// flattening it into the address would read as though the store had proven it.
-//
-// An item answered before `answered_client` existed, or by a caller that sent
-// neither header, renders no line at all: an empty string here means "the store
-// recorded nothing about the client", which is the honest reading, not a blank
-// client.
-func recordClient(item pkg.Item) string {
-	client := item.AnsweredClient
-	if client == nil {
-		return ""
-	}
-	parts := make([]string, 0, 2)
-	if client.UserAgent != "" {
-		parts = append(parts, client.UserAgent)
-	}
-	if client.RemoteAddr != "" {
-		parts = append(parts, "@ "+client.RemoteAddr)
-	}
-	rendered := strings.TrimSpace(strings.Join(parts, " "))
-	if client.ForwardedFor != "" {
-		if rendered == "" {
-			rendered = "forwarded_for: " + client.ForwardedFor
-		} else {
-			rendered += " (forwarded_for: " + client.ForwardedFor + ")"
-		}
-	}
-	return rendered
-}
-
 // answerText renders one answer's content from its kind. `skip` is the case
 // that needs saying out loud: it carries neither value nor values, so a card
 // rendering the empty string would be indistinguishable from one whose answer
@@ -338,208 +300,15 @@ func optionName(itemID pkg.ItemID, tab string) string {
 	return "option-" + itemID.String() + "-" + tab
 }
 
-// vaultNameFromDir returns the vault's own name — the name an Obsidian URL
-// addresses — from the configured vault directory.
-//
-// It exists so the page handler and the SSE stream derive that name through one
-// function rather than two copies of the same expression: a row arriving over
-// the live channel must render identically to the same row on a fresh load, and
-// a name derived differently on either surface would put a different link on the
-// same card depending on how it arrived.
-//
-// Empty in, empty out. ⚠️ The guard is load-bearing rather than defensive:
-// filepath.Base("") is ".", so a host with no configured vault would otherwise
-// name a vault called `.` and emit `obsidian://open?vault=.` links.
-func vaultNameFromDir(vaultDir string) string {
-	if vaultDir == "" {
-		return ""
-	}
-	return filepath.Base(vaultDir)
-}
-
-// obsidianQueryValue escapes one half of an `obsidian://open` query value.
-//
-// ⚠️ It is url.QueryEscape with the `+` put back to `%20`, which is the vault's
-// own documented convention rather than a choice made here — see [[Deep Link URL
-// Schemes]] § "`+` is inert", measured against a live Obsidian on 2026-09-18:
-// Obsidian does not decode `+`, so a link carrying one opens nothing while
-// looking perfectly correct. The swap is safe because QueryEscape renders a
-// literal `+` as `%2B`, so no genuine `+` can be corrupted by it.
-//
-// ⚠️ Not url.PathEscape, the tempting choice for a value that reads as a path.
-// PathEscape leaves `&`, `=` and `+` unescaped — they are legal *inside a path
-// segment* — so a task file named `R&D notes.md` would render
-// `…&file=25%20Tasks%2FR&D%20notes`: Obsidian reads that as a `file` of
-// `25 Tasks/R` plus a stray `D notes` parameter, and the link opens the wrong
-// file. QueryEscape escapes all three (`&`→`%26`, `=`→`%3D`, `+`→`%2B`) and
-// still renders a slash as `%2F`.
-func obsidianQueryValue(value string) string {
-	return strings.ReplaceAll(url.QueryEscape(value), "+", "%20")
-}
-
-// vaultFileURL builds the link that opens a vault file in Obsidian, from the
-// vault's own name and the file's path relative to the vault root.
-//
-// It serves all three spans of the provenance line that link into the vault —
-// the task, the goal the task names first and the topic page that lists that
-// goal — because those are one link shape: a second builder for the goal and
-// topic spans would be a second escaper, and two escapers are free to disagree
-// about `&` or a space while both look correct.
-//
-// The form is `obsidian://open?vault=<vault>&file=<path>`, with both values
-// escaped so a space becomes `%20` and a slash `%2F`, and a trailing `.md`
-// dropped if present. The extension is stripped idempotently — strings.TrimSuffix
-// rather than an assumed suffix — because the index's own path field is not
-// specified to carry one, and a strip that assumed it would either double-handle
-// the path or mangle a task whose name genuinely ends in those characters.
-//
-// Both halves go through obsidianQueryValue, the vault name as well as the path:
-// the name is only the configured directory's base name, and nothing guarantees
-// it is free of a space.
-//
-// Empty when either half is empty, so an item whose session anchors no task, and
-// a host with no configured vault, each render no link rather than a dangling
-// one.
-func vaultFileURL(vaultName string, path string) template.URL {
-	if vaultName == "" || path == "" {
-		return ""
-	}
-	link := "obsidian://open?vault=" + obsidianQueryValue(vaultName) +
-		"&file=" + obsidianQueryValue(strings.TrimSuffix(path, ".md"))
-	// #nosec G203 -- the reported risk is "use of unescaped data in an HTML
-	// template", and the conversion is the point: html/template's URL filter
-	// admits only `http`, `https`, `mailto` and relative URLs, so an
-	// `obsidian://` href is representable no other way — without this the
-	// template renders `href="#ZgotmplZ"` and the link is dead. The value is
-	// built two lines above from the operator-configured vault name (the base
-	// name of the configured vault directory) and a filesystem-derived task
-	// path, never from producer input, and both halves are escaped with
-	// obsidianQueryValue before they are concatenated. This records the
-	// provenance; it does not waive a risk.
-	return template.URL(link)
-}
-
-// jumpPane is the pane a row's control targets, and the ONE place the two ways a
-// row can have one are ordered.
-//
-// ⚠️ A validated pane wins outright. RecordedPane is consulted only when the
-// listing could not be read, which is the single case where the board holds a
-// pane id it cannot confirm: refusing it would take the route away for a reason
-// the operator cannot see, and offering it unmarked would present an unvalidated
-// value as resolved. The row offers it AND says so — the page marks it
-// `unvalidated` — which is the only shape that is both honest and useful.
-//
-// ⚠️ A wedged `list` does NOT guarantee a dead jump, but it does not guarantee a
-// live one either, and the difference is worth stating exactly — an earlier
-// version of this comment claimed the activator "runs a different subcommand",
-// which is false. `weztermPaneActivator.Activate` reads its OWN listing first
-// (`a.panes.List`, before it ever reaches `activate-pane`) and fails on it, so a
-// click while the mux is still wedged answers 502. What makes the control work is
-// the CACHE: the resolver serves a snapshot up to provenanceCacheWindow plus one
-// refresh old while the activator reads live, so a mux that recovers inside that
-// gap turns the click into a real jump. The control is a CONDITIONAL recovery, not
-// a guaranteed route, and the row's `unvalidated` marker is what says so.
-func jumpPane(provenance pkg.Provenance) string {
-	if provenance.Pane != "" {
-		return provenance.Pane
-	}
-	if provenance.PaneListingUnreadable {
-		return provenance.RecordedPane
-	}
-	return ""
-}
-
-// jumpCommand renders the copyable half of the handover for an item the board
-// must not answer.
-//
-// ⚠️ This was the *whole* handover, and a command only, on the reasoning that a
-// browser cannot activate a WezTerm tab. That premise is false against the
-// fleet-jump server, which activates a pane from a plain HTTP GET, so the row
-// now carries jumpURL's button as well. The command stays because an operator
-// may still want to paste it — it is added to, never replaced.
-//
-// An item whose pane did not resolve yields no command, so its row renders
-// exactly as it did before: an unresolvable value renders absent rather than as
-// a stand-in, which is what the schema's silence 7 forbids.
-//
-// It is empty for a `message` item, which renders the button without the
-// command — the label above it is false for an item the board may answer in
-// place.
-func jumpCommand(item pkg.Item, provenance pkg.Provenance) string {
-	if item.AnswerMechanism == pkg.MessageAnswerMechanism {
-		return ""
-	}
-	pane := jumpPane(provenance)
-	if pane == "" {
-		return ""
-	}
-	return "/supervisor:jump " + pane
-}
-
-// jumpURL renders the clickable half of the handover: a path on this board, not
-// the fleet-jump server's URL.
-//
-// The fleet-jump URL carries the shared token as a query parameter, so putting
-// it in the page would publish the token in the served document on every load.
-// This path is called in the background and the board performs the jump
-// in-process, which keeps the browser on the board, since a real link would
-// navigate it away.
-//
-// Empty when no pane resolved — the same absence rule as jumpCommand, so a row
-// with no resolvable pane renders no button and no placeholder.
-//
-// ⚠️ The `enabled` parameter that used to gate this on a readable jump token is
-// gone, removed by the jump fold: the endpoint this path points at no longer
-// reads a token, so gating on one would hide a control that works. The pane is
-// now the only condition, which is also why a row's button and its explanation
-// cannot disagree about why it is missing.
-func jumpURL(item pkg.Item, provenance pkg.Provenance) string {
-	if jumpPane(provenance) == "" {
-		return ""
-	}
-	return "/jump/" + string(item.ItemID)
-}
-
-// noJumpReason explains, in the row's own words, why it carries no jump control.
-//
-// Empty whenever the row carries one. ⚠️ It asks jumpCommand and jumpURL
-// themselves rather than restating their guards, so the explanation cannot drift
-// from the control it explains: there is one decision, read twice.
-//
-// ⚠️ Three sentences, not one per code path, and the coarseness is read rather
-// than chosen. The reasons a pane is absent subdivide by *writer* — no state dir,
-// an unopenable one, a missing producer log, a log with no line for the key — but
-// readEvents collapses every one of its own failures into the same empty map and
-// Resolve cannot tell "no entry" from "no log", so the board has no fact to
-// separate them by. A finer split would have to be invented here rather than
-// read from the resolver, and it would name host-internal paths on a card the
-// operator reads. See [[A Card With No Jump Target Explains Why Instead of
-// Rendering Nothing]] § Results.
-//
-// ⚠️ There is deliberately NO sentence for "the listing was unreadable". A row in
-// that state carries a recorded pane and therefore renders a control, so the guard
-// above returns before any sentence — the state cannot reach this function. A
-// branch for it was written and removed rather than left standing: unreachable
-// code reads as coverage, and the sentence it produced was false for the one shape
-// that could reach it. See [[A Card Loses Its Jump Button While the Session's Pane
-// Is Still Open]].
-// ⚠️ The "jump is unavailable on this host" sentence is gone with the token
-// gate that produced it. It explained a row that HAD a resolvable pane yet
-// carried no control — the state that existed only while the button was gated
-// on a readable token. With the gate removed that state is unreachable, so the
-// sentence is deleted rather than left as a branch nothing can take. A case
-// that cannot occur is worse than a missing one: it reads as coverage.
-func noJumpReason(item pkg.Item, provenance pkg.Provenance) string {
-	if jumpCommand(item, provenance) != "" || jumpURL(item, provenance) != "" {
-		return ""
-	}
-	if provenance.PaneRecorded {
-		// A pane was recorded and does not resolve to this session: the case
-		// silence 7 marks `unroutable`. The provenance line still carries that
-		// marker; this sentence is additive rather than a replacement for it.
-		return "The pane recorded for this item does not resolve to this session."
-	}
-	return "No pane was recorded for this item, so there is no session to jump to."
+// vaultFileHref is vaultFileURL (attention-board-row.go) typed for the page
+// template.
+func vaultFileHref(vaultName string, path string) template.URL {
+	// #nosec G203 -- html/template's URL filter admits only `http`, `https`,
+	// `mailto` and relative URLs, so an `obsidian://` href is representable no
+	// other way. vaultFileURL builds it from the operator-configured vault name
+	// and a filesystem-derived task path, never from producer input, and escapes
+	// both halves.
+	return template.URL(vaultFileURL(vaultName, path))
 }
 
 // infoMetaLine renders the panel's state-and-timestamp line, and is empty when
@@ -562,38 +331,6 @@ func infoMetaLine(item pkg.Item) string {
 	default:
 		return state + " - " + created
 	}
-}
-
-// navigationSessionName is the value the session-name span renders: the
-// registry name the resolver returned, except when it repeats the task title
-// the task link already carries, in which case it is empty and the span
-// renders nothing.
-//
-// ⚠️ The two are different fields that coincide whenever a session is named
-// after its task — this vault's own `/rename <task name>` convention — so the
-// busiest cards are the ones that pay it. The task link carries the value; the
-// span is what goes, because hiding the link behind the affordance is the
-// alternative the schema rejected. A name that differs from the title is
-// returned unchanged, so no navigation value is dropped.
-func navigationSessionName(provenance pkg.Provenance) string {
-	// ⚠️ Compare GLYPH-STRIPPED, and the raw comparison is the defect this
-	// replaces. The registry name may carry Claude Code's leading status glyph
-	// (`⚙ …`) while the task title never does, so `SessionName == TaskName` was
-	// false for exactly the case this exists for — a session named after its
-	// task — and the card rendered that title twice anyway. Measured on the live
-	// board 2026-10-03: the second occurrence read
-	// `⚙ An Attention Card's Task Name Renders Twice Below the Ask and the
-	// Header Text Overlaps the Corner Icons` beside a task link carrying the
-	// same title without the glyph.
-	//
-	// pkg.StripStatusGlyph is the same stripper the pane-ownership comparison
-	// uses, deliberately: the reader and the page must not drift on what "the
-	// name" is. The value returned is the registry name as given — the glyph is
-	// the session's own decoration and is kept whenever the span renders at all.
-	if pkg.StripStatusGlyph(provenance.SessionName) == pkg.StripStatusGlyph(provenance.TaskName) {
-		return ""
-	}
-	return provenance.SessionName
 }
 
 // attentionPageQuestion is one question unit as the card renders it: the unit a
