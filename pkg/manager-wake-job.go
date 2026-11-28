@@ -1056,6 +1056,15 @@ func (p *wakePass) keeps(manager string, item Item) bool {
 			)
 			return false
 		}
+		// The item's goal is THIS manager's goal. Keep it even when a different live
+		// manager spawned the producer: without this, the spawner drops it as foreign
+		// and this manager falls to `return !isLive(spawner)` below and drops it too,
+		// so the card is kept by nobody (the C2 foreign-drop class). The Fleet Manager
+		// does not double-keep it — `ownedOnSpawnEdge` blocks the fleet for a live
+		// same-vault spawner.
+		if scoped && !foreign {
+			return true
+		}
 	}
 	spawner := p.owners[sessionID].SpawnerSessionID
 	if spawner == manager && sameVaultDir(p.owners[manager].Cwd, p.owners[sessionID].Cwd) {
