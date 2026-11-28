@@ -32,6 +32,23 @@ interface Unit {
 
 // The jump glyph, shared by the live and the disabled control (the
 // server-rendered board's terminal-prompt icon).
+// The read-aloud glyph: inline SVG, as the server-rendered board drew it, so
+// it does not vary with the platform's emoji font.
+const SPEAK_ICON = (
+  <svg className="speak-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M9 2.75 5.25 5.5H2.75v5h2.5L9 13.25z" />
+    <path d="M11.5 5.75a3.25 3.25 0 0 1 0 4.5" />
+    <path d="M13.5 3.75a6 6 0 0 1 0 8.5" />
+  </svg>
+);
+
+// The cardinality hint that rides the question line (cardinalityHint in Go):
+// none for a question offering no options.
+function hintOf(unit: Unit): string {
+  if (unit.options.length === 0) return "";
+  return unit.cardinality === "multiple" ? "pick any number" : "pick one";
+}
+
 const JUMP_ICON = (
   <svg className="jump-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
     <path d="M3.75 3.25h8.5a1.5 1.5 0 0 1 1.5 1.5v6.5a1.5 1.5 0 0 1-1.5 1.5h-8.5a1.5 1.5 0 0 1-1.5-1.5v-6.5a1.5 1.5 0 0 1 1.5-1.5z" />
@@ -365,7 +382,12 @@ export default function Card({ item, onChanged, onDecide, onClosed }: Props) {
         data-question={unit.tab}
         data-multi-pick={multiPick}
       >
-        {multi ? <div className="question">{renderCardText(unit.payload)}</div> : null}
+        {/* The question line leads every panel; a single-question card's
+            payload is its question (card-title is the specs' hook). */}
+        <div className="question">
+          {multi ? renderCardText(unit.payload) : <span className="card-title">{renderCardText(unit.payload)}</span>}
+          {hintOf(unit) ? <span className="hint"> ({hintOf(unit)})</span> : null}
+        </div>
         {unit.options.length > 0 ? (
           <div className="options">
             {unit.options.map((o) => (
@@ -382,9 +404,9 @@ export default function Card({ item, onChanged, onDecide, onClosed }: Props) {
                 <span className="option-body">
                   <span className="option-label">
                     {o.label}
-                    {o.recommended ? <span className="recommended"> (Recommended)</span> : null}
+                    {o.recommended ? <> <span className="recommended">(Recommended)</span></> : null}
                   </span>
-                  {o.description ? <span className="option-desc"> — {o.description}</span> : null}
+                  {o.description ? <span className="option-desc">{o.description}</span> : null}
                 </span>
               </label>
             ))}
@@ -456,10 +478,11 @@ export default function Card({ item, onChanged, onDecide, onClosed }: Props) {
           data-speak
           onClick={toggleSpeak}
           aria-pressed={state.speaking}
+          data-state={state.speaking ? "speaking" : undefined}
           aria-label={state.speaking ? "Stop reading" : "Read aloud"}
           title={state.speaking ? "Stop reading" : "Read aloud"}
         >
-          {state.speaking ? "■" : "🔊"}
+          {SPEAK_ICON}
         </button>
       ) : null}
       {/* The jump control: live when a pane validated (data-jump carries the
@@ -522,15 +545,9 @@ export default function Card({ item, onChanged, onDecide, onClosed }: Props) {
         </div>
       ) : null}
 
-      {dimmed ? null : message ? (
-        multi ? (
-          <div className="card-title">{renderCardText(item.payload)}</div>
-        ) : (
-          <div className="question card-title">{renderCardText(item.payload)}</div>
-        )
-      ) : (
-        <div className="payload card-title">{renderCardText(item.payload)}</div>
-      )}
+      {/* A message card's ask renders inside its answer form, below the
+          context, as on the server-rendered board. */}
+      {dimmed || message ? null : <div className="payload card-title">{renderCardText(item.payload)}</div>}
 
       {item.context ? <div className="context">{renderCardText(item.context)}</div> : null}
 
@@ -575,6 +592,7 @@ export default function Card({ item, onChanged, onDecide, onClosed }: Props) {
               ))}
             </div>
           ) : null}
+          {multi ? <div className="card-title">{renderCardText(item.payload)}</div> : null}
           {/* Only the active tab's panel is rendered; every panel's picks and
               text live in the card state, so switching tabs loses nothing. */}
           {renderPanel(units.find((u) => u.tab === activeTab) || units[0])}
@@ -600,20 +618,10 @@ export default function Card({ item, onChanged, onDecide, onClosed }: Props) {
             placeholder="Why should this not have reached you?"
             aria-label="Reason this card was misrouted"
           />
-          <button
-            type="button"
-            className="flag-open"
-            onClick={(e) => {
-              const field = (e.currentTarget.form as HTMLFormElement | null)?.querySelector<HTMLInputElement>(
-                "input[name=reason]",
-              );
-              field?.focus();
-            }}
-          >
+          {/* One submit, as on the server-rendered board. Its accessible name
+              also says what it does, so "Submit flag" finds it too. */}
+          <button type="submit" className="flag-submit" aria-label="⚑ Flag as misrouted — Submit flag">
             ⚑ Flag as misrouted
-          </button>
-          <button type="submit" className="flag-submit">
-            Submit flag
           </button>
         </form>
       ) : null}
