@@ -166,13 +166,13 @@ export default function Card({ item, onChanged, onDecide }: Props) {
       <div className="card-head">
         <span className="card-title">{item.payload}</span>
         <span className="card-controls">
-          <button type="button" onClick={toggleSpeak} aria-pressed={speaking} aria-label={speaking ? "Stop reading" : "Read aloud"}>
+          <button type="button" data-speak onClick={toggleSpeak} aria-pressed={speaking} aria-label={speaking ? "Stop reading" : "Read aloud"}>
             {speaking ? "■" : "🔊"}
           </button>
-          <button type="button" onClick={() => setInfoOpen(!infoOpen)} aria-expanded={infoOpen} aria-label="Card identity">
+          <button type="button" data-info-toggle onClick={() => setInfoOpen(!infoOpen)} aria-expanded={infoOpen} aria-label="Card identity">
             i
           </button>
-          <button type="button" onClick={() => submitAnswer("hidden")} aria-label="Hide this card">
+          <button type="button" data-corner-x onClick={() => submitAnswer("hidden")} aria-label="Hide this card">
             ✕
           </button>
         </span>
@@ -181,7 +181,7 @@ export default function Card({ item, onChanged, onDecide }: Props) {
       {item.context ? <p className="subtitle">{item.context}</p> : null}
 
       {infoOpen ? (
-        <pre className="info-panel">
+        <pre className="info-panel" data-info-panel>
           item {itemID}
           {"\n"}producer {item.producer_id} ({item.producer_kind})
           {"\n"}state {item.state}
@@ -212,6 +212,7 @@ export default function Card({ item, onChanged, onDecide }: Props) {
               <label key={o.label} className="option">
                 <input
                   type={activeUnit.cardinality === "multiple" ? "checkbox" : "radio"}
+                  data-option={o.label}
                   name={`q-${activeUnit.tab}`}
                   checked={(selections[activeUnit.tab] || []).includes(o.label)}
                   onChange={() => pick(activeUnit, o.label)}
@@ -227,6 +228,7 @@ export default function Card({ item, onChanged, onDecide }: Props) {
               <input
                 type="text"
                 className="other"
+                data-other
                 placeholder="Other…"
                 value={otherText[activeUnit.tab] || ""}
                 onChange={(e) => typeOther(activeUnit, e.target.value)}
@@ -279,7 +281,7 @@ export default function Card({ item, onChanged, onDecide }: Props) {
           </button>
         </span>
         {item.flagged_at ? (
-          <button type="button" onClick={doUnflag}>
+          <button type="button" data-unflag onClick={doUnflag}>
             Unflag
           </button>
         ) : (
@@ -290,7 +292,7 @@ export default function Card({ item, onChanged, onDecide }: Props) {
       </div>
 
       {showFlag ? (
-        <div className="flag-form">
+        <div className="flag-form" data-flag-control>
           <input type="text" name="reason" value={flagReason} onChange={(e) => setFlagReason(e.target.value)} placeholder="Why is this misrouted?" />
           <button type="button" onClick={submitFlag}>
             Submit flag

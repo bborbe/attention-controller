@@ -102,6 +102,7 @@ export default function App() {
         <button
           type="button"
           role="switch"
+          data-board-filter
           aria-checked={filters.hideOn}
           onClick={toggleHide}
         >
@@ -110,6 +111,7 @@ export default function App() {
         <button
           type="button"
           role="switch"
+          data-flag-filter
           aria-checked={filters.flagsOn}
           onClick={toggleFlags}
         >
