@@ -8,9 +8,23 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- fix: the React board coalesces its re-reads. Each stream event refetches `GET /api/1.0/attention/board` through one loader: one read in flight plus one trailing read, and stale responses are dropped. A burst of upserts no longer fans out into parallel reads that can land out of order. Each card is keyed on its item id, so an echo no longer steals focus from a field being typed in, and a missing `/assets/` file answers 404 instead of the index document (#366). These lines were folded into the `v0.113.0` entry by #366's merge, but that tag does not contain #366; they are moved here and the `v0.113.0` entry is restored to its released text.
+- fix: the React board's styling matches the server-rendered board it replaced (#367).
+  - Dismiss is transparent and Submit is filled green.
+  - Allow has a green outline, Deny a warn-orange outline, and Acknowledge is green.
+  - The flag row is a single row and always visible.
+  - The 👍/👎 buttons are bordered and show the rated colour.
+  - The question sits inside the form with its "pick one"/"pick any number" hint.
+  - The filter switches are in the old order, including "Managers only".
+  - The page is 760px wide.
+  - The read-aloud icon is the old inline SVG.
+  - The undo bar reads "Approved"/"Denied" with `Undo · U`.
+
 ## v0.113.0
 
-- feat!: **the attention board is the React app; the server-rendered page is gone.** `/` and `/assets/` serve the Vite build embedded by `assets.go` (`//go:embed all:frontend/dist`) through `pkg/handler/attention-react-page.go`, which still injects the `commit <span class="bi-value">` footer the deploy gate reads. Removed: `pkg/handler/static/` (HTML + script), `static_embed.go`, the `html/template` page and its handler (`NewAttentionPageHandler`, `factory.CreateAttentionPageHandler`), the server-side producer-kind filter, the card-text linkifier and every HTML-only row field. The per-card derivations the React card renders (jump target, navigation links, uncovered, timeline, delivery outcome, undeliverable) stay in Go as `newBoardRow` behind the new `GET /api/1.0/attention/board`, which also carries the derived `risk` (raised by the production-touching marker and the consequence class) and `blast_radius`. The board coalesces its re-reads (one in flight plus one trailing, stale responses dropped), keys each card on its item id so an echo no longer steals focus from a field being typed in, and a missing `/assets/` file now answers 404 instead of the index document. ⚠️ **The SSE frame drops `html`**: `/api/1.0/attention/stream` now sends `{type, item_id}` only, and an upsert fires when the row's board entry changes; the React board, `permission-answer-hook` and `answered-watch.py` never read `html`. The page specs that asserted card data were ported to the board JSON; layout-only specs were dropped in favour of the frontend's own specs.
+- feat: **the attention board is the React app; the server-rendered page is gone.** `/` and `/assets/` serve the Vite build embedded by `assets.go` (`//go:embed all:frontend/dist`) through `pkg/handler/attention-react-page.go`, which still injects the `commit <span class="bi-value">` footer the deploy gate reads. Removed: `pkg/handler/static/` (HTML + script), `static_embed.go`, the `html/template` page and its handler (`NewAttentionPageHandler`, `factory.CreateAttentionPageHandler`), the server-side producer-kind filter, the card-text linkifier and every HTML-only row field. The per-card derivations the React card renders (jump target, navigation links, uncovered, timeline, delivery outcome, undeliverable) stay in Go as `newBoardRow` behind `GET /api/1.0/attention/board`, which now also carries the derived `risk` (raised by the production-touching marker and the consequence class) and `blast_radius`. ⚠️ **The SSE frame drops `html`**: `/api/1.0/attention/stream` now sends `{type, item_id}` only, and an upsert fires when the row's board entry changes; the React board, `permission-answer-hook` and `answered-watch.py` never read `html`. The page specs that asserted card data were ported to the board JSON; layout-only specs were dropped in favour of the frontend's own specs.
 
 ## v0.112.0
 
