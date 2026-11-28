@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Item } from "./types";
-import { fetchBoard, seen, subscribeItems } from "./api";
+import type { BoardItem } from "./types";
+import { fetchBoard, seen, subscribeItems, takePrefetchedBoard } from "./api";
 import Card from "./Card";
 import { useHeldAnswer } from "./useHeldAnswer";
 import { syncSignature, updateCardState } from "./cardState";
@@ -43,7 +43,7 @@ function writeFilter(name: string, value: string | null) {
 }
 
 export default function App() {
-  const [items, setItems] = useState<Item[] | null>(null);
+  const [items, setItems] = useState<BoardItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   // A failed re-read after a good load: the last board stays rendered and the
   // failure is named inline.
@@ -58,7 +58,7 @@ export default function App() {
   kindRef.current = filters.kind;
 
   const load = useCallback(() => {
-    fetchBoard()
+    (takePrefetchedBoard() ?? fetchBoard())
       .then((next) => {
         for (const item of next) {
           syncSignature(item.item_id, signatureOf(item));
@@ -121,7 +121,7 @@ export default function App() {
   if (!items) return <p className="subtitle">Loading…</p>;
 
   const kindAll = filters.kind === KIND_ALL;
-  const kindMatches = (item: Item) => kindAll || item.producer_kind === filters.kind;
+  const kindMatches = (item: BoardItem) => kindAll || item.producer_kind === filters.kind;
 
   // The rows the kind filter withholds that the operator would otherwise see:
   // under the answered filter an answered record is already parked by that

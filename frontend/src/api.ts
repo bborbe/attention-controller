@@ -1,19 +1,39 @@
 // api.ts — the only module that talks to the backend.
-import type { Item } from "./types";
+import type { BoardItem, Item } from "./types";
 
 export const ATTENTION_URL = "/api/1.0/attention";
 export const BOARD_URL = "/api/1.0/attention/board";
 export const ATTENTION_STREAM_URL = "/api/1.0/attention/stream";
 
 // fetchBoard reads the board's population: open items plus the answered records
-// it renders dimmed. Distinct from fetchItems (GET /attention), which returns
-// only the open items an arm should act on.
-export async function fetchBoard(signal?: AbortSignal): Promise<Item[]> {
+// it renders dimmed, each carrying the render data the server derives for it
+// under `board` (jump target, navigation line, uncovered marker, timeline).
+// Distinct from fetchItems (GET /attention), which returns only the open items
+// an arm should act on.
+export async function fetchBoard(signal?: AbortSignal): Promise<BoardItem[]> {
   const response = await fetch(BOARD_URL, { signal });
   if (!response.ok) {
     throw new Error(`GET ${BOARD_URL} failed: ${response.status}`);
   }
-  return (await response.json()) as Item[];
+  return (await response.json()) as BoardItem[];
+}
+
+// prefetchBoard starts the first board read before React mounts, so the board's
+// rows are not held behind the first render and effect pass. The first load()
+// consumes it through takePrefetchedBoard; every later read fetches afresh.
+let prefetched: Promise<BoardItem[]> | null = null;
+
+export function prefetchBoard(): void {
+  prefetched = fetchBoard();
+  // Handled by the consumer; this only keeps an early failure from surfacing as
+  // an unhandled rejection before load() attaches its handler.
+  prefetched.catch(() => undefined);
+}
+
+export function takePrefetchedBoard(): Promise<BoardItem[]> | null {
+  const pending = prefetched;
+  prefetched = null;
+  return pending;
 }
 
 export async function fetchItems(signal?: AbortSignal): Promise<Item[]> {

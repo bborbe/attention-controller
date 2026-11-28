@@ -1,7 +1,7 @@
 // itemView.ts — pure derivations from a board item, mirroring the Go page
 // builders (pkg/handler/attention-page-helpers.go, attention-page-timeline.go)
 // so the React card renders what the server-rendered board rendered.
-import type { Answer, Item } from "./types";
+import type { Answer, BoardItem, BoardView, Item } from "./types";
 
 // isAnswered: the item is a record (answered, out of the open set).
 export function isAnswered(item: Item): boolean {
@@ -31,9 +31,49 @@ export function signatureOf(item: Item): string {
 // renderKeyOf changes whenever the card's rendered content changes, so the row
 // is re-mounted (a fresh node) exactly when the store changed it. displayed_at
 // is excluded: the board's own seen stamp is not a change the operator caused.
-export function renderKeyOf(item: Item): string {
-  const { displayed_at: _displayed, ...rest } = item as Item & { displayed_at?: unknown };
-  return `${item.item_id}|${JSON.stringify(rest)}`;
+// The board's timeline is excluded for the same reason: its `displayed` line is
+// derived from displayed_at.
+export function renderKeyOf(item: BoardItem): string {
+  const { displayed_at: _displayed, board, ...rest } = item as BoardItem & { displayed_at?: unknown };
+  const { timeline: _timeline, ...view } = boardViewOf({ board } as BoardItem);
+  return `${item.item_id}|${JSON.stringify(rest)}|${JSON.stringify(view)}`;
+}
+
+// EMPTY_VIEW is the render data of an entry the board read carried none for:
+// every derived value absent, so the card renders exactly what it renders for
+// an item whose provenance did not resolve.
+const EMPTY_VIEW: BoardView = {
+  jump_url: "",
+  jump_command: "",
+  no_jump: "",
+  uncovered: false,
+  provenance: {
+    task_name: "",
+    task_href: "",
+    goal_name: "",
+    goal_href: "",
+    topic_name: "",
+    topic_href: "",
+    session_name: "",
+    host: "",
+    cwd: "",
+    tool: "",
+    pane: "",
+    pane_unvalidated: false,
+    unroutable: false,
+  },
+  timeline: [],
+  delivery_status: "",
+  delivery_outcome: "",
+  undeliverable: false,
+  speak_enabled: false,
+};
+
+// boardViewOf returns the entry's server-derived render data
+// (pkg/handler/attention-board-view.go), or EMPTY_VIEW when the entry carries
+// none.
+export function boardViewOf(item: BoardItem): BoardView {
+  return item.board ?? EMPTY_VIEW;
 }
 
 function answerText(answer: Answer): string {
@@ -76,45 +116,6 @@ export function recordClient(item: Item): string {
       : `forwarded_for: ${client.forwarded_for}`;
   }
   return rendered;
-}
-
-const ABSENT = "—";
-
-function stamp(at: unknown): string {
-  return typeof at === "string" && at ? at : ABSENT;
-}
-
-function delta(from: unknown, to: unknown): string {
-  if (typeof from !== "string" || typeof to !== "string" || !from || !to) return ABSENT;
-  const a = Date.parse(from);
-  const b = Date.parse(to);
-  if (Number.isNaN(a) || Number.isNaN(b)) return ABSENT;
-  return `${Math.floor((b - a) / 1000)}s`;
-}
-
-// timelineOf mirrors attentionTimeline. The board JSON carries no delivery
-// report, which is the Go builder's fail-soft case: no delivery stage.
-export function timelineOf(item: Item): string[] {
-  const lines = [
-    `asked ${stamp(item.asked_at)}`,
-    `created ${stamp(item.created_at)}`,
-    `displayed ${stamp(item.displayed_at)}`,
-    `asked→created ${delta(item.asked_at, item.created_at)}`,
-    `created→displayed ${delta(item.created_at, item.displayed_at)}`,
-    `answered ${stamp(item.answered_at)}`,
-    `displayed→answered ${delta(item.displayed_at, item.answered_at)}`,
-  ];
-  if (item.answered_by) lines.push(`answered by ${item.answered_by}`);
-  lines.push(`delivered ${ABSENT}`, `answered→delivered ${ABSENT}`, `released ${ABSENT}`);
-  if (item.closed_at) {
-    let close = `closed ${stamp(item.closed_at)} ${item.answer_mechanism}`;
-    const client = recordClient(item);
-    if (client) close += ` via ${client}`;
-    lines.push(close);
-  } else {
-    lines.push(`closed ${ABSENT}`);
-  }
-  return lines;
 }
 
 // answerFailureMessage reads the store's error envelope; a stale card (the item

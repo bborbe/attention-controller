@@ -247,6 +247,7 @@ li.item {
 .payload { font-size: 15px; line-height: 1.45; margin: 6px 0 8px; white-space: pre-wrap; }
 
 .provenance,
+.uncovered-reason,
 .payload,
 .context,
 .card-title,
@@ -299,3 +300,25 @@ li.item {
 .timeline { margin: 6px 0 0; }
 .timeline-line { white-space: pre-wrap; }
 .info-panel[hidden] { display: none; }
+
+/* The jump control and the card's provenance-derived lines, mirroring the
+   server-rendered board. A disabled jump control stays in its corner slot but
+   must not look pressable. */
+.jump-corner:hover { color: var(--text); border-color: var(--border); }
+.jump-corner:disabled { cursor: default; opacity: 0.4; }
+.jump-corner:disabled:hover { color: var(--muted); border-color: transparent; }
+.jump-corner .jump-icon { width: 15px; height: 15px; flex: none; }
+.jump-reason .no-jump { color: var(--muted); }
+.jump, .jump-reason { font-size: 12px; margin: 8px 0 0; }
+.uncovered-reason { color: var(--warn); font-size: 12px; margin: 0 0 6px; }
+.delivery-undeliverable {
+  color: var(--warn);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin: 8px 0 0;
+}
+.info-panel span + span::before { content: " · "; }
+.info-panel .unroutable,
+.info-panel .unvalidated { color: var(--warn); }

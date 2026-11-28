@@ -28,9 +28,17 @@ func CreateAttentionReadHandler(store pkg.AttentionStore) http.Handler {
 }
 
 // CreateAttentionBoardReadHandler creates the handler the board page reads: the
-// open items plus the answered records it renders dimmed.
-func CreateAttentionBoardReadHandler(store pkg.AttentionStore) http.Handler {
-	return handler.NewAttentionBoardReadHandler(store)
+// open items plus the answered records it renders dimmed, each with the render
+// data the board derives for it. It takes the page handler's provenance
+// resolver, speak flag and vault directory so the JSON board and the page
+// derive a card from the same inputs.
+func CreateAttentionBoardReadHandler(
+	store pkg.AttentionStore,
+	provenance pkg.ProvenanceResolver,
+	speakEnabled bool,
+	vaultDir string,
+) http.Handler {
+	return handler.NewAttentionBoardReadHandler(store, provenance, speakEnabled, vaultDir)
 }
 
 // CreateWhoNeedsMeHandler creates the handler that returns who-needs-me's answer

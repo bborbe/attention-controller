@@ -770,6 +770,122 @@ export const ClosedState: State = "closed";
 export type States = State[];
 
 //////////
+// source: board-item.go
+
+/**
+ * BoardItem is one entry of the board read (GET /api/1.0/attention/board): the
+ * stored item, flat on the wire exactly as the arm read returns it, plus the
+ * render data the board derives for it at read time.
+ * The item is embedded so its fields stay top-level — a consumer that reads the
+ * board as a list of items keeps working — and the derived data sits under one
+ * `board` key, so a stored field and a render-time derivation can never be
+ * confused for one another.
+ */
+export interface BoardItem extends Item {
+  /**
+   * Board is what the board renders for this item beyond its stored fields.
+   */
+  board: BoardView;
+}
+/**
+ * BoardView is the per-card render data the server-rendered board computed per
+ * row, carried in the board JSON so the React board renders the same card. Every
+ * value is derived at read time from the item, its resolved provenance and its
+ * delivery report; none of it is stored.
+ */
+export interface BoardView {
+  /**
+   * JumpURL is the board-relative path (`/jump/{itemID}`) that hands the card
+   * back to its session. Empty when no pane resolved.
+   */
+  jump_url: string;
+  /**
+   * JumpCommand is the copyable `/supervisor:jump <pane>` handover for a
+   * non-`message` item. Empty when no pane resolved, and for a `message` item.
+   */
+  jump_command: string;
+  /**
+   * NoJump explains why the card carries no jump target. Empty whenever
+   * JumpURL or JumpCommand is set.
+   */
+  no_jump: string;
+  /**
+   * Uncovered reports that no live manager can relay this card.
+   */
+  uncovered: boolean;
+  /**
+   * Provenance is the navigation line and the info panel's machine identity.
+   */
+  provenance: BoardProvenance;
+  /**
+   * Timeline is the info panel's stage lines, in stage order.
+   */
+  timeline: string[];
+  /**
+   * DeliveryStatus is the derived delivery status of the card's answer.
+   * Empty when the delivery read failed.
+   */
+  delivery_status: string;
+  /**
+   * DeliveryOutcome is the info panel's delivery-outcome line. Empty when the
+   * panel renders none (read failed, or a deliberate hold).
+   */
+  delivery_outcome: string;
+  /**
+   * Undeliverable reports that the card's answer failed to reach, or was never
+   * attempted toward, the asking session.
+   */
+  undeliverable: boolean;
+  /**
+   * SpeakEnabled reports whether a tts server is configured.
+   */
+  speak_enabled: boolean;
+}
+/**
+ * BoardProvenance is the subset of a resolved Provenance the board renders.
+ * Every value is empty when it did not resolve; an unresolvable value is absent
+ * rather than a stand-in.
+ */
+export interface BoardProvenance {
+  /**
+   * TaskName and TaskHref are the vault task link leading the navigation line.
+   */
+  task_name: string;
+  task_href: string;
+  /**
+   * GoalName and GoalHref link the goal the task names first.
+   */
+  goal_name: string;
+  goal_href: string;
+  /**
+   * TopicName and TopicHref link the topic page that lists that goal.
+   */
+  topic_name: string;
+  topic_href: string;
+  /**
+   * SessionName is the session's registry name, empty when it repeats the
+   * task name the task link already carries.
+   */
+  session_name: string;
+  /**
+   * Host, Cwd and Tool are the info panel's machine identity.
+   */
+  host: string;
+  cwd: string;
+  tool: string;
+  /**
+   * Pane is the pane the info panel names: the validated pane, or the recorded
+   * one when the pane listing was unreadable (then PaneUnvalidated is set).
+   */
+  pane: string;
+  pane_unvalidated: boolean;
+  /**
+   * Unroutable reports a recorded pane that does not resolve to this session.
+   */
+  unroutable: boolean;
+}
+
+//////////
 // source: close-reason.go
 
 /**

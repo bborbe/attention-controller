@@ -1,20 +1,20 @@
 import type { FormEvent, KeyboardEvent, MouseEvent } from "react";
-import type { Item, Question } from "./types";
-import { answer, boardClient, close, flag, rate, speak, cancel, unflag } from "./api";
+import type { BoardItem, Item, Question } from "./types";
+import { answer, boardClient, close, flag, jump, rate, speak, cancel, unflag } from "./api";
 import { updateCardState, useCardState } from "./cardState";
 import type { CardState, Note } from "./cardState";
 import {
   answerFailureMessage,
+  boardViewOf,
   isDimmed,
   isStoreHeld,
   recordAnswer,
   recordClient,
   signatureOf,
-  timelineOf,
 } from "./itemView";
 
 interface Props {
-  item: Item;
+  item: BoardItem;
   onChanged: () => void;
   onDecide: (itemID: string, decision: "allow" | "deny") => void;
   // A close note outlives its card (the row leaves the board on the stream
@@ -28,6 +28,16 @@ interface Unit {
   cardinality: string;
   options: { label: string; description?: string; recommended?: boolean; exclusive?: boolean }[];
 }
+
+// The jump glyph, shared by the live and the disabled control (the
+// server-rendered board's terminal-prompt icon).
+const JUMP_ICON = (
+  <svg className="jump-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M3.75 3.25h8.5a1.5 1.5 0 0 1 1.5 1.5v6.5a1.5 1.5 0 0 1-1.5 1.5h-8.5a1.5 1.5 0 0 1-1.5-1.5v-6.5a1.5 1.5 0 0 1 1.5-1.5z" />
+    <path d="M5.75 6.5 7.5 8.25 5.75 10" />
+    <path d="M9 10h1.75" />
+  </svg>
+);
 
 // A stale-card failure line is read before the board re-reads the store.
 const STALE_RELOAD_MS = 1500;
@@ -61,6 +71,8 @@ export default function Card({ item, onChanged, onDecide, onClosed }: Props) {
   const message = item.answer_mechanism === "message";
   const permission = item.answer_mechanism === "permission";
   const ack = item.answer_mechanism === "ack";
+  const view = boardViewOf(item);
+  const prov = view.provenance;
 
   const set = (patch: Partial<CardState> | ((s: CardState) => Partial<CardState>)) =>
     updateCardState(itemID, patch);
@@ -269,6 +281,23 @@ export default function Card({ item, onChanged, onDecide, onClosed }: Props) {
     }
   }
 
+  // The jump control calls the board's own endpoint, which performs the jump
+  // server-side and answers 204, so the click switches WezTerm and leaves the
+  // board where it was.
+  async function doJump() {
+    if (!view.jump_url) return;
+    try {
+      const res = await jump(view.jump_url);
+      if (res.ok) {
+        setNote({ text: "Jumped.", error: false });
+        return;
+      }
+      setNote({ text: `Jump failed - HTTP ${res.status} - ${await res.text()}`, error: true });
+    } catch (err) {
+      setNote({ text: `Jump failed - ${String(err)}`, error: true });
+    }
+  }
+
   async function toggleSpeak() {
     if (state.speaking) {
       await cancel(itemID, "");
@@ -369,6 +398,7 @@ export default function Card({ item, onChanged, onDecide, onClosed }: Props) {
       data-item-id={itemID}
       data-held={held ? "true" : "false"}
       data-producer-kind={item.producer_kind}
+      data-uncovered={view.uncovered ? "true" : undefined}
       data-flagged={item.flag_reason ? "true" : "false"}
     >
       <button
@@ -393,6 +423,25 @@ export default function Card({ item, onChanged, onDecide, onClosed }: Props) {
           {state.speaking ? "■" : "🔊"}
         </button>
       ) : null}
+      {/* The jump control: live when a pane validated (data-jump carries the
+          board-relative /jump/{itemID} path), disabled with the same glyph when
+          none did, so the corner reads the same on every card. */}
+      {view.jump_url ? (
+        <button
+          type="button"
+          className="jump-corner"
+          data-jump={view.jump_url}
+          aria-label="Jump to session"
+          title="Jump to session"
+          onClick={doJump}
+        >
+          {JUMP_ICON}
+        </button>
+      ) : view.no_jump ? (
+        <button type="button" className="jump-corner" disabled aria-label="Jump to session" title="Jump to session">
+          {JUMP_ICON}
+        </button>
+      ) : null}
       <button
         type="button"
         className="info-toggle"
@@ -404,9 +453,33 @@ export default function Card({ item, onChanged, onDecide, onClosed }: Props) {
         i
       </button>
 
-      {item.producer_id ? (
+      {/* The navigation line leads the card: task, goal and topic links into
+          the vault, then the session name. Machine identity lives in the info
+          panel. */}
+      {prov.task_href || prov.goal_href || prov.topic_href || prov.session_name ? (
         <div className="provenance">
-          <span className="producer">{item.producer_id}</span>
+          {prov.task_href ? (
+            <span className="task">
+              <a href={prov.task_href}>{prov.task_name}</a>
+            </span>
+          ) : null}
+          {prov.goal_href ? (
+            <span className="goal">
+              <a href={prov.goal_href}>{prov.goal_name}</a>
+            </span>
+          ) : null}
+          {prov.topic_href ? (
+            <span className="topic">
+              <a href={prov.topic_href}>{prov.topic_name}</a>
+            </span>
+          ) : null}
+          {prov.session_name ? <span className="session-name">{prov.session_name}</span> : null}
+        </div>
+      ) : null}
+
+      {view.uncovered ? (
+        <div className="uncovered-reason" data-uncovered-reason>
+          Shown because no live manager can relay it.
         </div>
       ) : null}
 
@@ -529,6 +602,8 @@ export default function Card({ item, onChanged, onDecide, onClosed }: Props) {
         </button>
       </div>
 
+      {view.undeliverable ? <div className="delivery-undeliverable">undeliverable</div> : null}
+
       {!dimmed && ack ? (
         <div className="actions">
           <button type="button" className="ack" data-ack onClick={() => closeCard(true)}>
@@ -548,6 +623,20 @@ export default function Card({ item, onChanged, onDecide, onClosed }: Props) {
         </div>
       ) : null}
 
+      {view.jump_command || view.jump_url ? (
+        <div className="jump">
+          {view.jump_command ? (
+            <span>
+              Approve in the session that asked: <code>{view.jump_command}</code>
+            </span>
+          ) : null}
+        </div>
+      ) : view.no_jump ? (
+        <div className="jump-reason">
+          <span className="no-jump">{view.no_jump}</span>
+        </div>
+      ) : null}
+
       <div className="info-panel" data-info-panel hidden={!state.infoOpen}>
         <div className="item-id">item {itemID}</div>
         <div className="producer">
@@ -557,13 +646,20 @@ export default function Card({ item, onChanged, onDecide, onClosed }: Props) {
           state {item.state}
           {item.risk ? ` · risk ${item.risk}` : ""}
         </div>
+        {prov.host ? <span className="host">{prov.host}</span> : null}
+        {prov.cwd ? <span className="cwd">{prov.cwd}</span> : null}
+        {prov.tool ? <span className="tool">{prov.tool}</span> : null}
+        {prov.pane ? <span className="pane">pane {prov.pane}</span> : null}
+        {prov.pane && prov.pane_unvalidated ? <span className="unvalidated">unvalidated</span> : null}
+        {!prov.pane && prov.unroutable ? <span className="unroutable">unroutable</span> : null}
         <div className="timeline" data-timeline>
-          {timelineOf(item).map((line, i) => (
+          {view.timeline.map((line, i) => (
             <div className="timeline-line" key={i}>
               {line}
             </div>
           ))}
         </div>
+        {view.delivery_outcome ? <div className="delivery-outcome">{view.delivery_outcome}</div> : null}
       </div>
 
       {state.note ? <div className={`note${state.note.error ? " failed" : ""}`}>{state.note.text}</div> : null}
