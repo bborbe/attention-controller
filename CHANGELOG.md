@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.113.0
 
 - feat: **the attention board is the React app; the server-rendered page is gone.** `/` and `/assets/` serve the Vite build embedded by `assets.go` (`//go:embed all:frontend/dist`) through `pkg/handler/attention-react-page.go`, which still injects the `commit <span class="bi-value">` footer the deploy gate reads. Removed: `pkg/handler/static/` (HTML + script), `static_embed.go`, the `html/template` page and its handler (`NewAttentionPageHandler`, `factory.CreateAttentionPageHandler`), the server-side producer-kind filter, the card-text linkifier and every HTML-only row field. The per-card derivations the React card renders (jump target, navigation links, uncovered, timeline, delivery outcome, undeliverable) stay in Go as `newBoardRow` behind `GET /api/1.0/attention/board`, which now also carries the derived `risk` (raised by the production-touching marker and the consequence class) and `blast_radius`. ⚠️ **The SSE frame drops `html`**: `/api/1.0/attention/stream` now sends `{type, item_id}` only, and an upsert fires when the row's board entry changes; the React board, `permission-answer-hook` and `answered-watch.py` never read `html`. The page specs that asserted card data were ported to the board JSON; layout-only specs were dropped in favour of the frontend's own specs.
 
