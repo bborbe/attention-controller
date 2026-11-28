@@ -90,6 +90,18 @@ export function speak(itemID: string): Promise<Response> {
   return postJSON(itemURL(itemID, "speak"), {});
 }
 
+// speakMessageID reads the tts message id from a successful /speak response.
+// It is what a later cancel must name: the cancel endpoint refuses an empty id.
+// A body that is not JSON or carries no id yields "".
+export async function speakMessageID(response: Response): Promise<string> {
+  try {
+    const body = (await response.json()) as { message_id?: unknown } | null;
+    return typeof body?.message_id === "string" ? body.message_id : "";
+  } catch {
+    return "";
+  }
+}
+
 export function cancel(itemID: string, messageID: string): Promise<Response> {
   return postJSON(itemURL(itemID, "cancel"), { message_id: messageID });
 }

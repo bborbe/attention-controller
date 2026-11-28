@@ -1,5 +1,5 @@
 // Card unit specs for the server-derived render data the board JSON carries.
-import { render } from "@testing-library/react";
+import { fireEvent, render, waitFor } from "@testing-library/react";
 import Card from "./Card";
 import { boardViewOf } from "./itemView";
 import type { BoardItem } from "./types";
@@ -36,6 +36,60 @@ describe("Card read-aloud control", () => {
   it("renders the read-aloud control when a tts server is configured", () => {
     const { container } = renderCard(boardItem("speak-on", true));
     expect(container.querySelector("[data-speak]")).not.toBeNull();
+  });
+});
+
+// stubFetch answers /speak with a message id and /cancel with cancelStatus,
+// recording every request body by verb.
+function stubFetch(cancelStatus: number) {
+  const bodies: Record<string, unknown> = {};
+  const mock = vi.fn(async (url: string, init?: RequestInit) => {
+    const verb = url.split("/").pop() ?? "";
+    if (init?.body) bodies[verb] = JSON.parse(String(init.body));
+    if (verb === "speak") {
+      return new Response('{"message_id":"tts-msg-1"}', { status: 200 });
+    }
+    if (verb === "cancel") {
+      return new Response("{}", { status: cancelStatus });
+    }
+    return new Response(null, { status: 204 });
+  });
+  vi.stubGlobal("fetch", mock);
+  return bodies;
+}
+
+describe("Card read-aloud stop", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("stops by the message id /speak returned", async () => {
+    const bodies = stubFetch(200);
+    const { container } = renderCard(boardItem("stop-ok", true));
+    const button = container.querySelector("[data-speak]")!;
+
+    fireEvent.click(button);
+    await waitFor(() => expect(button.getAttribute("aria-pressed")).toBe("true"));
+
+    fireEvent.click(button);
+    await waitFor(() => expect(button.getAttribute("aria-pressed")).toBe("false"));
+    expect(bodies.cancel).toEqual({ message_id: "tts-msg-1" });
+  });
+
+  it("keeps speaking and shows a failure when the stop is refused", async () => {
+    const bodies = stubFetch(502);
+    const { container } = renderCard(boardItem("stop-fail", true));
+    const button = container.querySelector("[data-speak]")!;
+
+    fireEvent.click(button);
+    await waitFor(() => expect(button.getAttribute("aria-pressed")).toBe("true"));
+
+    fireEvent.click(button);
+    await waitFor(() =>
+      expect(container.querySelector(".note.failed")?.textContent).toBe("Stop reading failed - HTTP 502"),
+    );
+    expect(button.getAttribute("aria-pressed")).toBe("true");
+    expect(bodies.cancel).toEqual({ message_id: "tts-msg-1" });
   });
 });
 
