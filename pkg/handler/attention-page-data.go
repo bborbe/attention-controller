@@ -10,7 +10,6 @@
 package handler
 
 import (
-	"context"
 	"html/template"
 
 	libtime "github.com/bborbe/time"
@@ -409,29 +408,12 @@ const (
 	boardFlagsNone    = "none"
 )
 
-// deliveryReportsOf reads every card's delivery report in ONE transaction, and
-// answers an empty map when the read fails.
-//
-// ⚠️ One read for the whole board, not one per row. The per-row read this
-// replaces opened a boltdb transaction for every card drawn — measured
-// 2026-11-16 at 772 rows per render and 3.5 renders a second, ~2700 read
-// transactions a second, and the page walk behind each of them was the largest
-// single CPU consumer in the process.
-//
-// ⚠️ The failure is swallowed deliberately, on the same fail-soft rule the
-// per-row read followed: the report DECORATES a card that is already on the
-// board, so a read that fails must not turn the whole page into a 500. An empty
-// map is what makes that safe rather than merely quiet — a missing entry is no
-// status the store ever returns, so the row renders the delivery stage as absent
-// and degrades to exactly what it rendered before the timeline existed.
-func deliveryReportsOf(
-	ctx context.Context,
-	store pkg.AttentionStore,
-	items pkg.Items,
-) map[pkg.ItemID]*pkg.DeliveryReport {
-	reports, err := store.DeliveryReports(ctx, items)
-	if err != nil || reports == nil {
-		return map[pkg.ItemID]*pkg.DeliveryReport{}
-	}
-	return reports
+// Timeline returns the panel's stage lines, in stage order (see boardRow).
+func (r attentionPageRow) Timeline() []string {
+	return attentionTimeline(r.Item, r.DeliveryStatus, r.DeliveryAttemptedAt)
+}
+
+// DeliveryOutcome is boardRow.DeliveryOutcome for the page template.
+func (r attentionPageRow) DeliveryOutcome() string {
+	return boardRow{DeliveryStatus: r.DeliveryStatus}.DeliveryOutcome()
 }
