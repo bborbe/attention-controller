@@ -48,7 +48,8 @@ test("an in-progress answer survives a stream re-render", async ({ page, request
 
   const card = row(page, itemID);
   await card.locator('[data-option="alpha"]').check();
-  await card.locator("[data-other]").fill("half typed");
+  await card.locator("input[name=text]").fill("half typed");
+  await expect(card.locator("[data-other]")).toBeChecked();
   await expect(card.locator('[data-option="alpha"]')).not.toBeChecked();
 
   // A second push makes the stream re-render the whole list.
@@ -56,7 +57,8 @@ test("an in-progress answer survives a stream re-render", async ({ page, request
   await expect(row(page, other)).toBeVisible();
 
   // Picks and typed text survive.
-  await expect(row(page, itemID).locator("[data-other]")).toHaveValue("half typed");
+  await expect(row(page, itemID).locator("input[name=text]")).toHaveValue("half typed");
+  await expect(row(page, itemID).locator("[data-other]")).toBeChecked();
 });
 
 test("a shown failure note survives a stream re-render", async ({ page, request, st }) => {

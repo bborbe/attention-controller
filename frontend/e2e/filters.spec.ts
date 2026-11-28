@@ -72,7 +72,8 @@ test("the flag filter is independent of the hide switch", async ({ page, request
 
   await flagToggle.click();
   await expect(row(page, itemID)).toHaveCount(0);
-  expect(new URL(page.url()).searchParams.get("flags")).toBeNull();
+  // The old page writes the on-spelling explicitly (attention-page.js FLAGS_FLAGGED).
+  expect(new URL(page.url()).searchParams.get("flags")).toBe("flagged");
 });
 
 test("the producer-kind link switches the view and the withheld cards appear", async ({

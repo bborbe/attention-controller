@@ -187,3 +187,115 @@ body {
   cursor: pointer;
 }
 
+
+/* The corner band: the card's corner controls sit at fixed offsets in its
+   top-right corner (X at 12px, read-aloud at 48px, jump at 84px, info at
+   120px, each 28px square at top 10px), and the card's text reserves that band
+   so a long ask wraps clear of them. Mirrors the server-rendered board. */
+:root {
+  --corner-band: 148px;
+}
+
+li.item {
+  position: relative;
+}
+
+.corner-x,
+.speak,
+.info-toggle,
+.jump-corner {
+  position: absolute;
+  top: 10px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.corner-x { right: 12px; }
+.speak { right: 48px; }
+.jump-corner { right: 84px; }
+.info-toggle { right: 120px; }
+
+.corner-x:hover,
+.speak:hover,
+.info-toggle:hover {
+  color: var(--text);
+  border-color: var(--border);
+}
+
+.provenance {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  margin: 0 0 6px;
+}
+
+.provenance span + span::before { content: " · "; }
+
+.question { font-size: 17px; font-weight: 600; line-height: 1.4; margin: 0 0 20px; }
+.payload { font-size: 15px; line-height: 1.45; margin: 6px 0 8px; white-space: pre-wrap; }
+
+.provenance,
+.payload,
+.context,
+.card-title,
+.question,
+.record {
+  margin-right: calc(var(--corner-band) - 12px);
+}
+
+.item.dimmed .record-question { font-weight: 600; }
+.item.dimmed .record-answer { margin-top: .25rem; }
+.record-client { color: var(--muted); font-size: 12px; }
+
+.options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.option-desc { color: var(--muted); font-size: 13px; }
+
+.flag {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.flag input { flex: 1; }
+
+.flag button {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.rate { margin-top: 8px; }
+.rate button {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.rate button.rated { border-color: var(--accent); }
+
+.kind-hidden { color: var(--muted); font-size: 13px; }
+.stream-stale { color: var(--warn); font-size: 13px; }
+.stream-stale[hidden] { display: none; }
+.timeline { margin: 6px 0 0; }
+.timeline-line { white-space: pre-wrap; }
+.info-panel[hidden] { display: none; }

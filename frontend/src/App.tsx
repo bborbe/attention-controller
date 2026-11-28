@@ -1,16 +1,24 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Item } from "./types";
-import { fetchBoard, subscribeItems } from "./api";
+import { fetchBoard, seen, subscribeItems } from "./api";
 import Card from "./Card";
 import { useHeldAnswer } from "./useHeldAnswer";
+import { syncSignature, updateCardState } from "./cardState";
+import { answerFailureMessage, isAnswered, renderKeyOf, signatureOf } from "./itemView";
 
 const HIDE_PARAM = "hide";
 const HIDE_NONE = "none";
 const FLAGS_PARAM = "flags";
+const FLAGS_FLAGGED = "flagged";
 const FLAGS_NONE = "none";
 const KIND_PARAM = "producer_kind";
 const KIND_ALL = "all";
 const KIND_DEFAULT = "manager";
+// How long a stale-card failure line is shown before the board re-reads the
+// store, so the outcome is read before the card turns into its record.
+const STALE_RELOAD_MS = 1500;
+// How long a board-level close note ("Acknowledged.") stays up after its card left.
+const BOARD_NOTE_MS = 8000;
 
 interface Filters {
   hideOn: boolean;
@@ -37,43 +45,97 @@ function writeFilter(name: string, value: string | null) {
 export default function App() {
   const [items, setItems] = useState<Item[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // A failed re-read after a good load: the last board stays rendered and the
+  // failure is named inline.
+  const [refreshError, setRefreshError] = useState<string | null>(null);
   const [filters, setFilters] = useState<Filters>(readFilters);
+  const [tracking, setTracking] = useState(true);
+  const [boardNote, setBoardNote] = useState<{ text: string; error: boolean } | null>(null);
+  const seenRef = useRef<Set<string>>(new Set());
+  const loadedRef = useRef(false);
+  const noteTimerRef = useRef<number | null>(null);
+  const kindRef = useRef(filters.kind);
+  kindRef.current = filters.kind;
 
   const load = useCallback(() => {
     fetchBoard()
       .then((next) => {
+        for (const item of next) {
+          syncSignature(item.item_id, signatureOf(item));
+          // The board records that it painted a card, once: before any
+          // answered/flag filter parks it, but only for the kind view's rows —
+          // a card the kind view withholds was never painted.
+          const kind = kindRef.current;
+          const painted = kind === KIND_ALL || item.producer_kind === kind;
+          if (painted && !item.displayed_at && !seenRef.current.has(item.item_id)) {
+            seenRef.current.add(item.item_id);
+            seen(item.item_id);
+          }
+        }
+        loadedRef.current = true;
         setItems(next);
         setError(null);
+        setRefreshError(null);
       })
-      .catch((err: Error) => setError(err.message));
+      .catch((err: Error) => {
+        // A failed re-read (an unreadable frame, a transient 500) leaves the last
+        // rendered board in place untouched; only a board that never loaded
+        // shows the error.
+        if (!loadedRef.current) setError(err.message);
+        else setRefreshError(err.message);
+      });
   }, []);
 
-  const { held, decide, undo, cancelIfAnswered } = useHeldAnswer(load);
+  const onHeldFailed = useCallback(
+    (itemID: string, status: number, body: string) => {
+      const failure =
+        status === 0
+          ? { text: `Answer failed - ${body}`, stale: false }
+          : answerFailureMessage(status, body);
+      updateCardState(itemID, { note: { text: failure.text, error: true } });
+      if (failure.stale) window.setTimeout(load, STALE_RELOAD_MS);
+    },
+    [load],
+  );
+
+  const { held, decide, undo, cancelIfAnswered } = useHeldAnswer(load, onHeldFailed);
 
   useEffect(() => {
     load();
-    return subscribeItems(load);
+    return subscribeItems(load, setTracking);
   }, [load]);
 
-  // A held answer is cancelled when the store answers that item from another arm
-  // (a stream frame carrying it answered), so an Undo can never restore a card the
-  // store no longer has open.
   useEffect(() => {
     if (items) {
       cancelIfAnswered(items);
     }
   }, [items, cancelIfAnswered]);
 
+  const showBoardNote = useCallback((text: string, isError: boolean) => {
+    if (noteTimerRef.current !== null) clearTimeout(noteTimerRef.current);
+    setBoardNote({ text, error: isError });
+    noteTimerRef.current = window.setTimeout(() => setBoardNote(null), BOARD_NOTE_MS);
+  }, []);
+
   if (error) return <p className="err">Could not read the board: {error}</p>;
   if (!items) return <p className="subtitle">Loading…</p>;
 
+  const kindAll = filters.kind === KIND_ALL;
+  const kindMatches = (item: Item) => kindAll || item.producer_kind === filters.kind;
+
+  // The rows the kind filter withholds that the operator would otherwise see:
+  // under the answered filter an answered record is already parked by that
+  // filter, so only the open ones (store-held included) count.
+  const kindHidden = kindAll
+    ? 0
+    : items.filter((item) => !kindMatches(item) && (!filters.hideOn || !isAnswered(item))).length;
+
   const visible = items.filter((item) => {
-    const answered = item.state === "answered";
     const flagged = !!item.flagged_at;
     if (held && item.item_id === held.itemID) return false;
-    if (filters.hideOn && answered) return false;
+    if (filters.hideOn && isAnswered(item)) return false;
     if (filters.flagsOn && flagged) return false;
-    if (filters.kind !== KIND_ALL && item.producer_kind !== filters.kind) return false;
+    if (!kindMatches(item)) return false;
     return true;
   });
 
@@ -85,11 +147,10 @@ export default function App() {
 
   function toggleFlags() {
     const next = !filters.flagsOn;
-    writeFilter(FLAGS_PARAM, next ? null : FLAGS_NONE);
+    writeFilter(FLAGS_PARAM, next ? FLAGS_FLAGGED : FLAGS_NONE);
     setFilters({ ...filters, flagsOn: next });
   }
 
-  const kindAll = filters.kind === KIND_ALL;
   const kindHref = (() => {
     const url = new URL(window.location.href);
     url.searchParams.set(KIND_PARAM, kindAll ? KIND_DEFAULT : KIND_ALL);
@@ -120,6 +181,24 @@ export default function App() {
         <a href={kindHref} data-board-kind data-all-kinds={kindAll}>
           {kindAll ? "Show manager cards" : "Show all kinds"}
         </a>
+        {kindHidden > 0 ? (
+          <span className="kind-hidden" data-kind-hidden>
+            {kindHidden} hidden
+          </span>
+        ) : null}
+        <span className="stream-stale" data-stream-stale hidden={tracking}>
+          Not tracking the store - showing the last known state.
+        </span>
+        {/* In the control row, not above the list, so showing it never moves
+            the first card. */}
+        {refreshError ? (
+          <span className="err refresh-error" data-refresh-error>
+            Could not refresh the board: {refreshError}
+          </span>
+        ) : null}
+        {boardNote ? (
+          <span className={`note board-note${boardNote.error ? " failed" : ""}`}>{boardNote.text}</span>
+        ) : null}
       </div>
       <div data-undo-bar className={`undo-bar${held ? " is-active" : ""}`}>
         <span>
@@ -138,7 +217,13 @@ export default function App() {
       ) : (
         <ul className="items">
           {visible.map((item) => (
-            <Card key={item.item_id} item={item} onChanged={load} onDecide={decide} />
+            <Card
+              key={renderKeyOf(item)}
+              item={item}
+              onChanged={load}
+              onDecide={decide}
+              onClosed={showBoardNote}
+            />
           ))}
         </ul>
       )}

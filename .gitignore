@@ -21,3 +21,5 @@ gha-creds-*.json
 /frontend/node_modules
 /frontend/dist/*
 !/frontend/dist/.gitkeep
+/frontend/test-results
+/frontend/playwright-report

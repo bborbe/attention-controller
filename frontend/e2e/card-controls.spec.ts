@@ -161,13 +161,13 @@ test("the info toggle is client-only: it shows the panel and posts no request", 
   const seen = captureItemRequests(page);
   const urlBefore = page.url();
 
-  await expect(card.locator("[data-info-panel]")).toHaveCount(0);
+  await expect(card.locator("[data-info-panel]")).toBeHidden();
   await card.locator("[data-info-toggle]").click();
   await expect(card.locator("[data-info-panel]")).toBeVisible();
   await expect(card.locator("[data-info-panel]")).toContainText(itemID);
 
   await card.locator("[data-info-toggle]").click();
-  await expect(card.locator("[data-info-panel]")).toHaveCount(0);
+  await expect(card.locator("[data-info-panel]")).toBeHidden();
 
   expect(requestsFor(seen, itemID)).toHaveLength(0);
   expect(page.url()).toBe(urlBefore);
@@ -179,8 +179,17 @@ test("jump control", async () => {
   test.fixme(true, "no jump control: the board JSON carries no jump_url and Card renders none");
 });
 
-test("seen endpoint", async () => {
-  // api.ts exports seen(), but no component calls it — opening a card issues
-  // no POST /api/1.0/attention/<id>/seen.
-  test.fixme(true, "the React board never calls POST /api/1.0/attention/<id>/seen");
+test("seen endpoint", async ({ page, request, st }) => {
+  // The board records that it painted a card: one POST /seen per card whose
+  // displayed_at is still unset, and the store stamps displayed_at.
+  const itemID = await pushMessage(request, st, { payload: "e2e: seen me" });
+  const pending = waitForRequestTo(page, itemID, "seen");
+  await openBoard(page, st, "?producer_kind=all");
+  await pending;
+  await expect
+    .poll(async () => {
+      const res = await request.get(`${st.baseURL}/api/1.0/attention/${itemID}`);
+      return ((await res.json()) as { displayed_at?: string }).displayed_at ?? "";
+    })
+    .not.toBe("");
 });

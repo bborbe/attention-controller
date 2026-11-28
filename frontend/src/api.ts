@@ -60,8 +60,10 @@ export function rate(itemID: string, rating: string): Promise<Response> {
   return postJSON(itemURL(itemID, "rate"), { rating });
 }
 
-export function seen(itemID: string): Promise<Response> {
-  return postJSON(itemURL(itemID, "seen"), {});
+// seen records that the board painted a card. Fire-and-forget: the store stamps
+// displayed_at once and ignores later calls; a failure is never surfaced.
+export function seen(itemID: string): void {
+  void fetch(itemURL(itemID, "seen"), { method: "POST" }).catch(() => undefined);
 }
 
 export function speak(itemID: string): Promise<Response> {
@@ -98,11 +100,53 @@ export function answerKeepalive(itemID: string, request: unknown): void {
 
 // Subscribes to the board's SSE stream. jsdom (Vitest) has no EventSource; the
 // guard returns a no-op so a component test never throws.
-export function subscribeItems(onChange: () => void): () => void {
+//
+// onTracking reports the stream's health: false on every error, true on the next
+// message (a message means the board is tracking the store again). EventSource
+// retries a network drop by itself, but a non-200 status or a non-event-stream
+// content type closes it for good, so a CLOSED source is reconnected here with
+// exponential backoff (1 s floor, 30 s ceiling).
+export function subscribeItems(
+  onChange: () => void,
+  onTracking: (tracking: boolean) => void = () => undefined,
+): () => void {
   if (typeof EventSource === "undefined") {
     return () => undefined;
   }
-  const source = new EventSource(ATTENTION_STREAM_URL);
-  source.onmessage = () => onChange();
-  return () => source.close();
+  let source: EventSource | null = null;
+  let delayMs = 1000;
+  let timer: number | null = null;
+  let stopped = false;
+  let everOpened = false;
+
+  const connect = () => {
+    const current = new EventSource(ATTENTION_STREAM_URL);
+    source = current;
+    current.onopen = () => {
+      delayMs = 1000;
+      // A reconnect may have missed changes while the stream was down.
+      if (everOpened) onChange();
+      everOpened = true;
+    };
+    current.onerror = () => {
+      onTracking(false);
+      if (current.readyState !== EventSource.CLOSED) return;
+      if (timer !== null || stopped) return;
+      timer = window.setTimeout(() => {
+        timer = null;
+        delayMs = Math.min(delayMs * 2, 30000);
+        if (!stopped) connect();
+      }, delayMs);
+    };
+    current.onmessage = () => {
+      onTracking(true);
+      onChange();
+    };
+  };
+  connect();
+  return () => {
+    stopped = true;
+    if (timer !== null) clearTimeout(timer);
+    source?.close();
+  };
 }

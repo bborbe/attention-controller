@@ -67,8 +67,9 @@ test("typing in Other clears the pick and posts answer{kind:text,value}", async 
   await card.locator('[data-option="alpha"]').check();
   await expect(card.locator('[data-option="alpha"]')).toBeChecked();
 
-  await card.locator("[data-other]").fill("my own words");
+  await card.locator("input[name=text]").fill("my own words");
   // Typing checks the Other control and clears every pick.
+  await expect(card.locator("[data-other]")).toBeChecked();
   await expect(card.locator('[data-option="alpha"]')).not.toBeChecked();
 
   const pending = waitForRequestTo(page, itemID, "answer");
@@ -83,10 +84,10 @@ test("Enter in Other submits the answer, not Dismiss", async ({ page, request, s
   await openBoard(page, st, "?producer_kind=all");
 
   const card = row(page, itemID);
-  await card.locator("[data-other]").fill("sent with enter");
+  await card.locator("input[name=text]").fill("sent with enter");
 
   const pending = waitForRequestTo(page, itemID, "answer");
-  await card.locator("[data-other]").press("Enter");
+  await card.locator("input[name=text]").press("Enter");
 
   const { body } = await pending;
   expect(bodyAnswer(body)).toEqual({ kind: "text", value: "sent with enter" });
@@ -148,7 +149,7 @@ test("multi-question tabs show one panel at a time and keep the other's input", 
   await expect(card.locator('[data-question="Alpha"]')).toBeVisible();
   await expect(card.locator('[data-question="Beta"]')).toHaveCount(0);
 
-  await card.locator('[data-question="Alpha"] [data-other]').fill("kept across tabs");
+  await card.locator('[data-question="Alpha"] input[name=text]').fill("kept across tabs");
 
   await card.locator('[data-tab="Beta"]').click();
   await expect(card.locator('[data-question="Beta"]')).toBeVisible();
@@ -156,7 +157,7 @@ test("multi-question tabs show one panel at a time and keep the other's input", 
   await expect(card.locator('[data-tab="Beta"]')).toHaveClass(/active/);
 
   await card.locator('[data-tab="Alpha"]').click();
-  await expect(card.locator('[data-question="Alpha"] [data-other]')).toHaveValue(
+  await expect(card.locator('[data-question="Alpha"] input[name=text]')).toHaveValue(
     "kept across tabs",
   );
 });

@@ -26,7 +26,10 @@ const SUPPRESS_MS = 400;
 // answer reaches the store. Undo (button or `U`) cancels it; answering another
 // card flushes it; leaving the page delivers it with keepalive so a held answer
 // is never dropped. The hold is client-side — the schema has no reopen endpoint.
-export function useHeldAnswer(onChanged: () => void): HeldAnswerApi {
+export function useHeldAnswer(
+  onChanged: () => void,
+  onFailed: (itemID: string, status: number, body: string) => void = () => undefined,
+): HeldAnswerApi {
   const [held, setHeld] = useState<HeldAnswer | null>(null);
   const timerRef = useRef<number | null>(null);
   const heldRef = useRef<HeldAnswer | null>(null);
@@ -44,11 +47,19 @@ export function useHeldAnswer(onChanged: () => void): HeldAnswerApi {
       clearTimer();
       heldRef.current = null;
       setHeld(null);
-      void answer(pending.itemID, { ...boardClient(), decision: pending.decision }).then(() =>
-        onChanged(),
-      );
+      void answer(pending.itemID, { ...boardClient(), decision: pending.decision })
+        .then(async (response) => {
+          if (!response.ok) {
+            onFailed(pending.itemID, response.status, await response.text());
+          }
+          onChanged();
+        })
+        .catch((error: unknown) => {
+          onFailed(pending.itemID, 0, String(error));
+          onChanged();
+        });
     },
-    [clearTimer, onChanged],
+    [clearTimer, onChanged, onFailed],
   );
 
   const decide = useCallback(
@@ -84,8 +95,10 @@ export function useHeldAnswer(onChanged: () => void): HeldAnswerApi {
       if (!current) {
         return;
       }
+      // Answered elsewhere (a record, or an open item carrying another arm's
+      // answer) or gone from the board (closed): the hold is moot.
       const found = items.find((item) => item.item_id === current.itemID);
-      if (found && found.state === "answered") {
+      if (!found || found.state !== "open" || found.answered_at) {
         clearTimer();
         heldRef.current = null;
         setHeld(null);
@@ -96,6 +109,18 @@ export function useHeldAnswer(onChanged: () => void): HeldAnswerApi {
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
+      // Never steal a keystroke: a held modifier is another shortcut, and a
+      // focused field is the operator typing.
+      if (event.metaKey || event.ctrlKey || event.altKey) {
+        return;
+      }
+      const target = event.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)
+      ) {
+        return;
+      }
       if ((event.key === "u" || event.key === "U") && heldRef.current) {
         event.preventDefault();
         undo();
