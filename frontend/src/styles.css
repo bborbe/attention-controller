@@ -1,6 +1,6 @@
-/* The house palette — plain CSS variables, declared once at the root.
-   color-scheme: dark is load-bearing: it makes the browser render scrollbars,
-   form controls and the canvas backdrop dark too. */
+/* The board's look, ported rule for rule from the server-rendered board's
+   stylesheet (attentionPageStyles), so the React board reads the same. Rules
+   for elements only the React board renders follow at the end. */
 :root {
   color-scheme: dark;
   --bg: #111418;
@@ -8,224 +8,83 @@
   --border: #2a3038;
   --text: #e8edf2;
   --muted: #8b95a3;
-  --accent: #4f8cff;
-  --ok: #38c172;
   --warn: #d08b5b;
   --err: #e55b5b;
-  /* The three risk tokens, in the operator's own vocabulary: gray for routine,
-     yellow for a decision, red for risk. They colour a card's left band and
-     nothing else — never its order. The class is set from the DERIVED level
-     (board.risk), which is what lets a card whose payload names a destructive
-     operation read red even though its producer declared routine. */
+  /* Submit answer is the forward move, so it reads as the affirmative one
+     beside a muted Dismiss. */
+  --green: #8fd39a;
+  --green-bg: #2c4a37;
+  /* The three risk tokens colour a card's left band and nothing else — never
+     its order. The class is set from the DERIVED level (board.risk). */
   --risk-routine: #6b7280;
   --risk-decision: #d0a35b;
   --risk-risk: #d05b5b;
+  /* The corner band: X at right 12px, read-aloud at 48px, jump at 84px, info at
+     120px, each 28px square at top 10px. The card's text reserves it. */
+  --corner-band: 148px;
 }
-
+* { box-sizing: border-box; }
 body {
   margin: 0 auto;
-  max-width: 860px;
+  max-width: 760px;
   padding: 24px;
   background: var(--bg);
   color: var(--text);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
-
-.subtitle {
-  color: var(--muted);
-  font-size: 13px;
-}
-
-.err {
-  color: var(--err);
-}
-
-.board-controls {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  margin-bottom: 16px;
-  color: var(--muted);
-  font-size: 13px;
-}
-
-.items {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.item {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 14px;
-}
-
-.item.dimmed {
-  opacity: 0.6;
-}
-
-/* The rendered risk level, as a left band. Per-card colour only: the board's
-   order stays the store's, so a red card is no higher than a green one. */
-.item.risk-routine {
-  border-left: 4px solid var(--risk-routine);
-}
-
-.item.risk-decision {
-  border-left: 4px solid var(--risk-decision);
-}
-
-.item.risk-risk {
-  border-left: 4px solid var(--risk-risk);
-}
-
-.card-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: start;
-  gap: 12px;
-}
-
-.card-title {
-  font-weight: 600;
-}
-
-.card-controls button {
-  background: none;
-  border: none;
-  color: var(--muted);
-  cursor: pointer;
-  font-size: 14px;
-}
-
-.answer .tabs {
-  display: flex;
-  gap: 6px;
-  margin: 8px 0;
-}
-
-.answer .tabs button.active {
-  border-color: var(--accent);
-  color: var(--text);
-}
-
-.panel {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin: 8px 0;
-}
-
-.option,
-.option-other {
-  display: flex;
-  gap: 8px;
-  align-items: baseline;
-}
-
-.option-other input.other {
-  flex: 1;
-}
-
-.actions {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  margin-top: 8px;
-}
-
-.actions button,
-.flag-form button,
-.tabs button {
-  background: var(--bg);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 4px 10px;
-  cursor: pointer;
-}
-
-.rating button.rated {
-  color: var(--accent);
-}
-
-.flag-form {
-  display: flex;
-  gap: 8px;
-  margin-top: 8px;
-}
-
-.flag-form input {
-  flex: 1;
-}
-
-.note {
-  margin-top: 8px;
-  color: var(--muted);
-  font-size: 13px;
-}
-
-.note.failed {
-  color: var(--err);
-}
-
-.info-panel {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 8px;
-  font-size: 12px;
-  color: var(--muted);
-  overflow-x: auto;
-}
-
+h1 { font-size: 20px; margin: 0 0 16px; }
+ul.items { list-style: none; padding: 0; margin: 0; }
+.board-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 0 0 16px; }
 /* The held-answer bar. It always occupies its height (visibility, not display)
    so showing it never moves the first card — the e2e contract measures a 0 px
    offsetTop delta. Only .is-active reveals it. */
 .undo-bar {
   display: flex;
   align-items: center;
-  height: 44px;
-  margin-bottom: 12px;
-  color: var(--muted);
-  font-size: 13px;
+  gap: 10px;
+  height: 40px;
+  margin: 0 0 12px;
   visibility: hidden;
 }
-
-.undo-bar.is-active {
-  visibility: visible;
-}
-
-.undo-bar button {
-  background: var(--bg);
+.undo-bar.is-active { visibility: visible; }
+.undo-verb { font-weight: 600; }
+.undo-verb::after { content: ": "; }
+.undo-title { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 48ch; }
+.undo-button {
+  font-family: inherit;
+  font-size: 13px;
+  background: transparent;
   color: var(--text);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 4px 10px;
+  border-radius: 8px;
+  padding: 5px 12px;
   cursor: pointer;
 }
-
-
-/* The corner band: the card's corner controls sit at fixed offsets in its
-   top-right corner (X at 12px, read-aloud at 48px, jump at 84px, info at
-   120px, each 28px square at top 10px), and the card's text reserves that band
-   so a long ask wraps clear of them. Mirrors the server-rendered board. */
-:root {
-  --corner-band: 148px;
-}
-
+.undo-button:hover { border-color: var(--muted); }
+.item.dimmed { opacity: .5; }
+.item.dimmed .record-question { font-weight: 600; }
+.item.dimmed .record-answer { margin-top: .25rem; }
 li.item {
   position: relative;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+  margin-bottom: 12px;
 }
-
+li.item.risk-routine { border-left: 4px solid var(--risk-routine); }
+li.item.risk-decision { border-left: 4px solid var(--risk-decision); }
+li.item.risk-risk { border-left: 4px solid var(--risk-risk); }
+.producer {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
 .corner-x,
 .speak,
-.info-toggle,
-.jump-corner {
+.jump-corner,
+.info-toggle {
   position: absolute;
   top: 10px;
   width: 28px;
@@ -243,31 +102,67 @@ li.item {
   line-height: 1;
   cursor: pointer;
 }
-
 .corner-x { right: 12px; }
 .speak { right: 48px; }
 .jump-corner { right: 84px; }
 .info-toggle { right: 120px; }
-
 .corner-x:hover,
 .speak:hover,
-.info-toggle:hover {
-  color: var(--text);
-  border-color: var(--border);
-}
-
+.jump-corner:hover,
+.info-toggle:hover { color: var(--text); border-color: var(--border); }
+.info-toggle[aria-expanded="true"] { color: var(--text); border-color: var(--border); }
+/* The read-aloud toggle's speaking state: only the colour and border move. */
+.speak[data-state="speaking"],
+.speak[data-state="speaking"]:hover { color: var(--green); border-color: var(--green); }
+.speak .speak-icon,
+.jump-corner .jump-icon { width: 15px; height: 15px; flex: none; }
+/* A disabled jump control stays in its corner slot but must not look pressable. */
+.jump-corner:disabled { cursor: default; opacity: 0.4; }
+.jump-corner:disabled:hover { color: var(--muted); border-color: transparent; }
+.payload { font-size: 15px; line-height: 1.45; margin: 6px 0 8px; white-space: pre-wrap; }
 .provenance {
   color: var(--muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
   margin: 0 0 6px;
 }
-
 .provenance span + span::before { content: " · "; }
-
+.provenance .unroutable { color: var(--warn); }
+.jump-reason .no-jump { color: var(--muted); }
+.meta { color: var(--muted); font-size: 12px; }
+.info-panel {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  margin: 8px 0 0;
+}
+.info-panel span + span::before { content: " · "; }
+.info-panel .unroutable,
+.info-panel .unvalidated { color: var(--warn); }
+.empty { color: var(--muted); font-size: 14px; }
+.context { color: var(--muted); font-size: 13px; line-height: 1.45; margin: 0 0 8px; white-space: pre-wrap; }
+/* One tab per question; the active tab is outlined rather than filled. */
+.tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 20px; }
+.tab {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid transparent;
+  border-radius: 9px;
+  padding: 7px 15px;
+  font-size: 14px;
+  font-family: inherit;
+  cursor: pointer;
+}
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--text); background: var(--bg); border-color: var(--muted); }
+/* A multi-question item's own payload: the card's title, muted. */
+.card-title { color: var(--muted); font-size: 15px; line-height: 1.45; margin: 0 0 16px; white-space: pre-wrap; }
 .question { font-size: 17px; font-weight: 600; line-height: 1.4; margin: 0 0 20px; }
-.payload { font-size: 15px; line-height: 1.45; margin: 6px 0 8px; white-space: pre-wrap; }
-
+.question .hint { font-weight: 400; color: var(--muted); }
+/* The React board also tags the single question and the plain payload with
+   card-title (a spec hook), so the muted title look applies to neither. */
+.question > .card-title { color: inherit; font-size: inherit; line-height: inherit; margin: 0; white-space: normal; }
+.payload.card-title { color: var(--text); margin-top: 6px; margin-bottom: 8px; }
 .provenance,
 .uncovered-reason,
 .payload,
@@ -277,70 +172,129 @@ li.item {
 .record {
   margin-right: calc(var(--corner-band) - 12px);
 }
-
-.item.dimmed .record-question { font-weight: 600; }
-.item.dimmed .record-answer { margin-top: .25rem; }
-.record-client { color: var(--muted); font-size: 12px; }
-
-.options {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.option-desc { color: var(--muted); font-size: 13px; }
-
-.flag {
-  display: flex;
-  gap: 8px;
-  margin-top: 8px;
-}
-
-.flag input { flex: 1; }
-
-.flag button {
-  background: var(--bg);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 4px 10px;
-  cursor: pointer;
-}
-
-.rate { margin-top: 8px; }
-.rate button {
-  background: none;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  cursor: pointer;
-}
-.rate button.rated { border-color: var(--accent); }
-
-.kind-hidden { color: var(--muted); font-size: 13px; }
-.stream-stale { color: var(--warn); font-size: 13px; }
-.stream-stale[hidden] { display: none; }
-.timeline { margin: 6px 0 0; }
-.timeline-line { white-space: pre-wrap; }
-.info-panel[hidden] { display: none; }
-
-/* The jump control and the card's provenance-derived lines, mirroring the
-   server-rendered board. A disabled jump control stays in its corner slot but
-   must not look pressable. */
-.jump-corner:hover { color: var(--text); border-color: var(--border); }
-.jump-corner:disabled { cursor: default; opacity: 0.4; }
-.jump-corner:disabled:hover { color: var(--muted); border-color: transparent; }
-.jump-corner .jump-icon { width: 15px; height: 15px; flex: none; }
-.jump-reason .no-jump { color: var(--muted); }
-.jump, .jump-reason { font-size: 12px; margin: 8px 0 0; }
-.uncovered-reason { color: var(--warn); font-size: 12px; margin: 0 0 6px; }
+/* The undeliverable marker reads as a warning and is never hidden. */
 .delivery-undeliverable {
   color: var(--warn);
   font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  margin: 8px 0 0;
+  margin: 0 0 12px;
 }
-.info-panel span + span::before { content: " · "; }
-.info-panel .unroutable,
-.info-panel .unvalidated { color: var(--warn); }
+.options { display: flex; flex-direction: column; gap: 18px; margin: 0 0 22px; }
+.option { display: flex; align-items: flex-start; gap: 12px; cursor: pointer; }
+/* Direct child: the Other option nests a text field inside its own body. */
+.option > input { flex: none; width: 16px; height: 16px; margin: 3px 0 0; accent-color: var(--muted); }
+.option-body { flex: 1 1 auto; min-width: 0; }
+.option-label { display: block; font-size: 15px; line-height: 1.4; }
+.option-label .recommended { color: var(--muted); }
+.option-desc { display: block; color: var(--muted); font-size: 14px; line-height: 1.45; margin-top: 4px; }
+.other {
+  width: 100%;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 13px 15px;
+  font-size: 14px;
+  font-family: inherit;
+  margin: 0 0 20px;
+}
+.other::placeholder { color: var(--muted); }
+.option .other { margin: 8px 0 0; }
+.actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.actions button {
+  font-family: inherit;
+  font-size: 14px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 9px 18px;
+  cursor: pointer;
+}
+/* Dismiss is the skip, so it is muted; Submit answer carries the colour. */
+.actions .dismiss { background: transparent; color: var(--muted); }
+.actions .dismiss:hover { color: var(--text); border-color: var(--muted); }
+.actions .next { background: var(--green-bg); color: var(--green); border-color: var(--green-bg); font-weight: 500; }
+.actions .next:hover { border-color: var(--green); }
+/* A permission card's pair is a DECISION, not a walk step: two outlined,
+   equally weighted choices, restyled through data-decision so neither reads as
+   the board's green forward move. */
+.actions button[data-decision] { background: transparent; font-weight: 500; }
+.actions button[data-decision="allow"] { color: var(--green); border-color: var(--green); }
+.actions button[data-decision="allow"]:hover { background: var(--panel); }
+.actions button[data-decision="deny"] { color: var(--warn); border-color: var(--warn); }
+.actions button[data-decision="deny"]:hover { background: var(--panel); }
+/* Acknowledge is a report-only card's only move, so it takes the affirmative colour. */
+.actions .ack { background: var(--green-bg); color: var(--green); border-color: var(--green-bg); font-weight: 500; }
+.actions .ack:hover { border-color: var(--green); }
+.jump { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; color: var(--muted); font-size: 12px; margin: 8px 0 0; }
+.jump:empty { margin: 0; }
+.jump code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 6px;
+  user-select: all;
+}
+/* The board's filters are switches: the track carries the state in colour, the
+   knob in position. */
+.board-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+  text-decoration: none;
+}
+.kind-hidden { color: var(--muted); font-size: 13px; }
+.board-filter .switch { width: 44px; height: 24px; display: block; flex: none; }
+.board-filter .switch-track {
+  fill: var(--panel);
+  stroke: var(--border);
+  stroke-width: 2;
+  transition: fill 120ms ease, stroke 120ms ease;
+}
+.board-filter .switch-knob { fill: var(--text); transition: transform 120ms ease; }
+.board-filter:hover .switch-track { stroke: var(--muted); }
+/* After :hover deliberately: the state outranks the pointer. */
+.board-filter[aria-checked="true"] .switch-track,
+.board-filter[data-all-kinds="true"] .switch-track {
+  fill: var(--green-bg);
+  stroke: var(--green);
+}
+.board-filter[aria-checked="true"] .switch-knob,
+.board-filter[data-all-kinds="true"] .switch-knob { transform: translateX(20px); }
+.board-filter:focus-visible .switch-track { stroke: var(--text); }
+.stream-stale { color: var(--warn); font-size: 13px; }
+.stream-stale[hidden] { display: none; }
+.note { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
+.note.failed { color: var(--warn); }
+.build-identity { color: var(--muted); font-size: 12px; margin: 24px 0 0; padding-top: 12px; border-top: 1px solid var(--border); }
+.build-identity .bi-value { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text); }
+.build-identity .bi-absent { color: var(--warn); }
+/* The flag control is its own form beside the answer form, never inside it. */
+.flag { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0 0; }
+.flag input { flex: 1 1 220px; }
+.flag-reason-shown { margin: 8px 0 0; color: var(--muted); }
+/* The rating pair renders on every row; the chosen icon is highlighted from
+   the stored value. */
+.rate { display: inline-flex; gap: 4px; margin: 8px 0 0; }
+.rate-btn { background: none; border: 1px solid var(--border); border-radius: 6px; padding: 2px 8px; cursor: pointer; opacity: .45; }
+.rate-btn.rated { opacity: 1; background: var(--green-bg); border-color: var(--green); }
+.rate-btn[data-rate=down].rated { background: var(--panel); border-color: var(--warn); }
+.timeline { margin: 6px 0 0; }
+.timeline-line { white-space: pre-wrap; }
+.delivery-outcome { margin: 6px 0 0; }
+
+/* Elements only the React board renders. */
+.err { color: var(--err); }
+.board-note { margin: 0; }
+.info-panel[hidden] { display: none; }
+.uncovered-reason { color: var(--warn); font-size: 12px; margin: 0 0 6px; }
+.subtitle { color: var(--muted); font-size: 13px; }

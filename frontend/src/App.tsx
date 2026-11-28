@@ -44,6 +44,14 @@ function writeFilter(name: string, value: string | null) {
   window.history.replaceState(null, "", url);
 }
 
+// The filter switch: the track carries the state in colour, the knob in position.
+const SWITCH = (
+  <svg className="switch" viewBox="0 0 44 24" aria-hidden="true" focusable="false">
+    <rect className="switch-track" x="1" y="1" width="42" height="22" rx="11" />
+    <circle className="switch-knob" cx="12" cy="12" r="8" />
+  </svg>
+);
+
 export default function App() {
   const [items, setItems] = useState<BoardItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -162,6 +170,10 @@ export default function App() {
     return true;
   });
 
+  // The undo bar names what is held: the held card's ask, single-lined.
+  const heldItem = held ? items?.find((item) => item.item_id === held.itemID) : undefined;
+  const heldTitle = held ? (heldItem?.payload || held.itemID).replace(/\s+/g, " ").trim() : "";
+
   function toggleHide() {
     const next = !filters.hideOn;
     writeFilter(HIDE_PARAM, next ? null : HIDE_NONE);
@@ -182,33 +194,39 @@ export default function App() {
 
   return (
     <div>
+      <h1>Attention</h1>
       <div className="board-controls">
-        <button
-          type="button"
-          role="switch"
-          data-board-filter
-          aria-checked={filters.hideOn}
-          onClick={toggleHide}
-        >
-          Hide answered
-        </button>
-        <button
-          type="button"
-          role="switch"
-          data-flag-filter
-          aria-checked={filters.flagsOn}
-          onClick={toggleFlags}
-        >
-          Hide flagged
-        </button>
-        <a href={kindHref} data-board-kind data-all-kinds={kindAll}>
-          {kindAll ? "Show manager cards" : "Show all kinds"}
+        <a className="board-filter" href={kindHref} data-board-kind data-all-kinds={kindAll}>
+          {SWITCH}
+          <span className="switch-label">{kindAll ? "Show manager cards" : "Show all kinds"}</span>
         </a>
         {kindHidden > 0 ? (
           <span className="kind-hidden" data-kind-hidden>
             {kindHidden} hidden
           </span>
         ) : null}
+        <button
+          type="button"
+          className="board-filter"
+          role="switch"
+          data-board-filter
+          aria-checked={filters.hideOn}
+          onClick={toggleHide}
+        >
+          {SWITCH}
+          <span className="switch-label">Hide answered</span>
+        </button>
+        <button
+          type="button"
+          className="board-filter flag-filter"
+          role="switch"
+          data-flag-filter
+          aria-checked={filters.flagsOn}
+          onClick={toggleFlags}
+        >
+          {SWITCH}
+          <span className="switch-label">Hide flagged</span>
+        </button>
         <span className="stream-stale" data-stream-stale hidden={tracking}>
           Not tracking the store - showing the last known state.
         </span>
@@ -224,12 +242,11 @@ export default function App() {
         ) : null}
       </div>
       <div data-undo-bar className={`undo-bar${held ? " is-active" : ""}`}>
-        <span>
-          Answer held for a moment —{" "}
-          <button type="button" data-undo onClick={undo}>
-            Undo
-          </button>
-        </span>
+        <span className="undo-verb">{held ? (held.decision === "allow" ? "Approved" : "Denied") : ""}</span>
+        <span className="undo-title">{heldTitle}</span>
+        <button type="button" className="undo-button" data-undo onClick={undo}>
+          Undo · U
+        </button>
       </div>
       {visible.length === 0 ? (
         <p className="empty">
