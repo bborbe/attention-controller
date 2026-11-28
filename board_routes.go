@@ -10,7 +10,6 @@ import (
 	"net/http"
 
 	"github.com/bborbe/errors"
-
 	"github.com/gorilla/mux"
 
 	"github.com/bborbe/attention-controller/pkg"
