@@ -126,6 +126,20 @@ type AttentionStore struct {
 		result1 map[pkg.ItemID]*pkg.DeliveryReport
 		result2 error
 	}
+	DrainPendingWakesStub        func(context.Context, string) (pkg.Items, error)
+	drainPendingWakesMutex       sync.RWMutex
+	drainPendingWakesArgsForCall []struct {
+		arg1 context.Context
+		arg2 string
+	}
+	drainPendingWakesReturns struct {
+		result1 pkg.Items
+		result2 error
+	}
+	drainPendingWakesReturnsOnCall map[int]struct {
+		result1 pkg.Items
+		result2 error
+	}
 	EscalateStub        func(context.Context, pkg.ItemID, string) (*pkg.Item, error)
 	escalateMutex       sync.RWMutex
 	escalateArgsForCall []struct {
@@ -254,6 +268,20 @@ type AttentionStore struct {
 	parkDeliveryReturnsOnCall map[int]struct {
 		result1 error
 	}
+	PendingWakesStub        func(context.Context, string) (pkg.Items, error)
+	pendingWakesMutex       sync.RWMutex
+	pendingWakesArgsForCall []struct {
+		arg1 context.Context
+		arg2 string
+	}
+	pendingWakesReturns struct {
+		result1 pkg.Items
+		result2 error
+	}
+	pendingWakesReturnsOnCall map[int]struct {
+		result1 pkg.Items
+		result2 error
+	}
 	PushStub        func(context.Context, pkg.PushRequest) (*pkg.Item, error)
 	pushMutex       sync.RWMutex
 	pushArgsForCall []struct {
@@ -267,6 +295,19 @@ type AttentionStore struct {
 	pushReturnsOnCall map[int]struct {
 		result1 *pkg.Item
 		result2 error
+	}
+	PutPendingWakeStub        func(context.Context, string, pkg.ItemID) error
+	putPendingWakeMutex       sync.RWMutex
+	putPendingWakeArgsForCall []struct {
+		arg1 context.Context
+		arg2 string
+		arg3 pkg.ItemID
+	}
+	putPendingWakeReturns struct {
+		result1 error
+	}
+	putPendingWakeReturnsOnCall map[int]struct {
+		result1 error
 	}
 	RateStub        func(context.Context, pkg.ItemID, pkg.Rating) (*pkg.Item, error)
 	rateMutex       sync.RWMutex
@@ -923,6 +964,71 @@ func (fake *AttentionStore) DeliveryReportsReturnsOnCall(i int, result1 map[pkg.
 	}{result1, result2}
 }
 
+func (fake *AttentionStore) DrainPendingWakes(arg1 context.Context, arg2 string) (pkg.Items, error) {
+	fake.drainPendingWakesMutex.Lock()
+	ret, specificReturn := fake.drainPendingWakesReturnsOnCall[len(fake.drainPendingWakesArgsForCall)]
+	fake.drainPendingWakesArgsForCall = append(fake.drainPendingWakesArgsForCall, struct {
+		arg1 context.Context
+		arg2 string
+	}{arg1, arg2})
+	stub := fake.DrainPendingWakesStub
+	fakeReturns := fake.drainPendingWakesReturns
+	fake.recordInvocation("DrainPendingWakes", []interface{}{arg1, arg2})
+	fake.drainPendingWakesMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *AttentionStore) DrainPendingWakesCallCount() int {
+	fake.drainPendingWakesMutex.RLock()
+	defer fake.drainPendingWakesMutex.RUnlock()
+	return len(fake.drainPendingWakesArgsForCall)
+}
+
+func (fake *AttentionStore) DrainPendingWakesCalls(stub func(context.Context, string) (pkg.Items, error)) {
+	fake.drainPendingWakesMutex.Lock()
+	defer fake.drainPendingWakesMutex.Unlock()
+	fake.DrainPendingWakesStub = stub
+}
+
+func (fake *AttentionStore) DrainPendingWakesArgsForCall(i int) (context.Context, string) {
+	fake.drainPendingWakesMutex.RLock()
+	defer fake.drainPendingWakesMutex.RUnlock()
+	argsForCall := fake.drainPendingWakesArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2
+}
+
+func (fake *AttentionStore) DrainPendingWakesReturns(result1 pkg.Items, result2 error) {
+	fake.drainPendingWakesMutex.Lock()
+	defer fake.drainPendingWakesMutex.Unlock()
+	fake.DrainPendingWakesStub = nil
+	fake.drainPendingWakesReturns = struct {
+		result1 pkg.Items
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *AttentionStore) DrainPendingWakesReturnsOnCall(i int, result1 pkg.Items, result2 error) {
+	fake.drainPendingWakesMutex.Lock()
+	defer fake.drainPendingWakesMutex.Unlock()
+	fake.DrainPendingWakesStub = nil
+	if fake.drainPendingWakesReturnsOnCall == nil {
+		fake.drainPendingWakesReturnsOnCall = make(map[int]struct {
+			result1 pkg.Items
+			result2 error
+		})
+	}
+	fake.drainPendingWakesReturnsOnCall[i] = struct {
+		result1 pkg.Items
+		result2 error
+	}{result1, result2}
+}
+
 func (fake *AttentionStore) Escalate(arg1 context.Context, arg2 pkg.ItemID, arg3 string) (*pkg.Item, error) {
 	fake.escalateMutex.Lock()
 	ret, specificReturn := fake.escalateReturnsOnCall[len(fake.escalateArgsForCall)]
@@ -1508,6 +1614,71 @@ func (fake *AttentionStore) ParkDeliveryReturnsOnCall(i int, result1 error) {
 	}{result1}
 }
 
+func (fake *AttentionStore) PendingWakes(arg1 context.Context, arg2 string) (pkg.Items, error) {
+	fake.pendingWakesMutex.Lock()
+	ret, specificReturn := fake.pendingWakesReturnsOnCall[len(fake.pendingWakesArgsForCall)]
+	fake.pendingWakesArgsForCall = append(fake.pendingWakesArgsForCall, struct {
+		arg1 context.Context
+		arg2 string
+	}{arg1, arg2})
+	stub := fake.PendingWakesStub
+	fakeReturns := fake.pendingWakesReturns
+	fake.recordInvocation("PendingWakes", []interface{}{arg1, arg2})
+	fake.pendingWakesMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *AttentionStore) PendingWakesCallCount() int {
+	fake.pendingWakesMutex.RLock()
+	defer fake.pendingWakesMutex.RUnlock()
+	return len(fake.pendingWakesArgsForCall)
+}
+
+func (fake *AttentionStore) PendingWakesCalls(stub func(context.Context, string) (pkg.Items, error)) {
+	fake.pendingWakesMutex.Lock()
+	defer fake.pendingWakesMutex.Unlock()
+	fake.PendingWakesStub = stub
+}
+
+func (fake *AttentionStore) PendingWakesArgsForCall(i int) (context.Context, string) {
+	fake.pendingWakesMutex.RLock()
+	defer fake.pendingWakesMutex.RUnlock()
+	argsForCall := fake.pendingWakesArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2
+}
+
+func (fake *AttentionStore) PendingWakesReturns(result1 pkg.Items, result2 error) {
+	fake.pendingWakesMutex.Lock()
+	defer fake.pendingWakesMutex.Unlock()
+	fake.PendingWakesStub = nil
+	fake.pendingWakesReturns = struct {
+		result1 pkg.Items
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *AttentionStore) PendingWakesReturnsOnCall(i int, result1 pkg.Items, result2 error) {
+	fake.pendingWakesMutex.Lock()
+	defer fake.pendingWakesMutex.Unlock()
+	fake.PendingWakesStub = nil
+	if fake.pendingWakesReturnsOnCall == nil {
+		fake.pendingWakesReturnsOnCall = make(map[int]struct {
+			result1 pkg.Items
+			result2 error
+		})
+	}
+	fake.pendingWakesReturnsOnCall[i] = struct {
+		result1 pkg.Items
+		result2 error
+	}{result1, result2}
+}
+
 func (fake *AttentionStore) Push(arg1 context.Context, arg2 pkg.PushRequest) (*pkg.Item, error) {
 	fake.pushMutex.Lock()
 	ret, specificReturn := fake.pushReturnsOnCall[len(fake.pushArgsForCall)]
@@ -1571,6 +1742,69 @@ func (fake *AttentionStore) PushReturnsOnCall(i int, result1 *pkg.Item, result2 
 		result1 *pkg.Item
 		result2 error
 	}{result1, result2}
+}
+
+func (fake *AttentionStore) PutPendingWake(arg1 context.Context, arg2 string, arg3 pkg.ItemID) error {
+	fake.putPendingWakeMutex.Lock()
+	ret, specificReturn := fake.putPendingWakeReturnsOnCall[len(fake.putPendingWakeArgsForCall)]
+	fake.putPendingWakeArgsForCall = append(fake.putPendingWakeArgsForCall, struct {
+		arg1 context.Context
+		arg2 string
+		arg3 pkg.ItemID
+	}{arg1, arg2, arg3})
+	stub := fake.PutPendingWakeStub
+	fakeReturns := fake.putPendingWakeReturns
+	fake.recordInvocation("PutPendingWake", []interface{}{arg1, arg2, arg3})
+	fake.putPendingWakeMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2, arg3)
+	}
+	if specificReturn {
+		return ret.result1
+	}
+	return fakeReturns.result1
+}
+
+func (fake *AttentionStore) PutPendingWakeCallCount() int {
+	fake.putPendingWakeMutex.RLock()
+	defer fake.putPendingWakeMutex.RUnlock()
+	return len(fake.putPendingWakeArgsForCall)
+}
+
+func (fake *AttentionStore) PutPendingWakeCalls(stub func(context.Context, string, pkg.ItemID) error) {
+	fake.putPendingWakeMutex.Lock()
+	defer fake.putPendingWakeMutex.Unlock()
+	fake.PutPendingWakeStub = stub
+}
+
+func (fake *AttentionStore) PutPendingWakeArgsForCall(i int) (context.Context, string, pkg.ItemID) {
+	fake.putPendingWakeMutex.RLock()
+	defer fake.putPendingWakeMutex.RUnlock()
+	argsForCall := fake.putPendingWakeArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3
+}
+
+func (fake *AttentionStore) PutPendingWakeReturns(result1 error) {
+	fake.putPendingWakeMutex.Lock()
+	defer fake.putPendingWakeMutex.Unlock()
+	fake.PutPendingWakeStub = nil
+	fake.putPendingWakeReturns = struct {
+		result1 error
+	}{result1}
+}
+
+func (fake *AttentionStore) PutPendingWakeReturnsOnCall(i int, result1 error) {
+	fake.putPendingWakeMutex.Lock()
+	defer fake.putPendingWakeMutex.Unlock()
+	fake.PutPendingWakeStub = nil
+	if fake.putPendingWakeReturnsOnCall == nil {
+		fake.putPendingWakeReturnsOnCall = make(map[int]struct {
+			result1 error
+		})
+	}
+	fake.putPendingWakeReturnsOnCall[i] = struct {
+		result1 error
+	}{result1}
 }
 
 func (fake *AttentionStore) Rate(arg1 context.Context, arg2 pkg.ItemID, arg3 pkg.Rating) (*pkg.Item, error) {

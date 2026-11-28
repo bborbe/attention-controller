@@ -244,6 +244,38 @@ func (n *notifyingAttentionStore) DeliveryAttemptCounts(
 	return n.store.DeliveryAttemptCounts(ctx)
 }
 
+// PutPendingWake delegates and never signals.
+//
+// ⚠️ It is a write, but not one any live view renders: a pending wake is
+// delivery bookkeeping, not item state, so a board re-read would show nothing
+// changed. Signalling here would wake every subscriber once per busy-composer
+// deferral — one per ManagerWakeBatchWindow per busy manager — to re-read an
+// unchanged store.
+func (n *notifyingAttentionStore) PutPendingWake(
+	ctx context.Context,
+	managerSession string,
+	itemID ItemID,
+) error {
+	return n.store.PutPendingWake(ctx, managerSession, itemID)
+}
+
+// DrainPendingWakes delegates and never signals, for the same reason
+// PutPendingWake does not: draining a record changes no rendered item.
+func (n *notifyingAttentionStore) DrainPendingWakes(
+	ctx context.Context,
+	managerSession string,
+) (Items, error) {
+	return n.store.DrainPendingWakes(ctx, managerSession)
+}
+
+// PendingWakes delegates and never signals: it is a read.
+func (n *notifyingAttentionStore) PendingWakes(
+	ctx context.Context,
+	managerSession string,
+) (Items, error) {
+	return n.store.PendingWakes(ctx, managerSession)
+}
+
 // ParkDelivery delegates and signals: a park is a board-visible state change.
 func (n *notifyingAttentionStore) ParkDelivery(ctx context.Context, park DeliveryPark) error {
 	if err := n.store.ParkDelivery(ctx, park); err != nil {

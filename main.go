@@ -843,6 +843,9 @@ func (a *application) registerWhoNeedsMeRoute(
 		Handler(factory.CreateWhoNeedsMeHandler(
 			a.createWhoNeedsMeReader(ctx, store, provenance, panes),
 		))
+	// Both routes are board-only for the same reason: the board instance is the
+	// one that types into a pane, so it is the one that queues a wake.
+	a.registerPendingWakesRoute(router, store)
 }
 
 // defaultAttentionStateDir resolves ~/.claude/state/attention, the directory

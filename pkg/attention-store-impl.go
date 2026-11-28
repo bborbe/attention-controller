@@ -50,6 +50,9 @@ func NewAttentionStore(
 		parks: libkv.NewStoreTx[string, DeliveryPark](
 			deliveryParkBucketName,
 		),
+		pendingWakes: libkv.NewStoreTx[string, Item](
+			pendingWakeBucketName,
+		),
 		db:                     db,
 		itemIDGenerator:        itemIDGenerator,
 		sessionLivenessChecker: sessionLivenessChecker,
@@ -176,6 +179,7 @@ type attentionStore struct {
 	attempts               libkv.StoreTx[string, DeliveryAttempt]
 	attemptCounts          libkv.StoreTx[string, DeliveryAttemptCount]
 	parks                  libkv.StoreTx[string, DeliveryPark]
+	pendingWakes           libkv.StoreTx[string, Item]
 	db                     libkv.DB
 	itemIDGenerator        ItemIDGenerator
 	sessionLivenessChecker SessionLivenessChecker

@@ -718,6 +718,11 @@ func (p *wakePass) flushPending(
 					manager, batchItemIDs(batch),
 				)
 			}
+			// Persist the deferral so the wake survives this process and can be
+			// drained at the manager's own turn boundary. The in-memory batch is
+			// the only carrier today: a restart forgets the wake, and a manager
+			// continuously busy past every pass never frees at one.
+			p.persistDeferredWakes(manager, batch)
 			batch.deferredAt = p.now
 			continue
 		}
@@ -736,6 +741,25 @@ func (p *wakePass) flushPending(
 		delete(p.job.pending, manager)
 	}
 	return delivered
+}
+
+// persistDeferredWakes writes a deferred batch's items to the store, so the
+// wake survives this process and can be drained at the manager's own turn
+// boundary instead of waiting for a pass that a continuously-busy manager never
+// gives it.
+//
+// ⚠️ A failed write must not fail the pass — the in-memory batch still carries
+// the wake, exactly as it did before this record existed. The failure is logged
+// and the deferral proceeds.
+func (p *wakePass) persistDeferredWakes(manager string, batch *managerWakeBatch) {
+	for _, item := range batch.items {
+		if err := p.job.store.PutPendingWake(p.ctx, manager, item.ItemID); err != nil {
+			glog.V(2).Infof(
+				"job=manager-wake action=pending_wake_write_failed manager=%s item=%s err=%v",
+				manager, item.ItemID, err,
+			)
+		}
+	}
 }
 
 // commit stores a manager's kept set, dropping the manager's entry when it kept
@@ -1138,7 +1162,11 @@ func (p *wakePass) keeps(manager string, item Item) bool {
 // spawned the producer — which is exactly the C2 foreign-drop class. The Fleet
 // Manager does not double-keep it (`ownedOnSpawnEdge` blocks the fleet for a live
 // same-vault spawner).
-func (p *wakePass) goalScopeDecision(manager string, item Item, sessionID string) (keep bool, decided bool, scoped bool) {
+func (p *wakePass) goalScopeDecision(
+	manager string,
+	item Item,
+	sessionID string,
+) (keep bool, decided bool, scoped bool) {
 	if p.job.goalScope == nil {
 		return false, false, false
 	}

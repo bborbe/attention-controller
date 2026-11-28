@@ -8,6 +8,10 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
+## Unreleased
+
+- feat: a manager wake deferred on a busy composer is now persisted to the store and drained at the manager's own turn boundary, instead of living only in the in-memory `wakePass.pending` batch. `AttentionStore` gained `PutPendingWake`, `DrainPendingWakes` and `PendingWakes`; the deferral site writes the record, and the drain reads and deletes in ONE transaction — drain-and-mark, so a replayed drain delivers exactly once. An item answered since it was queued is dropped from the drain and its record still deleted. Before this, a controller restart forgot the wake and a manager continuously busy past every pass never freed. `POST /api/1.0/pending-wakes/drain?session=<id>` on the board router exposes the drain — the store is in-process bbolt, so this is the manager's only read path.
+
 ## v0.112.0
 
 - fix: a manager-tier gate whose goal belongs to a manager other than its spawner is now kept by the goal's own manager. Before, the spawner dropped it as foreign and the goal's manager dropped it on the spawn-edge liveness branch, so the card reached no manager (the C2 foreign-drop class). The Fleet Manager still does not double-keep it (`ownedOnSpawnEdge`).

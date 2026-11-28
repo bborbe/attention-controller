@@ -112,6 +112,13 @@ func CreateAttentionUnflagHandler(store pkg.AttentionStore) http.Handler {
 	return handler.NewAttentionUnflagHandler(store)
 }
 
+// CreatePendingWakesHandler creates the handler that drains the wakes owed to
+// one manager session. It is a POST because the drain deletes what it returns,
+// and it is the manager's only read path to the in-process store.
+func CreatePendingWakesHandler(store pkg.AttentionStore) http.Handler {
+	return handler.NewPendingWakesHandler(store)
+}
+
 // CreateAttentionRateHandler creates the handler that records or clears the
 // operator's 👍/👎 rating of an item.
 func CreateAttentionRateHandler(store pkg.AttentionStore) http.Handler {
