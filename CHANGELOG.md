@@ -12,6 +12,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 
 - fix: a manager-tier gate whose goal belongs to a manager other than its spawner is now kept by the goal's own manager. Before, the spawner dropped it as foreign and the goal's manager dropped it on the spawn-edge liveness branch, so the card reached no manager (the C2 foreign-drop class). The Fleet Manager still does not double-keep it (`ownedOnSpawnEdge`).
 - fix: a manager-tier gate whose goal's manager is not live now falls back to the Fleet Manager. Before, the live spawner was foreign to the goal (dropped it) and `ownedOnSpawnEdge` blocked the Fleet, so the card reached no manager (the C2 no-live-manager class). `GoalScope` gained `GoalOwner()`.
+- fix: a manager wake deferred on a busy composer now logs `wake_queued` and, when it later lands, `wake_drained` with the same item ids — so the batch retention is observable in the log rather than asserted (the drain that lets a continuously-busy manager free in time is a separate cross-repo follow-up).
 
 ## v0.111.4
 

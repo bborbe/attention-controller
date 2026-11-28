@@ -587,6 +587,32 @@ var _ = Describe("manager wake job", func() {
 	)
 
 	It(
+		"TestBusyComposerRetainsTheWakeUntilFree — a busy-composer deferral is not lost and delivers once the composer frees",
+		func() {
+			oneManager()
+			store.ReadReturns(pkg.Items{wakeItem("item-1", "w-1")}, nil)
+			job := newJob()
+			carrier.setVerdict(pkg.DeliveryRetry)
+
+			// The composer is busy: the wake is deferred (retained), never delivered — no
+			// emission is recorded, so the busy attempt did not land.
+			Expect(job.WakeOnce(context.Background())).To(Succeed())
+			advance(pkg.ManagerWakeBatchWindow)
+			Expect(job.WakeOnce(context.Background())).To(Succeed())
+			Expect(sink.records).To(BeEmpty())
+
+			// The composer frees; the retained wake is delivered on a later pass — the
+			// deferral was not a drop. (The wake_queued / wake_drained lines make this
+			// retention observable in production.)
+			carrier.setVerdict(pkg.DeliveryOK)
+			advance(pkg.ManagerWakeBatchWindow)
+			Expect(job.WakeOnce(context.Background())).To(Succeed())
+			Expect(sink.records).To(HaveLen(1))
+			Expect(sink.records[0].ItemIDs).To(ConsistOf(pkg.ItemID("item-1")))
+		},
+	)
+
+	It(
 		"TestNoGoalTaskGoesToTheFleetManagerOnly — a card whose task declares no goal wakes only the Fleet Manager",
 		func() {
 			// The task EXISTS but declares no `goals:`, so Foreign answers
