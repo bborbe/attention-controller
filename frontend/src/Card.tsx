@@ -435,7 +435,8 @@ export default function Card({ item, onChanged, onDecide, onClosed }: Props) {
       data-blast-radius={blastRadius || undefined}
       data-producer-kind={item.producer_kind}
       data-uncovered={view.uncovered ? "true" : undefined}
-      data-flagged={item.flag_reason ? "true" : "false"}
+      // The same field the board's Hide-flagged filter reads (App.tsx).
+      data-flagged={item.flagged_at ? "true" : "false"}
     >
       <button
         type="button"

@@ -29,17 +29,6 @@ export function signatureOf(item: Item): string {
   ]);
 }
 
-// renderKeyOf changes whenever the card's rendered content changes, so the row
-// is re-mounted (a fresh node) exactly when the store changed it. displayed_at
-// is excluded: the board's own seen stamp is not a change the operator caused.
-// The board's timeline is excluded for the same reason: its `displayed` line is
-// derived from displayed_at.
-export function renderKeyOf(item: BoardItem): string {
-  const { displayed_at: _displayed, board, ...rest } = item as BoardItem & { displayed_at?: unknown };
-  const { timeline: _timeline, ...view } = boardViewOf({ board } as BoardItem);
-  return `${item.item_id}|${JSON.stringify(rest)}|${JSON.stringify(view)}`;
-}
-
 // EMPTY_VIEW is the render data of an entry the board read carried none for:
 // every derived value absent, so the card renders exactly what it renders for
 // an item whose provenance did not resolve.

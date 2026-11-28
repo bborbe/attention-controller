@@ -71,11 +71,46 @@ var _ = Describe("AttentionReactPageHandler", func() {
 		Expect(rec.Header().Get("Cache-Control")).To(ContainSubstring("immutable"))
 	})
 
-	It("falls back to index.html for an unknown client-side route", func() {
+	It("answers 404 for a missing asset rather than the index document", func() {
+		h := handler.NewAttentionReactPageHandler(dist, identity, metrics)
+		rec := get(h, "/assets/missing-abc123.js")
+		Expect(rec.Code).To(Equal(http.StatusNotFound))
+		Expect(rec.Body.String()).NotTo(ContainSubstring(`<div id="root">`))
+		Expect(rec.Header().Get("Cache-Control")).NotTo(ContainSubstring("immutable"))
+		Expect(counterValue(registry, "attention_board_page_requests_total")).To(Equal(0.0))
+	})
+
+	It("answers 404 for any other unknown path", func() {
 		h := handler.NewAttentionReactPageHandler(dist, identity, metrics)
 		rec := get(h, "/some/client/route")
+		Expect(rec.Code).To(Equal(http.StatusNotFound))
+		Expect(rec.Body.String()).NotTo(ContainSubstring(`<div id="root">`))
+	})
+
+	It("still serves the document under /index.html", func() {
+		h := handler.NewAttentionReactPageHandler(dist, identity, metrics)
+		rec := get(h, "/index.html")
 		Expect(rec.Code).To(Equal(http.StatusOK))
 		Expect(rec.Body.String()).To(ContainSubstring(`<div id="root">`))
+		Expect(rec.Body.String()).To(ContainSubstring(`commit <span class="bi-value">1a2b3c4d5e6f</span>`))
+	})
+
+	It("sends X-Content-Type-Options nosniff on the document and on assets", func() {
+		h := handler.NewAttentionReactPageHandler(dist, identity, metrics)
+		Expect(get(h, "/").Header().Get("X-Content-Type-Options")).To(Equal("nosniff"))
+		Expect(get(h, "/assets/app.js").Header().Get("X-Content-Type-Options")).To(Equal("nosniff"))
+	})
+
+	It("escapes the build-identity values it injects", func() {
+		h := handler.NewAttentionReactPageHandler(dist, buildidentity.Identity{
+			Version:    `v1<script>alert(1)</script>`,
+			Commit:     "1a2b3c4d5e6f",
+			CommitTime: "2026-01-02T03:04:05Z",
+		}, metrics)
+		body := get(h, "/").Body.String()
+		Expect(body).NotTo(ContainSubstring("<script>alert(1)</script>"))
+		Expect(body).To(ContainSubstring("v1&lt;script&gt;alert(1)&lt;/script&gt;"))
+		Expect(body).To(ContainSubstring(`commit <span class="bi-value">1a2b3c4d5e6f</span>`))
 	})
 
 	It("answers 503 when the frontend was not built", func() {

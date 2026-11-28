@@ -5,7 +5,8 @@ export default defineConfig({
   plugins: [react()],
   build: { outDir: "dist", emptyOutDir: true },
   server: {
-    proxy: { "/api": "http://127.0.0.1:18080" },
+    // /jump is the card's jump control (GET /jump/{itemID}), served by the store.
+    proxy: { "/api": "http://127.0.0.1:18080", "/jump": "http://127.0.0.1:18080" },
   },
   test: {
     environment: "jsdom",

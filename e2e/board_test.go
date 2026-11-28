@@ -1444,9 +1444,9 @@ var _ = Describe("the attention board", func() {
 			WithTimeout(10 * time.Second).Should(BeTrue())
 
 		// Letting the request through is what restores the stream. Nothing here
-		// re-opens it — EventSource reconnects on its own — and the state clears
-		// on the next frame rather than on the reconnect, so each attempt makes a
-		// real change for the channel to carry.
+		// re-opens it — EventSource reconnects on its own. The state clears on
+		// the reconnect's open and on any later frame; each attempt still makes a
+		// real change so a frame is there to carry it either way.
 		Expect(page.Unroute(streamPattern)).To(Succeed())
 
 		attempt := 0

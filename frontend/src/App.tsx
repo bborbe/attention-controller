@@ -3,8 +3,10 @@ import type { BoardItem } from "./types";
 import { fetchBoard, seen, subscribeItems, takePrefetchedBoard } from "./api";
 import Card from "./Card";
 import { useHeldAnswer } from "./useHeldAnswer";
-import { syncSignature, updateCardState } from "./cardState";
-import { answerFailureMessage, isAnswered, renderKeyOf, signatureOf } from "./itemView";
+import { pruneCardStates, syncSignature, updateCardState } from "./cardState";
+import { createBoardLoader } from "./boardLoader";
+import type { BoardLoader } from "./boardLoader";
+import { answerFailureMessage, isAnswered, signatureOf } from "./itemView";
 
 const HIDE_PARAM = "hide";
 const HIDE_NONE = "none";
@@ -57,10 +59,21 @@ export default function App() {
   const kindRef = useRef(filters.kind);
   kindRef.current = filters.kind;
 
-  const load = useCallback(() => {
-    (takePrefetchedBoard() ?? fetchBoard())
-      .then((next) => {
+  // The id of the answer the board is holding back, so the card-state prune
+  // never drops the state of a card the operator just decided.
+  const heldIDRef = useRef<string | null>(null);
+
+  // One loader per board: at most one read in flight plus one trailing re-read,
+  // and a response older than the last applied one is dropped (boardLoader.ts).
+  const loaderRef = useRef<BoardLoader | null>(null);
+  if (loaderRef.current === null) {
+    loaderRef.current = createBoardLoader<BoardItem[]>({
+      // The first read consumes the fetch main.tsx started before React mounted.
+      read: () => takePrefetchedBoard() ?? fetchBoard(),
+      apply: (next) => {
+        const ids = new Set<string>();
         for (const item of next) {
+          ids.add(item.item_id);
           syncSignature(item.item_id, signatureOf(item));
           // The board records that it painted a card, once: before any
           // answered/flag filter parks it, but only for the kind view's rows —
@@ -72,19 +85,23 @@ export default function App() {
             seen(item.item_id);
           }
         }
+        if (heldIDRef.current !== null) ids.add(heldIDRef.current);
+        pruneCardStates(ids);
         loadedRef.current = true;
         setItems(next);
         setError(null);
         setRefreshError(null);
-      })
-      .catch((err: Error) => {
+      },
+      fail: (err) => {
         // A failed re-read (an unreadable frame, a transient 500) leaves the last
         // rendered board in place untouched; only a board that never loaded
         // shows the error.
         if (!loadedRef.current) setError(err.message);
         else setRefreshError(err.message);
-      });
-  }, []);
+      },
+    });
+  }
+  const load = useCallback(() => loaderRef.current?.request(), []);
 
   const onHeldFailed = useCallback(
     (itemID: string, status: number, body: string) => {
@@ -99,6 +116,7 @@ export default function App() {
   );
 
   const { held, decide, undo, cancelIfAnswered } = useHeldAnswer(load, onHeldFailed);
+  heldIDRef.current = held ? held.itemID : null;
 
   useEffect(() => {
     load();
@@ -223,7 +241,7 @@ export default function App() {
         <ul className="items">
           {visible.map((item) => (
             <Card
-              key={renderKeyOf(item)}
+              key={item.item_id}
               item={item}
               onChanged={load}
               onDecide={decide}

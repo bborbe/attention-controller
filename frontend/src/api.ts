@@ -133,8 +133,8 @@ export function answerKeepalive(itemID: string, request: unknown): void {
 // Subscribes to the board's SSE stream. jsdom (Vitest) has no EventSource; the
 // guard returns a no-op so a component test never throws.
 //
-// onTracking reports the stream's health: false on every error, true on the next
-// message (a message means the board is tracking the store again). EventSource
+// onTracking reports the stream's health: false on every error, true on every
+// open and every message (either means the board is tracking the store again). EventSource
 // retries a network drop by itself, but a non-200 status or a non-event-stream
 // content type closes it for good, so a CLOSED source is reconnected here with
 // exponential backoff (1 s floor, 30 s ceiling).
@@ -149,16 +149,20 @@ export function subscribeItems(
   let delayMs = 1000;
   let timer: number | null = null;
   let stopped = false;
-  let everOpened = false;
 
   const connect = () => {
     const current = new EventSource(ATTENTION_STREAM_URL);
     source = current;
     current.onopen = () => {
       delayMs = 1000;
-      // A reconnect may have missed changes while the stream was down.
-      if (everOpened) onChange();
-      everOpened = true;
+      // An open stream is tracking the store again, so the stale banner clears
+      // on a reconnect without waiting for the next change.
+      onTracking(true);
+      // Re-read on every open: a reconnect may have missed changes while the
+      // stream was down, and the first open closes the window between the
+      // prefetched board and the stream's baseline. The board loader coalesces
+      // this with any read already in flight.
+      onChange();
     };
     current.onerror = () => {
       onTracking(false);
