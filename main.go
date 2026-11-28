@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -1101,10 +1102,28 @@ func (a *application) createHTTPServer(
 		// the store's operator-facing surface, not a business endpoint. It is
 		// read-only, so GET and HEAD are the only methods routed here; without
 		// .Methods, gorilla mux would route POST and DELETE to it as well.
+		//
+		// The document is the embedded React build (frontend/dist, carried by
+		// assets.go). The client fetches the JSON API and subscribes to the SSE
+		// stream; the binary serves only the static bundle and the build-identity
+		// footer the deploy gate reads.
+		dist, distErr := fs.Sub(frontendDist, "frontend/dist")
+		if distErr != nil {
+			return errors.Wrap(ctx, distErr, "open embedded frontend dist failed")
+		}
+		// ⚠️ The page is mounted at BOTH the exact root and the /assets/ prefix.
+		// The React build loads a hashed JS/CSS bundle from /assets/, and an exact
+		// root route leaves those unmatched, so gorilla mux 404s them and the page
+		// renders an empty #root. A PathPrefix("/") registered here would instead shadow every
+		// API route registered below it, so the prefix is narrowed to the asset tree
+		// the build actually emits.
+		reactPage := factory.CreateAttentionReactPageHandler(dist, buildIdentity, boardMetrics)
+		router.PathPrefix("/assets/").
+			Methods(http.MethodGet, http.MethodHead).
+			Handler(reactPage)
 		router.Path("/").
 			Methods(http.MethodGet, http.MethodHead).
-			Handler(factory.CreateAttentionPageHandler(
-				store, provenance, a.TTSURL != "", a.VaultDir, buildIdentity, boardMetrics))
+			Handler(reactPage)
 
 		// The board's live channel. It is registered here, ahead of the
 		// `/api/1.0/attention/{itemID}` route below, because gorilla mux matches

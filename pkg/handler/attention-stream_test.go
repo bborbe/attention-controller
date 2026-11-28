@@ -150,7 +150,7 @@ var _ = Describe("AttentionStreamHandler", func() {
 		return event
 	}
 
-	It("sends a pushed row over the open stream", func() {
+	It("sends a pushed row over the open stream as a bare change signal", func() {
 		reader, cancel := connect()
 		defer cancel()
 
@@ -159,88 +159,26 @@ var _ = Describe("AttentionStreamHandler", func() {
 		event := readEvent(reader)
 		Expect(event["type"]).Should(Equal("upsert"))
 		Expect(event["item_id"]).Should(Equal(item.ItemID.String()))
-		Expect(event["html"]).Should(ContainSubstring("deploy prod?"))
-	})
-
-	// The task link must arrive over the live channel as well as on a fresh load,
-	// and this is the case that catches the wiring rather than the rendering: a
-	// stream handler built with an empty vault name compiles, passes every page
-	// spec above and renders a link-less row — the same card differing by how it
-	// arrived, which is the drift this handler exists to prevent.
-	It("sends the row's vault task link over the stream", func() {
-		// Resolved from the items the handler actually asks about rather than
-		// keyed on an id the spec cannot know before the push: the stub returns a
-		// task for whatever the store hands it, so the row is linked whenever it
-		// renders rather than only if the timing happens to favour it.
-		provenance.ResolveStub = func(_ context.Context, items pkg.Items) pkg.Provenances {
-			resolved := make(pkg.Provenances, len(items))
-			for _, item := range items {
-				resolved[item.ItemID] = pkg.Provenance{
-					Host:     "burn",
-					TaskName: "Fix the board",
-					TaskPath: "25 Tasks/Fix the board.md",
-				}
-			}
-			return resolved
-		}
-
-		reader, cancel := connect()
-		defer cancel()
-
-		item := push("which task is this?")
-
-		event := readEvent(reader)
-		Expect(event["type"]).Should(Equal("upsert"))
-		Expect(event["item_id"]).Should(Equal(item.ItemID.String()))
-		// The hand-written literal, as the page's own spec writes it, so a change
-		// to the URL shape has to be made in two places rather than agreeing with
-		// itself through a shared helper.
-		Expect(event["html"]).Should(ContainSubstring(
-			`<span class="task"><a href="obsidian://open?vault=Personal&amp;file=25%20Tasks%2FFix%20the%20board">Fix the board</a></span>`,
-		))
-	})
-
-	// The timeline must arrive over the live channel as well as on a fresh load.
-	// This pins the requirement that BOTH callers of newAttentionPageRow pass
-	// the delivery report: a stream handler left passing the old argument
-	// compiles and renders a row with no timeline, and a page-only spec cannot
-	// see the difference.
-	It("carries the timeline in a streamed row", func() {
-		reader, cancel := connect()
-		defer cancel()
-
-		push("which timeline is this?")
-
-		event := readEvent(reader)
-		Expect(event["type"]).Should(Equal("upsert"))
-		Expect(event["html"]).Should(ContainSubstring("asked→created"))
-		Expect(event["html"]).Should(ContainSubstring("data-timeline"))
+		// The frame names the card and carries nothing else: every consumer
+		// re-reads the board or the item by id, so no rendered row is sent.
+		Expect(event).Should(HaveLen(2))
+		Expect(event).ShouldNot(HaveKey("html"))
 	})
 
 	// The dimmed record reaches an open board over the live channel, not only
 	// on the next load. The channel reads through ReadBoard, the same reader
-	// the page uses, so an item that is answered arrives as a dimmed upsert
-	// rather than leaving the rendered set.
-	//
-	// ⚠️ This is also the class the board's view filter keys on. A row that
-	// arrived undimmed would render as a live card offering an answer to a
-	// question that already has one, and the filter would have nothing to
-	// hide — which is why the reader is asserted here rather than left to the
-	// page's own specs.
-	It("streams the dimmed record when an item is answered", func() {
+	// the board JSON uses, so an item that is answered arrives as an upsert
+	// rather than as a removal from the rendered set.
+	It("signals an upsert, never a removal, when an item is answered", func() {
 		reader, cancel := connect()
 		defer cancel()
 
 		item := push("already answered?")
 
-		// Positive control: the same row arrives undimmed while the item is
-		// open, so this cannot pass on a channel that dims everything it
-		// sends.
+		// The push's own upsert arrives first.
 		open := readEvent(reader)
 		Expect(open["type"]).Should(Equal("upsert"))
 		Expect(open["item_id"]).Should(Equal(item.ItemID.String()))
-		Expect(open["html"]).Should(ContainSubstring(`data-item-id="` + item.ItemID.String() + `"`))
-		Expect(open["html"]).ShouldNot(ContainSubstring(` dimmed"`))
 
 		answer := pkg.Answer{Kind: pkg.TextAnswerKind, Value: "yes"}
 		_, err := store.Answer(ctx, item.ItemID, "attention-board", "", "", &answer, nil, nil)
@@ -249,15 +187,11 @@ var _ = Describe("AttentionStreamHandler", func() {
 		event := readEvent(reader)
 		Expect(event["type"]).Should(Equal("upsert"))
 		Expect(event["item_id"]).Should(Equal(item.ItemID.String()))
-		Expect(event["html"]).Should(ContainSubstring(
-			` dimmed" data-item-id="` + item.ItemID.String() + `"`,
-		))
 	})
 
-	// A flagged row must carry the same mark over the stream as on a fresh load,
-	// or the page's filter would read a stale mark on the row it swapped in and
-	// park the wrong cards.
-	It("carries the flag mark in a streamed row", func() {
+	// A flag changes what the board serves for the row, so it must signal an
+	// upsert, or the client would keep a stale flag mark and park the wrong cards.
+	It("signals an upsert when a row is flagged", func() {
 		reader, cancel := connect()
 		defer cancel()
 
@@ -265,7 +199,7 @@ var _ = Describe("AttentionStreamHandler", func() {
 		// The push's own upsert arrives first and is unflagged.
 		open := readEvent(reader)
 		Expect(open["type"]).Should(Equal("upsert"))
-		Expect(open["html"]).Should(ContainSubstring(`data-flagged="false"`))
+		Expect(open["item_id"]).Should(Equal(item.ItemID.String()))
 
 		_, err := store.Flag(ctx, item.ItemID, "asked the wrong team")
 		Expect(err).Should(BeNil())
@@ -273,7 +207,6 @@ var _ = Describe("AttentionStreamHandler", func() {
 		event := readEvent(reader)
 		Expect(event["type"]).Should(Equal("upsert"))
 		Expect(event["item_id"]).Should(Equal(item.ItemID.String()))
-		Expect(event["html"]).Should(ContainSubstring(`data-flagged="true"`))
 	})
 
 	It("sends a removal when the item is resolved elsewhere", func() {
@@ -289,7 +222,7 @@ var _ = Describe("AttentionStreamHandler", func() {
 		event := readEvent(reader)
 		Expect(event["type"]).Should(Equal("remove"))
 		Expect(event["item_id"]).Should(Equal(item.ItemID.String()))
-		Expect(event["html"]).Should(BeEmpty())
+		Expect(event).ShouldNot(HaveKey("html"))
 	})
 
 	It("sends nothing for a read", func() {
@@ -435,7 +368,7 @@ var _ = Describe("AttentionStreamHandler under a write deadline", func() {
 		var event map[string]string
 		Expect(json.Unmarshal([]byte(payload), &event)).Should(BeNil())
 		Expect(event["type"]).Should(Equal("upsert"))
-		Expect(event["html"]).Should(ContainSubstring("past the deadline"))
+		Expect(event["item_id"]).ShouldNot(BeEmpty())
 	})
 })
 
@@ -641,14 +574,14 @@ var _ = Describe("AttentionStreamHandler render fan-out", func() {
 
 	// ⚠️ SC4's probe. Sharing the render must not cost the per-client diff: a
 	// row the operator is typing into is still never replaced underneath them,
-	// which means a row whose rendered HTML did not change is not sent — even
+	// which means a row whose board entry did not change is not sent — even
 	// though the render that produced it is now shared by every stream.
 	//
 	// The absence is ordered rather than windowed, because "nothing was sent"
 	// cannot be shown by waiting and observing silence: a handler that sent
 	// nothing at all would pass that. So a real write follows, and the FIRST
 	// event read after the change under test must be that write's.
-	It("sends only the rows whose own HTML changed", func() {
+	It("sends only the rows whose own board entry changed", func() {
 		reader, cancel := connect()
 		defer cancel()
 
@@ -659,7 +592,7 @@ var _ = Describe("AttentionStreamHandler render fan-out", func() {
 		second := push("second?")
 		Expect(readEvent(reader)["item_id"]).Should(Equal(second.ItemID.String()))
 
-		// The change under test touches `first` alone; `second`'s rendered HTML
+		// The change under test touches `first` alone; `second`'s board entry
 		// is untouched and must not be re-sent.
 		answer := pkg.Answer{Kind: pkg.TextAnswerKind, Value: "yes"}
 		_, err := store.Answer(ctx, first.ItemID, "attention-board", "", "", &answer, nil, nil)
@@ -668,7 +601,6 @@ var _ = Describe("AttentionStreamHandler render fan-out", func() {
 		event := readEvent(reader)
 		Expect(event["type"]).Should(Equal("upsert"))
 		Expect(event["item_id"]).Should(Equal(first.ItemID.String()))
-		Expect(event["html"]).Should(ContainSubstring(` dimmed"`))
 
 		// The real write. Had the answer above also re-sent `second`, its event
 		// would be read here instead of this push's.

@@ -317,12 +317,30 @@ func startBinary(port int) error {
 		if err == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
-				return nil
+				return waitReady(deadline)
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 	return fmt.Errorf("binary did not become healthy at %s", baseURL)
+}
+
+// waitReady polls /readiness until the binary's init steps have finished.
+// /healthz answers 200 while the store is still opening, and every API route
+// answers 503 {"status":"starting"} until then, so seeding the ledger straight
+// after /healthz raced that window.
+func waitReady(deadline time.Time) error {
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(baseURL + "readiness")
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return nil
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return fmt.Errorf("binary did not become ready at %s", baseURL)
 }
 
 var _ = BeforeSuite(func() {
@@ -950,6 +968,10 @@ var _ = Describe("the attention board", func() {
 			// Read before the push: the store carries cards from earlier specs, so
 			// the count has a non-zero starting point and an absolute assertion
 			// would encode the suite's ordering.
+			// Wait for the board read first: the React page renders the list (or
+			// the empty statement) and the count only once it has resolved.
+			Eventually(func() (int, error) { return page.Locator("ul.items, p.empty").Count() }).
+				Should(BeNumerically(">=", 1))
 			hiddenBefore := kindHiddenCount(page)
 
 			agentID := pushOfKind(
@@ -1305,57 +1327,64 @@ var _ = Describe("the attention board", func() {
 		rowSpeak := page.Locator(
 			fmt.Sprintf("%s %s", fmt.Sprintf(rowSelectorFmt, itemID), speakSelector),
 		)
-		Expect(rowSpeak.Count()).To(Equal(1))
+		// Eventually: the React page renders its rows after the board read, not at load.
+		Eventually(rowSpeak.Count).Should(Equal(1))
 		Expect(rowSpeak.Click()).To(Succeed())
 
 		Eventually(tts.utterances).Should(ContainElement("e2e: read this aloud"))
 	})
 
+	// Protects: one garbage stream frame neither crashes the page nor kills the
+	// board's live updates — the frame after it still drives an update, and a
+	// later real change still renders.
+	//
+	// ⚠️ The vanilla page parsed each frame's `html` and swapped it into the
+	// row, so this case used to serve a well-formed frame carrying an `<li>`
+	// fragment and look for that fragment. The React board reads no frame
+	// content: every event is a trigger to re-read GET /board. So the frames are
+	// served by a route (the store has no path that emits a malformed one), and
+	// the evidence is user-visible instead: a card the page can learn of ONLY
+	// through those routed frames renders, nothing throws, and after the route is
+	// lifted a real change pushed through the API renders too. The name is kept
+	// because scenarios/001-board-browser-cases.md cites it verbatim; React logs
+	// nothing for the frame, so no console line is asserted.
 	It("logs a malformed stream frame and still applies the frame that follows it", func() {
-		// The store has no path that emits a frame the page cannot read, so the
-		// only way to drive one through the browser is to serve the channel
-		// ourselves: the route fulfills it with a truncated frame followed by a
-		// well-formed one, which is what makes both assertions below about the
-		// page's handler rather than about the store.
-		//
-		// ⚠️ LIMITATION: this is as close as the harness gets. A frame from a
-		// newer store version — the other case the handler's catch exists for —
-		// is not producible here either, for the same reason: nothing in this
-		// repo can be made to serve one.
-		const survivorID = "e2e-frame-survivor"
 		malformed := `{"type":"upsert","item_id":"e2e-truncated`
 		wellFormed, err := json.Marshal(map[string]string{
 			"type":    "upsert",
-			"item_id": survivorID,
-			"html": `<li class="item" data-item-id="` + survivorID +
-				`">read past the malformed frame</li>`,
+			"item_id": "e2e-frame-survivor",
 		})
 		Expect(err).NotTo(HaveOccurred())
 
 		var mu sync.Mutex
-		var logged []string
 		var thrown []error
 
 		page := newPage("")
 		defer func() { _ = page.Close() }()
 
-		page.OnConsole(func(message playwright.ConsoleMessage) {
-			mu.Lock()
-			defer mu.Unlock()
-			logged = append(logged, message.Text())
-		})
 		page.OnPageError(func(err error) {
 			mu.Lock()
 			defer mu.Unlock()
 			thrown = append(thrown, err)
 		})
+		var realStreams int64
+		page.OnResponse(func(response playwright.Response) {
+			if strings.HasSuffix(response.URL(), "/api/1.0/attention/stream") &&
+				strings.HasPrefix(response.Headers()["content-type"], "text/event-stream") &&
+				response.Headers()["x-e2e-routed"] == "" {
+				atomic.AddInt64(&realStreams, 1)
+			}
+		})
 		// Registered before the navigation that opens the channel: newPage has
 		// already loaded once, so the reload is what puts this page's stream
-		// behind the route.
+		// behind the route. `retry` keeps EventSource's reconnect after each
+		// served body short, so the routed frames repeat while the route stands.
 		Expect(page.Route(streamPattern, func(route playwright.Route) {
 			_ = route.Fulfill(playwright.RouteFulfillOptions{
 				ContentType: playwright.String("text/event-stream"),
-				Body:        "data: " + malformed + "\n\ndata: " + string(wellFormed) + "\n\n",
+				Headers:     map[string]string{"x-e2e-routed": "1"},
+				Body: "retry: 250\n\ndata: " + malformed + "\n\ndata: " +
+					string(wellFormed) + "\n\n",
 			})
 		})).To(Succeed())
 		_, err = page.Reload(
@@ -1363,15 +1392,31 @@ var _ = Describe("the attention board", func() {
 		)
 		Expect(err).NotTo(HaveOccurred())
 
-		// The row the second frame carried is rendered, so the handler read past
-		// the frame it could not parse instead of aborting on it.
-		Eventually(func() int { return rowCount(page, survivorID) }).
+		// Pushed after the reload, while the real stream is unreachable: the page
+		// can only learn of this card through the routed frames, so its row is
+		// proof the frames around the malformed one drove an update.
+		routedID := push("e2e: learned through the routed frames", "e2e-frame-routed")
+		Eventually(func() int { return rowCount(page, routedID) }).
 			WithTimeout(10 * time.Second).Should(Equal(1))
+
+		// Lift the route and wait for a real stream to attach: the store
+		// baselines a client before its headers go out, so a change pushed after
+		// that response is guaranteed to reach it.
+		Expect(page.Unroute(streamPattern)).To(Succeed())
+		Eventually(func() int64 { return atomic.LoadInt64(&realStreams) }).
+			WithTimeout(10 * time.Second).Should(BeNumerically(">=", 1))
+
+		laterID := push("e2e: the real update after the garbage", "e2e-frame-later")
+		Eventually(func() int { return rowCount(page, laterID) }).
+			WithTimeout(10 * time.Second).Should(Equal(1))
+
+		// The board itself never fell into its error state.
+		errCount, err := page.Locator("p.err").Count()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(errCount).To(Equal(0))
 
 		mu.Lock()
 		defer mu.Unlock()
-		// And the frame it could not parse was reported rather than swallowed.
-		Expect(logged).To(ContainElement(ContainSubstring("unreadable stream frame")))
 		// Caught, not thrown: the page's own window.onerror never saw it.
 		Expect(thrown).To(BeEmpty())
 	})
@@ -1507,21 +1552,19 @@ var _ = Describe("the attention board", func() {
 	It(
 		"applies a frame atomically, so a throw inside the update never leaves a half-updated row",
 		func() {
-			// ⚠️ FAULT-INJECTION PROBE, and the justification is load bearing
-			// rather than a convenience. A probe is evidence only if the case it
-			// constructs can actually occur, and this one can: attention-page.go
-			// records a shipped instance of exactly this class — a null
-			// querySelector result threw a TypeError on every X-click of a
-			// permission card until 2026-09-27, and the file notes that throw was
-			// invisible because "the operator saw the right outcome and only the
-			// console took the error" (§ showCloseNote). The store emits no frame
-			// that throws, so a DOM call the update path itself makes is the only
-			// way to drive one through the browser.
+			// Protects: a fault inside a stream-driven update never leaves the card
+			// half-applied — the row is either untouched or fully updated, the
+			// per-card state the operator can see (here a failure note) survives,
+			// and the next real update still renders.
 			//
-			// The fault is aimed at the note replay, which is the step upsertRow
-			// used to run AFTER committing the swap. That is what makes the probe
-			// discriminating: it lands inside the update on both revisions, but
-			// only the swap-then-repair order loses the note.
+			// ⚠️ The vanilla probe patched querySelector('form.answer') to throw
+			// inside upsertRow's DOM swap and read a console line naming the
+			// frame. React has neither: it swaps no DOM and logs nothing. Its
+			// update path is "stream event → GET /board → setItems", so the fault
+			// is injected there instead: the first board re-read after the
+			// re-push is served a truncated JSON body (a half-written update).
+			// That is the same class of fault — the update's input is unusable
+			// part-way through — and it reaches the browser deterministically.
 			itemID := push("e2e: the row that must not half-update", "e2e-atomic-update")
 
 			page := newPage("")
@@ -1531,41 +1574,31 @@ var _ = Describe("the attention board", func() {
 
 			// A failure note is what gives the update something to lose, put there
 			// by failing the read-aloud POST — the technique the two note cases
-			// above already use. Without it replayFailure returns early and the
-			// update has no post-swap step left to throw in.
+			// above already use. It is card-local state the server never sends,
+			// so only a card that survived the update keeps it.
 			failSpeak(page)
 			clickSpeak(page, itemID)
 			Eventually(func() int { return noteCount(page, itemID, failedNoteSelector) }).
 				WithTimeout(5 * time.Second).Should(Equal(1))
 
-			var mu sync.Mutex
-			var logged []string
-			page.OnConsole(func(message playwright.ConsoleMessage) {
-				mu.Lock()
-				defer mu.Unlock()
-				logged = append(logged, message.Text())
-			})
-
-			// querySelector('form.answer') is the call replayFailure makes to place
-			// a note: on a DETACHED node under prepare-then-swap, and on the LIVE
-			// row under swap-then-repair. One patch therefore reaches the update
-			// from both sides. It disarms on first use, so the page is not left
-			// broken for the assertions that follow.
-			_, err := page.Evaluate(`() => {
-			const original = Element.prototype.querySelector;
-			let armed = true;
-			Element.prototype.querySelector = function (selector) {
-				if (armed && selector === 'form.answer') {
-					armed = false;
-					throw new Error('e2e: injected fault inside the row update');
+			// One-shot fault: the next board read is cut off mid-array, every read
+			// after it passes through. The counter is what proves the fault was
+			// actually served, so the assertions below cannot pass on an update
+			// that never ran.
+			var faulted int64
+			Expect(page.Route("**/api/1.0/attention/board", func(route playwright.Route) {
+				if atomic.CompareAndSwapInt64(&faulted, 0, 1) {
+					_ = route.Fulfill(playwright.RouteFulfillOptions{
+						ContentType: playwright.String("application/json"),
+						Body:        `[{"item_id":"` + itemID + `","payload":"e2e: half`,
+					})
+					return
 				}
-				return original.call(this, selector);
-			};
-		}`)
-			Expect(err).NotTo(HaveOccurred())
+				_ = route.Continue()
+			})).To(Succeed())
 
 			// A differing payload on the same dedup key updates the item in place,
-			// so the store's render changes, the stream sends an upsert and the page
+			// so the store's render changes, the stream sends an event and the page
 			// runs its update path. A byte-identical re-push renders identically and
 			// the stream sends nothing.
 			repushedID := push(
@@ -1573,39 +1606,38 @@ var _ = Describe("the attention board", func() {
 				"e2e-atomic-update",
 			)
 			Expect(repushedID).To(Equal(itemID), "the re-push must update in place, not add a row")
+			Eventually(func() int64 { return atomic.LoadInt64(&faulted) }).
+				WithTimeout(10*time.Second).Should(Equal(int64(1)),
+				"the stream event never drove a board re-read, so the fault never landed")
 
-			// The frame was handled and the failure reported rather than swallowed.
-			// This is also what proves the update path ran at all — without it the
-			// assertion below could pass on a frame that never arrived.
-			Eventually(func() []string {
-				mu.Lock()
-				defer mu.Unlock()
-				return append([]string(nil), logged...)
-			}).WithTimeout(10 * time.Second).Should(ContainElement(
-				ContainSubstring("could not apply stream frame for " + itemID),
-			))
-
-			// Atomicity. BOTH legal outcomes keep the note — untouched leaves the
-			// one already rendered, fully applied re-renders it — so only the
-			// half-applied state loses it. That is what makes the note the
-			// assertion rather than a proxy for one.
+			// Atomicity. Untouched and fully applied both keep the row and its
+			// note; only a half-applied (or torn-down) board loses them.
 			Consistently(func() int { return noteCount(page, itemID, failedNoteSelector) }).
 				WithTimeout(2*time.Second).Should(Equal(1),
-				"the row lost its note, so the frame was applied part-way")
+				"the row lost its note, so the faulty update was applied part-way")
+
+			// And the stream still drives updates: the next real change renders in
+			// full, on the same card, with the note still in place.
+			push("e2e: the row that must not half-update, applied after", "e2e-atomic-update")
+			Eventually(func() string { return rowText(page, itemID) }).
+				WithTimeout(10 * time.Second).Should(ContainSubstring("applied after"))
+			Expect(noteCount(page, itemID, failedNoteSelector)).To(Equal(1))
 		},
 	)
 
 	It(
 		"keeps a control working when a stream event replaces its row, so a re-rendered card still answers",
 		func() {
-			// A row swap is what destroys a per-node listener, and this case
-			// covers the two binding styles a message card renders: the tab
-			// strip and the answer form the Dismiss button submits. Both were
-			// bound per node at page load and both went inert on a row the
-			// stream had re-rendered — measured 2026-09-28, with a reload the
-			// only way back. The read-aloud and Jump controls were converted to
-			// delegation for this same defect; the assertion here is what was
-			// missing when the other two rotted.
+			// Protects: after a stream update re-renders a card, its controls
+			// still work and the operator's chosen tab is kept — the tab strip
+			// and the Dismiss button both, the two controls that once went inert
+			// on a re-rendered row (measured 2026-09-28, vanilla page).
+			//
+			// ⚠️ The vanilla page swapped the row node, so this case marked the
+			// old node and waited for the mark to vanish. React swaps in no
+			// server HTML, so node identity says nothing about whether the
+			// update landed; the landed-update
+			// signal is now the re-pushed payload text rendering in the row.
 			itemID := pushQuestions(
 				"e2e: the control that must survive a swap",
 				"e2e-control-survives",
@@ -1621,28 +1653,27 @@ var _ = Describe("the attention board", func() {
 			Expect(activeTab(page, itemID)).To(Equal("Alpha"))
 			clickTab(page, itemID, "Beta")
 			Expect(activeTab(page, itemID)).To(Equal("Beta"))
-			markRow(page, itemID)
 
 			// Re-push the same producer and dedup key: the store updates the
-			// item in place, the stream sees the row's rendered HTML change and
-			// sends an upsert, and the page swaps the node. The payload differs
-			// because a byte-identical re-push renders identically and the
-			// stream sends nothing — the swap would not happen.
+			// item in place, the stream sends an event, and the page re-reads
+			// the board and re-renders the card. The payload differs because a
+			// byte-identical re-push renders identically and the stream sends
+			// nothing — no update would happen.
 			repushedID := pushQuestions(
 				"e2e: the control that must survive a swap, re-rendered",
 				"e2e-control-survives",
 			)
 			Expect(repushedID).To(Equal(itemID), "the re-push must update in place, not add a row")
 
-			// The swap really happened: the marked node is gone. Waiting for that
-			// is what makes the clicks below about the swapped node rather than
-			// about the pre-swap one — asserting straight after the push reads
-			// the old node, because the frame has not landed yet. The operator's
-			// chosen tab is carried onto the new node (carryFormState), so the
-			// swap no longer resets the strip to the server's active question.
-			Eventually(func() bool { return rowSwapped(page, itemID) }).
-				WithTimeout(10 * time.Second).Should(BeTrue())
-			Expect(activeTab(page, itemID)).To(Equal("Beta"))
+			// The update really landed: the new payload is on screen. Waiting for
+			// it is what makes the clicks below about the re-rendered card rather
+			// than the pre-update one. The operator's chosen tab is still the one
+			// shown, so the update did not reset the strip to the first question.
+			Eventually(func() string { return rowText(page, itemID) }).
+				WithTimeout(10 * time.Second).Should(ContainSubstring("re-rendered"))
+			settle(func(g Gomega) {
+				g.Expect(activeTab(page, itemID)).To(Equal("Beta"))
+			})
 
 			// The control still works on the node the stream put there.
 			clickTab(page, itemID, "Alpha")
@@ -1780,6 +1811,16 @@ var _ = Describe("the attention board", func() {
 		Eventually(func() string { return infoExpanded(page, itemID) }).Should(Equal("false"))
 	})
 
+	// Protects: an update arriving over the stream leaves the card's info
+	// affordance operable, and the operator's open panel is not silently lost.
+	//
+	// ⚠️ The vanilla page replaced the row with server markup that ships the
+	// panel hidden, so it came back CLOSED by construction and this case
+	// asserted closed. React keeps the operator's per-card UI state across the
+	// update, so the panel stays OPEN — the
+	// acceptance criterion allows either ("still showing its metadata, or
+	// closed with the affordance still operable"). The case asserts the React
+	// outcome, then drives the toggle both ways on the updated card.
 	It("keeps the info affordance working when a stream event replaces its row", func() {
 		itemID := push("e2e: the card that survives a swap", "e2e-info-survives")
 
@@ -1792,38 +1833,30 @@ var _ = Describe("the attention board", func() {
 		clickInfoToggle(page, itemID)
 		Eventually(func() bool { return infoPanelVisible(page, itemID) }).Should(BeTrue())
 
-		// Force the stream to replace the row: a differing payload on the same
-		// producer and dedup key updates the item in place, so the store's render
-		// changes and the stream sends an upsert. The payload MUST differ — a
-		// byte-identical re-push renders identically and the stream sends nothing,
-		// so no swap would happen. This is the technique the existing
-		// `keeps a control working when a stream event replaces its row` case uses.
+		// Force a stream update: a differing payload on the same producer and
+		// dedup key updates the item in place, so the stream sends an event. The
+		// payload MUST differ — a byte-identical re-push renders identically and
+		// the stream sends nothing, so no update would happen.
 		repushedID := push("e2e: the card that survives a swap, re-rendered", "e2e-info-survives")
 		Expect(repushedID).To(Equal(itemID), "the re-push must update in place, not add a row")
 
-		// Wait for the swap to land before asserting on the node the stream put
-		// there: reading straight after the push reads the old node, because the
-		// frame has not arrived yet.
-		Eventually(func() string {
-			text, err := page.Locator(rowSelector(itemID)).TextContent()
-			Expect(err).NotTo(HaveOccurred())
-			return text
-		}).WithTimeout(10 * time.Second).Should(ContainSubstring("re-rendered"))
+		// Wait for the update to land before asserting: reading straight after
+		// the push reads the pre-update card, because the event has not arrived.
+		Eventually(func() string { return rowText(page, itemID) }).
+			WithTimeout(10 * time.Second).Should(ContainSubstring("re-rendered"))
 
-		// The row came back closed. The acceptance criterion allows either outcome
-		// — "still showing its metadata, or closed with the affordance still
-		// operable" — and this design chose CLOSED, because the panel's state is
-		// the served markup's rather than a page-local map's: the panel is
-		// server-rendered `hidden` and the client keeps no open/closed state of its
-		// own, so a swapped row is closed by construction and can never be stale.
+		// The panel the operator opened is still open, and reports so.
+		settle(func(g Gomega) {
+			g.Expect(infoPanelVisible(page, itemID)).To(BeTrue())
+			g.Expect(infoExpanded(page, itemID)).To(Equal("true"))
+		})
+
+		// ⚠️ The load-bearing half: the affordance still works on the updated
+		// card, both ways — the rendered-and-inert failure this board shipped
+		// once at v0.19.0 is a control that renders but no longer toggles.
+		clickInfoToggle(page, itemID)
 		Eventually(func() bool { return infoPanelVisible(page, itemID) }).Should(BeFalse())
-		Expect(infoExpanded(page, itemID)).To(Equal("false"))
-
-		// ⚠️ The load-bearing half. A per-button listener dies with the node
-		// upsertRow replaces, leaving the control rendered and inert — the
-		// rendered-and-inert failure this board shipped once at v0.19.0 with the
-		// read-aloud control. The delegated listener is what keeps the swapped
-		// node's affordance operable.
+		Eventually(func() string { return infoExpanded(page, itemID) }).Should(Equal("false"))
 		clickInfoToggle(page, itemID)
 		Eventually(func() bool { return infoPanelVisible(page, itemID) }).Should(BeTrue())
 		Eventually(func() string { return infoExpanded(page, itemID) }).Should(Equal("true"))

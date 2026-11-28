@@ -5,10 +5,8 @@
 package handler
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"html/template"
 	"net/http"
 	"reflect"
 	"sync"
@@ -20,18 +18,16 @@ import (
 	"github.com/bborbe/attention-controller/pkg"
 )
 
-// attentionStreamEvent is what a change is sent as. It carries the rendered row
-// rather than the item, so the page swaps a node instead of re-implementing the
-// card, its answer controls and its jump button in JavaScript — one renderer,
-// not two that drift.
+// attentionStreamEvent is what a change is sent as: a change signal naming the
+// card, never the card itself. The React board re-fetches
+// `GET /api/1.0/attention/board` on every frame, and the permission-answer hook
+// and answered-watch re-read the item by id, so no consumer needs a body.
 type attentionStreamEvent struct {
 	// Type is `upsert` for a row that appeared or changed and `remove` for one
-	// that left. A removal carries no HTML.
+	// that left.
 	Type string `json:"type"`
-	// ItemID is the row this event is about, and the key the page matches on.
+	// ItemID is the row this event is about.
 	ItemID string `json:"item_id"`
-	// HTML is the rendered `li`, present on an upsert only.
-	HTML string `json:"html,omitempty"`
 }
 
 // NewAttentionStreamHandler serves the board's live channel: a
@@ -50,14 +46,10 @@ type attentionStreamEvent struct {
 // connection.
 //
 // vaultDir is the configured vault directory. The vault's own name is derived
-// from it by vaultNameFromDir — the *same* function the page handler calls, so
-// the two surfaces cannot drift: a row arriving over this channel must render
-// identically to the same row on a fresh load, and a name derived differently
-// here would put a different link on the same card depending on how it arrived.
+// from it by vaultNameFromDir — the *same* function the board JSON read calls,
+// so a row's change detection sees the same task link the board serves.
 // ⚠️ It is derived once at construction rather than per push: this handler
-// outlives any one request, and the directory cannot change under it. An empty
-// vaultDir yields an empty name, so a host with no vault renders no task link on
-// either surface.
+// outlives any one request, and the directory cannot change under it.
 //
 // metrics is injected rather than reached for, so a spec can build the counters
 // on its own registry and read them back — and so the running service registers
@@ -72,19 +64,12 @@ func NewAttentionStreamHandler(
 	vaultDir string,
 	metrics pkg.Metrics,
 ) http.Handler {
-	// The same template the page parses, so `attention-row` renders from one
-	// definition rather than from a copy kept in step by hand. Parsed through
-	// the shared constructor rather than here: the funcs the template calls have
-	// to be registered on both paths, and a second `Parse` call is a second
-	// place for them to drift.
-	rows := newAttentionPageTemplate()
 	handler := &attentionStreamHandler{
 		store:        store,
 		notifier:     notifier,
 		provenance:   provenance,
 		speakEnabled: speakEnabled,
 		vaultName:    vaultNameFromDir(vaultDir),
-		rows:         rows,
 	}
 	// ⚠️ One renderer per handler, and the handler is built once per process
 	// (`factory.CreateAttentionStreamHandler` is called from
@@ -101,7 +86,6 @@ type attentionStreamHandler struct {
 	provenance   pkg.ProvenanceResolver
 	speakEnabled bool
 	vaultName    string
-	rows         *template.Template
 	board        *boardRenderer
 }
 
@@ -111,21 +95,23 @@ type boardSnapshot struct {
 	// render, so a stream can tell a snapshot it has already applied from one
 	// it has not, and a diff can be skipped outright when they are the same.
 	seq uint64
-	// rendered is each item's row as HTML, keyed by item id. ⚠️ Never written
-	// after publication, which is what makes it safe for every stream to read
-	// concurrently — the same property `provenance`'s hostState relies on.
+	// rendered is each item's board entry — the item plus its BoardView, as the
+	// board JSON serves it — serialised, keyed by item id. It is the row's
+	// fingerprint: an upsert is sent exactly when what the board would serve for
+	// that row changed. ⚠️ Never written after publication, which is what makes
+	// it safe for every stream to read concurrently.
 	rendered map[string]string
 	// inputs is what each rendered row was derived from, so the next render can
-	// tell an unchanged row from a changed one and carry the HTML over.
+	// tell an unchanged row from a changed one and carry its fingerprint over.
 	// ⚠️ Never written after publication, for the same reason as `rendered`.
 	inputs map[string]rowInput
 }
 
-// rowInput is everything a row's HTML is derived from. The template output is a
-// pure function of these three values plus the handler's own speakEnabled and
-// vaultName constants — which cannot change under a running handler — so two
-// renders with an equal rowInput must produce identical HTML. That is what makes
-// carrying an unchanged row over exact rather than approximate.
+// rowInput is everything a row's fingerprint is derived from. The fingerprint
+// is a pure function of these three values plus the handler's own speakEnabled
+// and vaultName constants — which cannot change under a running handler — so two
+// renders with an equal rowInput produce an identical fingerprint. That is what
+// makes carrying an unchanged row over exact rather than approximate.
 type rowInput struct {
 	item       pkg.Item
 	provenance pkg.Provenance
@@ -136,17 +122,17 @@ type rowInput struct {
 //
 // ⚠️ DeepEqual on the item, not `==`: Item carries `Options`, a slice, so the
 // struct is not comparable. The comparison is still far cheaper than the work it
-// replaces — microseconds against the ~1 ms a row costs to execute.
+// replaces.
 func (r rowInput) equal(other rowInput) bool {
 	return r.provenance == other.provenance &&
 		reflect.DeepEqual(r.report, other.report) &&
 		reflect.DeepEqual(r.item, other.item)
 }
 
-// renderedBoard is one render's output: every row's HTML, the inputs it derived
-// them from, and how many rows were actually re-executed.
+// renderedBoard is one render's output: every row's fingerprint, the inputs it
+// derived them from, and how many rows were actually re-derived.
 type renderedBoard struct {
-	html   map[string]string
+	views  map[string]string
 	inputs map[string]rowInput
 	// rows counts the rows RE-RENDERED, not the rows on the board. It feeds
 	// attention_board_rows_rendered_total, whose whole purpose is to show what a
@@ -182,9 +168,9 @@ func (r *boardRefresh) wait(ctx context.Context) error {
 //
 // ⚠️ This is the fix for a cost that scaled with clients rather than with
 // changes. `render` takes no client input — it reads the store, resolves
-// provenance and executes the row template — so with eight streams attached
-// every change used to decode ~2,563 items and execute ~2,548 templates eight
-// times over, producing eight identical maps. Here the first wake renders and
+// provenance and derives each row — so with eight streams attached every change
+// used to decode ~2,563 items and derive every row eight times over, producing
+// eight identical maps. Here the first wake renders and
 // the rest are served that result.
 //
 // The generation is what makes it exact. Every subscriber woken by one write
@@ -199,7 +185,7 @@ func (r *boardRefresh) wait(ctx context.Context) error {
 // reports nothing at all.
 type boardRenderer struct {
 	// render produces one board, given the previous one so it can carry
-	// unchanged rows over instead of re-executing their templates.
+	// unchanged rows over instead of re-deriving them.
 	render func(ctx context.Context, previous *boardSnapshot) (renderedBoard, error)
 	// metrics is the counters the shared render path reports through; held by
 	// the renderer and not the handler, so the increment cannot be reached from
@@ -291,7 +277,7 @@ func (b *boardRenderer) run(ctx context.Context, refresh *boardRefresh, generati
 		// cost nothing, and the counter exists to show what a render cost.
 		b.metrics.BoardRowsRenderedTotalCounterAdd(rendered.rows)
 		b.seq++
-		b.current = &boardSnapshot{seq: b.seq, rendered: rendered.html, inputs: rendered.inputs}
+		b.current = &boardSnapshot{seq: b.seq, rendered: rendered.views, inputs: rendered.inputs}
 		// ⚠️ Stamped with the generation this render was FOR, never with the
 		// notifier's current one. A read taken for generation 5 may not cover
 		// generation 7, and stamping 7 would mark that change as rendered and
@@ -340,15 +326,13 @@ func (a *attentionStreamHandler) ServeHTTP(resp http.ResponseWriter, req *http.R
 	//
 	// ⚠️ The baseline is the SHARED board, not a render of this client's own,
 	// so a connection made while the board is warm costs no render at all — and
-	// that snapshot comes from the same renderer the page reads through, which
-	// is what keeps a row arriving here identical to the same row on a fresh
-	// load.
 	//
 	// ⚠️ It is asked for at the notifier's CURRENT generation, not at zero.
 	// Zero would return whatever the board last held, which can predate the page
 	// this client is looking at — and a baseline older than the page makes the
-	// first diff re-send rows the page already drew, replacing nodes that did
-	// not change, which is the one thing the diff exists to prevent. Asking at
+	// first diff re-send rows the page already drew, triggering re-fetches for
+	// rows that did not change, which is the one thing the diff exists to
+	// prevent. Asking at
 	// the current generation keeps the pre-shared behaviour exactly: the
 	// baseline is the store as of this moment, and it costs a render only when
 	// the board is genuinely behind, which is precisely when one is owed.
@@ -397,17 +381,16 @@ func (a *attentionStreamHandler) ServeHTTP(resp http.ResponseWriter, req *http.R
 }
 
 // push sends what differs from the last board this stream applied, and adopts
-// the new one. It sends the difference rather than the whole board so a row the
-// operator is typing into is never replaced underneath them.
+// the new one. It sends the difference rather than the whole board, so a quiet
+// row never wakes a consumer.
 //
-// A row is sent when its rendered HTML changed, which is a stricter test than
-// its fields changing and costs nothing extra: the render is already in hand,
-// and comparing the output is what the page actually shows.
+// A row is sent when its fingerprint changed — when what the board JSON would
+// serve for it changed — which is what a client re-fetching the board can see.
 //
 // ⚠️ The diff stays per-client even though the render is now shared, and it has
 // to. Each stream's baseline is the last board IT sent, so two clients that
 // joined at different moments must be told different things about one change —
-// sharing the render is what removes the repeated decoding and templating, not
+// sharing the render is what removes the repeated decoding and deriving, not
 // the comparison, which is a map walk over the same map every stream already
 // holds a reference to.
 func (a *attentionStreamHandler) push(
@@ -423,14 +406,13 @@ func (a *attentionStreamHandler) push(
 	if next.seq == previous.seq {
 		return nil
 	}
-	for itemID, html := range next.rendered {
-		if prior, seen := previous.rendered[itemID]; seen && prior == html {
+	for itemID, view := range next.rendered {
+		if prior, seen := previous.rendered[itemID]; seen && prior == view {
 			continue
 		}
 		if err := writeEvent(ctx, resp, flusher, attentionStreamEvent{
 			Type:   "upsert",
 			ItemID: itemID,
-			HTML:   html,
 		}); err != nil {
 			return errors.Wrapf(ctx, err, "write upsert for %s failed", itemID)
 		}
@@ -449,20 +431,12 @@ func (a *attentionStreamHandler) push(
 	return nil
 }
 
-// render reads the store and returns each item's row as rendered HTML, keyed by
-// item id. It resolves provenance and the jump token exactly as the page does,
-// so a row arriving over the stream is identical to the same row on a fresh
-// load.
+// render reads the store and returns each item's fingerprint, keyed by item id.
+// It resolves provenance and builds the row exactly as the board JSON read does.
 //
-// ⚠️ ReadBoard, not Read — the same reader the page uses, and for the same
-// reason. Read returns open items only, so an item that was answered left this
-// map and the channel sent a removal for it: the board dropped the row at the
-// moment the dimmed record became worth reading, and the record reappeared only
-// on the next load. That contradicted § The dimmed record card, which has the
-// card appear when the item is answered and leave when it reaches closed. The
-// two readers have to agree, because the stream's whole claim is that a row it
-// sends is identical to the same row on a fresh load — with Read here and
-// ReadBoard on the page, that claim was false for every answered item.
+// ⚠️ ReadBoard, not Read — the same reader the board JSON uses. Read returns
+// open items only, so an answered item would leave this map and the channel
+// would send a removal for a dimmed record the board still serves.
 func (a *attentionStreamHandler) render(
 	ctx context.Context,
 	previous *boardSnapshot,
@@ -475,18 +449,13 @@ func (a *attentionStreamHandler) render(
 	// Derived for the whole board in one read, not one read per row: this
 	// render runs several times a second over every item the board holds.
 	reports := deliveryReportsOf(ctx, a.store, items)
-	// ⚠️ No token is read here either: the stream's rows must render exactly as
-	// the page's do, and the page's Jump button is now gated on the pane alone.
-	//
-	// ⚠️ Only the rows whose INPUTS changed are re-executed. Every other row is
+	// ⚠️ Only the rows whose INPUTS changed are re-derived. Every other row is
 	// carried over verbatim from the previous snapshot. Measured 2026-11-16: the
 	// board held 536 rows and one full render cost ~0.5 s of CPU, so a batch of
-	// writes — the unforwarded-closers scan posts hundreds — re-templated the
-	// whole board hundreds of times to change one row each. The template output
-	// is a pure function of the three inputs kept in `inputs`, which is what
-	// makes carrying a row over exact rather than approximate.
+	// writes — the unforwarded-closers scan posts hundreds — re-rendered the
+	// whole board hundreds of times to change one row each.
 	board := renderedBoard{
-		html:   make(map[string]string, len(items)),
+		views:  make(map[string]string, len(items)),
 		inputs: make(map[string]rowInput, len(items)),
 	}
 	for _, item := range items {
@@ -499,22 +468,22 @@ func (a *attentionStreamHandler) render(
 		board.inputs[key] = input
 		if previous != nil {
 			if prior, ok := previous.inputs[key]; ok && prior.equal(input) {
-				board.html[key] = previous.rendered[key]
+				board.views[key] = previous.rendered[key]
 				continue
 			}
 		}
-		row := newAttentionPageRow(
+		row := newBoardRow(
 			item,
 			input.provenance,
 			input.report,
 			a.speakEnabled,
 			a.vaultName,
 		)
-		var body bytes.Buffer
-		if err := a.rows.ExecuteTemplate(&body, "attention-row", row); err != nil {
+		view, err := json.Marshal(pkg.BoardItem{Item: item, Board: newBoardView(row)})
+		if err != nil {
 			return renderedBoard{}, errors.Wrap(ctx, err, "render row failed")
 		}
-		board.html[key] = body.String()
+		board.views[key] = string(view)
 		board.rows++
 	}
 	return board, nil

@@ -186,6 +186,7 @@ Standard Go microservice architecture:
 - `main.go` - Application entry point with dependency injection
 - `pkg/factory/` - Factory functions for handler creation
 - `pkg/handler/` - HTTP handlers for various endpoints
+- `frontend/` - The attention board: a React app built by Vite into `frontend/dist`, embedded into the binary by `assets.go` (`//go:embed all:frontend/dist`) and served at `/` and `/assets/` by `pkg/handler/attention-react-page.go`, which also injects the build-identity footer. The board renders from `GET /api/1.0/attention/board` (each item plus its server-derived `board` render data) and re-reads it on every `GET /api/1.0/attention/stream` frame. There is no server-rendered HTML board.
 - Uses proven libraries for service framework, HTTP handling, Kafka, database, and monitoring
 
 ## API Documentation

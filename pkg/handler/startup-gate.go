@@ -127,7 +127,7 @@ func writeStartingJSON(resp http.ResponseWriter, step string) {
 // rather than a generic light document. The gate is what the operator sees on
 // every restart, and it used to render a white page that flashed before the
 // dark board appeared — one surface announcing itself in two different designs.
-// The tokens below mirror attentionPageStyles on purpose: the two documents
+// The tokens below mirror frontend/src/styles.css on purpose: the two documents
 // must read as one surface, and a value changed in one without the other is
 // the drift this comment exists to name.
 //

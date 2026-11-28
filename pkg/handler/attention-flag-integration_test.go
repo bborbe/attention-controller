@@ -19,11 +19,9 @@ import (
 	"github.com/gorilla/mux"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/bborbe/attention-controller/mocks"
 	"github.com/bborbe/attention-controller/pkg"
-	"github.com/bborbe/attention-controller/pkg/boardmetrics"
 	"github.com/bborbe/attention-controller/pkg/factory"
 	"github.com/bborbe/attention-controller/pkg/handler"
 )
@@ -39,7 +37,7 @@ var _ = Describe("Attention flag round trip", func() {
 	var db libkv.DB
 	var store pkg.AttentionStore
 	var router *mux.Router
-	var pageHandler http.Handler
+	var boardHandler http.Handler
 	var provenance *mocks.ProvenanceResolver
 
 	BeforeEach(func() {
@@ -83,13 +81,11 @@ var _ = Describe("Attention flag round trip", func() {
 		provenance = &mocks.ProvenanceResolver{}
 		provenance.ResolveReturns(pkg.Provenances{})
 
-		pageHandler = handler.NewAttentionPageHandler(
+		boardHandler = handler.NewAttentionBoardReadHandler(
 			store,
 			provenance,
 			false,
 			filepath.Join(GinkgoT().TempDir(), "Personal"),
-			testBuildIdentity,
-			boardmetrics.NewMetrics(prometheus.NewRegistry()),
 		)
 	})
 
@@ -118,37 +114,6 @@ var _ = Describe("Attention flag round trip", func() {
 		return &item
 	}
 
-	// producer_kind=all is appended unless the target already names one: the
-	// board defaults to manager-kind rows and these fixtures are session cards,
-	// so without it every case below would render no row and pass vacuously on
-	// a missing subtree. The filter axes under test here are `hide` and
-	// `flags`, never the kind.
-	renderAt := func(target string) string {
-		if !strings.Contains(target, "producer_kind=") {
-			if strings.Contains(target, "?") {
-				target += "&producer_kind=all"
-			} else {
-				target += "?producer_kind=all"
-			}
-		}
-		req := httptest.NewRequest(http.MethodGet, target, nil)
-		rec := httptest.NewRecorder()
-		pageHandler.ServeHTTP(rec, req)
-		Expect(rec.Code).To(Equal(http.StatusOK))
-		return rec.Body.String()
-	}
-
-	// rowOf returns one item's rendered row, so an assertion is scoped to that
-	// item rather than to the whole page.
-	rowOf := func(body string, itemID pkg.ItemID) string {
-		start := strings.Index(body, `data-item-id="`+itemID.String()+`"`)
-		Expect(start).To(BeNumerically(">=", 0), "row for %s not found", itemID)
-		rest := body[start:]
-		end := strings.Index(rest, "</li>")
-		Expect(end).To(BeNumerically(">=", 0))
-		return rest[:end]
-	}
-
 	errorCode := func(rec *httptest.ResponseRecorder) string {
 		var errorResponse libhttp.ErrorResponse
 		Expect(json.NewDecoder(rec.Body).Decode(&errorResponse)).To(BeNil())
@@ -169,61 +134,33 @@ var _ = Describe("Attention flag round trip", func() {
 		return &item
 	}
 
-	It("flags, hides, reveals and unflags a card end to end", func() {
-		// (a) Push through the HTTP route.
+	It("flags and unflags a card end to end, the board serving it throughout", func() {
 		item := pushMessage("flag-round-trip")
 
-		// (b) Default view: an open card carries the flag control, is marked
-		// unflagged and shows no reason line.
-		block := rowOf(renderAt("/"), item.ItemID)
-		Expect(block).To(ContainSubstring("data-flag-control"))
-		Expect(block).To(ContainSubstring(`data-flagged="false"`))
-		Expect(block).NotTo(ContainSubstring("flagged:"))
+		entry := boardEntryOf(boardHandler, item.ItemID)
+		Expect(entry.FlagReason).To(BeEmpty())
+		Expect(entry.FlaggedAt).To(BeNil())
 
-		// (c) Flag through the route.
 		flagRec := post(
 			"/api/1.0/attention/"+item.ItemID.String()+"/flag",
 			`{"reason":"asked the wrong team"}`,
 		)
 		Expect(flagRec.Code).To(Equal(http.StatusOK))
 
-		// (d) Read back: AC1's four stored values through the wire.
+		// The flag parks the card, it does not answer it.
 		flagged := getItem(item.ItemID)
 		Expect(flagged.State).To(Equal(pkg.OpenState))
 		Expect(flagged.AnsweredAt).To(BeNil())
 		Expect(flagged.FlagReason).To(Equal("asked the wrong team"))
 		Expect(flagged.FlaggedAt).NotTo(BeNil())
 
-		// (e) Default view: the mark and the reason are served, and the row is
-		// still in the body — the park is client-side.
-		block = rowOf(renderAt("/"), item.ItemID)
-		Expect(block).To(ContainSubstring(`data-flagged="true"`))
-		Expect(block).To(ContainSubstring("flagged: asked the wrong team"))
+		// The board still serves the flagged card — the flag filter is the
+		// client's view, never a server-side omission.
+		entry = boardEntryOf(boardHandler, item.ItemID)
+		Expect(entry.State).To(Equal(pkg.OpenState))
+		Expect(entry.FlagReason).To(Equal("asked the wrong team"))
+		Expect(entry.FlaggedAt).NotTo(BeNil())
 
-		// (f) ?flags=none: the flag switch is off, the answered switch is still
-		// on, and the row still carries the mark and the reason.
-		flagsOffBody := renderAt("/?flags=none")
-		Expect(flagsOffBody).To(ContainSubstring(
-			`data-flag-filter role="switch" aria-checked="false"`,
-		))
-		Expect(flagsOffBody).To(ContainSubstring(filterSwitchOn))
-		block = rowOf(flagsOffBody, item.ItemID)
-		Expect(block).To(ContainSubstring(`data-flagged="true"`))
-		Expect(block).To(ContainSubstring("flagged: asked the wrong team"))
-
-		// (g) ?hide=none: only the answered switch moves — the flag switch
-		// stays on, because the two are independent — and the reason is still
-		// served.
-		hideNoneBody := renderAt("/?hide=none")
-		Expect(hideNoneBody).To(ContainSubstring(filterSwitchOff))
-		Expect(hideNoneBody).To(ContainSubstring(
-			`data-flag-filter role="switch" aria-checked="true"`,
-		))
-		Expect(rowOf(hideNoneBody, item.ItemID)).To(ContainSubstring(
-			"flagged: asked the wrong team",
-		))
-
-		// (h) Unflag through the route, then read back: both fields cleared.
 		unflagRec := post(
 			"/api/1.0/attention/"+item.ItemID.String()+"/unflag",
 			"",
@@ -233,13 +170,12 @@ var _ = Describe("Attention flag round trip", func() {
 		Expect(unflagged.FlagReason).To(BeEmpty())
 		Expect(unflagged.FlaggedAt).To(BeNil())
 
-		// (i) Default view: unflagged and no reason line.
-		block = rowOf(renderAt("/"), item.ItemID)
-		Expect(block).To(ContainSubstring(`data-flagged="false"`))
-		Expect(block).NotTo(ContainSubstring("flagged:"))
+		entry = boardEntryOf(boardHandler, item.ItemID)
+		Expect(entry.FlagReason).To(BeEmpty())
+		Expect(entry.FlaggedAt).To(BeNil())
 	})
 
-	It("escapes the reason on both views", func() {
+	It("carries the reason verbatim as data, never pre-rendered markup", func() {
 		item := pushMessage("flag-escape")
 		flagRec := post(
 			"/api/1.0/attention/"+item.ItemID.String()+"/flag",
@@ -247,11 +183,8 @@ var _ = Describe("Attention flag round trip", func() {
 		)
 		Expect(flagRec.Code).To(Equal(http.StatusOK))
 
-		for _, target := range []string{"/?flags=none", "/?hide=none"} {
-			body := renderAt(target)
-			Expect(body).To(ContainSubstring("&lt;script&gt;alert(1)"))
-			Expect(body).NotTo(ContainSubstring("<script>alert(1)"))
-		}
+		Expect(boardEntryOf(boardHandler, item.ItemID).FlagReason).
+			To(Equal("<script>alert(1)</script>"))
 	})
 
 	It("refuses a flag on an answered card and leaves the record intact", func() {

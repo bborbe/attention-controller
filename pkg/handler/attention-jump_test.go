@@ -11,7 +11,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 
 	libboltkv "github.com/bborbe/boltkv"
 	"github.com/bborbe/errors"
@@ -21,11 +20,9 @@ import (
 	"github.com/gorilla/mux"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/bborbe/attention-controller/mocks"
 	"github.com/bborbe/attention-controller/pkg"
-	"github.com/bborbe/attention-controller/pkg/boardmetrics"
 	"github.com/bborbe/attention-controller/pkg/handler"
 )
 
@@ -138,168 +135,70 @@ var _ = Describe("Attention jump handover", func() {
 		})
 	}
 
-	// rowBlock returns the rendered HTML for one item's row, so an assertion
-	// about the handover is scoped to that item rather than to the whole page. A
-	// page-wide grep would pass on a page where the wrong item carried the
-	// control.
-	rowBlock := func(body string, itemID pkg.ItemID) string {
-		start := strings.Index(body, `data-item-id="`+itemID.String()+`"`)
-		Expect(start).To(BeNumerically(">=", 0), "row for %s not found", itemID)
-		rest := body[start:]
-		end := strings.Index(rest, "</li>")
-		Expect(end).To(BeNumerically(">=", 0))
-		return rest[:end]
-	}
-
-	Describe("the board page", func() {
-		var pageHandler http.Handler
+	Describe("the board JSON", func() {
+		var boardHandler http.Handler
 
 		BeforeEach(func() {
-			pageHandler = handler.NewAttentionPageHandler(
-				store,
-				provenance,
-				false,
-				"",
-				testBuildIdentity,
-				boardmetrics.NewMetrics(prometheus.NewRegistry()),
-			)
+			boardHandler = handler.NewAttentionBoardReadHandler(store, provenance, false, "")
 		})
 
-		renderPage := func() *httptest.ResponseRecorder {
-			req := httptest.NewRequest(http.MethodGet, "/?producer_kind=all", nil)
-			resp := httptest.NewRecorder()
-			pageHandler.ServeHTTP(resp, req)
-			return resp
+		viewOf := func(itemID pkg.ItemID) pkg.BoardView {
+			return boardEntryOf(boardHandler, itemID).Board
 		}
 
-		renderRow := func(itemID pkg.ItemID) string {
-			resp := renderPage()
-			Expect(resp.Code).To(Equal(http.StatusOK))
-			return rowBlock(resp.Body.String(), itemID)
-		}
-
-		// The control is a button carrying data-jump, never an anchor with an
-		// href: a link navigates the browser away from the board, which is the
-		// behaviour the operator asked to remove. The path is a path on this
-		// board, never the fleet-jump URL — that URL carries the token, and the
-		// token must not reach the document.
-		It("renders a Jump button whose data-jump is the item's board-relative jump path", func() {
+		It("carries the item's board-relative jump path, never a fleet-jump URL", func() {
 			item := pushItem(nonMessageRequest())
 			resolvedPane(item.ItemID, "1907")
 
-			resp := renderPage()
-			Expect(resp.Code).To(Equal(http.StatusOK))
-			block := rowBlock(resp.Body.String(), item.ItemID)
+			view := viewOf(item.ItemID)
 
-			Expect(block).To(ContainSubstring(`class="jump-corner"`))
-			Expect(block).To(ContainSubstring(`<button type="button"`))
-			Expect(block).To(ContainSubstring(`data-jump="/jump/` + item.ItemID.String() + `"`))
-			Expect(block).NotTo(ContainSubstring("/jump?pane="))
-			// No anchor to the jump route anywhere on the page: an href would
-			// navigate the board away on a click.
-			Expect(resp.Body.String()).NotTo(ContainSubstring(`href="/jump/`))
+			Expect(view.JumpURL).To(Equal("/jump/" + item.ItemID.String()))
+			Expect(view.JumpURL).NotTo(ContainSubstring("/jump?pane="))
 		})
 
-		// An unresolvable pane must not render a control that promises a jump it
-		// cannot deliver: a button pointing at a jump that will 404 is a value
-		// presented as working that is not. See the attention item schema
-		// § silence 7.
-		// ⚠️ AMENDED 2026-09-27 — the control now RENDERS here, disabled, because
-		// the operator asked for it in the same place on every card. What this
-		// spec guards is unchanged and is asserted below: no *working* jump, no
-		// copyable command, and no placeholder standing in for the missing pane.
-		It(
-			"renders no working Jump control and no placeholder when the pane does not resolve",
-			func() {
-				item := pushItem(nonMessageRequest())
-				provenance.ResolveReturns(pkg.Provenances{})
+		It("carries no jump target and no placeholder when the pane does not resolve", func() {
+			item := pushItem(nonMessageRequest())
+			provenance.ResolveReturns(pkg.Provenances{})
 
-				block := renderRow(item.ItemID)
+			view := viewOf(item.ItemID)
 
-				Expect(block).NotTo(ContainSubstring("jump-button"))
-				Expect(block).NotTo(ContainSubstring(`data-jump="/jump/`))
-				Expect(block).NotTo(ContainSubstring("/supervisor:jump"))
-				Expect(block).NotTo(ContainSubstring(`class="jump"`))
-				// The control is present and unavailable, and "unavailable" is the
-				// whole of the claim: a disabled button cannot dispatch, and it
-				// carries no data-jump for the document-delegated handler to match
-				// even if it somehow did.
-				Expect(block).To(ContainSubstring(`class="jump-corner"`))
-				Expect(block).To(ContainSubstring(`disabled`))
-				Expect(block).NotTo(ContainSubstring(`data-jump=`))
-				// No stand-in text either. A placeholder would be an unresolvable value
-				// presented as resolved, which is the one failure this task exists to
-				// avoid.
-				//
-				// ⚠️ Scoped to the card FACE: the info panel now renders an em dash
-				// for a timeline stage that did not happen, which is a fact about the
-				// item, not an invented jump placeholder.
-				face, _, _ := strings.Cut(block, `<div class="info-panel"`)
-				for _, placeholder := range []string{"unknown", "n/a", "N/A", "—", "??"} {
-					Expect(face).NotTo(ContainSubstring(placeholder))
-				}
-			},
-		)
+			Expect(view.JumpURL).To(BeEmpty())
+			Expect(view.JumpCommand).To(BeEmpty())
+			Expect(view.Provenance.Pane).To(BeEmpty())
+			Expect(view.NoJump).NotTo(BeEmpty())
+		})
 
-		// The button is for every class, the command only for the classes the board
-		// must not answer. On a `message` row the "Approve in the session that
-		// asked" label would be false — the board may answer that item in place —
-		// so the label and the command both have to be absent while the button
-		// stays.
-		It("renders the button on a message row without the command or the approval label", func() {
+		It("carries the jump path on a message row without the command", func() {
 			item := pushItem(messageRequest())
 			resolvedPane(item.ItemID, "1907")
 
-			block := renderRow(item.ItemID)
+			view := viewOf(item.ItemID)
 
-			Expect(block).To(ContainSubstring(`class="jump-corner"`))
-			Expect(block).To(ContainSubstring(`data-jump="/jump/` + item.ItemID.String() + `"`))
-			Expect(block).NotTo(ContainSubstring("/supervisor:jump"))
-			Expect(block).NotTo(ContainSubstring("Approve in the session that asked"))
+			Expect(view.JumpURL).To(Equal("/jump/" + item.ItemID.String()))
+			Expect(view.JumpCommand).To(BeEmpty())
 		})
 
-		// The regression guard for the half that already shipped: adding the button
-		// must not drop the copyable command an operator may still want to paste.
 		It("keeps the copyable jump command on a non-message row", func() {
 			item := pushItem(nonMessageRequest())
 			resolvedPane(item.ItemID, "1907")
 
-			block := renderRow(item.ItemID)
+			view := viewOf(item.ItemID)
 
-			Expect(block).To(ContainSubstring("/supervisor:jump 1907"))
-			Expect(block).To(ContainSubstring("Approve in the session that asked"))
+			Expect(view.JumpCommand).To(Equal("/supervisor:jump 1907"))
+			Expect(view.JumpURL).To(Equal("/jump/" + item.ItemID.String()))
 		})
 
-		// ⚠️ INVERTED by the jump fold, and the inversion is the assertion.
-		// This spec used to require that an unreadable token suppressed the
-		// button. It now requires the opposite: the endpoint the button points
-		// at performs the jump in-process and reads no token, so a button
-		// withheld over a token would be a working control hidden by a
-		// credential it no longer touches.
-		It("renders the button on a pane-resolving row regardless of token readability", func() {
+		It("never carries the token value", func() {
 			item := pushItem(nonMessageRequest())
 			resolvedPane(item.ItemID, "1907")
 
-			block := renderRow(item.ItemID)
-
-			Expect(block).To(ContainSubstring(`data-jump="/jump/` + item.ItemID.String() + `"`))
-			Expect(block).To(ContainSubstring("/supervisor:jump 1907"))
-		})
-
-		// The token is a credential. It stays on the server, in the request the
-		// handler builds and nowhere a document the browser renders can carry it.
-		It("never renders the token value into the page", func() {
-			item := pushItem(nonMessageRequest())
-			resolvedPane(item.ItemID, "1907")
-
-			resp := renderPage()
+			req := httptest.NewRequest(http.MethodGet, "/api/1.0/attention/board", nil)
+			resp := httptest.NewRecorder()
+			boardHandler.ServeHTTP(resp, req)
 			Expect(resp.Code).To(Equal(http.StatusOK))
-			body := resp.Body.String()
 
-			// Positive control first: a page that failed to render the handover at
-			// all must not be able to satisfy the leak assertion below.
-			Expect(body).To(ContainSubstring(`data-jump="/jump/` + item.ItemID.String() + `"`))
-			Expect(body).NotTo(ContainSubstring(jumpTokenSentinel))
+			Expect(resp.Body.String()).To(ContainSubstring(`"/jump/` + item.ItemID.String() + `"`))
+			Expect(resp.Body.String()).NotTo(ContainSubstring(jumpTokenSentinel))
 		})
 	})
 
