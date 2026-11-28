@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { Item } from "./types";
 import { fetchBoard, subscribeItems } from "./api";
 import Card from "./Card";
+import { useHeldAnswer } from "./useHeldAnswer";
 
 const HIDE_PARAM = "hide";
 const HIDE_NONE = "none";
@@ -47,10 +48,21 @@ export default function App() {
       .catch((err: Error) => setError(err.message));
   }, []);
 
+  const { held, decide, undo, cancelIfAnswered } = useHeldAnswer(load);
+
   useEffect(() => {
     load();
     return subscribeItems(load);
   }, [load]);
+
+  // A held answer is cancelled when the store answers that item from another arm
+  // (a stream frame carrying it answered), so an Undo can never restore a card the
+  // store no longer has open.
+  useEffect(() => {
+    if (items) {
+      cancelIfAnswered(items);
+    }
+  }, [items, cancelIfAnswered]);
 
   if (error) return <p className="err">Could not read the board: {error}</p>;
   if (!items) return <p className="subtitle">Loading…</p>;
@@ -58,6 +70,7 @@ export default function App() {
   const visible = items.filter((item) => {
     const answered = item.state === "answered";
     const flagged = !!item.flagged_at;
+    if (held && item.item_id === held.itemID) return false;
     if (filters.hideOn && answered) return false;
     if (filters.flagsOn && flagged) return false;
     if (filters.kind !== KIND_ALL && item.producer_kind !== filters.kind) return false;
@@ -106,6 +119,14 @@ export default function App() {
           {kindAll ? "Show manager cards" : "Show all kinds"}
         </a>
       </div>
+      <div data-undo-bar className={`undo-bar${held ? " is-active" : ""}`}>
+        <span>
+          Answer held for a moment —{" "}
+          <button type="button" data-undo onClick={undo}>
+            Undo
+          </button>
+        </span>
+      </div>
       {visible.length === 0 ? (
         <p className="empty">
           {kindAll
@@ -115,7 +136,7 @@ export default function App() {
       ) : (
         <ul className="items">
           {visible.map((item) => (
-            <Card key={item.item_id} item={item} onChanged={load} />
+            <Card key={item.item_id} item={item} onChanged={load} onDecide={decide} />
           ))}
         </ul>
       )}

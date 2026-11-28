@@ -80,6 +80,22 @@ export function jump(url: string): Promise<Response> {
   return fetch(url, { method: "GET" });
 }
 
+// answerKeepalive delivers a held answer as the page unloads. A normal fetch is
+// cancelled when the document goes away; `keepalive` lets it outlive the page so
+// a held Allow/Deny is never dropped when the operator closes the tab.
+export function answerKeepalive(itemID: string, request: unknown): void {
+  try {
+    void fetch(itemURL(itemID, "answer"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+      keepalive: true,
+    });
+  } catch {
+    // A pagehide delivery is best-effort; a throw here would be lost anyway.
+  }
+}
+
 // Subscribes to the board's SSE stream. jsdom (Vitest) has no EventSource; the
 // guard returns a no-op so a component test never throws.
 export function subscribeItems(onChange: () => void): () => void {

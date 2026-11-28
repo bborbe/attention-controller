@@ -5,6 +5,7 @@ import { answer, boardClient, close, flag, rate, speak, cancel, unflag } from ".
 interface Props {
   item: Item;
   onChanged: () => void;
+  onDecide: (itemID: string, decision: "allow" | "deny") => void;
 }
 
 interface Unit {
@@ -33,7 +34,7 @@ function unitsOf(item: Item): Unit[] {
   ];
 }
 
-export default function Card({ item, onChanged }: Props) {
+export default function Card({ item, onChanged, onDecide }: Props) {
   const dimmed = item.state === "answered";
   const units = unitsOf(item);
   const multi = units.length > 1;
@@ -112,12 +113,6 @@ export default function Card({ item, onChanged }: Props) {
     } else {
       setNote({ text: `Answer failed - HTTP ${res.status}`, error: true });
     }
-  }
-
-  async function decide(decision: "allow" | "deny") {
-    const res = await answer(itemID, { ...boardClient(), decision });
-    if (!res.ok) setNote({ text: `${decision} failed - HTTP ${res.status}`, error: true });
-    else onChanged();
   }
 
   async function acknowledge() {
@@ -257,10 +252,10 @@ export default function Card({ item, onChanged }: Props) {
 
       {!dimmed && item.answer_mechanism === "permission" ? (
         <div className="actions">
-          <button type="button" onClick={() => decide("allow")}>
+          <button type="button" data-decision="allow" onClick={() => onDecide(itemID, "allow")}>
             Allow
           </button>
-          <button type="button" onClick={() => decide("deny")}>
+          <button type="button" data-decision="deny" onClick={() => onDecide(itemID, "deny")}>
             Deny
           </button>
         </div>

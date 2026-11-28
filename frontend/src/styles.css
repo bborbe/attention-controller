@@ -161,3 +161,29 @@ body {
   overflow-x: auto;
 }
 
+/* The held-answer bar. It always occupies its height (visibility, not display)
+   so showing it never moves the first card — the e2e contract measures a 0 px
+   offsetTop delta. Only .is-active reveals it. */
+.undo-bar {
+  display: flex;
+  align-items: center;
+  height: 44px;
+  margin-bottom: 12px;
+  color: var(--muted);
+  font-size: 13px;
+  visibility: hidden;
+}
+
+.undo-bar.is-active {
+  visibility: visible;
+}
+
+.undo-bar button {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+

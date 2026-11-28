@@ -5,9 +5,11 @@
 package handler
 
 import (
+	"bytes"
 	"io/fs"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/bborbe/attention-controller/pkg"
 	"github.com/bborbe/attention-controller/pkg/buildidentity"
@@ -30,6 +32,13 @@ const buildIdentityMarker = `<div id="build-identity"></div>`
 // loads. A missing index.html — a binary built without `make frontend` — is a
 // 503 rather than an empty 200.
 //
+// ⚠️ Assets are read with fs.ReadFile + http.ServeContent rather than
+// http.FileServer(http.FS(dist)). FileServer maps req.URL.Path into the FS with a
+// leading slash, which fs.Sub rejects, so every asset 404s under the FileServer
+// form while index.html still serves — the exact "page loads, JS does not"
+// failure. Reading the bytes and serving them by name keeps the Content-Type
+// (from the extension), Range and HEAD handling without the path mismatch.
+//
 // identity is the running binary's provenance. It is injected into the served
 // index.html's footer so the deploy gate's `commit <span class="bi-value">`
 // probe keeps working; the footer is the same markup the vanilla page rendered.
@@ -38,15 +47,14 @@ func NewAttentionReactPageHandler(
 	identity buildidentity.Identity,
 	metrics pkg.Metrics,
 ) http.Handler {
-	fileServer := http.FileServer(http.FS(dist))
 	return http.HandlerFunc(func(resp http.ResponseWriter, req *http.Request) {
 		path := strings.TrimPrefix(req.URL.Path, "/")
 		if path != "" && path != "index.html" {
-			if _, err := fs.Stat(dist, path); err == nil {
+			if data, err := fs.ReadFile(dist, path); err == nil {
 				// Vite emits content-hashed asset names, so an asset's bytes never
 				// change under a given URL.
 				resp.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-				fileServer.ServeHTTP(resp, req)
+				http.ServeContent(resp, req, path, time.Time{}, bytes.NewReader(data))
 				return
 			}
 		}
