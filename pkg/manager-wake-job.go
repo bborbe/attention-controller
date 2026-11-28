@@ -1061,29 +1061,9 @@ func (p *wakePass) keeps(manager string, item Item) bool {
 	// another goal is not this manager's. ⚠️ It sits ABOVE the own-worker branch
 	// deliberately — a positively-foreign pane is foreign even when this manager
 	// spawned it, which is the case `TestForeignGoalNeverWakes` pins.
-	var (
-		goal    string
-		foreign bool
-		scoped  bool
-	)
-	if p.job.goalScope != nil {
-		goal, foreign, scoped = p.job.goalScope.Foreign(manager, sessionID)
-		if scoped && foreign {
-			glog.V(3).Infof(
-				"job=manager-wake action=foreign_goal item=%s manager=%s goal=%q",
-				item.ItemID, manager, goal,
-			)
-			return false
-		}
-		// The item's goal is THIS manager's goal. Keep it even when a different live
-		// manager spawned the producer: without this, the spawner drops it as foreign
-		// and this manager falls to `return !isLive(spawner)` below and drops it too,
-		// so the card is kept by nobody (the C2 foreign-drop class). The Fleet Manager
-		// does not double-keep it — `ownedOnSpawnEdge` blocks the fleet for a live
-		// same-vault spawner.
-		if scoped && !foreign {
-			return true
-		}
+	keep, decided, scoped := p.goalScopeDecision(manager, item, sessionID)
+	if decided {
+		return keep
 	}
 	spawner := p.owners[sessionID].SpawnerSessionID
 	if spawner == manager && sameVaultDir(p.owners[manager].Cwd, p.owners[sessionID].Cwd) {
@@ -1147,6 +1127,33 @@ func (p *wakePass) keeps(manager string, item Item) bool {
 		return true
 	}
 	return !p.isLive(spawner)
+}
+
+// goalScopeDecision settles a card for this manager from the vault goal scope: a
+// foreign goal drops it, and the manager's OWN goal keeps it. decided=false when
+// the scope cannot answer, so keeps() falls through to the spawn-edge branches.
+//
+// ⚠️ The goal-owner keep lives here, not in the spawn-edge tail, because the
+// tail's `return !isLive(spawner)` drops the card when a DIFFERENT live manager
+// spawned the producer — which is exactly the C2 foreign-drop class. The Fleet
+// Manager does not double-keep it (`ownedOnSpawnEdge` blocks the fleet for a live
+// same-vault spawner).
+func (p *wakePass) goalScopeDecision(manager string, item Item, sessionID string) (keep bool, decided bool, scoped bool) {
+	if p.job.goalScope == nil {
+		return false, false, false
+	}
+	goal, foreign, isScoped := p.job.goalScope.Foreign(manager, sessionID)
+	if !isScoped {
+		return false, false, false
+	}
+	if foreign {
+		glog.V(3).Infof(
+			"job=manager-wake action=foreign_goal item=%s manager=%s goal=%q",
+			item.ItemID, manager, goal,
+		)
+		return false, true, true
+	}
+	return true, true, true
 }
 
 // fleetOnly reports whether a card with no resolvable goal owner is kept for
