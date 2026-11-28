@@ -8,7 +8,7 @@ Please choose versions by [Semantic Versioning](http://semver.org/).
 * MINOR version when you add functionality in a backwards-compatible manner, and
 * PATCH version when you make backwards-compatible bug fixes.
 
-## Unreleased
+## v0.113.1
 
 - fix: the React board coalesces its re-reads. Each stream event refetches `GET /api/1.0/attention/board` through one loader: one read in flight plus one trailing read, and stale responses are dropped. A burst of upserts no longer fans out into parallel reads that can land out of order. Each card is keyed on its item id, so an echo no longer steals focus from a field being typed in, and a missing `/assets/` file answers 404 instead of the index document (#366). These lines were folded into the `v0.113.0` entry by #366's merge, but that tag does not contain #366; they are moved here and the `v0.113.0` entry is restored to its released text.
 - fix: the React board's styling matches the server-rendered board it replaced (#367).
