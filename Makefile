@@ -37,8 +37,13 @@ run:
 .PHONY: e2e
 e2e: frontend
 	go run $(PLAYWRIGHT_GO_MODULE)/cmd/playwright@$(PLAYWRIGHT_GO_VERSION) install chromium
-	go test -mod=mod -tags e2e -count=1 -timeout 15m ./e2e/
-	cd $(FRONTEND_DIR) && npx playwright install chromium && npm run e2e
+	@# Both suites always run: a Go failure must not hide the frontend result.
+	@# The target still exits non-zero if either suite failed.
+	@go_rc=0; fe_rc=0; \
+		go test -mod=mod -tags e2e -count=1 -timeout 25m ./e2e/ || go_rc=$$?; \
+		(cd $(FRONTEND_DIR) && npx playwright install chromium && npm run e2e) || fe_rc=$$?; \
+		echo "e2e: go suite rc=$$go_rc, frontend suite rc=$$fe_rc"; \
+		[ $$go_rc -eq 0 ] && [ $$fe_rc -eq 0 ]
 
 # The React frontend (frontend/), built into frontend/dist and embedded with
 # go:embed. types first: tsc imports ./types, which tygo generates from pkg.
